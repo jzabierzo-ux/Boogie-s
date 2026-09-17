@@ -1,0 +1,92 @@
+[debug] [2026-04-22T08:06:16.409Z] ----------------------------------------------------------------------
+[debug] [2026-04-22T08:06:16.411Z] Command:       C:\Program Files\nodejs\node.exe C:\Users\abega\AppData\Roaming\npm\node_modules\firebase-tools\lib\bin\firebase.js init
+[debug] [2026-04-22T08:06:16.412Z] CLI Version:   15.15.0
+[debug] [2026-04-22T08:06:16.412Z] Platform:      win32
+[debug] [2026-04-22T08:06:16.412Z] Node Version:  v24.14.0
+[debug] [2026-04-22T08:06:16.412Z] Time:          Wed Apr 22 2026 16:06:16 GMT+0800 (Philippine Standard Time)
+[debug] [2026-04-22T08:06:16.412Z] ----------------------------------------------------------------------
+[debug] 
+[info] 
+     ######## #### ########  ######## ########     ###     ######  ########
+     ##        ##  ##     ## ##       ##     ##  ##   ##  ##       ##
+     ######    ##  ########  ######   ########  #########  ######  ######
+     ##        ##  ##    ##  ##       ##     ## ##     ##       ## ##
+     ##       #### ##     ## ######## ########  ##     ##  ######  ########
+
+You're about to initialize a Firebase project in this directory:
+
+  C:\xampp\htdocs\Pets
+
+Before we get started, keep in mind:
+
+  * You are currently outside your home directory
+
+[info] 
+=== Project Setup
+[info] 
+[info] First, let's associate this project directory with a Firebase project.
+[info] You can create multiple project aliases by running firebase use --add, 
+[info] 
+[debug] [2026-04-22T08:06:57.082Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-04-22T08:06:57.083Z] > authorizing via signed-in user (keapresentacion@pcu.edu.ph)
+[debug] [2026-04-22T08:06:57.084Z] Checked if tokens are valid: true, expires at: 1776848759670
+[debug] [2026-04-22T08:06:57.084Z] Checked if tokens are valid: true, expires at: 1776848759670
+[debug] [2026-04-22T08:06:57.085Z] >>> [apiv2][query] GET https://firebase.googleapis.com/v1beta1/projects pageSize=100
+[debug] [2026-04-22T08:06:57.812Z] <<< [apiv2][status] GET https://firebase.googleapis.com/v1beta1/projects 200
+[debug] [2026-04-22T08:06:57.813Z] <<< [apiv2][body] GET https://firebase.googleapis.com/v1beta1/projects [omitted]
+[info] 
+=== Dataconnect Setup
+[info] i  dataconnect: ensuring required API firebasedataconnect.googleapis.com is enabled... 
+[debug] [2026-04-22T08:07:01.945Z] Checked if tokens are valid: true, expires at: 1776848759670
+[debug] [2026-04-22T08:07:01.945Z] Checked if tokens are valid: true, expires at: 1776848759670
+[info] i  dataconnect: ensuring required API sqladmin.googleapis.com is enabled... 
+[debug] [2026-04-22T08:07:01.946Z] Checked if tokens are valid: true, expires at: 1776848759670
+[debug] [2026-04-22T08:07:01.946Z] Checked if tokens are valid: true, expires at: 1776848759670
+[debug] [2026-04-22T08:07:01.946Z] >>> [apiv2][query] GET https://serviceusage.googleapis.com/v1/projects/boogies-pet-care/services/firebasedataconnect.googleapis.com [none]
+[debug] [2026-04-22T08:07:01.946Z] >>> [apiv2][(partial)header] GET https://serviceusage.googleapis.com/v1/projects/boogies-pet-care/services/firebasedataconnect.googleapis.com  x-goog-user-project=boogies-pet-care
+[debug] [2026-04-22T08:07:01.947Z] >>> [apiv2][query] GET https://serviceusage.googleapis.com/v1/projects/boogies-pet-care/services/sqladmin.googleapis.com [none]
+[debug] [2026-04-22T08:07:01.947Z] >>> [apiv2][(partial)header] GET https://serviceusage.googleapis.com/v1/projects/boogies-pet-care/services/sqladmin.googleapis.com  x-goog-user-project=boogies-pet-care
+[debug] [2026-04-22T08:07:03.668Z] <<< [apiv2][status] GET https://serviceusage.googleapis.com/v1/projects/boogies-pet-care/services/sqladmin.googleapis.com 200
+[debug] [2026-04-22T08:07:03.668Z] <<< [apiv2][body] GET https://serviceusage.googleapis.com/v1/projects/boogies-pet-care/services/sqladmin.googleapis.com [omitted]
+[warn] !  dataconnect: missing required API sqladmin.googleapis.com. Enabling now... 
+[debug] [2026-04-22T08:07:03.670Z] Checked if tokens are valid: true, expires at: 1776848759670
+[debug] [2026-04-22T08:07:03.670Z] Checked if tokens are valid: true, expires at: 1776848759670
+[debug] [2026-04-22T08:07:03.670Z] >>> [apiv2][query] POST https://serviceusage.googleapis.com/v1/projects/boogies-pet-care/services/sqladmin.googleapis.com:enable [none]
+[debug] [2026-04-22T08:07:03.670Z] >>> [apiv2][(partial)header] POST https://serviceusage.googleapis.com/v1/projects/boogies-pet-care/services/sqladmin.googleapis.com:enable  x-goog-user-project=boogies-pet-care
+[debug] [2026-04-22T08:07:04.121Z] <<< [apiv2][status] POST https://serviceusage.googleapis.com/v1/projects/boogies-pet-care/services/sqladmin.googleapis.com:enable 200
+[debug] [2026-04-22T08:07:04.121Z] <<< [apiv2][body] POST https://serviceusage.googleapis.com/v1/projects/boogies-pet-care/services/sqladmin.googleapis.com:enable [omitted]
+[debug] [2026-04-22T08:07:04.249Z] <<< [apiv2][status] GET https://serviceusage.googleapis.com/v1/projects/boogies-pet-care/services/firebasedataconnect.googleapis.com 200
+[debug] [2026-04-22T08:07:04.249Z] <<< [apiv2][body] GET https://serviceusage.googleapis.com/v1/projects/boogies-pet-care/services/firebasedataconnect.googleapis.com [omitted]
+[warn] !  dataconnect: missing required API firebasedataconnect.googleapis.com. Enabling now... 
+[debug] [2026-04-22T08:07:04.250Z] Checked if tokens are valid: true, expires at: 1776848759670
+[debug] [2026-04-22T08:07:04.250Z] Checked if tokens are valid: true, expires at: 1776848759670
+[debug] [2026-04-22T08:07:04.251Z] >>> [apiv2][query] POST https://serviceusage.googleapis.com/v1/projects/boogies-pet-care/services/firebasedataconnect.googleapis.com:enable [none]
+[debug] [2026-04-22T08:07:04.251Z] >>> [apiv2][(partial)header] POST https://serviceusage.googleapis.com/v1/projects/boogies-pet-care/services/firebasedataconnect.googleapis.com:enable  x-goog-user-project=boogies-pet-care
+[debug] [2026-04-22T08:07:05.935Z] <<< [apiv2][status] POST https://serviceusage.googleapis.com/v1/projects/boogies-pet-care/services/firebasedataconnect.googleapis.com:enable 200
+[debug] [2026-04-22T08:07:05.935Z] <<< [apiv2][body] POST https://serviceusage.googleapis.com/v1/projects/boogies-pet-care/services/firebasedataconnect.googleapis.com:enable [omitted]
+[debug] [2026-04-22T08:07:15.942Z] Checked if tokens are valid: true, expires at: 1776848759670
+[debug] [2026-04-22T08:07:15.942Z] Checked if tokens are valid: true, expires at: 1776848759670
+[debug] [2026-04-22T08:07:15.942Z] >>> [apiv2][query] GET https://firebasedataconnect.googleapis.com/v1/projects/boogies-pet-care/locations/-/services [none]
+[debug] [2026-04-22T08:07:17.414Z] <<< [apiv2][status] GET https://firebasedataconnect.googleapis.com/v1/projects/boogies-pet-care/locations/-/services 200
+[debug] [2026-04-22T08:07:17.415Z] <<< [apiv2][body] GET https://firebasedataconnect.googleapis.com/v1/projects/boogies-pet-care/locations/-/services {}
+[debug] [2026-04-22T08:07:17.420Z] Checked if tokens are valid: true, expires at: 1776848759670
+[debug] [2026-04-22T08:07:17.420Z] Checked if tokens are valid: true, expires at: 1776848759670
+[debug] [2026-04-22T08:07:17.421Z] >>> [apiv2][query] GET https://cloudbilling.googleapis.com/v1/projects/boogies-pet-care/billingInfo [none]
+[debug] [2026-04-22T08:07:19.129Z] <<< [apiv2][status] GET https://cloudbilling.googleapis.com/v1/projects/boogies-pet-care/billingInfo 200
+[debug] [2026-04-22T08:07:19.130Z] <<< [apiv2][body] GET https://cloudbilling.googleapis.com/v1/projects/boogies-pet-care/billingInfo {"name":"projects/boogies-pet-care/billingInfo","projectId":"boogies-pet-care","billingAccountName":"","billingEnabled":false}
+[debug] [2026-04-22T08:07:19.130Z] Checked if tokens are valid: true, expires at: 1776848759670
+[debug] [2026-04-22T08:07:19.130Z] Checked if tokens are valid: true, expires at: 1776848759670
+[debug] [2026-04-22T08:07:19.130Z] >>> [apiv2][query] GET https://monitoring.googleapis.com/v3/projects/boogies-pet-care/timeSeries/ filter=metric.type%3D%22serviceruntime.googleapis.com%2Fquota%2Fallocation%2Fusage%22+AND+metric.label.quota_metric+%3D+%22sqladmin.googleapis.com%2Ffdc_lifetime_free_trial_per_project%22&interval.endTime=2026-04-22T08%3A07%3A19.130Z&interval.startTime=2026-04-15T08%3A07%3A19.130Z
+[debug] [2026-04-22T08:07:20.949Z] <<< [apiv2][status] GET https://monitoring.googleapis.com/v3/projects/boogies-pet-care/timeSeries/ 200
+[debug] [2026-04-22T08:07:20.949Z] <<< [apiv2][body] GET https://monitoring.googleapis.com/v3/projects/boogies-pet-care/timeSeries/ {"unit":"1"}
+[info] +  dataconnect: CloudSQL no cost trial available! 
+[debug] [2026-04-22T08:07:20.950Z] Checked if tokens are valid: true, expires at: 1776848759670
+[debug] [2026-04-22T08:07:20.951Z] Checked if tokens are valid: true, expires at: 1776848759670
+[debug] [2026-04-22T08:07:20.951Z] >>> [apiv2][query] GET https://sqladmin.googleapis.com/v1/projects/boogies-pet-care/instances [none]
+[debug] [2026-04-22T08:07:22.095Z] <<< [apiv2][status] GET https://sqladmin.googleapis.com/v1/projects/boogies-pet-care/instances 200
+[debug] [2026-04-22T08:07:22.095Z] <<< [apiv2][body] GET https://sqladmin.googleapis.com/v1/projects/boogies-pet-care/instances {}
+[debug] [2026-04-22T08:07:22.096Z] Checked if tokens are valid: true, expires at: 1776848759670
+[debug] [2026-04-22T08:07:22.096Z] Checked if tokens are valid: true, expires at: 1776848759670
+[debug] [2026-04-22T08:07:22.096Z] >>> [apiv2][query] GET https://firebasedataconnect.googleapis.com/v1/projects/boogies-pet-care/locations [none]
+[debug] [2026-04-22T08:07:22.460Z] <<< [apiv2][status] GET https://firebasedataconnect.googleapis.com/v1/projects/boogies-pet-care/locations 200
+[debug] [2026-04-22T08:07:22.460Z] <<< [apiv2][body] GET https://firebasedataconnect.googleapis.com/v1/projects/boogies-pet-care/locations {"locations":[{"name":"projects/boogies-pet-care/locations/asia-east1","locationId":"asia-east1","displayName":"Taiwan"},{"name":"projects/boogies-pet-care/locations/asia-east2","locationId":"asia-east2","displayName":"Hong Kong"},{"name":"projects/boogies-pet-care/locations/asia-northeast1","locationId":"asia-northeast1","displayName":"Tokyo"},{"name":"projects/boogies-pet-care/locations/asia-northeast2","locationId":"asia-northeast2","displayName":"Osaka"},{"name":"projects/boogies-pet-care/locations/asia-northeast3","locationId":"asia-northeast3","displayName":"Seoul"},{"name":"projects/boogies-pet-care/locations/asia-south1","locationId":"asia-south1","displayName":"Mumbai"},{"name":"projects/boogies-pet-care/locations/asia-southeast1","locationId":"asia-southeast1","displayName":"Singapore"},{"name":"projects/boogies-pet-care/locations/asia-southeast2","locationId":"asia-southeast2","displayName":"Jakarta"},{"name":"projects/boogies-pet-care/locations/australia-southeast1","locationId":"australia-southeast1","displayName":"Sydney"},{"name":"projects/boogies-pet-care/locations/australia-southeast2","locationId":"australia-southeast2","displayName":"Melbourne"},{"name":"projects/boogies-pet-care/locations/europe-central2","locationId":"europe-central2","displayName":"Warsaw"},{"name":"projects/boogies-pet-care/locations/europe-north1","locationId":"europe-north1","displayName":"Finland"},{"name":"projects/boogies-pet-care/locations/europe-southwest1","locationId":"europe-southwest1","displayName":"Madrid"},{"name":"projects/boogies-pet-care/locations/europe-west1","locationId":"europe-west1","displayName":"Belgium"},{"name":"projects/boogies-pet-care/locations/europe-west2","locationId":"europe-west2","displayName":"London"},{"name":"projects/boogies-pet-care/locations/europe-west3","locationId":"europe-west3","displayName":"Frankfurt"},{"name":"projects/boogies-pet-care/locations/europe-west4","locationId":"europe-west4","displayName":"Netherlands"},{"name":"projects/boogies-pet-care/locations/europe-west6","locationId":"europe-west6","displayName":"Zurich"},{"name":"projects/boogies-pet-care/locations/europe-west8","locationId":"europe-west8","displayName":"Milan"},{"name":"projects/boogies-pet-care/locations/europe-west9","locationId":"europe-west9","displayName":"Paris"},{"name":"projects/boogies-pet-care/locations/me-west1","locationId":"me-west1","displayName":"Tel Aviv"},{"name":"projects/boogies-pet-care/locations/northamerica-northeast1","locationId":"northamerica-northeast1","displayName":"Montréal"},{"name":"projects/boogies-pet-care/locations/northamerica-northeast2","locationId":"northamerica-northeast2","displayName":"Toronto"},{"name":"projects/boogies-pet-care/locations/southamerica-east1","locationId":"southamerica-east1","displayName":"São Paulo"},{"name":"projects/boogies-pet-care/locations/southamerica-west1","locationId":"southamerica-west1","displayName":"Santiago"},{"name":"projects/boogies-pet-care/locations/us-central1","locationId":"us-central1","displayName":"Iowa"},{"name":"projects/boogies-pet-care/locations/us-east1","locationId":"us-east1","displayName":"South Carolina"},{"name":"projects/boogies-pet-care/locations/us-east4","locationId":"us-east4","displayName":"Northern Virginia"},{"name":"projects/boogies-pet-care/locations/us-south1","locationId":"us-south1","displayName":"Dallas"},{"name":"projects/boogies-pet-care/locations/us-west1","locationId":"us-west1","displayName":"Oregon"},{"name":"projects/boogies-pet-care/locations/us-west2","locationId":"us-west2","displayName":"Los Angeles"},{"name":"projects/boogies-pet-care/locations/us-west3","locationId":"us-west3","displayName":"Salt Lake City"},{"name":"projects/boogies-pet-care/locations/us-west4","locationId":"us-west4","displayName":"Las Vegas"}]}
