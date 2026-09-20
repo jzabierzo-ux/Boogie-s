@@ -1,11 +1,13 @@
 <?php
 session_start();
-include '../db_connect.php'; 
+require_once '../db_supabase.php';
 
 // --- SECURITY CHECK (FIXED PARA SA VET/STAFF) ---
 $current_role = isset($_SESSION['role']) ? strtolower(trim($_SESSION['role'])) : '';
-$is_admin_or_supervisor = isset($_SESSION['logged_in']) && in_array($current_role, ['admin', 'supervisor', 'staff']);
-$is_staff = isset($_SESSION['staff_logged_in']) && $_SESSION['staff_logged_in'] === true;
+$is_admin_or_supervisor = isset($_SESSION['logged_in'])
+    && in_array($current_role, ['admin', 'supervisor', 'staff'], true);
+$is_staff = isset($_SESSION['staff_logged_in'])
+    && $_SESSION['staff_logged_in'] === true;
 
 if (!$is_admin_or_supervisor && !$is_staff) {
     header("Location: stafflogin.php");
@@ -24,53 +26,134 @@ $full_display_name = $staff_name;
 
 if (isset($_SESSION['user_id']) || isset($_SESSION['staff_id'])) {
     $uid = $_SESSION['user_id'] ?? $_SESSION['staff_id'];
-    
-    // FIX: Idinagdag ang 'full_name' sa query para makuha ang buong pangalan
-    $get_staff = mysqli_query($conn, "SELECT full_name, profile_image FROM users WHERE id = '$uid'");
-    
-    if($get_staff && $staff_data = mysqli_fetch_assoc($get_staff)) {
-        $profile_img_path = $staff_data['profile_image']; 
-        if (!empty($staff_data['full_name'])) {
-            $full_display_name = $staff_data['full_name'];
+
+    try {
+        // FIX: Idinagdag ang full_name sa query para makuha ang buong pangalan
+        $get_staff = $pdo->prepare("
+            SELECT full_name, profile_image
+            FROM users
+            WHERE id = :uid
+            LIMIT 1
+        ");
+
+        $get_staff->execute([
+            ':uid' => (int)$uid
+        ]);
+
+        $staff_data = $get_staff->fetch(PDO::FETCH_ASSOC);
+
+        if ($staff_data) {
+            $profile_img_path = $staff_data['profile_image'] ?? '';
+
+            if (!empty($staff_data['full_name'])) {
+                $full_display_name = $staff_data['full_name'];
+            }
         }
+    } catch (PDOException $e) {
+        error_log("Staff profile query failed: " . $e->getMessage());
     }
 }
 
 // Linisin ang pangalan para sa Avatar Initial
-$clean_name = trim(str_replace('Dr. ', '', $full_display_name), " ,"); 
-$first_letter = strtoupper(substr($clean_name, 0, 1)); 
+$clean_name = trim(str_replace('Dr. ', '', $full_display_name), " ,");
+$first_letter = strtoupper(substr($clean_name, 0, 1));
 
 // Siguraduhing may "Dr. " na nakadikit
-$display_with_title = (stripos($full_display_name, 'Dr.') === false) ? 'Dr. ' . $full_display_name : $full_display_name;
+$display_with_title = (stripos($full_display_name, 'Dr.') === false)
+    ? 'Dr. ' . $full_display_name
+    : $full_display_name;
 
 // --- FETCH NOTIFICATIONS ---
-$admin_notif_query = mysqli_query($conn, "SELECT * FROM admin_notifications WHERE is_read = 0 ORDER BY created_at DESC");
-$unread_count = ($admin_notif_query) ? mysqli_num_rows($admin_notif_query) : 0;
+$admin_notifications = [];
+$unread_count = 0;
+
+try {
+    $admin_notif_stmt = $pdo->query("
+        SELECT *
+        FROM admin_notifications
+        WHERE is_read = 0
+        ORDER BY created_at DESC
+    ");
+
+    $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
+    $unread_count = count($admin_notifications);
+} catch (PDOException $e) {
+    error_log("Admin notifications query failed: " . $e->getMessage());
+}
 
 $today = date('Y-m-d');
 $hour = date('H');
 $greeting = ($hour < 12) ? "Good Morning" : (($hour < 17) ? "Good Afternoon" : "Good Evening");
 
 // --- SQL QUERIES FOR VET DASHBOARD ---
-$today_count_query = mysqli_query($conn, "SELECT COUNT(*) as total FROM appointments WHERE appointment_date = '$today' AND service LIKE 'Vet Services%'");
-$today_count = ($today_count_query) ? mysqli_fetch_assoc($today_count_query)['total'] : 0;
+try {
+    $today_count_stmt = $pdo->prepare("
+        SELECT COUNT(*) AS total
+        FROM appointments
+        WHERE appointment_date = :today
+          AND service LIKE 'Vet Services%'
+    ");
+    $today_count_stmt->execute([
+        ':today' => $today
+    ]);
+    $today_count = (int)($today_count_stmt->fetchColumn() ?? 0);
+} catch (PDOException $e) {
+    error_log("Today's appointments count query failed: " . $e->getMessage());
+    $today_count = 0;
+}
 
-$completed_count_query = mysqli_query($conn, "SELECT COUNT(*) as total FROM appointments WHERE booking_status = 'Completed' AND service LIKE 'Vet Services%'");
-$completed_count = ($completed_count_query) ? mysqli_fetch_assoc($completed_count_query)['total'] : 0;
+try {
+    $completed_count_stmt = $pdo->prepare("
+        SELECT COUNT(*) AS total
+        FROM appointments
+        WHERE booking_status = 'Completed'
+          AND service LIKE 'Vet Services%'
+    ");
+    $completed_count_stmt->execute();
+    $completed_count = (int)($completed_count_stmt->fetchColumn() ?? 0);
+} catch (PDOException $e) {
+    error_log("Completed consultations count query failed: " . $e->getMessage());
+    $completed_count = 0;
+}
 
-$pet_count_query = mysqli_query($conn, "SELECT COUNT(*) as total FROM pets");
-$pet_count = ($pet_count_query) ? mysqli_fetch_assoc($pet_count_query)['total'] : 0;
+try {
+    $pet_count_stmt = $pdo->query("
+        SELECT COUNT(*) AS total
+        FROM pets
+    ");
+    $pet_count = (int)($pet_count_stmt->fetchColumn() ?? 0);
+} catch (PDOException $e) {
+    error_log("Patient count query failed: " . $e->getMessage());
+    $pet_count = 0;
+}
 
-$today_schedule_query = mysqli_query($conn, "
-    SELECT a.*, p.name as pet_name 
-    FROM appointments a 
-    LEFT JOIN pets p ON a.pet_id = p.id 
-    WHERE a.appointment_date = '$today' 
-    AND a.service LIKE 'Vet Services%'
-    AND (a.booking_status != 'Cancelled' OR a.booking_status IS NULL)
-    ORDER BY a.appointment_time ASC
-");
+$today_schedule = [];
+
+try {
+    $today_schedule_stmt = $pdo->prepare("
+        SELECT
+            a.*,
+            p.name AS pet_name
+        FROM appointments a
+        LEFT JOIN pets p
+            ON a.pet_id = p.id
+        WHERE a.appointment_date = :today
+          AND a.service LIKE 'Vet Services%'
+          AND (a.booking_status <> 'Cancelled' OR a.booking_status IS NULL)
+        ORDER BY a.appointment_time ASC
+    ");
+
+    $today_schedule_stmt->execute([
+        ':today' => $today
+    ]);
+
+    $today_schedule = $today_schedule_stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    error_log("Today's schedule query failed: " . $e->getMessage());
+    $today_schedule = [];
+}
 ?>
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -288,14 +371,14 @@ $today_schedule_query = mysqli_query($conn, "
                         </div>
                         
                         <div class="notif-body" id="admin-notif-list">
-                            <?php if($unread_count > 0 && $admin_notif_query): ?>
-                                <?php while($notif = mysqli_fetch_assoc($admin_notif_query)): ?>
+                            <?php if($unread_count > 0 && !empty($admin_notifications)): ?>
+                                <?php foreach($admin_notifications as $notif): ?>
                                     <div class="notif-item">
                                         <i class="fa-solid fa-circle-exclamation" style="color: #ef4444; margin-right: 5px;"></i>
                                         <?php echo htmlspecialchars($notif['message']); ?>
                                         <br><small style="color: #94a3b8; font-size: 11px;"><?php echo date('M d, g:i A', strtotime($notif['created_at'])); ?></small>
                                     </div>
-                                <?php endwhile; ?>
+                                <?php endforeach; ?>
                             <?php else: ?>
                                 <div class="notif-empty">No new clinic alerts.</div>
                             <?php endif; ?>
@@ -362,8 +445,8 @@ $today_schedule_query = mysqli_query($conn, "
                 </div>
                 
                 <div class="schedule-list">
-                    <?php if (mysqli_num_rows($today_schedule_query) > 0): ?>
-                        <?php while($appt = mysqli_fetch_assoc($today_schedule_query)): 
+                    <?php if (!empty($today_schedule)): ?>
+                        <?php foreach($today_schedule as $appt): 
                             $status = $appt['booking_status'] ?? 'Pending';
                             $s_class = 'st-pending';
                             if (strtolower($status) == 'confirmed') $s_class = 'st-confirmed';
@@ -384,7 +467,7 @@ $today_schedule_query = mysqli_query($conn, "
                                     <span class="schedule-status <?php echo $s_class; ?>"><?php echo $status; ?></span>
                                 </div>
                             </div>
-                        <?php endwhile; ?>
+                        <?php endforeach; ?>
                     <?php else: ?>
                         <div style="text-align: center; padding: 60px 0; color: #94a3b8;">
                             <i class="fas fa-calendar-day" style="font-size: 40px; margin-bottom: 15px; opacity: 0.2;"></i>

@@ -1,10 +1,10 @@
 <?php
 session_start();
-include '../db_connect.php'; 
+require_once '../db_supabase.php';
 
 // --- SECURITY CHECK (FIXED PARA SA VET/STAFF) ---
 $current_role = isset($_SESSION['role']) ? strtolower(trim($_SESSION['role'])) : '';
-$is_admin_or_supervisor = isset($_SESSION['logged_in']) && in_array($current_role, ['admin', 'supervisor', 'staff']);
+$is_admin_or_supervisor = isset($_SESSION['logged_in']) && in_array($current_role, ['admin', 'supervisor', 'staff'], true);
 $is_staff = isset($_SESSION['staff_logged_in']) && $_SESSION['staff_logged_in'] === true;
 
 if (!$is_admin_or_supervisor && !$is_staff) {
@@ -22,13 +22,15 @@ $profile_img_path = "";
 $full_display_name = $staff_name;
 
 if (isset($_SESSION['user_id']) || isset($_SESSION['staff_id'])) {
-    $uid = $_SESSION['user_id'] ?? $_SESSION['staff_id'];
-    
-    // FIX: Idinagdag ang 'full_name' sa query para makuha ang buong pangalan
-    $get_staff = mysqli_query($conn, "SELECT full_name, profile_image FROM users WHERE id = '$uid'");
-    
-    if($get_staff && $staff_data = mysqli_fetch_assoc($get_staff)) {
-        $profile_img_path = $staff_data['profile_image']; 
+    $uid = (int)($_SESSION['user_id'] ?? $_SESSION['staff_id']);
+
+    // Fetch full name and profile image using PDO
+    $get_staff_stmt = $pdo->prepare("SELECT full_name, profile_image FROM users WHERE id = :id LIMIT 1");
+    $get_staff_stmt->execute([':id' => $uid]);
+    $staff_data = $get_staff_stmt->fetch(PDO::FETCH_ASSOC);
+
+    if ($staff_data) {
+        $profile_img_path = $staff_data['profile_image'] ?? '';
         if (!empty($staff_data['full_name'])) {
             $full_display_name = $staff_data['full_name'];
         }
@@ -36,61 +38,95 @@ if (isset($_SESSION['user_id']) || isset($_SESSION['staff_id'])) {
 }
 
 // Linisin ang pangalan para sa Avatar Initial (Tatanggalin ang "Dr. " at comma)
-$clean_name = trim(str_replace('Dr. ', '', $full_display_name), " ,"); 
-$first_letter = strtoupper(substr($clean_name, 0, 1)); 
+$clean_name = trim(str_replace('Dr. ', '', $full_display_name), " ,");
+$first_letter = strtoupper(substr($clean_name, 0, 1));
 
 // Siguraduhing may "Dr. " na nakadikit sa buong pangalan para formal
 $display_with_title = (stripos($full_display_name, 'Dr.') === false) ? 'Dr. ' . $full_display_name : $full_display_name;
 
 // --- FETCH NOTIFICATIONS ---
-$admin_notif_query = mysqli_query($conn, "SELECT * FROM admin_notifications WHERE is_read = 0 ORDER BY created_at DESC");
-$unread_count = ($admin_notif_query) ? mysqli_num_rows($admin_notif_query) : 0;
+$admin_notif_stmt = $pdo->prepare("SELECT * FROM admin_notifications WHERE is_read = 0 ORDER BY created_at DESC");
+$admin_notif_stmt->execute();
+$admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
+$unread_count = count($admin_notifications);
 
 // --- ACTION LOGIC PARA SA BUTTONS (NO PAYMENTS) ---
 if (isset($_GET['action']) && isset($_GET['id'])) {
     $action = $_GET['action'];
     $id = (int)$_GET['id'];
-    
+
     // Logic for booking_status and Notification only
-    $appt_query = mysqli_query($conn, "SELECT a.*, p.name as pet_real_name FROM appointments a JOIN pets p ON a.pet_id = p.id WHERE a.id = $id");
-    
-    if ($appt_query && mysqli_num_rows($appt_query) > 0) {
-        $appt = mysqli_fetch_assoc($appt_query);
-        $pet_display_name = mysqli_real_escape_string($conn, $appt['pet_real_name']);
-        $service = mysqli_real_escape_string($conn, $appt['service']); 
-        $user_id = $appt['user_id'] ?? 0; 
-        
+    $appt_stmt = $pdo->prepare("
+        SELECT a.*, p.name AS pet_real_name
+        FROM appointments a
+        JOIN pets p ON a.pet_id = p.id
+        WHERE a.id = :id
+        LIMIT 1
+    ");
+    $appt_stmt->execute([':id' => $id]);
+    $appt = $appt_stmt->fetch(PDO::FETCH_ASSOC);
+
+    if ($appt) {
+        $pet_display_name = $appt['pet_real_name'] ?? 'Unknown Pet';
+        $service = $appt['service'] ?? '';
+        $user_id = isset($appt['user_id']) ? (int)$appt['user_id'] : 0;
+
         $new_status = '';
-        if ($action == 'confirm') { $new_status = 'Confirmed'; }
-        elseif ($action == 'complete') { $new_status = 'Completed'; }
-        elseif ($action == 'cancel') { $new_status = 'Cancelled'; }
-        
+        if ($action === 'confirm') {
+            $new_status = 'Confirmed';
+        } elseif ($action === 'complete') {
+            $new_status = 'Completed';
+        } elseif ($action === 'cancel') {
+            $new_status = 'Cancelled';
+        }
+
         if ($new_status !== '') {
             // MEDICAL STATUS UPDATE ONLY (Removed Payment Auto-Update)
-            mysqli_query($conn, "UPDATE appointments SET booking_status = '$new_status' WHERE id = $id");
+            $update_stmt = $pdo->prepare("UPDATE appointments SET booking_status = :status WHERE id = :id");
+            $update_stmt->execute([
+                ':status' => $new_status,
+                ':id' => $id
+            ]);
 
             $message = "Your $service appointment for $pet_display_name has been $new_status.";
-            mysqli_query($conn, "INSERT INTO notifications (user_id, message, is_read) VALUES ('$user_id', '$message', 0)");
+            $notification_stmt = $pdo->prepare("
+                INSERT INTO notifications (user_id, message, is_read)
+                VALUES (:user_id, :message, 0)
+            ");
+            $notification_stmt->execute([
+                ':user_id' => $user_id,
+                ':message' => $message
+            ]);
         }
     }
+
     header("Location: appointments.php");
     exit;
 }
 
 // Fetch Stats using 'booking_status' (FILTERED FOR VET SERVICES ONLY)
 // Note: We keep this query global so the cards always show the grand totals regardless of the current filter.
-$stats_query = "SELECT 
-    COUNT(*) as total,
-    SUM(CASE WHEN booking_status = 'Pending' OR booking_status IS NULL OR booking_status = '' THEN 1 ELSE 0 END) as pending,
-    SUM(CASE WHEN booking_status = 'Confirmed' THEN 1 ELSE 0 END) as confirmed,
-    SUM(CASE WHEN booking_status = 'Completed' THEN 1 ELSE 0 END) as completed
-    FROM appointments WHERE service LIKE 'Vet Services%'"; 
-$stats_result = mysqli_query($conn, $stats_query);
-$stats = mysqli_fetch_assoc($stats_result);
+$stats_stmt = $pdo->prepare("
+    SELECT
+        COUNT(*) AS total,
+        SUM(CASE WHEN booking_status = 'Pending' OR booking_status IS NULL OR booking_status = '' THEN 1 ELSE 0 END) AS pending,
+        SUM(CASE WHEN booking_status = 'Confirmed' THEN 1 ELSE 0 END) AS confirmed,
+        SUM(CASE WHEN booking_status = 'Completed' THEN 1 ELSE 0 END) AS completed
+    FROM appointments
+    WHERE service LIKE :service_prefix
+");
+$stats_stmt->execute([':service_prefix' => 'Vet Services%']);
+$stats = $stats_stmt->fetch(PDO::FETCH_ASSOC) ?: [
+    'total' => 0,
+    'pending' => 0,
+    'confirmed' => 0,
+    'completed' => 0
+];
 
 // --- GET FILTER STATUS FROM URL ---
 $filter_status = isset($_GET['status']) ? $_GET['status'] : 'All';
 ?>
+
 
 <!DOCTYPE html>
 <html lang="en">
@@ -321,13 +357,13 @@ $filter_status = isset($_GET['status']) ? $_GET['status'] : 'All';
                         
                         <div class="notif-body" id="admin-notif-list">
                             <?php if($unread_count > 0 && $admin_notif_query): ?>
-                                <?php while($notif = mysqli_fetch_assoc($admin_notif_query)): ?>
+                                <?php foreach($admin_notifications as $notif): ?>
                                     <div class="notif-item">
                                         <i class="fa-solid fa-circle-exclamation" style="color: #ef4444; margin-right: 5px;"></i>
                                         <?php echo htmlspecialchars($notif['message']); ?>
                                         <br><small style="color: #94a3b8; font-size: 11px;"><?php echo date('M d, g:i A', strtotime($notif['created_at'])); ?></small>
                                     </div>
-                                <?php endwhile; ?>
+                                <?php endforeach; ?>
                             <?php else: ?>
                                 <div class="notif-empty">No new clinic alerts.</div>
                             <?php endif; ?>
@@ -423,15 +459,17 @@ $filter_status = isset($_GET['status']) ? $_GET['status'] : 'All';
                             }
 
                             // FILTERED FOR VET SERVICES ONLY + CLICKED STATUS
-                            $query = "SELECT a.*, p.name as pet_name FROM appointments a 
-                                      LEFT JOIN pets p ON a.pet_id = p.id 
-                                      WHERE a.service LIKE 'Vet Services%' $status_condition
+                            $query = "SELECT a.*, p.name as pet_name FROM appointments a
+                                      LEFT JOIN pets p ON a.pet_id = p.id
+                                      WHERE a.service LIKE :service_prefix $status_condition
                                       ORDER BY a.appointment_date DESC, a.appointment_time ASC";
-                            
-                            $result = mysqli_query($conn, $query);
 
-                            if ($result && mysqli_num_rows($result) > 0) {
-                                while($row = mysqli_fetch_assoc($result)) {
+                            $stmt = $pdo->prepare($query);
+                            $stmt->execute([':service_prefix' => 'Vet Services%']);
+                            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+                            if (count($rows) > 0) {
+                                foreach ($rows as $row) {
                                     $raw_status = $row['booking_status'] ?? '';
                                     $status = (empty($raw_status)) ? 'Pending' : htmlspecialchars($raw_status);
                                     $status_lower = strtolower($status);

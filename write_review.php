@@ -1,6 +1,6 @@
 <?php
 session_start();
-include 'db_connect.php';
+include 'db_supabase.php';
 
 // Access Control
 if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
@@ -12,11 +12,25 @@ $user_id = $_SESSION['user_id'];
 $appointment_id = isset($_GET['appointment_id']) ? intval($_GET['appointment_id']) : 0;
 
 // Security Check: Ensure this appointment belongs to the user and is COMPLETED
-$check_query = "SELECT id, service FROM appointments WHERE id = ? AND user_id = ? AND booking_status = 'Completed'";
-$stmt = $conn->prepare($check_query);
-$stmt->bind_param("ii", $appointment_id, $user_id);
-$stmt->execute();
-$booking = $stmt->get_result()->fetch_assoc();
+$check_query = "
+    SELECT id, service
+    FROM appointments
+    WHERE id = :appointment_id
+      AND user_id = :user_id
+      AND booking_status = 'Completed'
+";
+
+try {
+    $stmt = $pdo->prepare($check_query);
+    $stmt->execute([
+        ':appointment_id' => $appointment_id,
+        ':user_id' => $user_id
+    ]);
+
+    $booking = $stmt->fetch(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    die("Unable to verify the appointment at this time.");
+}
 
 if (!$booking) {
     die("Invalid request or appointment not eligible for review.");
@@ -24,16 +38,29 @@ if (!$booking) {
 
 // Handle Form Submission
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $rating = intval($_POST['rating']);
-    $comment = mysqli_real_escape_string($conn, $_POST['comment']);
+    $rating = intval($_POST['rating'] ?? 0);
+    $comment = trim($_POST['comment'] ?? '');
 
-    $insert_query = "INSERT INTO reviews (user_id, appointment_id, rating, comment, review_date) VALUES (?, ?, ?, ?, NOW())";
-    $stmt = $conn->prepare($insert_query);
-    $stmt->bind_param("iiis", $user_id, $appointment_id, $rating, $comment);
+    $insert_query = "
+        INSERT INTO reviews
+            (user_id, appointment_id, rating, comment, review_date)
+        VALUES
+            (:user_id, :appointment_id, :rating, :comment, NOW())
+    ";
 
-    if ($stmt->execute()) {
+    try {
+        $stmt = $pdo->prepare($insert_query);
+        $stmt->execute([
+            ':user_id' => $user_id,
+            ':appointment_id' => $appointment_id,
+            ':rating' => $rating,
+            ':comment' => $comment
+        ]);
+
         header("Location: bookings.php?msg=review_success");
         exit();
+    } catch (PDOException $e) {
+        die("Unable to submit the review at this time.");
     }
 }
 ?>
@@ -64,7 +91,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <div class="review-card">
     <h2>Share your experience</h2>
     <div class="service-tag">Service: <?php echo htmlspecialchars($booking['service']); ?></div>
-    
+
     <form method="POST">
         <p style="margin-bottom: 5px; font-weight: 600;">How would you rate our service?</p>
         <div class="star-rating">

@@ -1,40 +1,54 @@
 <?php
 session_start();
-include '../db_connect.php'; 
+require_once '../db_supabase.php';
 
-if (!isset($_SESSION['logged_in']) || $_SESSION['role'] !== 'admin') {
+if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true || ($_SESSION['role'] ?? '') !== 'admin') {
     header("Location: adminlogin.php");
     exit();
 }
 
-$user_id = $_SESSION['user_id'];
+$user_id = (int)($_SESSION['user_id'] ?? 0);
 $message = '';
 
 // Handle Password Update
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_password'])) {
-    $current_password = $_POST['current_password'];
-    $new_password = $_POST['new_password'];
-    $confirm_password = $_POST['confirm_password'];
+    $current_password = $_POST['current_password'] ?? '';
+    $new_password = $_POST['new_password'] ?? '';
+    $confirm_password = $_POST['confirm_password'] ?? '';
 
-    // Fetch current hashed password from DB
-    $get_pass = mysqli_query($conn, "SELECT password FROM users WHERE id = '$user_id'");
-    $row = mysqli_fetch_assoc($get_pass);
+    try {
+        // Fetch current hashed password from DB
+        $get_pass = $pdo->prepare("SELECT password FROM users WHERE id = :user_id LIMIT 1");
+        $get_pass->execute([':user_id' => $user_id]);
+        $row = $get_pass->fetch();
 
-    if (password_verify($current_password, $row['password'])) {
-        if ($new_password === $confirm_password) {
-            $hashed_new_password = password_hash($new_password, PASSWORD_DEFAULT);
-            $update_query = "UPDATE users SET password = '$hashed_new_password' WHERE id = '$user_id'";
-            
-            if (mysqli_query($conn, $update_query)) {
-                $message = '<div class="alert success">Password successfully updated!</div>';
+        if (!$row || empty($row['password'])) {
+            $message = '<div class="alert error">Admin account could not be found.</div>';
+        } elseif (password_verify($current_password, $row['password'])) {
+            if ($new_password === $confirm_password) {
+                if (strlen($new_password) < 8) {
+                    $message = '<div class="alert error">New password must be at least 8 characters.</div>';
+                } else {
+                    $hashed_new_password = password_hash($new_password, PASSWORD_DEFAULT);
+
+                    $update_query = "UPDATE users SET password = :password WHERE id = :user_id";
+                    $update_stmt = $pdo->prepare($update_query);
+                    $update_stmt->execute([
+                        ':password' => $hashed_new_password,
+                        ':user_id' => $user_id
+                    ]);
+
+                    $message = '<div class="alert success">Password successfully updated!</div>';
+                }
             } else {
-                $message = '<div class="alert error">Failed to update password in database.</div>';
+                $message = '<div class="alert error">New passwords do not match.</div>';
             }
         } else {
-            $message = '<div class="alert error">New passwords do not match.</div>';
+            $message = '<div class="alert error">Incorrect current password.</div>';
         }
-    } else {
-        $message = '<div class="alert error">Incorrect current password.</div>';
+    } catch (PDOException $e) {
+        error_log("Admin password update failed: " . $e->getMessage());
+        $message = '<div class="alert error">Failed to update password in database.</div>';
     }
 }
 ?>
@@ -77,11 +91,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_password'])) {
                     </div>
                     <div class="form-group">
                         <label>New Password</label>
-                        <input type="password" name="new_password" required placeholder="Enter new password">
+                        <input type="password" name="new_password" required minlength="8" placeholder="Enter new password">
                     </div>
                     <div class="form-group">
                         <label>Confirm New Password</label>
-                        <input type="password" name="confirm_password" required placeholder="Confirm new password">
+                        <input type="password" name="confirm_password" required minlength="8" placeholder="Confirm new password">
                     </div>
                     <button type="submit" name="update_password" class="btn-submit"><i class="fas fa-key"></i> Update Password</button>
                 </form>

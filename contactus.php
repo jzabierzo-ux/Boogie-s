@@ -1,6 +1,6 @@
 <?php
 session_start();
-include 'db_connect.php'; 
+require_once 'db_supabase.php';
 
 // Check if user is logged in
 $is_logged_in = isset($_SESSION['logged_in']) && $_SESSION['logged_in'] === true;
@@ -12,9 +12,9 @@ if (isset($_POST['send_contact'])) {
         exit();
     }
 
-    $name = mysqli_real_escape_string($conn, $_POST['name']);
-    $email = mysqli_real_escape_string($conn, $_POST['email']);
-    $message = mysqli_real_escape_string($conn, $_POST['message']);
+    $name = trim($_POST['name'] ?? '');
+    $email = trim($_POST['email'] ?? '');
+    $message = trim($_POST['message'] ?? '');
 
     if (!preg_match("/^[a-zA-Z\s]*$/", $name)) {
         echo "<script>alert('Invalid name. Only letters and spaces are allowed.'); window.history.back();</script>";
@@ -26,12 +26,25 @@ if (isset($_POST['send_contact'])) {
         exit();
     }
 
-    $sql = "INSERT INTO contacts (name, email, message) VALUES ('$name', '$email', '$message')";
-    
-    if (mysqli_query($conn, $sql)) {
+    try {
+        // Save contact message to Supabase/PostgreSQL.
+        $contact_stmt = $pdo->prepare("
+            INSERT INTO contacts (name, email, message)
+            VALUES (:name, :email, :message)
+        ");
+
+        $contact_stmt->execute([
+            ':name' => $name,
+            ':email' => $email,
+            ':message' => $message
+        ]);
+
         echo "<script>alert('Message sent successfully and saved to database!'); window.location='contactus.php';</script>";
-    } else {
-        echo "<script>alert('Error: " . mysqli_error($conn) . "'); window.history.back();</script>";
+        exit();
+    } catch (Throwable $e) {
+        error_log("Contact message insert failed: " . $e->getMessage());
+        echo "<script>alert('Error saving your message. Please try again.'); window.history.back();</script>";
+        exit();
     }
 }
 
@@ -43,11 +56,17 @@ $review_db_error = false;
 
 try {
     // Get the real review count and average rating.
-    $count_query = "SELECT COUNT(*) AS total, COALESCE(AVG(rating), 0) AS average FROM reviews";
-    $count_result = mysqli_query($conn, $count_query);
+    $count_query = "
+        SELECT
+            COUNT(*) AS total,
+            COALESCE(AVG(rating), 0) AS average
+        FROM reviews
+    ";
 
-    if ($count_result) {
-        $count_data = mysqli_fetch_assoc($count_result);
+    $count_stmt = $pdo->query($count_query);
+    $count_data = $count_stmt->fetch(PDO::FETCH_ASSOC);
+
+    if ($count_data) {
         $total_reviews = (int)($count_data['total'] ?? 0);
         $avg_rating = number_format((float)($count_data['average'] ?? 0), 1);
     } else {
@@ -71,10 +90,12 @@ try {
         LIMIT 6
     ";
 
-    $review_result = mysqli_query($conn, $review_query);
+    $review_stmt = $pdo->query($review_query);
 
-    if ($review_result) {
-        while ($row = mysqli_fetch_assoc($review_result)) {
+    if ($review_stmt) {
+        $rows = $review_stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        foreach ($rows as $row) {
             $reviews_list[] = [
                 'id' => (int)$row['id'],
                 'rating' => max(1, min(5, (int)$row['rating'])),
@@ -88,6 +109,7 @@ try {
         $review_db_error = true;
     }
 } catch (Throwable $e) {
+    error_log("Reviews query failed: " . $e->getMessage());
     $review_db_error = true;
 }
 

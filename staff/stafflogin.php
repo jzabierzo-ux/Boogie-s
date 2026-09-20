@@ -1,6 +1,6 @@
 <?php
 session_start();
-include '../db_connect.php';
+require_once '../db_supabase.php';
 
 /*
 |--------------------------------------------------------------------------
@@ -10,36 +10,28 @@ include '../db_connect.php';
 | admin, manager, and vet.
 |--------------------------------------------------------------------------
 */
-function logAdminAccount($conn, $user_id, $action, $status)
+function logAdminAccount($pdo, $user_id, $action, $status)
 {
     $ip_address = $_SERVER['REMOTE_ADDR'] ?? 'UNKNOWN';
     $user_agent = $_SERVER['HTTP_USER_AGENT'] ?? 'UNKNOWN';
 
-    $stmt = $conn->prepare("
-        INSERT INTO admin_account_logs
-        (user_id, action, status, ip_address, user_agent)
-        VALUES (?, ?, ?, ?, ?)
-    ");
+    try {
+        $stmt = $pdo->prepare("
+            INSERT INTO admin_account_logs
+            (user_id, action, status, ip_address, user_agent)
+            VALUES (:user_id, :action, :status, :ip_address, :user_agent)
+        ");
 
-    if (!$stmt) {
-        error_log("Account log prepare failed: " . $conn->error);
-        return;
+        $stmt->execute([
+            ':user_id' => $user_id !== null ? (int)$user_id : null,
+            ':action' => $action,
+            ':status' => $status,
+            ':ip_address' => $ip_address,
+            ':user_agent' => $user_agent
+        ]);
+    } catch (PDOException $e) {
+        error_log("Account log insert failed: " . $e->getMessage());
     }
-
-    $stmt->bind_param(
-        "issss",
-        $user_id,
-        $action,
-        $status,
-        $ip_address,
-        $user_agent
-    );
-
-    if (!$stmt->execute()) {
-        error_log("Account log insert failed: " . $stmt->error);
-    }
-
-    $stmt->close();
 }
 
 
@@ -67,118 +59,134 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
         exit;
     }
 
-    // Escape username/email for SQL
-    $username_sql = mysqli_real_escape_string($conn, $username_input);
-
-
     // ------------------------------------------------------------
     // 2. FIND PERSONNEL ACCOUNT
     // ------------------------------------------------------------
-    $query = "
-        SELECT *
-        FROM users
-        WHERE (username = '$username_sql' OR email = '$username_sql')
-        AND role IN ('admin', 'manager', 'vet')
-        LIMIT 1
-    ";
+    try {
+        $stmt = $pdo->prepare("
+            SELECT *
+            FROM users
+            WHERE (username = :username OR email = :email)
+              AND role IN ('admin', 'manager', 'vet')
+            LIMIT 1
+        ");
 
-    $result = mysqli_query($conn, $query);
+        $stmt->execute([
+            ':username' => $username_input,
+            ':email' => $username_input
+        ]);
 
+        // ------------------------------------------------------------
+        // 3. ACCOUNT FOUND
+        // ------------------------------------------------------------
+        $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
-    // ------------------------------------------------------------
-    // 3. ACCOUNT FOUND
-    // ------------------------------------------------------------
-    if ($result && mysqli_num_rows($result) === 1) {
+        if ($user) {
 
-        $user = mysqli_fetch_assoc($result);
-
-
-        // --------------------------------------------------------
-        // 4. VERIFY PASSWORD
-        // --------------------------------------------------------
-        if (
-            isset($user['password']) &&
-            password_verify($password_input, $user['password'])
-        ) {
-
-            // ====================================================
-            // SUCCESSFUL LOGIN
-            // ====================================================
-            logAdminAccount(
-                $conn,
-                (int)$user['id'],
-                'LOGIN',
-                'SUCCESS'
-            );
-
-
-            // ----------------------------------------------------
-            // 5. REGENERATE SESSION ID
-            // ----------------------------------------------------
-            session_regenerate_id(true);
-
-
-            // ----------------------------------------------------
-            // 6. SAVE SESSION DATA
-            // ----------------------------------------------------
-            $_SESSION['logged_in'] = true;
-            $_SESSION['staff_logged_in'] = true;
-
-            $_SESSION['user_id'] = (int)$user['id'];
-
-            $_SESSION['role'] = strtolower(
-                trim($user['role'] ?? '')
-            );
-
-            $_SESSION['user_name'] =
-                !empty($user['full_name'])
-                    ? $user['full_name']
-                    : 'System User';
-
-            $_SESSION['staff_name'] =
-                !empty($user['full_name'])
-                    ? $user['full_name']
-                    : 'System User';
-
-            $_SESSION['staff_position'] =
-                !empty($user['position'])
-                    ? $user['position']
-                    : 'Personnel';
-
-
-            // ----------------------------------------------------
-            // 7. REDIRECT BASED ON ROLE
-            // ----------------------------------------------------
+            // --------------------------------------------------------
+            // 4. VERIFY PASSWORD
+            // --------------------------------------------------------
             if (
-                in_array(
-                    $_SESSION['role'],
-                    ['admin', 'manager'],
-                    true
-                )
+                isset($user['password']) &&
+                password_verify($password_input, $user['password'])
             ) {
 
-                header(
-                    "Location: ../admin/admindashboard.php"
+                // ====================================================
+                // SUCCESSFUL LOGIN
+                // ====================================================
+                logAdminAccount(
+                    $pdo,
+                    (int)$user['id'],
+                    'LOGIN',
+                    'SUCCESS'
                 );
-                exit;
 
-            } elseif ($_SESSION['role'] === 'vet') {
+                // ----------------------------------------------------
+                // 5. REGENERATE SESSION ID
+                // ----------------------------------------------------
+                session_regenerate_id(true);
 
-                header(
-                    "Location: staffdashboard.php"
+                // ----------------------------------------------------
+                // 6. SAVE SESSION DATA
+                // ----------------------------------------------------
+                $_SESSION['logged_in'] = true;
+                $_SESSION['staff_logged_in'] = true;
+
+                $_SESSION['user_id'] = (int)$user['id'];
+
+                $_SESSION['role'] = strtolower(
+                    trim($user['role'] ?? '')
                 );
-                exit;
+
+                $_SESSION['user_name'] =
+                    !empty($user['full_name'])
+                        ? $user['full_name']
+                        : 'System User';
+
+                $_SESSION['staff_name'] =
+                    !empty($user['full_name'])
+                        ? $user['full_name']
+                        : 'System User';
+
+                $_SESSION['staff_position'] =
+                    !empty($user['position'])
+                        ? $user['position']
+                        : 'Personnel';
+
+                // ----------------------------------------------------
+                // 7. REDIRECT BASED ON ROLE
+                // ----------------------------------------------------
+                if (
+                    in_array(
+                        $_SESSION['role'],
+                        ['admin', 'manager'],
+                        true
+                    )
+                ) {
+
+                    header(
+                        "Location: ../admin/admindashboard.php"
+                    );
+                    exit;
+
+                } elseif ($_SESSION['role'] === 'vet') {
+
+                    header(
+                        "Location: staffdashboard.php"
+                    );
+                    exit;
+
+                } else {
+
+                    // Safety fallback
+                    session_unset();
+                    session_destroy();
+
+                    echo "
+                        <script>
+                            alert('Unauthorized personnel role.');
+                            window.location='../home.php';
+                        </script>
+                    ";
+                    exit;
+                }
 
             } else {
 
-                // Safety fallback
-                session_unset();
-                session_destroy();
+                // ====================================================
+                // WRONG PASSWORD
+                // ====================================================
+                logAdminAccount(
+                    $pdo,
+                    (int)$user['id'],
+                    'LOGIN',
+                    'FAILED'
+                );
 
                 echo "
                     <script>
-                        alert('Unauthorized personnel role.');
-                        window.location='../home.php';
+                        alert('Incorrect password.');
+                        window.history.back();
                     </script>
                 ";
                 exit;
@@ -186,40 +194,31 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
         } else {
 
-            // ====================================================
-            // WRONG PASSWORD
-            // ====================================================
+            // ========================================================
+            // ACCOUNT NOT FOUND / INVALID USERNAME
+            // ========================================================
             logAdminAccount(
-                $conn,
-                (int)$user['id'],
+                $pdo,
+                null,
                 'LOGIN',
                 'FAILED'
             );
 
             echo "
                 <script>
-                    alert('Incorrect password.');
+                    alert('Invalid Username/Email or Account does not exist.');
                     window.history.back();
                 </script>
             ";
             exit;
         }
 
-    } else {
-
-        // ========================================================
-        // ACCOUNT NOT FOUND / INVALID USERNAME
-        // ========================================================
-        logAdminAccount(
-            $conn,
-            null,
-            'LOGIN',
-            'FAILED'
-        );
+    } catch (PDOException $e) {
+        error_log("Personnel login query failed: " . $e->getMessage());
 
         echo "
             <script>
-                alert('Invalid Username/Email or Account does not exist.');
+                alert('Unable to process login right now. Please try again.');
                 window.history.back();
             </script>
         ";

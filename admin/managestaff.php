@@ -1,70 +1,131 @@
 <?php
 session_start();
-include '../db_connect.php'; 
+include '../db_supabase.php';
 
 // --- UNIVERSAL SECURITY CHECK ---
 $current_role = isset($_SESSION['role']) ? strtolower(trim($_SESSION['role'])) : '';
 
 // 1. SECURITY: Allow Admin, Manager, and Vet only
-if (!isset($_SESSION['logged_in']) || !in_array($current_role, ['admin', 'manager', 'vet'])) {
+if (!isset($_SESSION['logged_in']) || !in_array($current_role, ['admin', 'manager', 'vet'], true)) {
     header("Location: stafflogin.php");
     exit();
 }
 
 // --- HANDLE DELETE ACTION ---
 if (isset($_GET['delete_id'])) {
-    $delete_id = intval($_GET['delete_id']);
-    
-    // Security check: Only delete if role is manager or vet
-    $delete_query = "DELETE FROM users WHERE id = '$delete_id' AND role IN ('manager', 'vet')";
-    if (mysqli_query($conn, $delete_query)) {
-        echo "<script>alert('Personnel account deleted successfully.'); window.location.href='managestaff.php';</script>";
+    $delete_id = (int)$_GET['delete_id'];
+
+    // Security check: Only delete manager or vet accounts.
+    // This prevents this page from deleting an admin account.
+    try {
+        $delete_stmt = $pdo->prepare("
+            DELETE FROM users
+            WHERE id = :delete_id
+              AND role IN ('manager', 'vet')
+        ");
+
+        $delete_stmt->execute([':delete_id' => $delete_id]);
+
+        if ($delete_stmt->rowCount() > 0) {
+            echo "<script>alert('Personnel account deleted successfully.'); window.location.href='managestaff.php';</script>";
+        } else {
+            echo "<script>alert('Personnel account not found or cannot be deleted.'); window.location.href='managestaff.php';</script>";
+        }
         exit();
-    } else {
-        echo "<script>alert('Error deleting account: " . mysqli_error($conn) . "'); window.location.href='managestaff.php';</script>";
+    } catch (PDOException $e) {
+        echo "<script>alert('Error deleting account.'); window.location.href='managestaff.php';</script>";
         exit();
     }
 }
 
-// 3. FETCH ADMIN PROFILE (Updated with Profile Image Logic)
+// 3. FETCH ADMIN PROFILE
 $admin_full_name = "User";
 $profile_img_path = "";
 $first_name = "User";
 
 if (isset($_SESSION['user_id'])) {
-    $uid = $_SESSION['user_id'];
-    $get_admin = mysqli_query($conn, "SELECT full_name, profile_image FROM users WHERE id = '$uid'");
-    if($admin_data = mysqli_fetch_assoc($get_admin)) {
-        $admin_full_name = $admin_data['full_name'];
-        $profile_img_path = $admin_data['profile_image']; 
-        $_SESSION['user_name'] = $admin_full_name; 
-        
-        $first_name = explode(' ', $admin_full_name)[0];
-        $first_name = trim($first_name, ',');
+    $uid = (int)$_SESSION['user_id'];
+
+    try {
+        $get_admin = $pdo->prepare("
+            SELECT full_name, profile_image
+            FROM users
+            WHERE id = :id
+            LIMIT 1
+        ");
+        $get_admin->execute([':id' => $uid]);
+        $admin_data = $get_admin->fetch(PDO::FETCH_ASSOC);
+
+        if ($admin_data) {
+            $admin_full_name = $admin_data['full_name'] ?? 'User';
+            $profile_img_path = $admin_data['profile_image'] ?? '';
+            $_SESSION['user_name'] = $admin_full_name;
+
+            $first_name = trim(explode(' ', $admin_full_name)[0], ',');
+        }
+    } catch (PDOException $e) {
+        $admin_full_name = $_SESSION['user_name'] ?? 'User';
+        $first_name = trim(explode(' ', $admin_full_name)[0], ',');
     }
 }
 
 // 4. FETCH STATISTICS (Manager, Vet)
-$total_staff_q = mysqli_query($conn, "SELECT COUNT(*) as count FROM users WHERE role IN ('manager', 'vet')");
-$total_staff   = mysqli_fetch_assoc($total_staff_q)['count'] ?? 0;
+try {
+    $total_staff_stmt = $pdo->query("
+        SELECT COUNT(*) AS count
+        FROM users
+        WHERE role IN ('manager', 'vet')
+    ");
+    $total_staff = (int)($total_staff_stmt->fetch(PDO::FETCH_ASSOC)['count'] ?? 0);
+} catch (PDOException $e) {
+    $total_staff = 0;
+}
 
 // --- FETCH ADMIN NOTIFICATIONS ---
-$admin_notif_query = mysqli_query($conn, "SELECT * FROM admin_notifications WHERE is_read = 0 ORDER BY created_at DESC");
-$unread_count = ($admin_notif_query) ? mysqli_num_rows($admin_notif_query) : 0;
+try {
+    $admin_notif_stmt = $pdo->prepare("
+        SELECT *
+        FROM admin_notifications
+        WHERE is_read = FALSE
+        ORDER BY created_at DESC
+    ");
+    $admin_notif_stmt->execute();
+    $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
+    $unread_count = count($admin_notifications);
+} catch (PDOException $e) {
+    $admin_notifications = [];
+    $unread_count = 0;
+}
 
 // 5. FETCH PERSONNEL LIST WITH SEARCH
-$search = "";
-if (isset($_GET['search']) && !empty($_GET['search'])) {
-    $search = mysqli_real_escape_string($conn, $_GET['search']);
-    $query = "SELECT * FROM users WHERE role IN ('manager', 'vet') AND (full_name LIKE '%$search%' OR username LIKE '%$search%') ORDER BY full_name ASC";
-} else {
-    $query = "SELECT * FROM users WHERE role IN ('manager', 'vet') ORDER BY full_name ASC";
-}
-$staff_list = mysqli_query($conn, $query);
+$search = trim($_GET['search'] ?? '');
 
-$vet_list = [];
-while ($row = mysqli_fetch_assoc($staff_list)) {
-    $vet_list[] = $row;
+try {
+    $query = "
+        SELECT *
+        FROM users
+        WHERE role IN ('manager', 'vet')
+    ";
+
+    $params = [];
+
+    if ($search !== '') {
+        $query .= "
+            AND (
+                full_name ILIKE :search
+                OR username ILIKE :search
+            )
+        ";
+        $params[':search'] = '%' . $search . '%';
+    }
+
+    $query .= " ORDER BY full_name ASC";
+
+    $staff_stmt = $pdo->prepare($query);
+    $staff_stmt->execute($params);
+    $vet_list = $staff_stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    $vet_list = [];
 }
 ?>
 <!DOCTYPE html>
@@ -246,13 +307,13 @@ while ($row = mysqli_fetch_assoc($staff_list)) {
                         
                         <div class="notif-body" id="admin-notif-list">
                             <?php if($unread_count > 0): ?>
-                                <?php while($notif = mysqli_fetch_assoc($admin_notif_query)): ?>
+                                <?php foreach($admin_notifications as $notif): ?>
                                     <div class="notif-item">
                                         <i class="fa-solid fa-circle-exclamation" style="color: #e11d48; margin-right: 5px;"></i>
                                         <?php echo htmlspecialchars($notif['message']); ?>
                                         <br><small style="color: #94a3b8; font-size: 11px;"><?php echo date('M d, g:i A', strtotime($notif['created_at'])); ?></small>
                                     </div>
-                                <?php endwhile; ?>
+                                <?php endforeach; ?>
                             <?php else: ?>
                                 <div class="notif-empty">No new notifications.</div>
                             <?php endif; ?>

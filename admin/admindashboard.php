@@ -1,6 +1,6 @@
 <?php
 session_start();
-include '../db_connect.php'; 
+include '../db_supabase.php';
 
 // --- UNIVERSAL SECURITY CHECK ---
 $current_role = isset($_SESSION['role']) ? strtolower(trim($_SESSION['role'])) : '';
@@ -12,87 +12,172 @@ if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
     exit();
 }
 
-if (!in_array($current_role, ['admin', 'manager', 'vet'])) {
+if (!in_array($current_role, ['admin', 'manager', 'vet'], true)) {
     // Logged-in user has an invalid/unauthorized staff role.
     header("Location: ../staff/stafflogin.php");
     exit();
 }
 
-// --- PROFILE LOGIC (Updated to fetch profile picture) ---
+// --- PROFILE LOGIC ---
 $user_id = $_SESSION['user_id'];
-$get_user = mysqli_query($conn, "SELECT full_name, profile_image FROM users WHERE id = '$user_id'");
 $profile_img_path = '';
 
-if($user_data = mysqli_fetch_assoc($get_user)) {
-    $full_name = $user_data['full_name'];
-    $profile_img_path = $user_data['profile_image']; // Kinuha na natin ang image
-    $_SESSION['user_name'] = $full_name; 
-} else {
-    $full_name = $_SESSION['user_name'] ?? 'User'; 
-}
+try {
+    $stmt = $pdo->prepare("
+        SELECT full_name, profile_image
+        FROM users
+        WHERE id = :user_id
+    ");
+    $stmt->execute([':user_id' => $user_id]);
+    $user_data = $stmt->fetch(PDO::FETCH_ASSOC);
 
-// Kumuha ng unang letra para sa avatar fallback, at inalis ang mga comma
-$first_name = explode(' ', $full_name)[0];
-$first_name = trim($first_name, ',');
+    if ($user_data) {
+        $full_name = $user_data['full_name'];
+        $profile_img_path = $user_data['profile_image'] ?? '';
+        $_SESSION['user_name'] = $full_name;
+    } else {
+        $full_name = $_SESSION['user_name'] ?? 'User';
+    }
 
-// --- FETCH ADMIN NOTIFICATIONS ---
-$admin_notif_query = mysqli_query($conn, "SELECT * FROM admin_notifications WHERE is_read = 0 ORDER BY created_at DESC");
-$unread_count = mysqli_num_rows($admin_notif_query);
+    // Kumuha ng unang letra para sa avatar fallback
+    $first_name = explode(' ', $full_name)[0];
+    $first_name = trim($first_name, ',');
 
-// --- FETCH REAL-TIME DATA ---
-$user_count_query = mysqli_query($conn, "SELECT COUNT(*) as total FROM users WHERE role = 'customer'");
-$total_users = mysqli_fetch_assoc($user_count_query)['total'] ?? 0;
+    // --- FETCH ADMIN NOTIFICATIONS ---
+    $stmt = $pdo->query("
+        SELECT *
+        FROM admin_notifications
+        WHERE is_read = FALSE
+        ORDER BY created_at DESC
+    ");
+    $admin_notif_query = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $unread_count = count($admin_notif_query);
 
-$staff_count_query = mysqli_query($conn, "SELECT COUNT(*) as total FROM users WHERE role IN ('staff', 'vet', 'supervisor')");
-$total_staff = mysqli_fetch_assoc($staff_count_query)['total'] ?? 0;
+    // --- FETCH REAL-TIME DATA ---
+    $stmt = $pdo->query("SELECT COUNT(*) AS total FROM users WHERE role = 'customer'");
+    $total_users = (int)($stmt->fetchColumn() ?? 0);
 
-$pet_count_query = mysqli_query($conn, "SELECT COUNT(*) as total FROM pets");
-$total_pets = ($pet_count_query) ? mysqli_fetch_assoc($pet_count_query)['total'] : 0;
+    $stmt = $pdo->query("
+        SELECT COUNT(*) AS total
+        FROM users
+        WHERE role IN ('staff', 'vet', 'supervisor')
+    ");
+    $total_staff = (int)($stmt->fetchColumn() ?? 0);
 
-$bookings_query = mysqli_query($conn, "SELECT 
-    COUNT(*) as total,
-    SUM(CASE WHEN booking_status = 'Pending' OR booking_status = 'pending' OR booking_status IS NULL OR booking_status = '' THEN 1 ELSE 0 END) as pending,
-    SUM(CASE WHEN booking_status = 'Completed' OR booking_status = 'completed' THEN 1 ELSE 0 END) as completed
-    FROM appointments");
-$booking_data = mysqli_fetch_assoc($bookings_query);
-$total_bookings = $booking_data['total'] ?? 0;
-$pending_bookings = $booking_data['pending'] ?? 0;
-$completed_bookings = $booking_data['completed'] ?? 0;
+    $stmt = $pdo->query("SELECT COUNT(*) AS total FROM pets");
+    $total_pets = (int)($stmt->fetchColumn() ?? 0);
 
-// --- TODAY'S REVENUE (RBAC: Admin Only) ---
-$todays_revenue = 0;
-if ($_SESSION['role'] === 'admin') {
-    $revenue_check = mysqli_query($conn, "SHOW COLUMNS FROM appointments LIKE 'service_fee'");
-    if(mysqli_num_rows($revenue_check) > 0) {
-        $revenue_query = mysqli_query($conn, "SELECT SUM(service_fee) as revenue FROM appointments WHERE (booking_status = 'Completed' OR booking_status = 'completed') AND DATE(appointment_date) = CURDATE()");
-        $revenue_data = mysqli_fetch_assoc($revenue_query);
+    $stmt = $pdo->query("
+        SELECT
+            COUNT(*) AS total,
+            SUM(
+                CASE
+                    WHEN booking_status = 'Pending'
+                      OR booking_status = 'pending'
+                      OR booking_status IS NULL
+                      OR booking_status = ''
+                    THEN 1 ELSE 0
+                END
+            ) AS pending,
+            SUM(
+                CASE
+                    WHEN booking_status = 'Completed'
+                      OR booking_status = 'completed'
+                    THEN 1 ELSE 0
+                END
+            ) AS completed
+        FROM appointments
+    ");
+    $booking_data = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+    $total_bookings = (int)($booking_data['total'] ?? 0);
+    $pending_bookings = (int)($booking_data['pending'] ?? 0);
+    $completed_bookings = (int)($booking_data['completed'] ?? 0);
+
+    // --- TODAY'S REVENUE (RBAC: Admin Only) ---
+    $todays_revenue = 0;
+
+    if ($_SESSION['role'] === 'admin') {
+        $stmt = $pdo->query("
+            SELECT COALESCE(SUM(service_fee), 0) AS revenue
+            FROM appointments
+            WHERE (booking_status = 'Completed' OR booking_status = 'completed')
+              AND DATE(appointment_date) = CURRENT_DATE
+        ");
+
+        $revenue_data = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
         $todays_revenue = $revenue_data['revenue'] ?? 0;
     }
+
+    // --- FETCH TODAY'S ACTIVITY ---
+    $stmt = $pdo->query("
+        SELECT
+            a.*,
+            p.name AS pet_name,
+            p.verification_status
+        FROM appointments a
+        LEFT JOIN pets p ON a.pet_id = p.id
+        WHERE DATE(a.appointment_date) = CURRENT_DATE
+          AND (
+              a.booking_status IS NULL
+              OR a.booking_status NOT IN (
+                  'Cancelled', 'cancelled',
+                  'Completed', 'completed'
+              )
+          )
+        ORDER BY a.appointment_time ASC
+        LIMIT 5
+    ");
+    $todays_activity_query = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    // --- FETCH TODAY'S VET CONSULTATIONS ---
+    $stmt = $pdo->query("
+        SELECT
+            a.*,
+            p.name AS pet_name,
+            p.verification_status
+        FROM appointments a
+        LEFT JOIN pets p ON a.pet_id = p.id
+        WHERE DATE(a.appointment_date) = CURRENT_DATE
+          AND a.service ILIKE 'Vet Services%'
+          AND (
+              a.booking_status IS NULL
+              OR a.booking_status NOT IN (
+                  'Cancelled', 'cancelled',
+                  'Completed', 'completed'
+              )
+          )
+        ORDER BY a.appointment_time ASC
+        LIMIT 5
+    ");
+    $vet_schedule_query = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    // --- FETCH RECENT USERS ---
+    $stmt = $pdo->query("
+        SELECT full_name, email, created_at
+        FROM users
+        WHERE role = 'customer'
+        ORDER BY id DESC
+        LIMIT 5
+    ");
+    $recent_users_query = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+} catch (PDOException $e) {
+    // Keep database error details out of the browser.
+    $admin_notif_query = [];
+    $unread_count = 0;
+    $total_users = 0;
+    $total_staff = 0;
+    $total_pets = 0;
+    $total_bookings = 0;
+    $pending_bookings = 0;
+    $completed_bookings = 0;
+    $todays_revenue = 0;
+    $todays_activity_query = [];
+    $vet_schedule_query = [];
+    $recent_users_query = [];
+    error_log('Admin dashboard database error: ' . $e->getMessage());
 }
-
-// Fetch Today's Activity (All Bookings) + VERIFICATION STATUS
-$todays_activity_query = mysqli_query($conn, "SELECT a.*, p.name as pet_name, p.verification_status 
-                                              FROM appointments a 
-                                              LEFT JOIN pets p ON a.pet_id = p.id 
-                                              WHERE DATE(a.appointment_date) = CURDATE()
-                                              AND (a.booking_status IS NULL OR a.booking_status NOT IN ('Cancelled', 'cancelled', 'Completed', 'completed'))
-                                              ORDER BY a.appointment_time ASC LIMIT 5");
-
-// Fetch Today's Vet Consultations + VERIFICATION STATUS
-$vet_schedule_query = mysqli_query($conn, "SELECT a.*, p.name as pet_name, p.verification_status 
-                                           FROM appointments a 
-                                           LEFT JOIN pets p ON a.pet_id = p.id 
-                                           WHERE DATE(a.appointment_date) = CURDATE() 
-                                           AND a.service LIKE 'Vet Services%'
-                                           AND (a.booking_status IS NULL OR a.booking_status NOT IN ('Cancelled', 'cancelled', 'Completed', 'completed'))
-                                           ORDER BY a.appointment_time ASC LIMIT 5");
-
-// Fetch Recent Users
-$recent_users_query = mysqli_query($conn, "SELECT full_name, email, created_at 
-                                           FROM users WHERE role = 'customer' 
-                                           ORDER BY id DESC LIMIT 5");
 ?>
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -277,13 +362,13 @@ $recent_users_query = mysqli_query($conn, "SELECT full_name, email, created_at
                         
                         <div class="notif-body" id="admin-notif-list">
                             <?php if($unread_count > 0): ?>
-                                <?php while($notif = mysqli_fetch_assoc($admin_notif_query)): ?>
+                                <?php foreach($admin_notif_query as $notif): ?>
                                     <div class="notif-item">
                                         <i class="fa-solid fa-circle-exclamation" style="color: #e11d48; margin-right: 5px;"></i>
                                         <?php echo htmlspecialchars($notif['message']); ?>
                                         <br><small style="color: #94a3b8; font-size: 11px;"><?php echo date('M d, g:i A', strtotime($notif['created_at'])); ?></small>
                                     </div>
-                                <?php endwhile; ?>
+                                <?php endforeach; ?>
                             <?php else: ?>
                                 <div class="notif-empty">No new notifications.</div>
                             <?php endif; ?>
@@ -371,9 +456,9 @@ $recent_users_query = mysqli_query($conn, "SELECT full_name, email, created_at
                         <h3>Today's Activity</h3>
                         <a href="managebooking.php" class="view-link">VIEW ALL</a>
                     </div>
-                    <?php if(mysqli_num_rows($todays_activity_query) > 0): ?>
+                    <?php if(count($todays_activity_query) > 0): ?>
                         <ul class="recent-list">
-                            <?php while($rb = mysqli_fetch_assoc($todays_activity_query)): 
+                            <?php foreach($todays_activity_query as $rb): 
                                 $raw_status = $rb['booking_status'] ?? '';
                                 $disp_status = empty($raw_status) ? 'Pending' : ucfirst($raw_status);
                                 $status_class = strtolower($disp_status);
@@ -392,7 +477,7 @@ $recent_users_query = mysqli_query($conn, "SELECT full_name, email, created_at
                                 </div>
                                 <span class="recent-status status-<?php echo $status_class; ?>"><?php echo $disp_status; ?></span>
                             </li>
-                            <?php endwhile; ?>
+                            <?php endforeach; ?>
                         </ul>
                     <?php else: ?>
                         <div style="text-align: center; color: #94a3b8; padding: 40px 0;">
@@ -406,9 +491,9 @@ $recent_users_query = mysqli_query($conn, "SELECT full_name, email, created_at
                     <div class="data-header">
                         <h3><i class="fas fa-user-md" style="color: var(--brand-blue); margin-right: 5px;"></i> Vet Consultations</h3>
                     </div>
-                    <?php if(mysqli_num_rows($vet_schedule_query) > 0): ?>
+                    <?php if(count($vet_schedule_query) > 0): ?>
                         <ul class="recent-list">
-                            <?php while($vs = mysqli_fetch_assoc($vet_schedule_query)): 
+                            <?php foreach($vet_schedule_query as $vs): 
                                 $raw_status = $vs['booking_status'] ?? '';
                                 $disp_status = empty($raw_status) ? 'Pending' : ucfirst($raw_status);
                                 $status_class = strtolower($disp_status);
@@ -427,7 +512,7 @@ $recent_users_query = mysqli_query($conn, "SELECT full_name, email, created_at
                                 </div>
                                 <span class="recent-status status-<?php echo $status_class; ?>"><?php echo $disp_status; ?></span>
                             </li>
-                            <?php endwhile; ?>
+                            <?php endforeach; ?>
                         </ul>
                     <?php else: ?>
                         <div style="text-align: center; color: #94a3b8; padding: 40px 0;">
@@ -442,9 +527,9 @@ $recent_users_query = mysqli_query($conn, "SELECT full_name, email, created_at
                         <h3>Newest Users</h3>
                         <a href="manageusers.php" class="view-link">VIEW ALL</a>
                     </div>
-                    <?php if(mysqli_num_rows($recent_users_query) > 0): ?>
+                    <?php if(count($recent_users_query) > 0): ?>
                         <ul class="recent-list">
-                            <?php while($ru = mysqli_fetch_assoc($recent_users_query)): ?>
+                            <?php foreach($recent_users_query as $ru): ?>
                             <li>
                                 <div class="recent-info">
                                     <span class="recent-name"><?php echo htmlspecialchars($ru['full_name']); ?></span>
@@ -452,7 +537,7 @@ $recent_users_query = mysqli_query($conn, "SELECT full_name, email, created_at
                                 </div>
                                 <span class="recent-sub" style="font-weight: 700;"><?php echo isset($ru['created_at']) ? date('M d', strtotime($ru['created_at'])) : ''; ?></span>
                             </li>
-                            <?php endwhile; ?>
+                            <?php endforeach; ?>
                         </ul>
                     <?php else: ?>
                         <div style="text-align: center; color: #94a3b8; padding: 40px 0;">

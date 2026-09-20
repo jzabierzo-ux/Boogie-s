@@ -8,72 +8,136 @@ if (!isset($_SESSION['logged_in']) || $_SESSION['role'] !== 'admin') {
 }
 
 // 2. DATABASE CONNECTION
-include('../db_connect.php'); 
+include('../db_supabase.php');
 
 // 3. FETCH ADMIN PROFILE (Updated with Profile Image Logic)
 $admin_full_name = "Administrator";
 $profile_img_path = "";
 $first_name = "Administrator";
 
-if (isset($_SESSION['user_id'])) {
-    $uid = $_SESSION['user_id'];
-    $get_admin = mysqli_query($conn, "SELECT full_name, profile_image FROM users WHERE id = '$uid'");
-    if($admin_data = mysqli_fetch_assoc($get_admin)) {
-        $admin_full_name = $admin_data['full_name'];
-        $profile_img_path = $admin_data['profile_image']; 
-        $_SESSION['user_name'] = $admin_full_name; 
-        
-        // Fix para walang comma sa avatar fallback
-        $first_name = explode(' ', $admin_full_name)[0];
-        $first_name = trim($first_name, ',');
+try {
+    if (isset($_SESSION['user_id'])) {
+        $uid = $_SESSION['user_id'];
+
+        $get_admin = $pdo->prepare("
+            SELECT full_name, profile_image
+            FROM users
+            WHERE id = :id
+            LIMIT 1
+        ");
+        $get_admin->execute([':id' => $uid]);
+
+        if ($admin_data = $get_admin->fetch(PDO::FETCH_ASSOC)) {
+            $admin_full_name = $admin_data['full_name'] ?? 'Administrator';
+            $profile_img_path = $admin_data['profile_image'] ?? '';
+            $_SESSION['user_name'] = $admin_full_name;
+
+            // Fix para walang comma sa avatar fallback
+            $first_name = explode(' ', $admin_full_name)[0] ?? 'Administrator';
+            $first_name = trim($first_name, ',');
+        }
     }
-}
 
-// --- DATE FILTER LOGIC ---
-$start_date = isset($_GET['start_date']) ? $_GET['start_date'] : '';
-$end_date = isset($_GET['end_date']) ? $_GET['end_date'] : '';
+    // --- DATE FILTER LOGIC ---
+    $start_date = isset($_GET['start_date']) ? trim($_GET['start_date']) : '';
+    $end_date = isset($_GET['end_date']) ? trim($_GET['end_date']) : '';
 
-$date_filter_query = "";
-if (!empty($start_date) && !empty($end_date)) {
-    $date_filter_query = " AND DATE(appointment_date) BETWEEN '$start_date' AND '$end_date'";
-} elseif (!empty($start_date)) {
-    $date_filter_query = " AND DATE(appointment_date) >= '$start_date'";
-} elseif (!empty($end_date)) {
-    $date_filter_query = " AND DATE(appointment_date) <= '$end_date'";
-}
+    $date_filter_query = "";
+    $date_params = [];
 
-// --- FETCH SALES SUMMARY ---
-$total_revenue = 0;
-$total_transactions = 0;
-
-$revenue_check = mysqli_query($conn, "SHOW COLUMNS FROM appointments LIKE 'service_fee'");
-if(mysqli_num_rows($revenue_check) > 0) {
-    // Total Revenue computation based on filter
-    $rev_query = mysqli_query($conn, "SELECT SUM(service_fee) as total_rev, COUNT(*) as total_trans FROM appointments WHERE (booking_status = 'Completed' OR booking_status = 'completed') $date_filter_query");
-    
-    if ($rev_data = mysqli_fetch_assoc($rev_query)) {
-        $total_revenue = $rev_data['total_rev'] ?? 0;
-        $total_transactions = $rev_data['total_trans'] ?? 0;
+    if (!empty($start_date) && !empty($end_date)) {
+        $date_filter_query = " AND a.appointment_date::date BETWEEN :start_date AND :end_date";
+        $date_params = [
+            ':start_date' => $start_date,
+            ':end_date' => $end_date
+        ];
+    } elseif (!empty($start_date)) {
+        $date_filter_query = " AND a.appointment_date::date >= :start_date";
+        $date_params = [':start_date' => $start_date];
+    } elseif (!empty($end_date)) {
+        $date_filter_query = " AND a.appointment_date::date <= :end_date";
+        $date_params = [':end_date' => $end_date];
     }
+
+    // --- FETCH SALES SUMMARY ---
+    $total_revenue = 0;
+    $total_transactions = 0;
+
+    // PostgreSQL equivalent of: SHOW COLUMNS FROM appointments LIKE 'service_fee'
+    $revenue_check = $pdo->prepare("
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'appointments'
+          AND column_name = 'service_fee'
+        LIMIT 1
+    ");
+    $revenue_check->execute();
+
+    if ($revenue_check->fetchColumn()) {
+        // Total Revenue computation based on filter
+        $rev_query = $pdo->prepare("
+            SELECT
+                COALESCE(SUM(a.service_fee), 0) AS total_rev,
+                COUNT(*) AS total_trans
+            FROM appointments a
+            WHERE (a.booking_status = 'Completed' OR a.booking_status = 'completed')
+            $date_filter_query
+        ");
+        $rev_query->execute($date_params);
+
+        if ($rev_data = $rev_query->fetch(PDO::FETCH_ASSOC)) {
+            $total_revenue = $rev_data['total_rev'] ?? 0;
+            $total_transactions = $rev_data['total_trans'] ?? 0;
+        }
+    }
+
+    // --- FETCH DETAILED HISTORY (UPDATED TO GET CUSTOMER / WALK-IN NAME) ---
+    $history_query = $pdo->prepare("
+        SELECT
+            a.id,
+            a.appointment_date,
+            a.appointment_time,
+            a.service,
+            a.service_fee,
+            p.name AS pet_name,
+            p.owner_name AS walkin_owner,
+            u.full_name AS registered_name
+        FROM appointments a
+        LEFT JOIN pets p ON a.pet_id = p.id
+        LEFT JOIN users u ON a.user_id = u.id
+        WHERE (a.booking_status = 'Completed' OR a.booking_status = 'completed')
+        $date_filter_query
+        ORDER BY a.appointment_date DESC, a.appointment_time DESC
+    ");
+    $history_query->execute($date_params);
+    $history_rows = $history_query->fetchAll(PDO::FETCH_ASSOC);
+
+    // --- FETCH ADMIN NOTIFICATIONS ---
+    $admin_notif_query = $pdo->prepare("
+        SELECT *
+        FROM admin_notifications
+        WHERE is_read = FALSE
+        ORDER BY created_at DESC
+    ");
+    $admin_notif_query->execute();
+    $admin_notifications = $admin_notif_query->fetchAll(PDO::FETCH_ASSOC);
+    $unread_count = count($admin_notifications);
+
+} catch (PDOException $e) {
+    // Keep the report page from crashing if a database query fails.
+    $history_rows = [];
+    $admin_notifications = [];
+    $unread_count = 0;
+
+    // Keep summary values safe for display.
+    $total_revenue = 0;
+    $total_transactions = 0;
+
+    error_log("Sales report database error: " . $e->getMessage());
 }
-
-// --- FETCH DETAILED HISTORY (UPDATED TO GET CUSTOMER / WALK-IN NAME) ---
-$history_query = mysqli_query($conn, "
-    SELECT a.id, a.appointment_date, a.appointment_time, a.service, a.service_fee, 
-           p.name as pet_name, p.owner_name as walkin_owner, 
-           u.full_name as registered_name
-    FROM appointments a
-    LEFT JOIN pets p ON a.pet_id = p.id
-    LEFT JOIN users u ON a.user_id = u.id
-    WHERE (a.booking_status = 'Completed' OR a.booking_status = 'completed') $date_filter_query
-    ORDER BY a.appointment_date DESC, a.appointment_time DESC
-");
-
-// --- FETCH ADMIN NOTIFICATIONS ---
-$admin_notif_query = mysqli_query($conn, "SELECT * FROM admin_notifications WHERE is_read = 0 ORDER BY created_at DESC");
-$unread_count = mysqli_num_rows($admin_notif_query);
-
 ?>
+
 
 <!DOCTYPE html>
 <html lang="en">
@@ -251,13 +315,13 @@ $unread_count = mysqli_num_rows($admin_notif_query);
                         
                         <div class="notif-body" id="admin-notif-list">
                             <?php if($unread_count > 0): ?>
-                                <?php while($notif = mysqli_fetch_assoc($admin_notif_query)): ?>
+                                <?php foreach($admin_notifications as $notif): ?>
                                     <div class="notif-item">
                                         <i class="fa-solid fa-circle-exclamation" style="color: #e11d48; margin-right: 5px;"></i>
                                         <?php echo htmlspecialchars($notif['message']); ?>
                                         <br><small style="color: #94a3b8; font-size: 11px;"><?php echo date('M d, g:i A', strtotime($notif['created_at'])); ?></small>
                                     </div>
-                                <?php endwhile; ?>
+                                <?php endforeach; ?>
                             <?php else: ?>
                                 <div class="notif-empty">No new notifications.</div>
                             <?php endif; ?>
@@ -332,7 +396,7 @@ $unread_count = mysqli_num_rows($admin_notif_query);
                 <button class="print-btn" onclick="window.print()"><i class="fas fa-print"></i> Print Report</button>
                 
                 <div class="table-wrapper">
-                    <?php if(mysqli_num_rows($history_query) > 0): ?>
+                    <?php if(count($history_rows) > 0): ?>
                         <table>
                             <thead>
                                 <tr>
@@ -344,7 +408,7 @@ $unread_count = mysqli_num_rows($admin_notif_query);
                                 </tr>
                             </thead>
                             <tbody>
-                                <?php while($row = mysqli_fetch_assoc($history_query)): 
+                                <?php foreach($history_rows as $row): 
                                     // SMART CUSTOMER NAME LOGIC:
                                     // Kung may registered_name, yun ang gagamitin.
                                     // Kung wala (ibig sabihin Walk-In sa lumang data), kukunin natin sa pets table ang pangalan nila.
@@ -368,7 +432,7 @@ $unread_count = mysqli_num_rows($admin_notif_query);
                                     <td><?php echo htmlspecialchars($row['service']); ?></td>
                                     <td class="price-col">₱<?php echo number_format($row['service_fee'] ?? 0, 2); ?></td>
                                 </tr>
-                                <?php endwhile; ?>
+                                <?php endforeach; ?>
                             </tbody>
                         </table>
                     <?php else: ?>

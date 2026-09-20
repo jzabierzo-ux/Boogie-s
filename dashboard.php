@@ -1,74 +1,185 @@
 <?php
 session_start();
-include 'db_connect.php'; 
 
+include 'db_supabase.php';
+
+// Security: Redirect to login if not logged in
 if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
     header("Location: login.php");
     exit();
 }
 
-$full_name = isset($_SESSION['user_name']) ? $_SESSION['user_name'] : (isset($_SESSION['full_name']) ? $_SESSION['full_name'] : 'User');
-$user_id = $_SESSION['user_id'];
+$full_name = $_SESSION['user_name'] ?? ($_SESSION['full_name'] ?? 'User');
+$user_id = (int)($_SESSION['user_id'] ?? 0);
 
-// --- FETCH USER PROFILE IMAGE ---
-$user_query = "SELECT profile_image FROM users WHERE id = ?";
-$stmt_user = $conn->prepare($user_query);
-$stmt_user->bind_param("i", $user_id);
-$stmt_user->execute();
-$user_result = $stmt_user->get_result();
-$user_data = $user_result->fetch_assoc();
-$current_profile_pic = !empty($user_data['profile_image']) ? $user_data['profile_image'] : 'default-avatar.png';
-$stmt_user->close();
 
-// --- FETCH PETS FOR THIS USER (Secured with Prepared Statements) ---
-$pet_query = "SELECT * FROM pets WHERE owner_id = ?";
-$stmt_pets = $conn->prepare($pet_query);
-$stmt_pets->bind_param("i", $user_id);
-$stmt_pets->execute();
-$pet_result = $stmt_pets->get_result();
-$pet_count = $pet_result->num_rows;
+// ============================================================
+// FETCH USER PROFILE IMAGE
+// ============================================================
 
-// --- FETCH BOOKING COUNT (Secured) ---
-$booking_query = "SELECT COUNT(*) as total FROM appointments WHERE user_id = ?";
-$stmt_booking = $conn->prepare($booking_query);
-$stmt_booking->bind_param("i", $user_id);
-$stmt_booking->execute();
-$booking_result = $stmt_booking->get_result();
-$booking_count = ($booking_result && $booking_result->num_rows > 0) ? $booking_result->fetch_assoc()['total'] : 0;
+$current_profile_pic = 'default-avatar.png';
 
-// --- 1. INITIAL FETCH UNREAD NOTIFICATIONS COUNT (Secured) ---
-$notif_query = "SELECT COUNT(*) as unread FROM notifications WHERE user_id = ? AND is_read = 0";
-$stmt_notif = $conn->prepare($notif_query);
-$stmt_notif->bind_param("i", $user_id);
-$stmt_notif->execute();
-$notif_result = $stmt_notif->get_result(); 
-$unread_count = ($notif_result && $notif_result->num_rows > 0) ? $notif_result->fetch_assoc()['unread'] : 0;
+try {
+    $stmt_user = $pdo->prepare("
+        SELECT profile_image
+        FROM users
+        WHERE id = :user_id
+        LIMIT 1
+    ");
 
-// --- FETCH LATEST 5 NOTIFICATIONS FOR DROPDOWN ---
-$notifications = [];
-$stmt_notif_list = $conn->prepare("SELECT id, message, created_at, is_read FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 5");
-if ($stmt_notif_list) {
-    $stmt_notif_list->bind_param("i", $user_id);
-    $stmt_notif_list->execute();
-    $res_list = $stmt_notif_list->get_result();
-    if ($res_list) {
-        $notifications = $res_list->fetch_all(MYSQLI_ASSOC);
+    $stmt_user->execute([
+        ':user_id' => $user_id
+    ]);
+
+    $user_data = $stmt_user->fetch();
+
+    if (!empty($user_data['profile_image'])) {
+        $current_profile_pic = $user_data['profile_image'];
     }
-    $stmt_notif_list->close();
+
+} catch (PDOException $e) {
+    // Keep default avatar if profile lookup fails.
 }
 
-// --- 2. FETCH UPCOMING APPOINTMENT (Secured) ---
-$upcoming_query = "SELECT a.*, p.name as pet_name  
-                   FROM appointments a
-                   LEFT JOIN pets p ON a.pet_id = p.id
-                   WHERE a.user_id = ? 
-                   AND a.booking_status = 'Confirmed' 
-                   ORDER BY a.appointment_date ASC LIMIT 1";
-$stmt_upcoming = $conn->prepare($upcoming_query);
-$stmt_upcoming->bind_param("i", $user_id);
-$stmt_upcoming->execute();
-$upcoming_result = $stmt_upcoming->get_result();
-$has_upcoming = $upcoming_result->num_rows > 0;
+
+// ============================================================
+// FETCH PETS FOR THIS USER
+// ============================================================
+
+$pets = [];
+
+try {
+    $stmt_pets = $pdo->prepare("
+        SELECT *
+        FROM pets
+        WHERE owner_id = :user_id
+        ORDER BY id DESC
+    ");
+
+    $stmt_pets->execute([
+        ':user_id' => $user_id
+    ]);
+
+    $pets = $stmt_pets->fetchAll();
+
+} catch (PDOException $e) {
+    $pets = [];
+}
+
+$pet_count = count($pets);
+
+
+// ============================================================
+// FETCH BOOKING COUNT
+// ============================================================
+
+$booking_count = 0;
+
+try {
+    $stmt_booking = $pdo->prepare("
+        SELECT COUNT(*) AS total
+        FROM appointments
+        WHERE user_id = :user_id
+    ");
+
+    $stmt_booking->execute([
+        ':user_id' => $user_id
+    ]);
+
+    $booking_row = $stmt_booking->fetch();
+
+    $booking_count = (int)($booking_row['total'] ?? 0);
+
+} catch (PDOException $e) {
+    $booking_count = 0;
+}
+
+
+// ============================================================
+// FETCH UNREAD NOTIFICATIONS COUNT
+// ============================================================
+
+$unread_count = 0;
+
+try {
+    $stmt_notif = $pdo->prepare("
+        SELECT COUNT(*) AS unread
+        FROM notifications
+        WHERE user_id = :user_id
+          AND is_read = 0
+    ");
+
+    $stmt_notif->execute([
+        ':user_id' => $user_id
+    ]);
+
+    $notif_row = $stmt_notif->fetch();
+
+    $unread_count = (int)($notif_row['unread'] ?? 0);
+
+} catch (PDOException $e) {
+    $unread_count = 0;
+}
+
+
+// ============================================================
+// FETCH LATEST 5 NOTIFICATIONS
+// ============================================================
+
+$notifications = [];
+
+try {
+    $stmt_notif_list = $pdo->prepare("
+        SELECT id, message, created_at, is_read
+        FROM notifications
+        WHERE user_id = :user_id
+        ORDER BY created_at DESC
+        LIMIT 5
+    ");
+
+    $stmt_notif_list->execute([
+        ':user_id' => $user_id
+    ]);
+
+    $notifications = $stmt_notif_list->fetchAll();
+
+} catch (PDOException $e) {
+    $notifications = [];
+}
+
+
+// ============================================================
+// FETCH UPCOMING APPOINTMENT
+// ============================================================
+
+$upcoming = null;
+
+try {
+    $stmt_upcoming = $pdo->prepare("
+        SELECT
+            a.*,
+            p.name AS pet_name
+        FROM appointments a
+        LEFT JOIN pets p
+            ON a.pet_id = p.id
+        WHERE a.user_id = :user_id
+          AND a.booking_status = 'Confirmed'
+        ORDER BY a.appointment_date ASC, a.appointment_time ASC
+        LIMIT 1
+    ");
+
+    $stmt_upcoming->execute([
+        ':user_id' => $user_id
+    ]);
+
+    $upcoming = $stmt_upcoming->fetch() ?: null;
+
+} catch (PDOException $e) {
+    $upcoming = null;
+}
+
+$has_upcoming = $upcoming !== null;
+
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -1030,10 +1141,7 @@ $has_upcoming = $upcoming_result->num_rows > 0;
                 <div class="panel-body">
                     <?php if ($pet_count > 0): ?>
                         <div class="pet-list">
-                            <?php
-                                $pet_result->data_seek(0);
-                                while($pet = $pet_result->fetch_assoc()):
-                            ?>
+                            <?php foreach ($pets as $pet): ?>
                                 <a href="petprofile.php?id=<?php echo htmlspecialchars($pet['id']); ?>" class="pet-item">
                                     <div class="pet-avatar">
                                         <i class="fa-solid fa-dog"></i>
@@ -1042,15 +1150,15 @@ $has_upcoming = $upcoming_result->num_rows > 0;
                                     <div class="pet-info">
                                         <h4><?php echo htmlspecialchars($pet['name']); ?></h4>
                                         <p>
-                                            <?php echo htmlspecialchars($pet['breed']); ?>
+                                            <?php echo htmlspecialchars($pet['breed'] ?? ''); ?>
                                             •
-                                            <?php echo htmlspecialchars($pet['age']); ?> years old
+                                            <?php echo htmlspecialchars($pet['age'] ?? ''); ?> years old
                                         </p>
                                     </div>
 
                                     <i class="fa-solid fa-chevron-right pet-arrow"></i>
                                 </a>
-                            <?php endwhile; ?>
+                            <?php endforeach; ?>
                         </div>
                     <?php else: ?>
                         <div class="empty-state">
@@ -1083,9 +1191,7 @@ $has_upcoming = $upcoming_result->num_rows > 0;
                 </div>
 
                 <div class="panel-body">
-                    <?php if ($has_upcoming):
-                        $upcoming = $upcoming_result->fetch_assoc();
-                    ?>
+                    <?php if ($has_upcoming): ?>
                         <div class="appointment-card">
                             <div class="appointment-top">
                                 <div>

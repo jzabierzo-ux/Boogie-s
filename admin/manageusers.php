@@ -1,66 +1,141 @@
 <?php
 session_start();
-include '../db_connect.php'; 
+include '../db_supabase.php';
 
 // --- UNIVERSAL SECURITY CHECK ---
 $current_role = isset($_SESSION['role']) ? strtolower(trim($_SESSION['role'])) : '';
 
 // 1. SECURITY: Allow Admin, Manager, and Veterinarian
-if (!isset($_SESSION['logged_in']) || !in_array($current_role, ['admin', 'manager', 'vet'])) {
+if (!isset($_SESSION['logged_in']) || !in_array($current_role, ['admin', 'manager', 'vet'], true)) {
     header("Location: stafflogin.php");
     exit();
 }
 
-// 2. FETCH ADMIN PROFILE (Variables explicitly defined to prevent errors)
+// 2. FETCH ADMIN PROFILE
 $admin_full_name = "User";
 $profile_img_path = "";
 $first_name = "User";
 
 if (isset($_SESSION['user_id'])) {
-    $uid = $_SESSION['user_id'];
-    $get_admin = mysqli_query($conn, "SELECT full_name, profile_image FROM users WHERE id = '$uid'");
-    if($admin_data = mysqli_fetch_assoc($get_admin)) {
-        $admin_full_name = $admin_data['full_name'] ?? 'User';
-        $profile_img_path = $admin_data['profile_image'] ?? ''; 
-        $_SESSION['user_name'] = $admin_full_name; 
-        
-        // Inayos ang first name para walang comma sa avatar fallback
-        $first_name = explode(' ', $admin_full_name)[0];
-        $first_name = trim($first_name, ',');
+    $uid = (int)$_SESSION['user_id'];
+
+    try {
+        $get_admin = $pdo->prepare("
+            SELECT full_name, profile_image
+            FROM users
+            WHERE id = :id
+            LIMIT 1
+        ");
+        $get_admin->execute([':id' => $uid]);
+        $admin_data = $get_admin->fetch(PDO::FETCH_ASSOC);
+
+        if ($admin_data) {
+            $admin_full_name = $admin_data['full_name'] ?? 'User';
+            $profile_img_path = $admin_data['profile_image'] ?? '';
+            $_SESSION['user_name'] = $admin_full_name;
+
+            $first_name = explode(' ', $admin_full_name)[0];
+            $first_name = trim($first_name, ',');
+        }
+    } catch (PDOException $e) {
+        // Use session fallback when the profile query fails.
+        $admin_full_name = $_SESSION['user_name'] ?? 'User';
+        $first_name = trim(explode(' ', $admin_full_name)[0], ',');
     }
 }
 
 // --- FETCH ADMIN NOTIFICATIONS ---
-$admin_notif_query = mysqli_query($conn, "SELECT * FROM admin_notifications WHERE is_read = 0 ORDER BY created_at DESC");
-$unread_count = ($admin_notif_query) ? mysqli_num_rows($admin_notif_query) : 0;
+$admin_notifications = [];
+
+try {
+    $admin_notif_stmt = $pdo->prepare("
+        SELECT *
+        FROM admin_notifications
+        WHERE is_read = FALSE
+        ORDER BY created_at DESC
+    ");
+    $admin_notif_stmt->execute();
+    $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    $admin_notifications = [];
+}
+
+$unread_count = count($admin_notifications);
 
 // 3. FETCH USER STATISTICS
-$total_q    = mysqli_query($conn, "SELECT COUNT(*) as count FROM users WHERE role = 'customer'");
-// UPDATED: Changed email_verified to is_verified to match our new OTP system
-$verified_q = mysqli_query($conn, "SELECT COUNT(*) as count FROM users WHERE role = 'customer' AND is_verified = 1");
-$contact_q  = mysqli_query($conn, "SELECT COUNT(*) as count FROM users WHERE role = 'customer' AND contact_number IS NOT NULL AND contact_number != ''");
+try {
+    $total_q = $pdo->query("
+        SELECT COUNT(*) AS count
+        FROM users
+        WHERE role = 'customer'
+    ");
+    $verified_q = $pdo->query("
+        SELECT COUNT(*) AS count
+        FROM users
+        WHERE role = 'customer'
+          AND is_verified::text IN ('1', 'true', 't')
+    ");
+    $contact_q = $pdo->query("
+        SELECT COUNT(*) AS count
+        FROM users
+        WHERE role = 'customer'
+          AND contact_number IS NOT NULL
+          AND contact_number <> ''
+    ");
 
-$total_users    = mysqli_fetch_assoc($total_q)['count'] ?? 0;
-$verified_users = mysqli_fetch_assoc($verified_q)['count'] ?? 0;
-$contact_users  = mysqli_fetch_assoc($contact_q)['count'] ?? 0;
+    $total_users = (int)($total_q->fetch(PDO::FETCH_ASSOC)['count'] ?? 0);
+    $verified_users = (int)($verified_q->fetch(PDO::FETCH_ASSOC)['count'] ?? 0);
+    $contact_users = (int)($contact_q->fetch(PDO::FETCH_ASSOC)['count'] ?? 0);
+} catch (PDOException $e) {
+    $total_users = 0;
+    $verified_users = 0;
+    $contact_users = 0;
+}
 
 // 4. FETCH USER LIST WITH SEARCH & FILTER
 $search = "";
 $filter_type = $_GET['filter'] ?? '';
 
-if (isset($_GET['search']) && !empty($_GET['search'])) {
-    $search = mysqli_real_escape_string($conn, $_GET['search']);
-    $query = "SELECT * FROM users WHERE role = 'customer' AND (full_name LIKE '%$search%' OR email LIKE '%$search%' OR contact_number LIKE '%$search%') ORDER BY id DESC";
-} elseif ($filter_type === 'verified') {
-    $query = "SELECT * FROM users WHERE role = 'customer' AND is_verified = 1 ORDER BY id DESC";
-} elseif ($filter_type === 'contact') {
-    $query = "SELECT * FROM users WHERE role = 'customer' AND contact_number IS NOT NULL AND contact_number != '' ORDER BY id DESC";
-} else {
-    $query = "SELECT * FROM users WHERE role = 'customer' ORDER BY id DESC";
-}
+try {
+    $query = "
+        SELECT *
+        FROM users
+        WHERE role = 'customer'
+    ";
 
-$users_list = mysqli_query($conn, $query);
-$displayed_count = mysqli_num_rows($users_list);
+    $params = [];
+
+    if (isset($_GET['search']) && trim($_GET['search']) !== '') {
+        $search = trim($_GET['search']);
+
+        $query .= "
+            AND (
+                full_name ILIKE :search
+                OR email ILIKE :search
+                OR contact_number ILIKE :search
+            )
+        ";
+
+        $params[':search'] = '%' . $search . '%';
+    } elseif ($filter_type === 'verified') {
+        $query .= " AND is_verified::text IN ('1', 'true', 't')";
+    } elseif ($filter_type === 'contact') {
+        $query .= "
+            AND contact_number IS NOT NULL
+            AND contact_number <> ''
+        ";
+    }
+
+    $query .= " ORDER BY id DESC";
+
+    $users_stmt = $pdo->prepare($query);
+    $users_stmt->execute($params);
+    $users_list = $users_stmt->fetchAll(PDO::FETCH_ASSOC);
+    $displayed_count = count($users_list);
+} catch (PDOException $e) {
+    $users_list = [];
+    $displayed_count = 0;
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -232,13 +307,13 @@ $displayed_count = mysqli_num_rows($users_list);
                         
                         <div class="notif-body" id="admin-notif-list">
                             <?php if($unread_count > 0): ?>
-                                <?php while($notif = mysqli_fetch_assoc($admin_notif_query)): ?>
+                                <?php foreach($admin_notifications as $notif): ?>
                                     <div class="notif-item">
                                         <i class="fa-solid fa-circle-exclamation" style="color: #e11d48; margin-right: 5px;"></i>
                                         <?php echo htmlspecialchars($notif['message']); ?>
                                         <br><small style="color: #94a3b8; font-size: 11px;"><?php echo date('M d, g:i A', strtotime($notif['created_at'])); ?></small>
                                     </div>
-                                <?php endwhile; ?>
+                                <?php endforeach; ?>
                             <?php else: ?>
                                 <div class="notif-empty">No new notifications.</div>
                             <?php endif; ?>
@@ -309,7 +384,7 @@ $displayed_count = mysqli_num_rows($users_list);
 
             <div class="users-list-container">
                 <?php if ($displayed_count > 0): ?>
-                    <?php while($user = mysqli_fetch_assoc($users_list)): ?>
+                    <?php foreach($users_list as $user): ?>
                         <?php 
                             $category = isset($user['user_category']) && !empty($user['user_category']) ? $user['user_category'] : 'Pet Owner';
                             $cat_class = ($category === 'Pet Breeder') ? 'category-breeder' : 'category-owner';
@@ -321,7 +396,12 @@ $displayed_count = mysqli_num_rows($users_list);
                                 $display_email = htmlspecialchars($raw_email);
                             }
                             
-                            $is_verified = isset($user['is_verified']) ? (int)$user['is_verified'] : 0;
+                            $is_verified_raw = $user['is_verified'] ?? false;
+                            $is_verified = in_array(
+                                strtolower(trim((string)$is_verified_raw)),
+                                ['1', 'true', 't'],
+                                true
+                            ) ? 1 : 0;
                         ?>
                         <div class="user-card">
                             <div class="user-card-top">
@@ -358,7 +438,7 @@ $displayed_count = mysqli_num_rows($users_list);
                                 </div>
                             </div>
                         </div>
-                    <?php endwhile; ?>
+                    <?php endforeach; ?>
                 <?php else: ?>
                     <div style="grid-column: 1/-1; text-align: center; padding: 80px; background: white; border-radius: 16px; border: 1px dashed #cbd5e1;">
                         <i class="fas fa-users" style="font-size: 40px; color: #cbd5e1; margin-bottom: 15px;"></i>

@@ -1,6 +1,6 @@
 <?php
 session_start();
-include 'db_connect.php';
+require_once 'db_supabase.php';
 
 if (!isset($_SESSION['temp_email'])) {
     header("Location: register.php");
@@ -8,25 +8,52 @@ if (!isset($_SESSION['temp_email'])) {
 }
 
 $email = $_SESSION['temp_email'];
+$error_msg = '';
 
 if (isset($_POST['verify_btn'])) {
-    $entered_otp = mysqli_real_escape_string($conn, $_POST['otp_code']);
-    
-    // Check if OTP matches
-    $check_query = "SELECT id FROM users WHERE email = '$email' AND otp_code = '$entered_otp'";
-    $result = mysqli_query($conn, $check_query);
-    
-    if (mysqli_num_rows($result) > 0) {
-        // Correct OTP! Update account to verified
-        mysqli_query($conn, "UPDATE users SET is_verified = 1, otp_code = NULL WHERE email = '$email'");
-        
-        // Clear temp session
-        unset($_SESSION['temp_email']);
-        
-        echo "<script>alert('Account verified successfully! You can now log in.'); window.location='login.php';</script>";
-        exit();
-    } else {
-        $error_msg = "Invalid Verification Code. Please try again.";
+    $entered_otp = trim($_POST['otp_code'] ?? '');
+
+    try {
+        // Check if OTP matches
+        $check_stmt = $pdo->prepare("
+            SELECT id
+            FROM users
+            WHERE email = :email
+              AND otp_code = :otp_code
+            LIMIT 1
+        ");
+
+        $check_stmt->execute([
+            ':email' => $email,
+            ':otp_code' => $entered_otp
+        ]);
+
+        $user = $check_stmt->fetch(PDO::FETCH_ASSOC);
+
+        if ($user) {
+            // Correct OTP: mark account as verified and clear OTP
+            $update_stmt = $pdo->prepare("
+                UPDATE users
+                SET is_verified = TRUE,
+                    otp_code = NULL
+                WHERE email = :email
+            ");
+
+            $update_stmt->execute([
+                ':email' => $email
+            ]);
+
+            // Clear temporary session
+            unset($_SESSION['temp_email']);
+
+            echo "<script>alert('Account verified successfully! You can now log in.'); window.location='login.php';</script>";
+            exit();
+        } else {
+            $error_msg = "Invalid Verification Code. Please try again.";
+        }
+    } catch (PDOException $e) {
+        error_log("OTP verification failed: " . $e->getMessage());
+        $error_msg = "Unable to verify the account right now. Please try again.";
     }
 }
 ?>
@@ -53,9 +80,9 @@ if (isset($_POST['verify_btn'])) {
     <div class="verify-card">
         <h2>Enter Verification Code</h2>
         <p>We've sent a 6-digit code to your registered contact number. Please enter it below.</p>
-        
-        <?php if(isset($error_msg)): ?>
-            <div class="error"><?php echo $error_msg; ?></div>
+
+        <?php if (!empty($error_msg)): ?>
+            <div class="error"><?php echo htmlspecialchars($error_msg); ?></div>
         <?php endif; ?>
 
         <form method="POST" action="">

@@ -1,72 +1,160 @@
 <?php
 session_start();
-include 'db_connect.php';
 
-// Access Control
+include 'db_supabase.php';
+
+date_default_timezone_set('Asia/Manila');
+
+// ============================================================
+// ACCESS CONTROL
+// ============================================================
+
 if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
     header("Location: login.php");
     exit();
 }
 
-$full_name = isset($_SESSION['user_name']) ? $_SESSION['user_name'] : (isset($_SESSION['full_name']) ? $_SESSION['full_name'] : 'User');
-$user_id = $_SESSION['user_id'];
+$full_name = $_SESSION['user_name']
+    ?? $_SESSION['full_name']
+    ?? 'User';
 
-// --- UPDATED: Kinuha ang profile_image (Tinanggal na ang no_show_count/strikes) ---
-$user_query = mysqli_query($conn, "SELECT profile_image FROM users WHERE id = '$user_id'");
-$user_data = mysqli_fetch_assoc($user_query);
-$profile_image = isset($user_data['profile_image']) ? $user_data['profile_image'] : null;
+$user_id = (int)($_SESSION['user_id'] ?? 0);
 
-// Use the same profile-image variable expected by the existing header markup.
+// ============================================================
+// FETCH PROFILE IMAGE
+// ============================================================
+
+$profile_image = null;
+
+try {
+    $stmt_user = $pdo->prepare("
+        SELECT profile_image
+        FROM users
+        WHERE id = :user_id
+        LIMIT 1
+    ");
+
+    $stmt_user->execute([
+        ':user_id' => $user_id
+    ]);
+
+    $user_data = $stmt_user->fetch();
+
+    if ($user_data) {
+        $profile_image = $user_data['profile_image'] ?? null;
+    }
+} catch (PDOException $e) {
+    $profile_image = null;
+}
+
 $profile_pic = $profile_image ?: ($_SESSION['profile_image'] ?? '');
 
-$notif_header_query = "SELECT COUNT(*) as unread FROM notifications WHERE user_id = ? AND is_read = 0";
-$stmt_notif = $conn->prepare($notif_header_query);
-$stmt_notif->bind_param("i", $user_id);
-$stmt_notif->execute();
-$notif_result = $stmt_notif->get_result(); 
-$unread_count = ($notif_result && $notif_result->num_rows > 0) ? $notif_result->fetch_assoc()['unread'] : 0;
+// ============================================================
+// FETCH NOTIFICATIONS FOR HEADER
+// ============================================================
 
+$unread_count = 0;
 $notifications = [];
-$stmt_notif_list = $conn->prepare("SELECT id, message, created_at, is_read FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 5");
-if ($stmt_notif_list) {
-    $stmt_notif_list->bind_param("i", $user_id);
-    $stmt_notif_list->execute();
-    $res_list = $stmt_notif_list->get_result();
-    if ($res_list) {
-        $notifications = $res_list->fetch_all(MYSQLI_ASSOC);
-    }
-    $stmt_notif_list->close();
+
+try {
+    $stmt_notif = $pdo->prepare("
+        SELECT COUNT(*) AS unread
+        FROM notifications
+        WHERE user_id = :user_id
+          AND is_read = 0
+    ");
+
+    $stmt_notif->execute([
+        ':user_id' => $user_id
+    ]);
+
+    $notif_row = $stmt_notif->fetch();
+
+    $unread_count = (int)($notif_row['unread'] ?? 0);
+
+    $stmt_notif_list = $pdo->prepare("
+        SELECT id, message, created_at, is_read
+        FROM notifications
+        WHERE user_id = :user_id
+        ORDER BY created_at DESC
+        LIMIT 5
+    ");
+
+    $stmt_notif_list->execute([
+        ':user_id' => $user_id
+    ]);
+
+    $notifications = $stmt_notif_list->fetchAll();
+
+} catch (PDOException $e) {
+    $unread_count = 0;
+    $notifications = [];
 }
 
-$search = isset($_GET['search']) ? mysqli_real_escape_string($conn, $_GET['search']) : '';
-$status_filter = isset($_GET['status']) ? mysqli_real_escape_string($conn, $_GET['status']) : 'all';
+// ============================================================
+// SEARCH / STATUS FILTERS
+// ============================================================
 
-$query = "SELECT a.*, p.name AS joined_pet_name, r.id AS review_id 
-          FROM appointments a
-          LEFT JOIN pets p ON a.pet_id = p.id
-          LEFT JOIN reviews r ON a.id = r.appointment_id
-          WHERE a.user_id = ?";
-
-if (!empty($search)) {
-    $query .= " AND (p.name LIKE '%$search%' OR a.service LIKE '%$search%')";
-}
-
-if ($status_filter !== 'all') {
-    $query .= " AND a.booking_status = '$status_filter'";
-}
-
-$query .= " ORDER BY a.appointment_date DESC, a.appointment_time DESC";
-
-$stmt = $conn->prepare($query);
-$stmt->bind_param("i", $user_id);
-$stmt->execute();
-$result = $stmt->get_result();
+$search = trim($_GET['search'] ?? '');
+$status_filter = trim($_GET['status'] ?? 'all');
 
 $bookings = [];
-if ($result) {
-    while ($booking_row = $result->fetch_assoc()) {
-        $bookings[] = $booking_row;
+
+try {
+    $conditions = [
+        "a.user_id = :user_id"
+    ];
+
+    $params = [
+        ':user_id' => $user_id
+    ];
+
+    if ($search !== '') {
+        $conditions[] = "(
+            p.name ILIKE :search
+            OR a.service ILIKE :search
+        )";
+
+        $params[':search'] = '%' . $search . '%';
     }
+
+    $allowed_statuses = [
+        'Pending',
+        'Confirmed',
+        'Completed',
+        'Cancelled',
+        'No-Show'
+    ];
+
+    if ($status_filter !== 'all' && in_array($status_filter, $allowed_statuses, true)) {
+        $conditions[] = "a.booking_status = :status";
+        $params[':status'] = $status_filter;
+    } else {
+        $status_filter = 'all';
+    }
+
+    $query = "
+        SELECT
+            a.*,
+            p.name AS joined_pet_name,
+            r.id AS review_id
+        FROM appointments a
+        LEFT JOIN pets p
+            ON a.pet_id = p.id
+        LEFT JOIN reviews r
+            ON a.id = r.appointment_id
+        WHERE " . implode(" AND ", $conditions) . "
+        ORDER BY a.appointment_date DESC,
+                 a.appointment_time DESC
+    ";
+
+    $stmt = $pdo->prepare($query);
+    $stmt->execute($params);
+
+    $bookings = $stmt->fetchAll();
+
+} catch (PDOException $e) {
+    $bookings = [];
 }
 ?>
 <!DOCTYPE html>

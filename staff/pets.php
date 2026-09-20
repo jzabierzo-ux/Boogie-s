@@ -1,6 +1,6 @@
 <?php
 session_start();
-include '../db_connect.php'; 
+require_once '../db_supabase.php'; 
 
 // --- SECURITY CHECK (FIXED PARA SA VET/STAFF) ---
 $is_admin_or_supervisor = isset($_SESSION['logged_in']) && in_array(strtolower(trim($_SESSION['role'] ?? '')), ['admin', 'supervisor', 'staff']);
@@ -24,10 +24,12 @@ if (isset($_SESSION['user_id']) || isset($_SESSION['staff_id'])) {
     $uid = $_SESSION['user_id'] ?? $_SESSION['staff_id'];
     
     // FIX: Idinagdag ang 'full_name' sa query para makuha ang buong pangalan
-    $get_staff = mysqli_query($conn, "SELECT full_name, profile_image FROM users WHERE id = '$uid'");
-    
-    if($get_staff && $staff_data = mysqli_fetch_assoc($get_staff)) {
-        $profile_img_path = $staff_data['profile_image']; 
+    $stmt_staff = $pdo->prepare("SELECT full_name, profile_image FROM users WHERE id = :id LIMIT 1");
+    $stmt_staff->execute([':id' => $uid]);
+    $staff_data = $stmt_staff->fetch(PDO::FETCH_ASSOC);
+
+    if ($staff_data) {
+        $profile_img_path = $staff_data['profile_image'] ?? '';
         if (!empty($staff_data['full_name'])) {
             $full_display_name = $staff_data['full_name'];
         }
@@ -42,19 +44,21 @@ $first_letter = strtoupper(substr($clean_name, 0, 1));
 $display_with_title = (stripos($full_display_name, 'Dr.') === false) ? 'Dr. ' . $full_display_name : $full_display_name;
 
 // --- FETCH NOTIFICATIONS ---
-$admin_notif_query = mysqli_query($conn, "SELECT * FROM admin_notifications WHERE is_read = 0 ORDER BY created_at DESC");
-$unread_count = ($admin_notif_query) ? mysqli_num_rows($admin_notif_query) : 0;
+$admin_notif_stmt = $pdo->prepare("SELECT * FROM admin_notifications WHERE is_read = 0 ORDER BY created_at DESC");
+$admin_notif_stmt->execute();
+$admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
+$unread_count = count($admin_notifications);
 
 // --- STATS LOGIC ---
-$total_res = mysqli_query($conn, "SELECT COUNT(*) as total FROM pets");
-$total_pets = ($total_res) ? mysqli_fetch_assoc($total_res)['total'] : 0;
+$total_res = $pdo->query("SELECT COUNT(*) AS total FROM pets")->fetch(PDO::FETCH_ASSOC);
+$total_pets = (int)($total_res['total'] ?? 0);
 
 // These now use the 'pet_type' column from your database
-$dog_res = mysqli_query($conn, "SELECT COUNT(*) as total FROM pets WHERE pet_type = 'Dog'");
-$dogs = ($dog_res) ? mysqli_fetch_assoc($dog_res)['total'] : 0;
+$dog_res = $pdo->query("SELECT COUNT(*) AS total FROM pets WHERE pet_type = 'Dog'")->fetch(PDO::FETCH_ASSOC);
+$dogs = (int)($dog_res['total'] ?? 0);
 
-$cat_res = mysqli_query($conn, "SELECT COUNT(*) as total FROM pets WHERE pet_type = 'Cat'");
-$cats = ($cat_res) ? mysqli_fetch_assoc($cat_res)['total'] : 0;
+$cat_res = $pdo->query("SELECT COUNT(*) AS total FROM pets WHERE pet_type = 'Cat'")->fetch(PDO::FETCH_ASSOC);
+$cats = (int)($cat_res['total'] ?? 0);
 
 $others = $total_pets - ($dogs + $cats);
 ?>
@@ -245,13 +249,13 @@ $others = $total_pets - ($dogs + $cats);
                         
                         <div class="notif-body" id="admin-notif-list">
                             <?php if($unread_count > 0): ?>
-                                <?php while($notif = mysqli_fetch_assoc($admin_notif_query)): ?>
+                                <?php foreach($admin_notifications as $notif): ?>
                                     <div class="notif-item">
                                         <i class="fa-solid fa-circle-exclamation" style="color: #ef4444; margin-right: 5px;"></i>
                                         <?php echo htmlspecialchars($notif['message']); ?>
                                         <br><small style="color: #94a3b8; font-size: 11px;"><?php echo date('M d, g:i A', strtotime($notif['created_at'])); ?></small>
                                     </div>
-                                <?php endwhile; ?>
+                                <?php endforeach; ?>
                             <?php else: ?>
                                 <div class="notif-empty">No new clinic alerts.</div>
                             <?php endif; ?>
@@ -342,7 +346,7 @@ $others = $total_pets - ($dogs + $cats);
                             <?php
                             // --- UPDATED: TABLE FILTER LOGIC ---
                             $filter_type = $_GET['type'] ?? '';
-                            
+
                             if ($filter_type === 'Dog') {
                                 $query = "SELECT * FROM pets WHERE pet_type = 'Dog' ORDER BY id DESC";
                             } elseif ($filter_type === 'Cat') {
@@ -353,27 +357,28 @@ $others = $total_pets - ($dogs + $cats);
                                 $query = "SELECT * FROM pets ORDER BY id DESC";
                             }
 
-                            $result = mysqli_query($conn, $query);
+                            $result = $pdo->query($query);
+                            $rows = $result ? $result->fetchAll(PDO::FETCH_ASSOC) : [];
 
-                            if ($result && mysqli_num_rows($result) > 0) {
-                                while($row = mysqli_fetch_assoc($result)) {
+                            if (!empty($rows)) {
+                                foreach ($rows as $row) {
                                     $p_name = $row['name'] ?? 'Unnamed';
                                     $p_type = $row['pet_type'] ?? 'Pet';
                                     $p_breed = $row['breed'] ?? 'N/A';
                                     $o_name = $row['owner_name'] ?? 'ID: ' . ($row['owner_id'] ?? 'N/A');
-                                    
+
                                     echo "<tr>";
                                     echo "<td style='font-weight:700; color: var(--sidebar-navy);'><i class='fas fa-paw' style='color:#cbd5e0; margin-right:10px;'></i>" . htmlspecialchars($p_name) . "</td>";
                                     echo "<td>" . htmlspecialchars($p_type) . "</td>";
                                     echo "<td>" . htmlspecialchars($p_breed) . "</td>";
                                     echo "<td><span class='owner-tag'>" . htmlspecialchars($o_name) . "</span></td>";
-                                    
+
                                     echo "<td>
                                             <div class='action-links'>
                                                 <a href='view_records.php?id=" . urlencode($row['id']) . "' class='btn-icon btn-view' title='View Medical Records'>
                                                     <i class='fas fa-notes-medical'></i>
                                                 </a>
-                                                
+
                                                 <a href='delete_pet.php?id=" . urlencode($row['id']) . "' class='btn-icon btn-delete' title='Delete Patient' onclick='return confirm(\"Are you sure you want to permanently delete this patient?\");'>
                                                     <i class='fas fa-trash-alt'></i>
                                                 </a>
@@ -387,6 +392,7 @@ $others = $total_pets - ($dogs + $cats);
                                     <span style='font-weight:500;'>No patients found for this category.</span>
                                 </td></tr>";
                             }
+
                             ?>
                         </tbody>
                     </table>

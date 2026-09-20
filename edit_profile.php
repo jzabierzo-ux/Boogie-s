@@ -1,6 +1,6 @@
 <?php
 session_start();
-include 'db_connect.php'; 
+require_once 'db_supabase.php';
 
 // Check if user is logged in
 if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
@@ -8,83 +8,161 @@ if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
     exit();
 }
 
-$user_id = $_SESSION['user_id'];
+$user_id = (int)($_SESSION['user_id'] ?? 0);
 $success_msg = "";
 $error_msg = "";
 
+if ($user_id <= 0) {
+    header("Location: login.php");
+    exit();
+}
+
 // --- PROCESS FORM SUBMISSION ---
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $full_name = mysqli_real_escape_string($conn, $_POST['full_name']);
-    $contact_number = mysqli_real_escape_string($conn, trim($_POST['contact_number']));
-    $user_category = mysqli_real_escape_string($conn, $_POST['user_category']); // BAGO: Kukunin ang user category
-    
-    $profile_pic_query = "";
+    $full_name = trim($_POST['full_name'] ?? '');
+    $contact_number = trim($_POST['contact_number'] ?? '');
+    $user_category = trim($_POST['user_category'] ?? '');
 
-    // --- BAGO: STRICT CONTACT NUMBER VALIDATION ---
+    // --- STRICT CONTACT NUMBER VALIDATION ---
     if (!preg_match("/^[0-9]{11}$/", $contact_number)) {
         $error_msg = "Invalid contact number. Please enter exactly 11 digits (e.g., 09123456789).";
     }
 
-    // Handle Profile Picture Upload using your 'profile_image' column
-    if (empty($error_msg) && isset($_FILES['profile_image']) && $_FILES['profile_image']['error'] == 0) {
+    // Handle Profile Picture Upload using the profile_image column
+    $new_profile_path = null;
+
+    if (
+        empty($error_msg) &&
+        isset($_FILES['profile_image']) &&
+        $_FILES['profile_image']['error'] === UPLOAD_ERR_OK
+    ) {
         $allowed_extensions = ['jpg', 'jpeg', 'png', 'gif'];
-        $file_name = $_FILES['profile_image']['name'];
-        $file_size = $_FILES['profile_image']['size'];
-        $file_tmp = $_FILES['profile_image']['tmp_name'];
-        
+        $file_name = $_FILES['profile_image']['name'] ?? '';
+        $file_size = (int)($_FILES['profile_image']['size'] ?? 0);
+        $file_tmp = $_FILES['profile_image']['tmp_name'] ?? '';
         $file_ext = strtolower(pathinfo($file_name, PATHINFO_EXTENSION));
 
-        if (in_array($file_ext, $allowed_extensions)) {
-            if ($file_size < 5000000) { // Limit to 5MB
-                // Create unique filename to avoid overwriting
-                $new_file_name = "user_" . $user_id . "_" . time() . "." . $file_ext;
-                $upload_path = "uploads/" . $new_file_name;
-
-                // Make sure the 'uploads' folder exists!
-                if (move_uploaded_file($file_tmp, $upload_path)) {
-                    $profile_pic_query = ", profile_image = '$upload_path'";
-                    $_SESSION['profile_image'] = $upload_path; 
-                } else {
-                    $error_msg = "Error uploading your image. Please check folder permissions.";
-                }
-            } else {
-                $error_msg = "File is too large. Maximum size is 5MB.";
-            }
-        } else {
+        if (!in_array($file_ext, $allowed_extensions, true)) {
             $error_msg = "Invalid file type. Only JPG, JPEG, PNG, and GIF are allowed.";
+        } elseif ($file_size >= 5000000) {
+            $error_msg = "File is too large. Maximum size is 5MB.";
+        } else {
+            if (!is_dir('uploads')) {
+                mkdir('uploads', 0777, true);
+            }
+
+            $new_file_name = "user_" . $user_id . "_" . time() . "." . $file_ext;
+            $upload_path = "uploads/" . $new_file_name;
+
+            if (move_uploaded_file($file_tmp, $upload_path)) {
+                $new_profile_path = $upload_path;
+            } else {
+                $error_msg = "Error uploading your image. Please check folder permissions.";
+            }
         }
     }
 
-    // Update query - Only execute if there are no errors
+    // Update database only when there are no errors
     if (empty($error_msg)) {
-        // BAGO: Idinagdag ang user_category sa i-u-update
-        $update_query = "UPDATE users SET full_name = '$full_name', contact_number = '$contact_number', user_category = '$user_category' $profile_pic_query WHERE id = '$user_id'";
-        
-        if (mysqli_query($conn, $update_query)) {
+        try {
+            if ($new_profile_path !== null) {
+                $update_stmt = $pdo->prepare("
+                    UPDATE users
+                    SET full_name = :full_name,
+                        contact_number = :contact_number,
+                        user_category = :user_category,
+                        profile_image = :profile_image
+                    WHERE id = :user_id
+                ");
+
+                $update_stmt->execute([
+                    ':full_name' => $full_name,
+                    ':contact_number' => $contact_number,
+                    ':user_category' => $user_category,
+                    ':profile_image' => $new_profile_path,
+                    ':user_id' => $user_id
+                ]);
+
+                $_SESSION['profile_image'] = $new_profile_path;
+            } else {
+                $update_stmt = $pdo->prepare("
+                    UPDATE users
+                    SET full_name = :full_name,
+                        contact_number = :contact_number,
+                        user_category = :user_category
+                    WHERE id = :user_id
+                ");
+
+                $update_stmt->execute([
+                    ':full_name' => $full_name,
+                    ':contact_number' => $contact_number,
+                    ':user_category' => $user_category,
+                    ':user_id' => $user_id
+                ]);
+            }
+
             $success_msg = "Your profile has been updated successfully!";
             $_SESSION['user_name'] = $full_name;
-            $_SESSION['full_name'] = $full_name; 
-        } else {
-            $error_msg = "Error updating profile: " . mysqli_error($conn);
+            $_SESSION['full_name'] = $full_name;
+        } catch (PDOException $e) {
+            error_log("Edit profile update failed: " . $e->getMessage());
+            $error_msg = "Error updating profile.";
         }
     }
 }
 
 // --- FETCH CURRENT USER DATA TO PRE-FILL THE FORM ---
-$query = "SELECT * FROM users WHERE id = '$user_id'";
-$result = mysqli_query($conn, $query);
-$user_data = mysqli_fetch_assoc($result);
+try {
+    $user_stmt = $pdo->prepare("
+        SELECT *
+        FROM users
+        WHERE id = :user_id
+        LIMIT 1
+    ");
+    $user_stmt->execute([
+        ':user_id' => $user_id
+    ]);
+
+    $user_data = $user_stmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$user_data) {
+        session_unset();
+        session_destroy();
+        header("Location: login.php");
+        exit();
+    }
+} catch (PDOException $e) {
+    error_log("Edit profile user fetch failed: " . $e->getMessage());
+    die("Unable to load your profile right now.");
+}
 
 // Determine the name to show in the header
-$header_name = isset($_SESSION['user_name']) ? $_SESSION['user_name'] : (isset($_SESSION['full_name']) ? $_SESSION['full_name'] : 'User');
+$header_name = $_SESSION['user_name']
+    ?? $_SESSION['full_name']
+    ?? 'User';
 
 // Fetch unread notifications count for the header
-$notif_query = "SELECT COUNT(*) as unread FROM notifications WHERE user_id = '$user_id' AND is_read = 0";
-$notif_result = @mysqli_query($conn, $notif_query);
-$unread_count = ($notif_result) ? mysqli_fetch_assoc($notif_result)['unread'] : 0;
+try {
+    $notif_stmt = $pdo->prepare("
+        SELECT COUNT(*) AS unread
+        FROM notifications
+        WHERE user_id = :user_id
+          AND is_read = FALSE
+    ");
+    $notif_stmt->execute([
+        ':user_id' => $user_id
+    ]);
+
+    $unread_count = (int)($notif_stmt->fetchColumn() ?? 0);
+} catch (PDOException $e) {
+    error_log("Edit profile notification count failed: " . $e->getMessage());
+    $unread_count = 0;
+}
 
 // Set default avatar if user has no profile image in DB
-$current_profile_pic = !empty($user_data['profile_image']) ? $user_data['profile_image'] : 'default-avatar.png';
+$current_profile_pic = !empty($user_data['profile_image'])
+    ? $user_data['profile_image']
+    : 'default-avatar.png';
 ?>
 <!DOCTYPE html>
 <html lang="en">

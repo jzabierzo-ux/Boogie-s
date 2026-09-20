@@ -1,36 +1,48 @@
 <?php
 session_start();
-include '../db_connect.php'; 
+require_once '../db_supabase.php';
 
 // --- UNIVERSAL SECURITY CHECK ---
 $current_role = isset($_SESSION['role']) ? strtolower(trim($_SESSION['role'])) : '';
 
 // Payagan ang admin, supervisor, at staff
-if (!isset($_SESSION['logged_in']) || !in_array($current_role, ['admin', 'supervisor', 'staff'])) {
-    header("Location: stafflogin.php"); 
+if (!isset($_SESSION['logged_in']) || !in_array($current_role, ['admin', 'supervisor', 'staff'], true)) {
+    header("Location: stafflogin.php");
     exit();
 }
 
-$user_id = $_SESSION['user_id'];
+$user_id = (int)($_SESSION['user_id'] ?? 0);
 $message = '';
 
 // Kumuha ng user data mula sa database
-$get_user = mysqli_query($conn, "SELECT * FROM users WHERE id = '$user_id'");
-$user_data = mysqli_fetch_assoc($get_user);
+$user_data = [];
+
+try {
+    $get_user = $pdo->prepare("SELECT * FROM users WHERE id = :id LIMIT 1");
+    $get_user->execute([':id' => $user_id]);
+    $user_data = $get_user->fetch(PDO::FETCH_ASSOC);
+
+    if (!$user_data) {
+        $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> User account not found.</div>';
+    }
+} catch (PDOException $e) {
+    error_log("Profile fetch failed: " . $e->getMessage());
+    $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Failed to load profile.</div>';
+}
 
 // ---------------------------------------------------------
 // 1. HANDLE PROFILE & PICTURE UPDATE
 // ---------------------------------------------------------
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_profile'])) {
-    $full_name = mysqli_real_escape_string($conn, $_POST['full_name']);
-    $username = mysqli_real_escape_string($conn, trim($_POST['username'] ?? ''));
-    $contact_number = mysqli_real_escape_string($conn, $_POST['contact_number'] ?? '');
-    
-    $profile_image = $user_data['profile_image']; // Default to current image
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_profile']) && !empty($user_data)) {
+    $full_name = trim($_POST['full_name'] ?? '');
+    $username = trim($_POST['username'] ?? '');
+    $contact_number = trim($_POST['contact_number'] ?? '');
+
+    $profile_image = $user_data['profile_image'] ?? ''; // Default to current image
     $has_error = false;
 
     // Contact Number Validation (Kung nilagyan ng laman)
-    if (!empty($contact_number) && !preg_match("/^[0-9]{11}$/", $contact_number)) {
+    if ($contact_number !== '' && !preg_match("/^[0-9]{11}$/", $contact_number)) {
         $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Invalid contact number. Must be exactly 11 digits.</div>';
         $has_error = true;
     }
@@ -39,20 +51,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_profile'])) {
         // Handle File Upload
         if (isset($_FILES['profile_picture']) && $_FILES['profile_picture']['error'] === 0) {
             $allowed_ext = ['jpg', 'jpeg', 'png', 'gif'];
-            $file_name = $_FILES['profile_picture']['name'];
-            $file_size = $_FILES['profile_picture']['size'];
-            $file_tmp = $_FILES['profile_picture']['tmp_name'];
+            $file_name = $_FILES['profile_picture']['name'] ?? '';
+            $file_size = (int)($_FILES['profile_picture']['size'] ?? 0);
+            $file_tmp = $_FILES['profile_picture']['tmp_name'] ?? '';
             $file_ext = strtolower(pathinfo($file_name, PATHINFO_EXTENSION));
 
-            if (in_array($file_ext, $allowed_ext)) {
+            if (in_array($file_ext, $allowed_ext, true)) {
                 if ($file_size < 5000000) { // Limit to 5MB
                     $new_file_name = 'admin_' . $user_id . '_' . time() . '.' . $file_ext;
-                    $upload_path = 'uploads/' . $new_file_name;
+                    $upload_dir = __DIR__ . '/uploads';
+                    $upload_path = $upload_dir . '/' . $new_file_name;
+                    $profile_db_path = 'uploads/' . $new_file_name;
 
-                    if (!is_dir('uploads')) { mkdir('uploads', 0777, true); }
+                    if (!is_dir($upload_dir)) {
+                        mkdir($upload_dir, 0777, true);
+                    }
 
                     if (move_uploaded_file($file_tmp, $upload_path)) {
-                        $profile_image = $upload_path; 
+                        $profile_image = $profile_db_path;
                     } else {
                         $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Failed to move uploaded file.</div>';
                         $has_error = true;
@@ -69,22 +85,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_profile'])) {
     }
 
     if (!$has_error) {
-        // Update Database using your exact column names
-        $update_query = "UPDATE users SET 
-                            full_name = '$full_name', 
-                            username = '$username', 
-                            contact_number = '$contact_number', 
-                            profile_image = '$profile_image' 
-                         WHERE id = '$user_id'";
+        try {
+            $update_stmt = $pdo->prepare("
+                UPDATE users
+                SET full_name = :full_name,
+                    username = :username,
+                    contact_number = :contact_number,
+                    profile_image = :profile_image
+                WHERE id = :id
+            ");
 
-        if (mysqli_query($conn, $update_query)) {
-            $_SESSION['user_name'] = $full_name; 
+            $update_stmt->execute([
+                ':full_name' => $full_name,
+                ':username' => $username,
+                ':contact_number' => $contact_number,
+                ':profile_image' => $profile_image,
+                ':id' => $user_id
+            ]);
+
+            $_SESSION['user_name'] = $full_name;
             $message = '<div class="alert alert-success"><i class="fas fa-check-circle"></i> Profile updated successfully!</div>';
+
             // Refresh data after update
-            $get_user = mysqli_query($conn, "SELECT * FROM users WHERE id = '$user_id'");
-            $user_data = mysqli_fetch_assoc($get_user);
-        } else {
-            $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Error updating profile: ' . mysqli_error($conn) . '</div>';
+            $get_user = $pdo->prepare("SELECT * FROM users WHERE id = :id LIMIT 1");
+            $get_user->execute([':id' => $user_id]);
+            $user_data = $get_user->fetch(PDO::FETCH_ASSOC) ?: $user_data;
+        } catch (PDOException $e) {
+            error_log("Profile update failed: " . $e->getMessage());
+            $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Error updating profile.</div>';
         }
     }
 }
@@ -92,19 +120,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_profile'])) {
 // ---------------------------------------------------------
 // 2. HANDLE PASSWORD UPDATE
 // ---------------------------------------------------------
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_password'])) {
-    $current_password = $_POST['current_password'];
-    $new_password = $_POST['new_password'];
-    $confirm_password = $_POST['confirm_password'];
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_password']) && !empty($user_data)) {
+    $current_password = $_POST['current_password'] ?? '';
+    $new_password = $_POST['new_password'] ?? '';
+    $confirm_password = $_POST['confirm_password'] ?? '';
 
-    if (password_verify($current_password, $user_data['password'])) {
+    if (password_verify($current_password, $user_data['password'] ?? '')) {
         if ($new_password === $confirm_password) {
             $hashed_new_password = password_hash($new_password, PASSWORD_DEFAULT);
-            $update_pass_query = "UPDATE users SET password = '$hashed_new_password' WHERE id = '$user_id'";
-            
-            if (mysqli_query($conn, $update_pass_query)) {
+
+            try {
+                $update_pass_stmt = $pdo->prepare("UPDATE users SET password = :password WHERE id = :id");
+                $update_pass_stmt->execute([
+                    ':password' => $hashed_new_password,
+                    ':id' => $user_id
+                ]);
+
                 $message = '<div class="alert alert-success"><i class="fas fa-check-circle"></i> Password successfully updated!</div>';
-            } else {
+
+                $get_user = $pdo->prepare("SELECT * FROM users WHERE id = :id LIMIT 1");
+                $get_user->execute([':id' => $user_id]);
+                $user_data = $get_user->fetch(PDO::FETCH_ASSOC) ?: $user_data;
+            } catch (PDOException $e) {
+                error_log("Password update failed: " . $e->getMessage());
                 $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Failed to update password.</div>';
             }
         } else {
@@ -116,10 +154,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_password'])) {
 }
 
 // Setup display variables
-$display_name = htmlspecialchars($user_data['full_name'] ?? 'User');
-$display_username = htmlspecialchars($user_data['username'] ?? 'No Username');
-$display_phone = isset($user_data['contact_number']) ? htmlspecialchars($user_data['contact_number']) : '';
-$display_image = !empty($user_data['profile_image']) ? htmlspecialchars($user_data['profile_image']) : null;
+$display_name_raw = $user_data['full_name'] ?? 'User';
+$display_username_raw = $user_data['username'] ?? 'No Username';
+$display_phone_raw = $user_data['contact_number'] ?? '';
+$display_image_raw = !empty($user_data['profile_image']) ? $user_data['profile_image'] : null;
+
+$display_name = htmlspecialchars($display_name_raw, ENT_QUOTES, 'UTF-8');
+$display_username = htmlspecialchars($display_username_raw, ENT_QUOTES, 'UTF-8');
+$display_phone = htmlspecialchars($display_phone_raw, ENT_QUOTES, 'UTF-8');
+$display_image = $display_image_raw !== null ? htmlspecialchars($display_image_raw, ENT_QUOTES, 'UTF-8') : null;
 $join_date = isset($user_data['created_at']) ? date('F d, Y', strtotime($user_data['created_at'])) : 'Unknown';
 
 // Dynamic Badge Logic based on Role
@@ -264,7 +307,7 @@ if ($current_role === 'staff') {
                         <?php if ($display_image && file_exists($display_image)): ?>
                             <img src="<?php echo $display_image; ?>" alt="Profile Picture">
                         <?php else: ?>
-                            <?php echo strtoupper(substr($display_name, 0, 1)); ?>
+                            <?php echo strtoupper(substr($display_name_raw, 0, 1)); ?>
                         <?php endif; ?>
                     </div>
                     <h3><?php echo $display_name; ?></h3>

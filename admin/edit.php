@@ -1,11 +1,11 @@
 <?php
 session_start();
-include '../db_connect.php';
+include '../db_supabase.php';
 
 // --- UNIVERSAL SECURITY CHECK ---
 $current_role = isset($_SESSION['role']) ? strtolower(trim($_SESSION['role'])) : '';
 
-if (!isset($_SESSION['logged_in']) || !in_array($current_role, ['admin', 'supervisor', 'staff'])) {
+if (!isset($_SESSION['logged_in']) || !in_array($current_role, ['admin', 'supervisor', 'staff'], true)) {
     header("Location: stafflogin.php");
     exit();
 }
@@ -15,62 +15,104 @@ if (!isset($_GET['id']) || !is_numeric($_GET['id'])) {
     die("Invalid Pet ID.");
 }
 
-$pet_id = $_GET['id'];
+$pet_id = (int)$_GET['id'];
 $success_msg = "";
 $error_msg = "";
 
 // --- BAGO: Fetch all users for Transfer of Ownership dropdown ---
 $users_list = [];
-$users_query = mysqli_query($conn, "SELECT id, full_name, email FROM users ORDER BY full_name ASC");
-if ($users_query) {
-    while ($u = mysqli_fetch_assoc($users_query)) {
-        $users_list[] = $u;
-    }
+
+try {
+    $users_query = $pdo->prepare("
+        SELECT id, full_name, email
+        FROM users
+        ORDER BY full_name ASC
+    ");
+    $users_query->execute();
+    $users_list = $users_query->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    $users_list = [];
+    $error_msg = "Unable to load the customer list.";
 }
 
 // 3. HANDLE FORM SUBMISSION (UPDATE)
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $p_name = $_POST['name'];
-    $p_type = $_POST['pet_type'];
-    $p_breed = $_POST['breed'];
-    $p_gender = $_POST['gender'];
-    $p_age = $_POST['age'];
-    $p_weight = $_POST['weight'];
-    
+    $p_name = trim($_POST['name'] ?? '');
+    $p_type = trim($_POST['pet_type'] ?? '');
+    $p_breed = trim($_POST['breed'] ?? '');
+    $p_gender = trim($_POST['gender'] ?? '');
+    $p_age = trim($_POST['age'] ?? '');
+    $p_weight = trim($_POST['weight'] ?? '');
+
     // BAGO: Kunin ang ID ng bagong owner mula sa dropdown
-    $new_owner_id = $_POST['owner_id'];
+    $new_owner_id = isset($_POST['owner_id']) ? (int)$_POST['owner_id'] : 0;
     $new_owner_name = "";
 
     // Hanapin yung pangalan nung piniling owner id para i-save din sa owner_name column
     foreach ($users_list as $u) {
-        if ($u['id'] == $new_owner_id) {
+        if ((int)$u['id'] === $new_owner_id) {
             $new_owner_name = $u['full_name'];
             break;
         }
     }
 
-    // BAGO: In-update ang query para isama ang owner_id at owner_name
-    $update_query = "UPDATE pets SET name=?, pet_type=?, breed=?, gender=?, age=?, weight=?, owner_id=?, owner_name=? WHERE id=?";
-    $update_stmt = mysqli_prepare($conn, $update_query);
-    
-    // "ssssssisi" -> 6 strings, 1 integer (owner_id), 1 string (owner_name), 1 integer (pet_id)
-    mysqli_stmt_bind_param($update_stmt, "ssssssisi", $p_name, $p_type, $p_breed, $p_gender, $p_age, $p_weight, $new_owner_id, $new_owner_name, $pet_id);
-    
-    if (mysqli_stmt_execute($update_stmt)) {
-        $success_msg = "Pet record and ownership successfully updated!";
+    if ($new_owner_id <= 0 || $new_owner_name === '') {
+        $error_msg = "Please select a valid owner.";
+    } elseif ($p_name === '' || $p_type === '' || $p_gender === '') {
+        $error_msg = "Please complete the required pet fields.";
     } else {
-        $error_msg = "Error updating record: " . mysqli_error($conn);
+        try {
+            // BAGO: Updated query para isama ang owner_id at owner_name
+            $update_query = "
+                UPDATE pets
+                SET name = :name,
+                    pet_type = :pet_type,
+                    breed = :breed,
+                    gender = :gender,
+                    age = :age,
+                    weight = :weight,
+                    owner_id = :owner_id,
+                    owner_name = :owner_name
+                WHERE id = :pet_id
+            ";
+
+            $update_stmt = $pdo->prepare($update_query);
+            $update_stmt->execute([
+                ':name' => $p_name,
+                ':pet_type' => $p_type,
+                ':breed' => $p_breed,
+                ':gender' => $p_gender,
+                ':age' => $p_age,
+                ':weight' => $p_weight,
+                ':owner_id' => $new_owner_id,
+                ':owner_name' => $new_owner_name,
+                ':pet_id' => $pet_id
+            ]);
+
+            $success_msg = "Pet record and ownership successfully updated!";
+        } catch (PDOException $e) {
+            $error_msg = "Error updating record.";
+        }
     }
 }
 
 // 4. FETCH CURRENT DATA
-$query = "SELECT * FROM pets WHERE id = ?";
-$stmt = mysqli_prepare($conn, $query);
-mysqli_stmt_bind_param($stmt, "i", $pet_id);
-mysqli_stmt_execute($stmt);
-$result = mysqli_stmt_get_result($stmt);
+try {
+    $query = "
+        SELECT *
+        FROM pets
+        WHERE id = :pet_id
+        LIMIT 1
+    ";
 
-if (!$row = mysqli_fetch_assoc($result)) {
+    $stmt = $pdo->prepare($query);
+    $stmt->execute([':pet_id' => $pet_id]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    die("Unable to load the pet record at this time.");
+}
+
+if (!$row) {
     die("Pet not found in the database.");
 }
 ?>

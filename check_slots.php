@@ -1,8 +1,8 @@
 <?php
 // check_slots.php
-include 'db_connect.php';
+require_once 'db_supabase.php';
 
-header('Content-Type: application/json');
+header('Content-Type: application/json; charset=UTF-8');
 
 // Added trim() to remove any accidental spaces from the request
 $date = isset($_GET['date']) ? trim($_GET['date']) : '';
@@ -18,49 +18,69 @@ $response = [
     "booked_times" => []
 ];
 
-// 1. Check Daily Limits 
+// 1. Check Daily Limits
 // Dahil 1 pet per slot na lang tayo at may 8 available timeslots (10AM to 5PM),
 // Ang maximum daily limit na lang ay 8 per service category.
-$daily_limit = 8; 
+$daily_limit = 8;
 
-// UPDATE: Pinalitan ang condition. Hindi na bibilangin ang 'Cancelled' at 'No-Show' sa daily limit!
-$stmt_count = $conn->prepare("
-    SELECT COUNT(*) as total_bookings 
-    FROM appointments 
-    WHERE appointment_date = ? 
-    AND service LIKE CONCAT(?, '%') 
-    AND booking_status NOT IN ('Cancelled', 'No-Show')
-");
-$stmt_count->bind_param("ss", $date, $category);
-$stmt_count->execute();
-$row_count = $stmt_count->get_result()->fetch_assoc();
+try {
+    // UPDATE: Hindi na bibilangin ang 'Cancelled' at 'No-Show' sa daily limit.
+    // PostgreSQL/PDO version of the original LIKE CONCAT(?, '%')
+    $stmt_count = $pdo->prepare("
+        SELECT COUNT(*) AS total_bookings
+        FROM appointments
+        WHERE appointment_date = :appointment_date
+          AND service LIKE :service_prefix
+          AND booking_status NOT IN ('Cancelled', 'No-Show')
+    ");
 
-if ($row_count['total_bookings'] >= $daily_limit) {
-    $response['is_full'] = true;
-}
-$stmt_count->close(); // ✅ BEST PRACTICE: Close the statement to free up resources
+    $stmt_count->execute([
+        ':appointment_date' => $date,
+        ':service_prefix' => $category . '%'
+    ]);
 
-// 2. Check Taken Time Slots per category (Strictly 1 per slot)
-// UPDATE: Hindi rin isasama ang 'No-Show' at 'Cancelled' dito para ma-recover ang slot.
-$stmt_slots = $conn->prepare("
-    SELECT appointment_time, COUNT(*) as slot_count 
-    FROM appointments 
-    WHERE appointment_date = ? 
-    AND service LIKE CONCAT(?, '%') 
-    AND booking_status NOT IN ('Cancelled', 'No-Show')
-    GROUP BY appointment_time
-");
-$stmt_slots->bind_param("ss", $date, $category);
-$stmt_slots->execute();
-$result_slots = $stmt_slots->get_result();
+    $row_count = $stmt_count->fetch(PDO::FETCH_ASSOC);
 
-while ($row = $result_slots->fetch_assoc()) {
-    // DITO ANG MAGIC: Kung may 1 na booking, "Taken" na agad ang oras na ito!
-    if ((int)$row['slot_count'] >= 1) {
-        $response['booked_times'][] = $row['appointment_time'];
+    if ((int)($row_count['total_bookings'] ?? 0) >= $daily_limit) {
+        $response['is_full'] = true;
     }
-}
-$stmt_slots->close(); // ✅ BEST PRACTICE: Close the statement
 
-echo json_encode($response);
+    // 2. Check Taken Time Slots per category (Strictly 1 per slot)
+    // UPDATE: Hindi rin isasama ang 'No-Show' at 'Cancelled' dito para ma-recover ang slot.
+    $stmt_slots = $pdo->prepare("
+        SELECT appointment_time, COUNT(*) AS slot_count
+        FROM appointments
+        WHERE appointment_date = :appointment_date
+          AND service LIKE :service_prefix
+          AND booking_status NOT IN ('Cancelled', 'No-Show')
+        GROUP BY appointment_time
+        ORDER BY appointment_time
+    ");
+
+    $stmt_slots->execute([
+        ':appointment_date' => $date,
+        ':service_prefix' => $category . '%'
+    ]);
+
+    $result_slots = $stmt_slots->fetchAll(PDO::FETCH_ASSOC);
+
+    foreach ($result_slots as $row) {
+        // DITO ANG MAGIC: Kung may 1 na booking, "Taken" na agad ang oras na ito!
+        if ((int)($row['slot_count'] ?? 0) >= 1) {
+            $response['booked_times'][] = $row['appointment_time'];
+        }
+    }
+
+    echo json_encode($response);
+} catch (PDOException $e) {
+    error_log("check_slots.php database error: " . $e->getMessage());
+
+    echo json_encode([
+        "error" => "Database error",
+        "is_full" => false,
+        "booked_times" => []
+    ]);
+}
+
+exit;
 ?>

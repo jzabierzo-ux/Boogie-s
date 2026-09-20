@@ -1,6 +1,6 @@
 <?php
 session_start();
-include 'db_connect.php'; 
+require_once 'db_supabase.php';
 
 // 1. SECURITY: Check if logged in
 if (!isset($_SESSION['user_id'])) {
@@ -8,90 +8,217 @@ if (!isset($_SESSION['user_id'])) {
     exit;
 }
 
-$user_id = $_SESSION['user_id'];
-$full_name = isset($_SESSION['user_name']) ? $_SESSION['user_name'] : (isset($_SESSION['full_name']) ? $_SESSION['full_name'] : 'User');
+$user_id = (int)$_SESSION['user_id'];
+$full_name = isset($_SESSION['user_name'])
+    ? $_SESSION['user_name']
+    : (isset($_SESSION['full_name']) ? $_SESSION['full_name'] : 'User');
 
 // --- FETCH UNREAD NOTIFICATIONS COUNT FOR HEADER ---
-$notif_header_query = "SELECT COUNT(*) as unread FROM notifications WHERE user_id = '$user_id' AND is_read = 0";
-$notif_header_result = @mysqli_query($conn, $notif_header_query);
-$unread_count = ($notif_header_result) ? mysqli_fetch_assoc($notif_header_result)['unread'] : 0;
+try {
+    $notif_header_stmt = $pdo->prepare("
+        SELECT COUNT(*) AS unread
+        FROM notifications
+        WHERE user_id = :user_id
+          AND is_read = FALSE
+    ");
+    $notif_header_stmt->execute([
+        ':user_id' => $user_id
+    ]);
+    $unread_count = (int)($notif_header_stmt->fetchColumn() ?? 0);
+} catch (PDOException $e) {
+    error_log("Notification count query failed: " . $e->getMessage());
+    $unread_count = 0;
+}
 
 // --- FETCH LATEST 5 NOTIFICATIONS FOR DROPDOWN ---
 $notifications = [];
-$stmt_notif_list = $conn->prepare("SELECT id, message, created_at, is_read FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 5");
-if ($stmt_notif_list) {
-    $stmt_notif_list->bind_param("i", $user_id);
-    $stmt_notif_list->execute();
-    $res_list = $stmt_notif_list->get_result();
-    if ($res_list) {
-        $notifications = $res_list->fetch_all(MYSQLI_ASSOC);
-    }
-    $stmt_notif_list->close();
+
+try {
+    $stmt_notif_list = $pdo->prepare("
+        SELECT id, message, created_at, is_read
+        FROM notifications
+        WHERE user_id = :user_id
+        ORDER BY created_at DESC
+        LIMIT 5
+    ");
+
+    $stmt_notif_list->execute([
+        ':user_id' => $user_id
+    ]);
+
+    $notifications = $stmt_notif_list->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    error_log("Notification list query failed: " . $e->getMessage());
 }
 
 // --- UPDATED: Fetching profile_image ONLY (Removed max_pets since limit is abolished) ---
-$user_query = mysqli_query($conn, "SELECT profile_image FROM users WHERE id = '$user_id'");
-$user_data = mysqli_fetch_assoc($user_query);
-$profile_image = isset($user_data['profile_image']) ? $user_data['profile_image'] : null;
+try {
+    $user_stmt = $pdo->prepare("
+        SELECT profile_image
+        FROM users
+        WHERE id = :user_id
+        LIMIT 1
+    ");
+    $user_stmt->execute([
+        ':user_id' => $user_id
+    ]);
+
+    $user_data = $user_stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+    $profile_image = $user_data['profile_image'] ?? null;
+} catch (PDOException $e) {
+    error_log("Profile image query failed: " . $e->getMessage());
+    $profile_image = null;
+}
 
 // Check how many pets the user currently has
-$count_query = "SELECT COUNT(*) as pet_count FROM pets WHERE owner_id = '$user_id'";
-$count_result = mysqli_query($conn, $count_query);
-$count_row = mysqli_fetch_assoc($count_result);
-$current_pet_count = $count_row['pet_count'];
+try {
+    $count_stmt = $pdo->prepare("
+        SELECT COUNT(*) AS pet_count
+        FROM pets
+        WHERE owner_id = :user_id
+    ");
+    $count_stmt->execute([
+        ':user_id' => $user_id
+    ]);
+
+    $current_pet_count = (int)($count_stmt->fetchColumn() ?? 0);
+} catch (PDOException $e) {
+    error_log("Pet count query failed: " . $e->getMessage());
+    $current_pet_count = 0;
+}
 
 // --- 2. LOGIC PARA SA PAG-ADD NG PET (Unlimited now) ---
 if (isset($_POST['add_pet'])) {
-    
-    // Kinukuha na rin natin yung pet_type, breed at gender para kumpleto sa display
-    $pet_name = mysqli_real_escape_string($conn, $_POST['name']);
-    $pet_type = mysqli_real_escape_string($conn, $_POST['pet_type']);
-    $breed = mysqli_real_escape_string($conn, $_POST['breed']);
-    $age = mysqli_real_escape_string($conn, $_POST['age']);
-    $gender = mysqli_real_escape_string($conn, $_POST['gender']);
-    
-    // Insert Query: Automatically approved, no status needed
-    $insert_pet_query = "INSERT INTO pets (owner_id, name, pet_type, breed, age, gender, created_at) 
-                         VALUES ('$user_id', '$pet_name', '$pet_type', '$breed', '$age', '$gender', NOW())";
 
-    if (mysqli_query($conn, $insert_pet_query)) {
-        
+    // Kinukuha na rin natin yung pet_type, breed at gender para kumpleto sa display
+    $pet_name = trim($_POST['name'] ?? '');
+    $pet_type = trim($_POST['pet_type'] ?? '');
+    $breed = trim($_POST['breed'] ?? '');
+    $age = trim($_POST['age'] ?? '');
+    $gender = trim($_POST['gender'] ?? '');
+
+    if ($pet_name === '' || $pet_type === '' || $breed === '' || $age === '' || $gender === '') {
+        die("Please complete all required pet fields.");
+    }
+
+    try {
+        // Insert Query: Automatically approved, no status needed
+        $insert_pet_stmt = $pdo->prepare("
+            INSERT INTO pets (
+                owner_id,
+                name,
+                pet_type,
+                breed,
+                age,
+                gender,
+                created_at
+            )
+            VALUES (
+                :owner_id,
+                :name,
+                :pet_type,
+                :breed,
+                :age,
+                :gender,
+                CURRENT_TIMESTAMP
+            )
+        ");
+
+        $insert_pet_stmt->execute([
+            ':owner_id' => $user_id,
+            ':name' => $pet_name,
+            ':pet_type' => $pet_type,
+            ':breed' => $breed,
+            ':age' => $age,
+            ':gender' => $gender
+        ]);
+
         // --- 3. LOGIC PARA SA NOTIFICATION ---
         $notif_title = "New Pet Profile Created!";
         $raw_notif_message = "A new pet profile for '$pet_name' has been successfully registered to your account.";
-        $safe_notif_message = mysqli_real_escape_string($conn, $raw_notif_message);
-        $notif_type = "announcement"; 
+        $notif_type = "announcement";
 
-        $notif_query = "INSERT INTO notifications (user_id, title, message, type, is_read, created_at) 
-                        VALUES ('$user_id', '$notif_title', '$safe_notif_message', '$notif_type', 0, NOW())";
-        
-        mysqli_query($conn, $notif_query);
-        
+        $notif_stmt = $pdo->prepare("
+            INSERT INTO notifications (
+                user_id,
+                title,
+                message,
+                type,
+                is_read,
+                created_at
+            )
+            VALUES (
+                :user_id,
+                :title,
+                :message,
+                :type,
+                FALSE,
+                CURRENT_TIMESTAMP
+            )
+        ");
+
+        $notif_stmt->execute([
+            ':user_id' => $user_id,
+            ':title' => $notif_title,
+            ':message' => $raw_notif_message,
+            ':type' => $notif_type
+        ]);
+
         header("Location: petprofile.php?success=1");
         exit();
-    } else {
-        die("Error inserting pet: " . mysqli_error($conn));
+    } catch (PDOException $e) {
+        error_log("Pet insert failed: " . $e->getMessage());
+        die("Error inserting pet.");
     }
 }
 
 // --- LOGIC PARA SA PAG-DELETE NG PET ---
 if (isset($_GET['delete_id'])) {
-    $delete_id = mysqli_real_escape_string($conn, $_GET['delete_id']);
+    $delete_id = (int)$_GET['delete_id'];
 
-    // Security: Only delete if the pet belongs to the currently logged-in user
-    $delete_query = "DELETE FROM pets WHERE id = '$delete_id' AND owner_id = '$user_id'";
-    
-    if (mysqli_query($conn, $delete_query)) {
+    if ($delete_id <= 0) {
+        die("Invalid pet ID.");
+    }
+
+    try {
+        // Security: Only delete if the pet belongs to the currently logged-in user
+        $delete_stmt = $pdo->prepare("
+            DELETE FROM pets
+            WHERE id = :delete_id
+              AND owner_id = :owner_id
+        ");
+
+        $delete_stmt->execute([
+            ':delete_id' => $delete_id,
+            ':owner_id' => $user_id
+        ]);
+
         header("Location: petprofile.php?success=deleted");
         exit();
-    } else {
-        die("Error deleting pet: " . mysqli_error($conn));
+    } catch (PDOException $e) {
+        error_log("Pet delete failed: " . $e->getMessage());
+        die("Error deleting pet.");
     }
 }
 
 // --- 4. FETCH PETS ---
-$query = "SELECT * FROM pets WHERE owner_id = '$user_id' ORDER BY id DESC";
-$result = mysqli_query($conn, $query);
+try {
+    $pets_stmt = $pdo->prepare("
+        SELECT *
+        FROM pets
+        WHERE owner_id = :user_id
+        ORDER BY id DESC
+    ");
+
+    $pets_stmt->execute([
+        ':user_id' => $user_id
+    ]);
+
+    $pets = $pets_stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    error_log("Pet list query failed: " . $e->getMessage());
+    $pets = [];
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -1139,10 +1266,10 @@ footer{
             <?php endif; ?>
         <?php endif; ?>
 
-        <?php if (mysqli_num_rows($result) > 0): ?>
+        <?php if (!empty($pets)): ?>
 
             <div class="pet-grid">
-                <?php while($row = mysqli_fetch_assoc($result)): ?>
+                <?php foreach($pets as $row): ?>
 
                     <?php
                         $pet_type = $row['pet_type'] ?? 'Pet';
@@ -1223,7 +1350,7 @@ footer{
                         </div>
                     </article>
 
-                <?php endwhile; ?>
+                <?php endforeach; ?>
             </div>
 
         <?php else: ?>

@@ -1,69 +1,120 @@
 <?php
 session_start();
 
-// 1. SECURITY: STRICTLY ADMIN ONLY (Dahil nakatago ang Promos sa Supervisor)
-if (!isset($_SESSION['logged_in']) || $_SESSION['role'] !== 'admin') {
+// 1. SECURITY: STRICTLY ADMIN ONLY
+if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true || ($_SESSION['role'] ?? '') !== 'admin') {
     header("Location: adminlogin.php");
     exit();
 }
 
 // 2. DATABASE CONNECTION
-include('../db_connect.php'); 
+include '../db_supabase.php';
 
-// 3. FETCH ADMIN PROFILE (Updated with Profile Image Logic)
+// 3. FETCH ADMIN PROFILE
 $admin_full_name = "User";
 $profile_img_path = "";
 $first_name = "User";
 
 if (isset($_SESSION['user_id'])) {
-    $uid = $_SESSION['user_id'];
-    $get_admin = mysqli_query($conn, "SELECT full_name, profile_image FROM users WHERE id = '$uid'");
-    if($admin_data = mysqli_fetch_assoc($get_admin)) {
-        $admin_full_name = $admin_data['full_name'];
-        $profile_img_path = $admin_data['profile_image']; 
-        $_SESSION['user_name'] = $admin_full_name; 
-        
-        // Fix para walang comma sa avatar fallback
-        $first_name = explode(' ', $admin_full_name)[0];
-        $first_name = trim($first_name, ',');
+    $uid = (int)$_SESSION['user_id'];
+
+    try {
+        $get_admin = $pdo->prepare("
+            SELECT full_name, profile_image
+            FROM users
+            WHERE id = :id
+            LIMIT 1
+        ");
+        $get_admin->execute([':id' => $uid]);
+        $admin_data = $get_admin->fetch(PDO::FETCH_ASSOC);
+
+        if ($admin_data) {
+            $admin_full_name = $admin_data['full_name'] ?? 'User';
+            $profile_img_path = $admin_data['profile_image'] ?? '';
+            $_SESSION['user_name'] = $admin_full_name;
+
+            $first_name = trim(explode(' ', $admin_full_name)[0], ',');
+        }
+    } catch (PDOException $e) {
+        $admin_full_name = $_SESSION['user_name'] ?? 'User';
+        $first_name = trim(explode(' ', $admin_full_name)[0], ',');
     }
 }
 
-// 4. DATABASE INITIALIZATION & SAFETY CHECK
-$table_name = "promos";
-$check_table = mysqli_query($conn, "SHOW TABLES LIKE '$table_name'");
+// 4. FETCH PROMO STATISTICS
+$total_promos = 0;
+$active_promos = 0;
+$expired_promos = 0;
+$promos = [];
 
-// Initialize variables to prevent errors if table is missing
-$total_promos = $active_promos = $expired_promos = 0;
-$promos_list = false;
-$current_date = date('Y-m-d');
+try {
+    $total_stmt = $pdo->query("
+        SELECT COUNT(*) AS count
+        FROM promos
+    ");
 
-if (mysqli_num_rows($check_table) > 0) {
-    // 5. FETCH PROMO STATISTICS
-    $total_q   = mysqli_query($conn, "SELECT COUNT(*) as count FROM $table_name");
-    $active_q  = mysqli_query($conn, "SELECT COUNT(*) as count FROM $table_name WHERE expiry_date >= '$current_date' AND status = 'active'");
-    $expired_q = mysqli_query($conn, "SELECT COUNT(*) as count FROM $table_name WHERE expiry_date < '$current_date'");
+    $active_stmt = $pdo->query("
+        SELECT COUNT(*) AS count
+        FROM promos
+        WHERE expiry_date >= CURRENT_DATE
+          AND status = 'active'
+    ");
 
-    $total_promos   = mysqli_fetch_assoc($total_q)['count'] ?? 0;
-    $active_promos  = mysqli_fetch_assoc($active_q)['count'] ?? 0;
-    $expired_promos = mysqli_fetch_assoc($expired_q)['count'] ?? 0;
+    $expired_stmt = $pdo->query("
+        SELECT COUNT(*) AS count
+        FROM promos
+        WHERE expiry_date < CURRENT_DATE
+    ");
 
-    // 6. FETCH PROMOS FOR THE LIST (WITH FILTERING LOGIC)
+    $total_promos = (int)($total_stmt->fetch(PDO::FETCH_ASSOC)['count'] ?? 0);
+    $active_promos = (int)($active_stmt->fetch(PDO::FETCH_ASSOC)['count'] ?? 0);
+    $expired_promos = (int)($expired_stmt->fetch(PDO::FETCH_ASSOC)['count'] ?? 0);
+
+    // 5. FETCH PROMOS WITH FILTERING
     $filter = $_GET['filter'] ?? 'all';
-    $query_condition = "";
+
+    $query = "
+        SELECT *
+        FROM promos
+    ";
 
     if ($filter === 'active') {
-        $query_condition = "WHERE expiry_date >= '$current_date' AND status = 'active'";
+        $query .= "
+            WHERE expiry_date >= CURRENT_DATE
+              AND status = 'active'
+        ";
     } elseif ($filter === 'expired') {
-        $query_condition = "WHERE expiry_date < '$current_date'";
+        $query .= "
+            WHERE expiry_date < CURRENT_DATE
+        ";
     }
 
-    $promos_list = mysqli_query($conn, "SELECT * FROM $table_name $query_condition ORDER BY id DESC");
+    $query .= " ORDER BY id DESC";
+
+    $promo_stmt = $pdo->prepare($query);
+    $promo_stmt->execute();
+    $promos = $promo_stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    $promos = [];
 }
 
+$current_date = date('Y-m-d');
+
 // --- FETCH ADMIN NOTIFICATIONS ---
-$admin_notif_query = mysqli_query($conn, "SELECT * FROM admin_notifications WHERE is_read = 0 ORDER BY created_at DESC");
-$unread_count = ($admin_notif_query) ? mysqli_num_rows($admin_notif_query) : 0;
+try {
+    $admin_notif_stmt = $pdo->prepare("
+        SELECT *
+        FROM admin_notifications
+        WHERE is_read = FALSE
+        ORDER BY created_at DESC
+    ");
+    $admin_notif_stmt->execute();
+    $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
+    $unread_count = count($admin_notifications);
+} catch (PDOException $e) {
+    $admin_notifications = [];
+    $unread_count = 0;
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -245,13 +296,13 @@ $unread_count = ($admin_notif_query) ? mysqli_num_rows($admin_notif_query) : 0;
                         
                         <div class="notif-body" id="admin-notif-list">
                             <?php if($unread_count > 0): ?>
-                                <?php while($notif = mysqli_fetch_assoc($admin_notif_query)): ?>
+                                <?php foreach($admin_notifications as $notif): ?>
                                     <div class="notif-item">
                                         <i class="fa-solid fa-circle-exclamation" style="color: #e11d48; margin-right: 5px;"></i>
                                         <?php echo htmlspecialchars($notif['message']); ?>
                                         <br><small style="color: #94a3b8; font-size: 11px;"><?php echo date('M d, g:i A', strtotime($notif['created_at'])); ?></small>
                                     </div>
-                                <?php endwhile; ?>
+                                <?php endforeach; ?>
                             <?php else: ?>
                                 <div class="notif-empty">No new notifications.</div>
                             <?php endif; ?>
@@ -329,7 +380,7 @@ $unread_count = ($admin_notif_query) ? mysqli_num_rows($admin_notif_query) : 0;
                 </div>
                 
                 <div class="table-wrapper">
-                    <?php if ($promos_list && mysqli_num_rows($promos_list) > 0): ?>
+                    <?php if (!empty($promos)): ?>
                         <table class="data-table">
                             <thead>
                                 <tr>
@@ -342,7 +393,7 @@ $unread_count = ($admin_notif_query) ? mysqli_num_rows($admin_notif_query) : 0;
                                 </tr>
                             </thead>
                             <tbody>
-                                <?php while($promo = mysqli_fetch_assoc($promos_list)): ?>
+                                <?php foreach($promos as $promo): ?>
                                     <?php 
                                         // Determine the status dynamically
                                         $status_class = 'inactive';
@@ -407,7 +458,7 @@ $unread_count = ($admin_notif_query) ? mysqli_num_rows($admin_notif_query) : 0;
                                             </div>
                                         </td>
                                     </tr>
-                                <?php endwhile; ?>
+                                <?php endforeach; ?>
                             </tbody>
                         </table>
                     <?php else: ?>

@@ -1,6 +1,6 @@
 <?php
 session_start();
-require_once '../db_connect.php';
+require_once '../db_supabase.php';
 
 /*
 |--------------------------------------------------------------------------
@@ -25,7 +25,6 @@ if (
 */
 date_default_timezone_set('Asia/Manila');
 
-
 /*
 |--------------------------------------------------------------------------
 | SEARCH
@@ -33,7 +32,6 @@ date_default_timezone_set('Asia/Manila');
 */
 $search = trim($_GET['search'] ?? '');
 $status_filter = trim($_GET['status'] ?? 'all');
-
 
 /*
 |--------------------------------------------------------------------------
@@ -58,6 +56,7 @@ $query = "
     WHERE 1=1
 ";
 
+$params = [];
 
 /*
 |--------------------------------------------------------------------------
@@ -65,44 +64,28 @@ $query = "
 |--------------------------------------------------------------------------
 */
 if ($search !== '') {
-
-    $search_sql = mysqli_real_escape_string(
-        $conn,
-        $search
-    );
-
     $query .= "
         AND (
-            u.full_name LIKE '%$search_sql%'
-            OR u.email LIKE '%$search_sql%'
-            OR aal.ip_address LIKE '%$search_sql%'
-            OR aal.action LIKE '%$search_sql%'
-            OR aal.status LIKE '%$search_sql%'
+            u.full_name ILIKE :search
+            OR u.email ILIKE :search
+            OR CAST(aal.ip_address AS TEXT) ILIKE :search
+            OR aal.action ILIKE :search
+            OR aal.status ILIKE :search
         )
     ";
-}
 
+    $params[':search'] = '%' . $search . '%';
+}
 
 /*
 |--------------------------------------------------------------------------
 | STATUS FILTER
 |--------------------------------------------------------------------------
 */
-if (
-    $status_filter === 'SUCCESS' ||
-    $status_filter === 'FAILED'
-) {
-
-    $status_sql = mysqli_real_escape_string(
-        $conn,
-        $status_filter
-    );
-
-    $query .= "
-        AND aal.status = '$status_sql'
-    ";
+if ($status_filter === 'SUCCESS' || $status_filter === 'FAILED') {
+    $query .= " AND aal.status = :status";
+    $params[':status'] = $status_filter;
 }
-
 
 /*
 |--------------------------------------------------------------------------
@@ -113,9 +96,9 @@ $query .= "
     ORDER BY aal.created_at DESC, aal.id DESC
 ";
 
-
-$result = mysqli_query($conn, $query);
-
+$result = $pdo->prepare($query);
+$result->execute($params);
+$rows = $result->fetchAll(PDO::FETCH_ASSOC);
 
 /*
 |--------------------------------------------------------------------------
@@ -126,21 +109,17 @@ $total_logs = 0;
 $success_logs = 0;
 $failed_logs = 0;
 
-$count_query = mysqli_query(
-    $conn,
-    "
+$count_stmt = $pdo->query("
     SELECT
         COUNT(*) AS total_logs,
-        SUM(status = 'SUCCESS') AS success_logs,
-        SUM(status = 'FAILED') AS failed_logs
+        COUNT(*) FILTER (WHERE status = 'SUCCESS') AS success_logs,
+        COUNT(*) FILTER (WHERE status = 'FAILED') AS failed_logs
     FROM admin_account_logs
-    "
-);
+");
 
-if ($count_query) {
+$count_data = $count_stmt->fetch(PDO::FETCH_ASSOC);
 
-    $count_data = mysqli_fetch_assoc($count_query);
-
+if ($count_data) {
     $total_logs = (int)($count_data['total_logs'] ?? 0);
     $success_logs = (int)($count_data['success_logs'] ?? 0);
     $failed_logs = (int)($count_data['failed_logs'] ?? 0);
@@ -148,7 +127,6 @@ if ($count_query) {
 
 ?>
 
-<!DOCTYPE html>
 <html lang="en">
 
 <head>
@@ -614,7 +592,7 @@ if ($count_query) {
 
         <div class="table-wrapper">
 
-            <?php if ($result && mysqli_num_rows($result) > 0): ?>
+            <?php if (!empty($rows)): ?>
 
                 <table>
 
@@ -644,7 +622,7 @@ if ($count_query) {
 
                     <tbody>
 
-                        <?php while ($row = mysqli_fetch_assoc($result)): ?>
+                        <?php foreach ($rows as $row): ?>
 
                             <tr>
 
@@ -799,7 +777,7 @@ if ($count_query) {
 
                             </tr>
 
-                        <?php endwhile; ?>
+                        <?php endforeach; ?>
 
                     </tbody>
 

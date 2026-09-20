@@ -1,44 +1,56 @@
 <?php
 session_start();
-include '../db_connect.php'; 
+require_once '../db_supabase.php';
 
 // 1. SECURITY: Check if admin, manager, or vet is logged in
 $current_role = isset($_SESSION['role']) ? strtolower(trim($_SESSION['role'])) : '';
-$is_authorized = isset($_SESSION['logged_in']) && in_array($current_role, ['admin', 'manager', 'vet']);
+$is_authorized = isset($_SESSION['logged_in'])
+    && in_array($current_role, ['admin', 'manager', 'vet'], true);
 
 if (!$is_authorized) {
-    header("Location: stafflogin.php"); 
+    header("Location: stafflogin.php");
     exit;
 }
 
 // Safely get the user ID
-$user_id = $_SESSION['user_id'] ?? $_SESSION['staff_id'] ?? $_SESSION['id'] ?? 0;
+$user_id = (int)($_SESSION['user_id'] ?? $_SESSION['staff_id'] ?? $_SESSION['id'] ?? 0);
 
 $success_msg = "";
 $error_msg = "";
 
 // 2. HANDLE PROFILE PICTURE UPLOAD
-if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_FILES['profile_image'])) {
-    if ($_FILES['profile_image']['error'] == 0 && $user_id > 0) {
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['profile_image'])) {
+    if ($_FILES['profile_image']['error'] === 0 && $user_id > 0) {
         $upload_dir = '../uploads/';
-        
+
         if (!is_dir($upload_dir)) {
             mkdir($upload_dir, 0777, true);
         }
 
         $file_name = $_FILES['profile_image']['name'];
         $file_ext = strtolower(pathinfo($file_name, PATHINFO_EXTENSION));
-        $allowed_exts = array('jpg', 'jpeg', 'png', 'gif');
+        $allowed_exts = ['jpg', 'jpeg', 'png', 'gif'];
 
-        if (in_array($file_ext, $allowed_exts)) {
+        if (in_array($file_ext, $allowed_exts, true)) {
             $new_filename = 'staff_' . $user_id . '_' . time() . '.' . $file_ext;
             $target_path = $upload_dir . $new_filename;
 
             if (move_uploaded_file($_FILES['profile_image']['tmp_name'], $target_path)) {
-                $update_img_q = "UPDATE users SET profile_image = '$target_path' WHERE id = '$user_id'";
-                if (mysqli_query($conn, $update_img_q)) {
+                try {
+                    $update_img_stmt = $pdo->prepare("
+                        UPDATE users
+                        SET profile_image = :profile_image
+                        WHERE id = :user_id
+                    ");
+
+                    $update_img_stmt->execute([
+                        ':profile_image' => $target_path,
+                        ':user_id' => $user_id
+                    ]);
+
                     $success_msg = "Profile picture updated successfully!";
-                } else {
+                } catch (PDOException $e) {
+                    error_log("Profile image update failed: " . $e->getMessage());
                     $error_msg = "Database error. Failed to save image path.";
                 }
             } else {
@@ -51,60 +63,117 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_FILES['profile_image'])) {
 }
 
 // 3. HANDLE PROFILE DETAILS UPDATE (TINANGGAL NA ANG EMAIL)
-if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_profile'])) {
-    $new_name = mysqli_real_escape_string($conn, $_POST['full_name']);
-    $new_username = mysqli_real_escape_string($conn, $_POST['username']); 
-    $new_contact = mysqli_real_escape_string($conn, $_POST['contact_number']);
-    
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_profile'])) {
+    $new_name = trim($_POST['full_name'] ?? '');
+    $new_username = trim($_POST['username'] ?? '');
+    $new_contact = trim($_POST['contact_number'] ?? '');
+
     if ($user_id > 0) {
-        // Check muna kung may kaparehas na username ang iba
-        $check_user = mysqli_query($conn, "SELECT id FROM users WHERE username = '$new_username' AND id != '$user_id'");
-        if (mysqli_num_rows($check_user) > 0) {
-            $error_msg = "Username is already taken by another account. Please choose another one.";
-        } else {
-            // Update kasama ang username, walang email
-            $update_info_q = "UPDATE users SET full_name = '$new_name', username = '$new_username', contact_number = '$new_contact' WHERE id = '$user_id'";
-            if (mysqli_query($conn, $update_info_q)) {
-                $_SESSION['staff_name'] = $new_name; 
-                $success_msg = "Profile details saved successfully!";
+        try {
+            // Check muna kung may kaparehas na username ang iba
+            $check_user_stmt = $pdo->prepare("
+                SELECT id
+                FROM users
+                WHERE username = :username
+                  AND id != :user_id
+                LIMIT 1
+            ");
+
+            $check_user_stmt->execute([
+                ':username' => $new_username,
+                ':user_id' => $user_id
+            ]);
+
+            if ($check_user_stmt->fetchColumn()) {
+                $error_msg = "Username is already taken by another account. Please choose another one.";
             } else {
-                $error_msg = "Failed to update profile details.";
+                // Update kasama ang username, walang email
+                $update_info_stmt = $pdo->prepare("
+                    UPDATE users
+                    SET full_name = :full_name,
+                        username = :username,
+                        contact_number = :contact_number
+                    WHERE id = :user_id
+                ");
+
+                $update_info_stmt->execute([
+                    ':full_name' => $new_name,
+                    ':username' => $new_username,
+                    ':contact_number' => $new_contact,
+                    ':user_id' => $user_id
+                ]);
+
+                $_SESSION['staff_name'] = $new_name;
+                $_SESSION['user_name'] = $new_name;
+                $success_msg = "Profile details saved successfully!";
             }
+        } catch (PDOException $e) {
+            error_log("Profile details update failed: " . $e->getMessage());
+            $error_msg = "Failed to update profile details.";
         }
     }
 }
 
 // 4. FETCH CURRENT DATA (Buong details mula sa Database)
 $staff_data = null;
+
 if ($user_id > 0) {
-    $get_staff = mysqli_query($conn, "SELECT * FROM users WHERE id = '$user_id'");
-    if ($get_staff) {
-        $staff_data = mysqli_fetch_assoc($get_staff);
+    try {
+        $get_staff_stmt = $pdo->prepare("
+            SELECT *
+            FROM users
+            WHERE id = :user_id
+            LIMIT 1
+        ");
+
+        $get_staff_stmt->execute([
+            ':user_id' => $user_id
+        ]);
+
+        $staff_data = $get_staff_stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+    } catch (PDOException $e) {
+        error_log("Staff data query failed: " . $e->getMessage());
     }
 }
 
 // Siguradong full_name ang gagamitin at ilalabas din natin ang username
 $full_display_name = $staff_data['full_name'] ?? $_SESSION['staff_name'] ?? 'Personnel';
 $profile_img_path = $staff_data['profile_image'] ?? '';
-$staff_username = $staff_data['username'] ?? ''; 
+$staff_username = $staff_data['username'] ?? '';
 $staff_contact = $staff_data['contact_number'] ?? '';
 $staff_position = $staff_data['position'] ?? strtoupper($current_role);
 
 // Format first name at initial para sa display
-$clean_name = trim(str_replace('Dr. ', '', $full_display_name), " ,"); 
-$first_name_only = explode(' ', $clean_name)[0]; 
-$first_letter = strtoupper(substr($clean_name, 0, 1)); 
+$clean_name = trim(str_replace('Dr. ', '', $full_display_name), " ,");
+$first_name_only = explode(' ', $clean_name)[0];
+$first_letter = strtoupper(substr($clean_name, 0, 1));
 
 // Siguraduhing may "Dr. " sa unahan ng full name para sa formal displays kung VET siya
 if ($current_role === 'vet') {
-    $display_with_title = (stripos($full_display_name, 'Dr.') === false) ? 'Dr. ' . $full_display_name : $full_display_name;
+    $display_with_title = (stripos($full_display_name, 'Dr.') === false)
+        ? 'Dr. ' . $full_display_name
+        : $full_display_name;
 } else {
     $display_with_title = $full_display_name;
 }
 
 // --- FETCH NOTIFICATIONS ---
-$admin_notif_query = mysqli_query($conn, "SELECT * FROM admin_notifications WHERE is_read = 0 ORDER BY created_at DESC");
-$unread_count = ($admin_notif_query) ? mysqli_num_rows($admin_notif_query) : 0;
+$admin_notifications = [];
+$unread_count = 0;
+
+try {
+    $admin_notif_stmt = $pdo->query("
+        SELECT *
+        FROM admin_notifications
+        WHERE is_read = 0
+        ORDER BY created_at DESC
+    ");
+
+    $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
+    $unread_count = count($admin_notifications);
+} catch (PDOException $e) {
+    error_log("Admin notifications query failed: " . $e->getMessage());
+}
 ?>
 
 <!DOCTYPE html>
@@ -288,14 +357,14 @@ $unread_count = ($admin_notif_query) ? mysqli_num_rows($admin_notif_query) : 0;
                             <a href="mark_notifications_read.php" id="mark-read-link" class="mark-read-btn" style="display: <?php echo ($unread_count > 0) ? 'inline-block' : 'none'; ?>;">Mark all read</a>
                         </div>
                         <div class="notif-body" id="staff-notif-list">
-                            <?php if($unread_count > 0 && $admin_notif_query): ?>
-                                <?php while($notif = mysqli_fetch_assoc($admin_notif_query)): ?>
+                            <?php if($unread_count > 0 && !empty($admin_notifications)): ?>
+                                <?php foreach($admin_notifications as $notif): ?>
                                     <div class="notif-item">
                                         <i class="fa-solid fa-circle-exclamation" style="color: #ef4444; margin-right: 5px;"></i>
                                         <?php echo htmlspecialchars($notif['message']); ?>
                                         <br><small style="color: #94a3b8; font-size: 11px;"><?php echo date('M d, g:i A', strtotime($notif['created_at'])); ?></small>
                                     </div>
-                                <?php endwhile; ?>
+                                <?php endforeach; ?>
                             <?php else: ?>
                                 <div class="notif-empty">No new alerts.</div>
                             <?php endif; ?>

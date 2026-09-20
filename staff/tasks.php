@@ -1,16 +1,13 @@
 <?php
 session_start();
-
-if (file_exists('../db_connect.php')) {
-    include '../db_connect.php';
-} else {
-    die("Error: db_connect.php not found.");
-}
+require_once '../db_supabase.php';
 
 // --- SECURITY CHECK (FIXED PARA SA VET/STAFF) ---
 $current_role = isset($_SESSION['role']) ? strtolower(trim($_SESSION['role'])) : '';
-$is_admin_or_supervisor = isset($_SESSION['logged_in']) && in_array($current_role, ['admin', 'supervisor', 'staff']);
-$is_staff = isset($_SESSION['staff_logged_in']) && $_SESSION['staff_logged_in'] === true;
+$is_admin_or_supervisor = isset($_SESSION['logged_in'])
+    && in_array($current_role, ['admin', 'supervisor', 'staff'], true);
+$is_staff = isset($_SESSION['staff_logged_in'])
+    && $_SESSION['staff_logged_in'] === true;
 
 if (!$is_admin_or_supervisor && !$is_staff) {
     header("Location: stafflogin.php");
@@ -28,58 +25,126 @@ $full_display_name = $staff_name;
 
 if (isset($_SESSION['user_id']) || isset($_SESSION['staff_id'])) {
     $uid = $_SESSION['user_id'] ?? $_SESSION['staff_id'];
-    
-    // FIX: Idinagdag ang 'full_name' sa query para makuha ang buong pangalan
-    $get_staff = mysqli_query($conn, "SELECT full_name, profile_image FROM users WHERE id = '$uid'");
-    
-    if($get_staff && $staff_data = mysqli_fetch_assoc($get_staff)) {
-        $profile_img_path = $staff_data['profile_image']; 
-        if (!empty($staff_data['full_name'])) {
-            $full_display_name = $staff_data['full_name'];
+
+    try {
+        // Idinagdag ang full_name para makuha ang buong pangalan
+        $get_staff = $pdo->prepare("
+            SELECT full_name, profile_image
+            FROM users
+            WHERE id = :uid
+            LIMIT 1
+        ");
+
+        $get_staff->execute([
+            ':uid' => (int)$uid
+        ]);
+
+        $staff_data = $get_staff->fetch(PDO::FETCH_ASSOC);
+
+        if ($staff_data) {
+            $profile_img_path = $staff_data['profile_image'] ?? '';
+
+            if (!empty($staff_data['full_name'])) {
+                $full_display_name = $staff_data['full_name'];
+            }
         }
+    } catch (PDOException $e) {
+        error_log("Staff profile query failed: " . $e->getMessage());
     }
 }
 
 // Linisin ang pangalan para sa Avatar Initial (Tatanggalin ang "Dr. " at comma)
-$clean_name = trim(str_replace('Dr. ', '', $full_display_name), " ,"); 
-$first_letter = strtoupper(substr($clean_name, 0, 1)); 
+$clean_name = trim(str_replace('Dr. ', '', $full_display_name), " ,");
+$first_letter = strtoupper(substr($clean_name, 0, 1));
 
 // Siguraduhing may "Dr. " na nakadikit sa buong pangalan para formal
-$display_with_title = (stripos($full_display_name, 'Dr.') === false) ? 'Dr. ' . $full_display_name : $full_display_name;
+$display_with_title = (stripos($full_display_name, 'Dr.') === false)
+    ? 'Dr. ' . $full_display_name
+    : $full_display_name;
 
 // --- FETCH NOTIFICATIONS ---
-$admin_notif_query = mysqli_query($conn, "SELECT * FROM admin_notifications WHERE is_read = 0 ORDER BY created_at DESC");
-$unread_count = ($admin_notif_query) ? mysqli_num_rows($admin_notif_query) : 0;
+$admin_notifications = [];
+$unread_count = 0;
+
+try {
+    $admin_notif_stmt = $pdo->query("
+        SELECT *
+        FROM admin_notifications
+        WHERE is_read = 0
+        ORDER BY created_at DESC
+    ");
+
+    $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
+    $unread_count = count($admin_notifications);
+} catch (PDOException $e) {
+    error_log("Admin notifications query failed: " . $e->getMessage());
+}
 
 // --- TASK LOGIC (Automated from Appointments - SINGLE VET CLINIC) ---
 
 // MARK AS COMPLETED
-if (isset($_GET['complete'])) {
+if (isset($_GET['complete']) && is_numeric($_GET['complete'])) {
     $id = (int)$_GET['complete'];
-    mysqli_query($conn, "UPDATE appointments SET booking_status = 'Completed' WHERE id = $id");
+
+    try {
+        $complete_stmt = $pdo->prepare("
+            UPDATE appointments
+            SET booking_status = 'Completed'
+            WHERE id = :id
+        ");
+
+        $complete_stmt->execute([
+            ':id' => $id
+        ]);
+    } catch (PDOException $e) {
+        error_log("Task completion update failed: " . $e->getMessage());
+    }
+
     header("Location: tasks.php");
     exit;
 }
 
 // FETCH CONFIRMED AND COMPLETED APPOINTMENTS FOR VET SERVICES
-$query = "
-    SELECT a.*, p.name as pet_name 
-    FROM appointments a 
-    LEFT JOIN pets p ON a.pet_id = p.id 
-    WHERE a.booking_status IN ('Confirmed', 'Completed') 
-    AND a.service LIKE 'Vet Services%'
-    ORDER BY 
-        CASE WHEN a.booking_status = 'Completed' THEN 1 ELSE 0 END, 
-        a.appointment_date ASC, 
-        a.appointment_time ASC
-";
-$tasks_res = mysqli_query($conn, $query);
-$tasks = mysqli_fetch_all($tasks_res, MYSQLI_ASSOC);
+try {
+    $tasks_stmt = $pdo->prepare("
+        SELECT
+            a.*,
+            p.name AS pet_name
+        FROM appointments a
+        LEFT JOIN pets p
+            ON a.pet_id = p.id
+        WHERE a.booking_status IN ('Confirmed', 'Completed')
+          AND a.service LIKE 'Vet Services%'
+        ORDER BY
+            CASE
+                WHEN a.booking_status = 'Completed' THEN 1
+                ELSE 0
+            END,
+            a.appointment_date ASC,
+            a.appointment_time ASC
+    ");
+
+    $tasks_stmt->execute();
+    $tasks = $tasks_stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    error_log("Tasks query failed: " . $e->getMessage());
+    $tasks = [];
+}
 
 // PROGRESS CALCULATION
 $total_tasks = count($tasks);
-$completed_tasks = count(array_filter($tasks, function($t) { return $t['booking_status'] == 'Completed'; }));
-$progress = ($total_tasks > 0) ? ($completed_tasks / $total_tasks) * 100 : 0;
+$completed_tasks = count(
+    array_filter(
+        $tasks,
+        function ($t) {
+            return ($t['booking_status'] ?? '') === 'Completed';
+        }
+    )
+);
+
+$progress = ($total_tasks > 0)
+    ? ($completed_tasks / $total_tasks) * 100
+    : 0;
 ?>
 
 <!DOCTYPE html>
@@ -279,14 +344,14 @@ $progress = ($total_tasks > 0) ? ($completed_tasks / $total_tasks) * 100 : 0;
                         </div>
                         
                         <div class="notif-body" id="admin-notif-list">
-                            <?php if($unread_count > 0 && $admin_notif_query): ?>
-                                <?php while($notif = mysqli_fetch_assoc($admin_notif_query)): ?>
+                            <?php if($unread_count > 0 && !empty($admin_notifications)): ?>
+                                <?php foreach($admin_notifications as $notif): ?>
                                     <div class="notif-item">
                                         <i class="fa-solid fa-circle-exclamation" style="color: #ef4444; margin-right: 5px;"></i>
                                         <?php echo htmlspecialchars($notif['message']); ?>
                                         <br><small style="color: #94a3b8; font-size: 11px;"><?php echo date('M d, g:i A', strtotime($notif['created_at'])); ?></small>
                                     </div>
-                                <?php endwhile; ?>
+                                <?php endforeach; ?>
                             <?php else: ?>
                                 <div class="notif-empty">No new clinic alerts.</div>
                             <?php endif; ?>

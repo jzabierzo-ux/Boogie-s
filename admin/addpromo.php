@@ -2,34 +2,69 @@
 session_start();
 
 // 1. SECURITY: Only allow logged-in Admins
-if (!isset($_SESSION['logged_in']) || $_SESSION['role'] !== 'admin') {
+if (
+    !isset($_SESSION['logged_in']) ||
+    $_SESSION['logged_in'] !== true ||
+    ($_SESSION['role'] ?? '') !== 'admin'
+) {
     header("Location: adminlogin.php");
     exit();
 }
 
 // 2. DATABASE CONNECTION
-include('../db_connect.php'); 
+include('../db_supabase.php');
 
 $message = "";
 
 // 3. HANDLE FORM SUBMISSION
-if ($_SERVER["REQUEST_METHOD"] == "POST") {
-    // Escape all inputs for security
-    $tag = mysqli_real_escape_string($conn, $_POST['tag']);
-    $title = mysqli_real_escape_string($conn, $_POST['title']);
-    $description = mysqli_real_escape_string($conn, $_POST['description']);
-    $theme_color = mysqli_real_escape_string($conn, $_POST['theme_color']);
-    $expiry_date = mysqli_real_escape_string($conn, $_POST['expiry_date']);
-    $status = mysqli_real_escape_string($conn, $_POST['status']);
+if ($_SERVER["REQUEST_METHOD"] === "POST") {
+    // Get and trim form inputs
+    $tag = trim($_POST['tag'] ?? '');
+    $title = trim($_POST['title'] ?? '');
+    $description = trim($_POST['description'] ?? '');
+    $theme_color = trim($_POST['theme_color'] ?? '');
+    $expiry_date = trim($_POST['expiry_date'] ?? '');
+    $status = trim($_POST['status'] ?? '');
 
-    // Insert into database (Only strictly necessary informational fields)
-    $insert_query = "INSERT INTO promos (tag, title, description, theme_color, expiry_date, status) 
-                     VALUES ('$tag', '$title', '$description', '$theme_color', '$expiry_date', '$status')";
-    
-    if (mysqli_query($conn, $insert_query)) {
-        $message = "<div class='alert success'>Promo card successfully created! <a href='managepromo.php'>Back to Promos</a></div>";
+    // Validate required fields
+    if (
+        $tag === '' ||
+        $title === '' ||
+        $description === '' ||
+        $theme_color === '' ||
+        $expiry_date === '' ||
+        $status === ''
+    ) {
+        $message = "<div class='alert error'>Please complete all required fields.</div>";
+    } elseif (!in_array($theme_color, ['purple', 'teal', 'red', 'orange'], true)) {
+        $message = "<div class='alert error'>Invalid color theme selected.</div>";
+    } elseif (!in_array($status, ['active', 'inactive'], true)) {
+        $message = "<div class='alert error'>Invalid promo status selected.</div>";
     } else {
-        $message = "<div class='alert error'>Error: " . mysqli_error($conn) . "</div>";
+        try {
+            // Insert into Supabase/PostgreSQL using a prepared statement
+            $insert_query = "
+                INSERT INTO promos
+                    (tag, title, description, theme_color, expiry_date, status)
+                VALUES
+                    (:tag, :title, :description, :theme_color, :expiry_date, :status)
+            ";
+
+            $stmt = $pdo->prepare($insert_query);
+            $stmt->execute([
+                ':tag' => $tag,
+                ':title' => $title,
+                ':description' => $description,
+                ':theme_color' => $theme_color,
+                ':expiry_date' => $expiry_date,
+                ':status' => $status
+            ]);
+
+            $message = "<div class='alert success'>Promo card successfully created! <a href='managepromo.php'>Back to Promos</a></div>";
+        } catch (PDOException $e) {
+            // Keep database details out of the browser.
+            $message = "<div class='alert error'>Unable to create the promo card. Please try again.</div>";
+        }
     }
 }
 ?>
@@ -51,11 +86,11 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         }
 
         body { font-family: 'Segoe UI', Tahoma, sans-serif; background-color: var(--bg-light); padding: 40px; display: flex; justify-content: center; }
-        
+
         .form-container { background: var(--white); border-radius: 12px; padding: 40px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); width: 100%; max-width: 600px; }
         .form-container h2 { color: var(--navy-dark); margin-bottom: 5px; }
         .form-container p { color: var(--text-muted); font-size: 14px; margin-bottom: 25px; }
-        
+
         .form-row { display: flex; gap: 15px; }
         .form-row .form-group { flex: 1; }
 
@@ -64,10 +99,10 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         .form-group input, .form-group select, .form-group textarea { width: 100%; padding: 12px 15px; border: 1px solid #e2e8f0; border-radius: 8px; font-size: 14px; box-sizing: border-box; outline: none; transition: border-color 0.3s; font-family: inherit; }
         .form-group input:focus, .form-group select:focus, .form-group textarea:focus { border-color: var(--admin-purple); }
         .form-group textarea { resize: vertical; min-height: 80px; }
-        
+
         .btn-submit { background-color: var(--admin-purple); color: white; border: none; padding: 14px 24px; border-radius: 8px; font-size: 15px; font-weight: 700; cursor: pointer; width: 100%; transition: 0.3s; margin-top: 10px; }
         .btn-submit:hover { opacity: 0.9; transform: translateY(-2px); }
-        
+
         .btn-back { display: block; text-align: center; margin-top: 15px; color: var(--text-muted); text-decoration: none; font-size: 14px; }
         .btn-back:hover { color: var(--admin-purple); text-decoration: underline; }
 
@@ -86,7 +121,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         <?php echo $message; ?>
 
         <form action="addpromo.php" method="POST">
-            
+
             <div class="form-row">
                 <div class="form-group">
                     <label for="tag">Card Tag</label>

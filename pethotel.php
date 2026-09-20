@@ -1,26 +1,29 @@
 <?php
 session_start();
 
-// Include your database connection
-require_once 'db_connect.php'; 
+// Include Supabase/PostgreSQL database connection
+require_once 'db_supabase.php';
 
 // Check if user is logged in
 $is_logged_in = isset($_SESSION['logged_in']) && $_SESSION['logged_in'] === true;
 $user_name = $is_logged_in ? $_SESSION['user_name'] : "Guest";
 
 // Fetch ONLY pet hotel services from your services_pricelist table
-$result = false;
-if (isset($conn)) {
-    try {
-        // Look exactly for the categories in your database 
-        $sql = "SELECT * FROM services_pricelist 
-                WHERE category IN ('Pet Daycare', 'Pet Boarding') 
-                AND is_available = 1 
-                ORDER BY category DESC, price ASC"; // DESC so Daycare comes before Boarding, or adjust as needed
-        $result = $conn->query($sql);
-    } catch (mysqli_sql_exception $e) {
-        $result = false; 
-    }
+$result = [];
+
+try {
+    // PostgreSQL/Supabase boolean column
+    $stmt = $pdo->query("
+        SELECT *
+        FROM services_pricelist
+        WHERE category IN ('Pet Daycare', 'Pet Boarding')
+          AND is_available = 1
+        ORDER BY category DESC, price ASC
+    ");
+    $result = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    error_log("Pet hotel service query failed: " . $e->getMessage());
+    $result = [];
 }
 ?>
 <!DOCTYPE html>
@@ -685,8 +688,8 @@ if (isset($conn)) {
 
             <div class="services-grid">
 
-            <?php if ($result && $result->num_rows > 0): ?>
-                <?php while($row = $result->fetch_assoc()): ?>
+            <?php if (!empty($result)): ?>
+                <?php foreach ($result as $row): ?>
                     <?php
                         $category = $row['category'];
                         $category_lower = strtolower($category);
@@ -745,7 +748,7 @@ if (isset($conn)) {
                             </div>
                         </div>
                     </article>
-                <?php endwhile; ?>
+                <?php endforeach; ?>
             <?php else: ?>
                 <div class="no-data">
                     <i class="fa-solid fa-circle-exclamation"></i>

@@ -2,66 +2,156 @@
 session_start();
 
 // 1. SECURITY: STRICTLY ADMIN ONLY (Restricted ito sa Supervisor)
-if (!isset($_SESSION['logged_in']) || $_SESSION['role'] !== 'admin') {
+if (
+    !isset($_SESSION['logged_in']) ||
+    $_SESSION['logged_in'] !== true ||
+    ($_SESSION['role'] ?? '') !== 'admin'
+) {
     header("Location: adminlogin.php");
     exit();
 }
 
 // 2. DATABASE CONNECTION
-include('../db_connect.php'); 
+include('../db_supabase.php');
 
-// 3. FETCH ADMIN PROFILE (Updated with Profile Image Logic)
+// 3. FETCH ADMIN PROFILE
 $admin_full_name = "Administrator";
 $profile_img_path = "";
 $first_name = "Administrator";
 
 if (isset($_SESSION['user_id'])) {
-    $uid = $_SESSION['user_id'];
-    $get_admin = mysqli_query($conn, "SELECT full_name, profile_image FROM users WHERE id = '$uid'");
-    if($admin_data = mysqli_fetch_assoc($get_admin)) {
-        $admin_full_name = $admin_data['full_name'];
-        $profile_img_path = $admin_data['profile_image']; 
-        $_SESSION['user_name'] = $admin_full_name; 
-        
-        // Fix para walang comma sa avatar fallback
-        $first_name = explode(' ', $admin_full_name)[0];
-        $first_name = trim($first_name, ',');
+    $uid = (int)$_SESSION['user_id'];
+
+    try {
+        $get_admin = $pdo->prepare("
+            SELECT full_name, profile_image
+            FROM users
+            WHERE id = :id
+            LIMIT 1
+        ");
+        $get_admin->execute([':id' => $uid]);
+        $admin_data = $get_admin->fetch(PDO::FETCH_ASSOC);
+
+        if ($admin_data) {
+            $admin_full_name = $admin_data['full_name'] ?? 'Administrator';
+            $profile_img_path = $admin_data['profile_image'] ?? '';
+            $_SESSION['user_name'] = $admin_full_name;
+
+            $first_name = trim(explode(' ', $admin_full_name)[0], ',');
+        }
+    } catch (PDOException $e) {
+        $admin_full_name = $_SESSION['user_name'] ?? 'Administrator';
+        $first_name = trim(explode(' ', $admin_full_name)[0], ',');
     }
 }
 
 // --- FETCH ADMIN NOTIFICATIONS ---
-$admin_notif_query = mysqli_query($conn, "SELECT * FROM admin_notifications WHERE is_read = 0 ORDER BY created_at DESC");
-$unread_count = mysqli_num_rows($admin_notif_query);
+try {
+    $admin_notif_stmt = $pdo->prepare("
+        SELECT *
+        FROM admin_notifications
+        WHERE is_read = FALSE
+        ORDER BY created_at DESC
+    ");
+    $admin_notif_stmt->execute();
+    $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
+    $unread_count = count($admin_notifications);
+} catch (PDOException $e) {
+    $admin_notifications = [];
+    $unread_count = 0;
+}
 
 // --- HANDLE DELETE ACTION ---
-if (isset($_GET['delete_id'])) {
-    $id = intval($_GET['delete_id']);
-    mysqli_query($conn, "DELETE FROM services_pricelist WHERE id=$id");
+if (isset($_GET['delete_id']) && is_numeric($_GET['delete_id'])) {
+    $id = (int)$_GET['delete_id'];
+
+    try {
+        $delete_stmt = $pdo->prepare("
+            DELETE FROM services_pricelist
+            WHERE id = :id
+        ");
+        $delete_stmt->execute([':id' => $id]);
+    } catch (PDOException $e) {
+        // Keep database details out of the browser.
+    }
+
     header("Location: manage_services.php");
     exit();
 }
 
 // --- HANDLE ADD / UPDATE ACTION ---
 if (isset($_POST['save_service'])) {
-    $cat = mysqli_real_escape_string($conn, $_POST['category']);
-    $name = mysqli_real_escape_string($conn, $_POST['service_name']);
-    $price = mysqli_real_escape_string($conn, $_POST['price']);
-    $available = mysqli_real_escape_string($conn, $_POST['is_available']);
+    $cat = trim($_POST['category'] ?? '');
+    $name = trim($_POST['service_name'] ?? '');
+    $price = $_POST['price'] ?? '';
+    $available = isset($_POST['is_available']) ? (int)$_POST['is_available'] : 1;
 
-    if (!empty($_POST['service_id'])) {
-        $id = intval($_POST['service_id']);
-        $sql = "UPDATE services_pricelist SET category='$cat', service_name='$name', price='$price', is_available='$available' WHERE id='$id'";
-    } else {
-        $sql = "INSERT INTO services_pricelist (category, service_name, price, is_available) VALUES ('$cat', '$name', '$price', 1)";
+    if ($cat === '' || $name === '' || $price === '' || !is_numeric($price)) {
+        header("Location: manage_services.php");
+        exit();
     }
-    mysqli_query($conn, $sql);
+
+    // Normalize visibility to 0/1.
+    $available = $available === 1 ? 1 : 0;
+
+    try {
+        if (!empty($_POST['service_id']) && is_numeric($_POST['service_id'])) {
+            $id = (int)$_POST['service_id'];
+
+            $sql = "
+                UPDATE services_pricelist
+                SET
+                    category = :category,
+                    service_name = :service_name,
+                    price = :price,
+                    is_available = :is_available
+                WHERE id = :id
+            ";
+
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute([
+                ':category' => $cat,
+                ':service_name' => $name,
+                ':price' => (float)$price,
+                ':is_available' => $available,
+                ':id' => $id
+            ]);
+        } else {
+            $sql = "
+                INSERT INTO services_pricelist
+                    (category, service_name, price, is_available)
+                VALUES
+                    (:category, :service_name, :price, :is_available)
+            ";
+
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute([
+                ':category' => $cat,
+                ':service_name' => $name,
+                ':price' => (float)$price,
+                ':is_available' => $available
+            ]);
+        }
+    } catch (PDOException $e) {
+        // Keep database details out of the browser.
+    }
+
     header("Location: manage_services.php");
     exit();
 }
 
-$query = "SELECT * FROM services_pricelist ORDER BY category ASC";
-$result = mysqli_query($conn, $query);
-$services = mysqli_fetch_all($result, MYSQLI_ASSOC);
+// --- FETCH SERVICES ---
+try {
+    $services_stmt = $pdo->prepare("
+        SELECT *
+        FROM services_pricelist
+        ORDER BY category ASC, id ASC
+    ");
+    $services_stmt->execute();
+    $services = $services_stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    $services = [];
+}
 ?>
 
 <!DOCTYPE html>
@@ -224,13 +314,13 @@ $services = mysqli_fetch_all($result, MYSQLI_ASSOC);
                         
                         <div class="notif-body" id="admin-notif-list">
                             <?php if($unread_count > 0): ?>
-                                <?php while($notif = mysqli_fetch_assoc($admin_notif_query)): ?>
+                                <?php foreach($admin_notifications as $notif): ?>
                                     <div class="notif-item">
                                         <i class="fa-solid fa-circle-exclamation" style="color: #e11d48; margin-right: 5px;"></i>
                                         <?php echo htmlspecialchars($notif['message']); ?>
                                         <br><small style="color: #94a3b8; font-size: 11px;"><?php echo date('M d, g:i A', strtotime($notif['created_at'])); ?></small>
                                     </div>
-                                <?php endwhile; ?>
+                                <?php endforeach; ?>
                             <?php else: ?>
                                 <div class="notif-empty">No new notifications.</div>
                             <?php endif; ?>
@@ -292,8 +382,8 @@ $services = mysqli_fetch_all($result, MYSQLI_ASSOC);
                                 <td style="font-weight: 600; font-size: 15px;"><?php echo htmlspecialchars($service['service_name']); ?></td>
                                 <td style="font-weight: 800; color: var(--navy-dark); font-size: 15px;">₱<?php echo number_format($service['price'], 2); ?></td>
                                 <td>
-                                    <span class="status-pill <?php echo $service['is_available'] == 1 ? 'available' : 'hidden'; ?>">
-                                        <?php echo $service['is_available'] == 1 ? 'Available' : 'Hidden'; ?>
+                                    <span class="status-pill <?php echo ((string)$service['is_available'] === '1' || $service['is_available'] === true) ? 'available' : 'hidden'; ?>">
+                                        <?php echo ((string)$service['is_available'] === '1' || $service['is_available'] === true) ? 'Available' : 'Hidden'; ?>
                                     </span>
                                 </td>
                                 <td>

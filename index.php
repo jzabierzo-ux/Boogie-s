@@ -1,51 +1,56 @@
 <?php
 session_start();
+
 // Kung naka-login na sila, i-redirect sa home.php para sa personalized view
-if(isset($_SESSION['logged_in']) && $_SESSION['logged_in'] === true){
-    header("Location: home.php");
+if (isset($_SESSION['logged_in']) && $_SESSION['logged_in'] === true) {
+    header('Location: home.php');
     exit();
 }
 
-include 'db_connect.php'; // Siguraduhing tama ang path
+require_once 'db_supabase.php';
 
 // --- FETCH REAL REVIEWS ---
-$review_query = "SELECT r.*, u.full_name, a.service
-                 FROM reviews r
-                 JOIN users u ON r.user_id = u.id
-                 JOIN appointments a ON r.appointment_id = a.id
-                 WHERE r.rating >= 4
-                 ORDER BY r.review_date DESC
-                 LIMIT 3";
-$reviews_result = @mysqli_query($conn, $review_query);
+$reviews_list = [];
+
+try {
+    $review_stmt = $pdo->prepare("\n        SELECT\n            r.*,\n            u.full_name,\n            a.service\n        FROM reviews r\n        JOIN users u ON r.user_id = u.id\n        JOIN appointments a ON r.appointment_id = a.id\n        WHERE r.rating >= 4\n        ORDER BY r.review_date DESC\n        LIMIT 3\n    ");
+    $review_stmt->execute();
+    $reviews_list = $review_stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    error_log('Reviews query failed: ' . $e->getMessage());
+    $reviews_list = [];
+}
 
 // --- FETCH AGGREGATE STATS ---
-$stats_query = "SELECT COUNT(*) as total_reviews, AVG(rating) as avg_rating FROM reviews";
-$stats_result = @mysqli_query($conn, $stats_query);
-$stats_row = @mysqli_fetch_assoc($stats_result);
+$total_reviews = 0;
+$avg_rating = '0.0';
 
-$total_reviews = $stats_row['total_reviews'] ?? 0;
-$avg_rating = ($total_reviews > 0) ? number_format($stats_row['avg_rating'], 1) : "0.0";
-$parent_text = ($total_reviews == 1) ? "happy fur-parent" : "happy fur-parents";
+try {
+    $stats_stmt = $pdo->query("\n        SELECT\n            COUNT(*) AS total_reviews,\n            AVG(rating) AS avg_rating\n        FROM reviews\n    ");
+    $stats_row = $stats_stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+
+    $total_reviews = (int)($stats_row['total_reviews'] ?? 0);
+    $avg_rating = ($total_reviews > 0)
+        ? number_format((float)($stats_row['avg_rating'] ?? 0), 1)
+        : '0.0';
+} catch (PDOException $e) {
+    error_log('Review stats query failed: ' . $e->getMessage());
+}
+
+$parent_text = ($total_reviews === 1)
+    ? 'happy fur-parent'
+    : 'happy fur-parents';
 
 // --- FETCH DYNAMIC PROMOTIONS ---
 $promos_list = [];
+
 try {
-    $current_date = date('Y-m-d');
-    // Fetch from the updated promos table where status is active and not expired
-    $promo_query = "SELECT * FROM promos 
-                    WHERE status = 'active' 
-                    AND (expiry_date >= '$current_date' OR expiry_date IS NULL OR expiry_date = '0000-00-00') 
-                    ORDER BY id DESC LIMIT 3";
-    
-    $promo_result = @mysqli_query($conn, $promo_query);
-    
-    if ($promo_result && mysqli_num_rows($promo_result) > 0) {
-        while($row = mysqli_fetch_assoc($promo_result)) {
-            $promos_list[] = $row;
-        }
-    }
-} catch (Exception $e) {
-    // Failsafe if table doesn't exist yet
+    $promo_stmt = $pdo->prepare("\n        SELECT *\n        FROM promos\n        WHERE status = 'active'\n          AND (expiry_date >= CURRENT_DATE OR expiry_date IS NULL)\n        ORDER BY id DESC\n        LIMIT 3\n    ");
+    $promo_stmt->execute();
+    $promos_list = $promo_stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    error_log('Promotions query failed: ' . $e->getMessage());
+    $promos_list = [];
 }
 ?>
 <!DOCTYPE html>
@@ -58,160 +63,1214 @@ try {
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         :root {
-            /* Dasmariñas Branch Brand Colors */
-            --brand-yellow: #ffcc00; 
-            --brand-blue: #001f3f; 
-            --brand-blue-light: #002d5b;
+            --brand-yellow: #ffcc00;
+            --brand-yellow-soft: #fff6c7;
+            --brand-blue: #001f3f;
+            --brand-blue-2: #0b3b66;
+            --brand-blue-light: #eef5fb;
             --dark-bg: var(--brand-blue);
             --light-text: #ffffff;
             --text-on-yellow: #1e293b;
+            --text: #17324d;
+            --muted: #6b7c8f;
+            --border: #e4eaf1;
         }
-
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Poppins', sans-serif; color: #1e293b; background: #fff; line-height: 1.6; overflow-x: hidden;}
-
-        /* --- HEADER & NAV (COPIED EXACTLY FROM PETSERVICES.PHP) --- */
-        .promo-bar { background: var(--brand-blue); color: var(--brand-yellow); text-align: center; padding: 8px; font-size: 12px; font-weight: 500; border-bottom: 2px solid var(--brand-yellow); }
-        header { position: sticky; top: 0; background: #fff; z-index: 1000; border-bottom: 1px solid #f1f5f9; box-shadow: 0 2px 5px rgba(0,0,0,0.03); }
-        .nav-top { display: flex; justify-content: space-between; align-items: center; padding: 15px 5%; }
-        .logo { display: flex; align-items: center; gap: 12px; text-decoration: none; }
-        .nav-logo-img { height: 50px; width: auto; object-fit: contain; display: block; }
-        .logo-text { display: flex; flex-direction: column; line-height: 1.1; }
-        .logo-text b { font-size: 20px; color: var(--brand-blue); }
-        .logo-text span { font-size: 10px; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px; font-weight: 600; }
-        
-        .search { flex: 0 1 450px; display: flex; background: #f1f5f9; border-radius: 8px; padding: 5px 15px; margin: 0 20px; border: 1px solid #e2e8f0; }
-        .search input { border: none; background: transparent; width: 100%; padding: 8px; outline: none; font-size: 14px; font-family: 'Poppins', sans-serif; }
-        .search button { background: none; border: none; color: var(--brand-blue); cursor: pointer; }
-
-        .nav-links { display: flex; align-items: center; gap: 15px; }
-        .cart-btn { background: var(--brand-blue); color: var(--brand-yellow); padding: 10px 22px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 14px; }
-
-        .categories { background: var(--brand-yellow); padding: 12px 5%; border-bottom: 2px solid rgba(0,0,0,0.05); }
-        .categories ul { display: flex; justify-content: center; gap: 15px; list-style: none; }
-        .categories ul li a { text-decoration: none; color: var(--text-on-yellow); font-size: 13px; font-weight: 700; padding: 10px 20px; border-radius: 8px; transition: all 0.3s ease; display: flex; align-items: center; gap: 8px; }
-        .categories ul li a:hover { background: rgba(0, 31, 63, 0.1); transform: translateY(-2px); color: var(--brand-blue); }
-
-        /* --- HERO SLIDER --- */
-        .slider-section { position: relative; height: 550px; overflow: hidden; background: var(--brand-blue); }
-        .slider-track { display: flex; height: 100%; transition: transform 0.7s cubic-bezier(0.4, 0, 0.2, 1); }
-        .slide { min-width: 100%; height: 100%; display: flex; align-items: center; padding: 0 8%; position: relative; }
-        
-        .slide-1 { background: linear-gradient(rgba(0,31,63,0.7), rgba(0,31,63,0.7)), url('https://images.unsplash.com/photo-1516734212186-a967f81ad0d7?q=80&w=2071&auto=format&fit=crop'); background-size: cover; background-position: center; }
-        .slide-2 { background: linear-gradient(rgba(0,31,63,0.7), rgba(0,31,63,0.7)), url('https://images.unsplash.com/photo-1583337130417-3346a1be7dee?q=80&w=1964&auto=format&fit=crop'); background-size: cover; background-position: center; }
-
-        .hero-content { color: white; max-width: 650px; transform: translateY(30px); opacity: 0; transition: 0.8s all 0.3s; }
-        .slide.active .hero-content { transform: translateY(0); opacity: 1; }
-        .hero-content h1 { font-size: 52px; font-weight: 800; line-height: 1.1; margin-bottom: 20px; }
-        .hero-content p { font-size: 18px; opacity: 0.9; margin-bottom: 30px; }
-        
-        .slider-dots { position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%); display: flex; gap: 10px; }
-        .dot { width: 10px; height: 10px; background: rgba(255,255,255,0.3); border-radius: 50%; cursor: pointer; transition: 0.3s; }
-        .dot.active { background: var(--brand-yellow); width: 25px; border-radius: 5px; }
-
-        .btn-join-hero { background: var(--brand-yellow); color: var(--brand-blue); padding: 15px 35px; border-radius: 8px; text-decoration: none; font-weight: 700; display: inline-block; transition: 0.3s; }
-        .btn-join-hero:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(255, 204, 0, 0.3); }
-
-        /* Stats */
-        .stats-bar { display: grid; grid-template-columns: repeat(4, 1fr); width: 90%; margin: -60px auto 80px; background: white; padding: 40px; border-radius: 25px; box-shadow: 0 20px 40px rgba(0,0,0,0.06); position: relative; z-index: 10; text-align: center; }
-        .stat-item i { font-size: 24px; display: block; margin-bottom: 10px; color: var(--brand-blue); }
-        .stat-item strong { font-size: 26px; display: block; color: var(--brand-blue); }
-        .stat-item span { font-size: 13px; color: #94a3b8; font-weight: 600; }
-
-        /* Promotions */
-        .section-header { text-align: center; margin-bottom: 50px; }
-        .section-header h2 { color: var(--brand-blue); font-weight: 700; font-size: 32px; margin-top: 10px; }
-        .badge { background: var(--brand-yellow); color: var(--text-on-yellow); padding: 6px 16px; border-radius: 20px; font-size: 12px; font-weight: 700; text-transform: uppercase; border: 1px solid var(--brand-blue); display: inline-block; margin-bottom: 20px;}
-        
-        .promo-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 25px; padding: 0 5% 100px; }
-        .promo-card { border-radius: 15px; padding: 40px; color: white; text-align: center; position: relative; box-shadow: 0 10px 20px rgba(0,0,0,0.05); transition: transform 0.3s ease; display: flex; flex-direction: column; }
-        .promo-card:hover { transform: translateY(-5px); }
-        .promo-card .tag { background: rgba(255,255,255,0.2); padding: 4px 12px; border-radius: 10px; font-size: 12px; font-weight: 600; align-self: center; margin-bottom: 15px; text-transform: uppercase; letter-spacing: 1px; }
-        .promo-card h3 { font-size: 28px; margin: 0 0 10px; font-weight: 800; }
-        .promo-card p { font-size: 15px; margin-bottom: 0; flex-grow: 1; opacity: 0.9; }
-
-        .promo-card.purple { background: linear-gradient(135deg, #a855f7, #8b2cf5); }
-        .promo-card.teal { background: linear-gradient(135deg, #2dd4bf, #0d9488); }
-        .promo-card.red { background: linear-gradient(135deg, #f87171, #dc2626); }
-        .promo-card.orange { background: linear-gradient(135deg, #fb923c, #ea580c); }
-
-        /* Services */
-        .service-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; padding: 0 5% 100px; }
-        .service-card { border-radius: 15px; padding: 50px 30px; color: white; text-align: center; transition: 0.3s; background: var(--brand-blue); border-bottom: 3px solid transparent; }
-        .service-card:hover { transform: translateY(-8px); background: var(--brand-blue-light); border-bottom: 3px solid var(--brand-yellow); }
-        .service-card i { font-size: 32px; margin-bottom: 20px; color: var(--brand-yellow); }
-        .service-card h4 { font-size: 20px; margin-bottom: 10px; color: #fff; font-weight: 700; }
-        .service-card a { color: var(--brand-yellow); text-decoration: none; font-size: 14px; font-weight: 600; }
-
-        /* Testimonials */
-        .testimonials { background: #f8fafc; padding: 100px 5%; text-align: center; }
-        .testimonial-grid { display: flex; flex-wrap: wrap; justify-content: center; gap: 40px; margin-bottom: 40px; }
-        .t-card { background: white; padding: 45px 40px; border-radius: 15px; box-shadow: 0 10px 25px rgba(0,0,0,0.06); text-align: left; border-left: 5px solid var(--brand-yellow); flex: 1 1 420px; max-width: 500px; width: 100%; }
-        .t-card .stars { font-size: 22px; color: #fbbf24; margin-bottom: 20px; }
-        .t-text { font-style: italic; color: #475569; font-size: 18px; line-height: 1.7; margin-bottom: 25px; }
-        .t-user { display: flex; align-items: center; gap: 15px; }
-        .t-avatar { width: 60px; height: 60px; background: #e2e8f0; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 24px; border: 2px solid var(--brand-yellow); font-weight: 700; color: var(--brand-blue); }
-        .t-user strong { font-size: 18px; color: var(--brand-blue); display: block; margin-bottom: 3px; }
-        .t-user small { font-size: 14px; color: #64748b; }
-
-        /* CTA & Footer */
-        .cta-section { background: var(--dark-bg); padding: 120px 5% 60px; color: white; border-top: 3px solid var(--brand-yellow); margin-top: 100px; }
-        .cta-box { background: var(--brand-yellow); border-radius: 20px; padding: 60px; text-align: center; color: var(--brand-blue); margin-top: -220px; margin-bottom: 60px; box-shadow: 0 15px 30px rgba(0,0,0,0.2); }
-        .cta-box h2 { font-size: 34px; margin-bottom: 15px; color: var(--brand-blue); font-weight: 800; }
-        .cta-box p { color: var(--brand-blue-light); }
-        .cta-box .btn-group { display: flex; justify-content: center; gap: 20px; margin: 30px 0; }
-        .btn-blue-solid { background: var(--brand-blue); color: var(--brand-yellow); padding: 14px 30px; border-radius: 8px; text-decoration: none; font-weight: 700; }
-        .btn-blue-outline { border: 2px solid var(--brand-blue); color: var(--brand-blue); padding: 12px 30px; border-radius: 8px; text-decoration: none; font-weight: 700; }
-        .cta-footer { font-size: 13px; opacity: 0.9; display: flex; justify-content: center; gap: 30px; color: var(--brand-blue); font-weight: 600; }
-
-        footer { background: transparent; padding: 20px 0 0; }
-        .footer-main { display: grid; grid-template-columns: 2fr 1fr 1fr 1.5fr; gap: 40px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 50px; max-width: 1200px; margin: 0 auto; }
-        .footer-main h4 { color: var(--brand-yellow); margin-bottom: 20px; text-transform: uppercase; font-weight: 700; }
-        .footer-main p, .footer-main a { color: #cbd5e1; text-decoration: none; font-size: 14px; display: block; margin-bottom: 10px; }
-        .socials { display: flex; gap: 15px; margin-top: 20px; }
-        .socials a { background: rgba(255,255,255,0.1); width: 35px; height: 35px; border-radius: 50%; display: flex; align-items: center; justify-content: center; transition: 0.3s; color: white; }
-        .socials a:hover { background: var(--brand-yellow); color: var(--brand-blue); }
-
-        .footer-bottom { padding-top: 30px; text-align: center; font-size: 12px; color: #94a3b8; }
-        .footer-bottom a { color: #cbd5e1; text-decoration: none; margin: 0 10px; font-weight: 600; }
-
-        @media (max-width: 900px) {
-            .hero-content h1 { font-size: 36px; }
-            .stats-bar, .service-grid, .footer-main { grid-template-columns: 1fr; }
-            .search { display: none; }
-            .cta-box { padding: 40px 20px; margin-top: -180px; }
-            .cta-footer { flex-direction: column; gap: 10px; }
+        html { scroll-behavior: smooth; }
+        body {
+            font-family: 'Poppins', sans-serif;
+            color: var(--text);
+            background: #f7f9fc;
+            line-height: 1.6;
+            min-height: 100vh;
         }
+
+        /* ===== SHARED PETSERVICES HEADER ===== */
+        .promo-bar {
+            background: var(--brand-blue);
+            color: #fff;
+            text-align: center;
+            padding: 7px 16px;
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: .2px;
+        }
+        .promo-bar i { color: var(--brand-yellow); margin-right: 7px; }
+
+        header {
+            position: sticky;
+            top: 0;
+            background: rgba(255,255,255,.97);
+            backdrop-filter: blur(12px);
+            z-index: 1000;
+            border-bottom: 1px solid var(--border);
+            box-shadow: 0 4px 18px rgba(0,0,0,.04);
+        }
+
+        .nav-top {
+            max-width: 1320px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: auto minmax(250px, 460px) auto;
+            align-items: center;
+            gap: 28px;
+            padding: 14px 28px;
+        }
+
+        .logo {
+            display: inline-flex;
+            align-items: center;
+            gap: 11px;
+            text-decoration: none;
+            min-width: 0;
+        }
+        .nav-logo-img {
+            height: 50px;
+            width: 50px;
+            object-fit: contain;
+            display: block;
+            border-radius: 10px;
+        }
+        .logo-text { display: flex; flex-direction: column; line-height: 1.05; }
+        .logo-text b { font-size: 20px; color: var(--brand-blue); }
+        .logo-text span {
+            font-size: 9px;
+            color: #8c9aae;
+            text-transform: uppercase;
+            letter-spacing: 1.2px;
+            font-weight: 700;
+            margin-top: 3px;
+        }
+
+        .search {
+            display: flex;
+            align-items: center;
+            background: #f5f8fb;
+            border: 1px solid #e0e7ef;
+            border-radius: 13px;
+            padding: 5px 8px 5px 15px;
+        }
+        .search input {
+            border: none;
+            background: transparent;
+            width: 100%;
+            padding: 9px 6px;
+            outline: none;
+            font-size: 13px;
+            color: var(--text);
+        }
+        .search input::placeholder { color: #97a4b4; }
+        .search button {
+            width: 38px;
+            height: 38px;
+            border: none;
+            border-radius: 10px;
+            background: var(--brand-blue);
+            color: #fff;
+            cursor: pointer;
+            transition: .25s;
+        }
+        .search button:hover { background: var(--brand-blue-2); }
+
+        .nav-links {
+            display: flex;
+            justify-content: flex-end;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+        .nav-links > span {
+            color: var(--brand-blue);
+            font-weight: 600;
+            font-size: 13px;
+            white-space: nowrap;
+        }
+        .cart-btn {
+            background: var(--brand-blue);
+            color: var(--brand-yellow);
+            padding: 10px 18px;
+            border-radius: 10px;
+            text-decoration: none;
+            font-weight: 700;
+            font-size: 13px;
+            transition: .25s;
+        }
+        .cart-btn:hover {
+            box-shadow: 0 8px 20px rgba(0,31,63,.16);
+        }
+        .nav-links a[style*="ef4444"] {
+            color: #dc3b45 !important;
+            text-decoration: none !important;
+            font-weight: 600 !important;
+            font-size: 13px !important;
+            margin-left: 0 !important;
+        }
+
+        .categories {
+            background: var(--brand-yellow);
+            border-bottom: 1px solid rgba(0,0,0,.08);
+        }
+        .categories ul {
+            max-width: 980px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 8px;
+            list-style: none;
+            padding: 7px 18px;
+        }
+        .categories ul li a {
+            text-decoration: none;
+            color: var(--brand-blue);
+            font-size: 12px;
+            font-weight: 800;
+            padding: 10px 18px;
+            border-radius: 10px;
+            transition: .25s;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .categories ul li a:hover,
+        .categories ul li a.active {
+            background: rgba(0,31,63,.12);
+        }
+        .categories i { font-size: 14px; }
+
+        @media (max-width: 1000px) {
+            .nav-top { grid-template-columns: 1fr; gap: 12px; }
+            .nav-links { justify-content: flex-start; }
+        }
+        @media (max-width: 680px) {
+            .categories ul {
+                overflow-x: auto;
+                justify-content: flex-start;
+                padding-left: 12px;
+            }
+            .categories ul li a {
+                white-space: nowrap;
+                padding: 10px 13px;
+            }
+        }
+
+
+        /* ===== HEADER SEARCH ===== */
+        .search-status {
+            position: fixed;
+            top: 148px;
+            left: 50%;
+            transform: translateX(-50%) translateY(-8px);
+            z-index: 1200;
+            min-width: 280px;
+            max-width: min(560px, 90vw);
+            padding: 10px 14px;
+            border-radius: 11px;
+            background: var(--brand-blue);
+            color: #fff;
+            font-size: 12px;
+            font-weight: 600;
+            text-align: center;
+            box-shadow: 0 10px 25px rgba(0,31,63,.16);
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity .2s ease, transform .2s ease;
+        }
+
+        .search-status.show {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0);
+        }
+
+        .search-status strong { color: var(--brand-yellow); }
+
+        /* ===== HOME PAGE ===== */
+        main { min-height: 70vh; }
+
+        .hero-slider {
+            position: relative;
+            overflow: hidden;
+            background: var(--brand-blue);
+        }
+
+        .slider-track {
+            display: flex;
+            transition: transform .7s cubic-bezier(.4,0,.2,1);
+            will-change: transform;
+        }
+
+        .slide {
+            min-width: 100%;
+            min-height: 560px;
+            display: flex;
+            align-items: center;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .slide::before,
+        .slide::after {
+            content: '';
+            position: absolute;
+            border-radius: 50%;
+            pointer-events: none;
+        }
+
+        .slide::before {
+            width: 420px;
+            height: 420px;
+            right: -120px;
+            top: -160px;
+            background: rgba(255,204,0,.11);
+        }
+
+        .slide::after {
+            width: 270px;
+            height: 270px;
+            left: -120px;
+            bottom: -145px;
+            background: rgba(255,255,255,.06);
+        }
+
+        .slide-1 {
+            background:
+                linear-gradient(90deg, rgba(0,31,63,.91), rgba(0,31,63,.62)),
+                url('https://images.unsplash.com/photo-1516734212186-a967f81ad0d7?q=80&w=2071&auto=format&fit=crop');
+            background-size: cover;
+            background-position: center;
+        }
+
+        .slide-2 {
+            background:
+                linear-gradient(90deg, rgba(0,31,63,.91), rgba(0,31,63,.62)),
+                url('https://images.unsplash.com/photo-1583337130417-3346a1be7dee?q=80&w=1964&auto=format&fit=crop');
+            background-size: cover;
+            background-position: center;
+        }
+
+        .slide-inner {
+            width: min(1180px, 92%);
+            margin: 0 auto;
+            padding: 80px 28px 95px;
+            position: relative;
+            z-index: 1;
+        }
+
+        .hero-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(255,255,255,.12);
+            border: 1px solid rgba(255,255,255,.2);
+            color: var(--brand-yellow);
+            padding: 8px 13px;
+            border-radius: 999px;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: .8px;
+            font-weight: 800;
+        }
+
+        .hero-content {
+            color: #fff;
+            max-width: 670px;
+            transform: translateY(18px);
+            opacity: 0;
+            transition: .7s ease;
+        }
+        .slide.active .hero-content {
+            transform: translateY(0);
+            opacity: 1;
+        }
+
+        .hero-content h1 {
+            margin: 17px 0 15px;
+            font-size: clamp(38px, 5vw, 58px);
+            line-height: 1.08;
+            letter-spacing: -1.2px;
+            font-weight: 800;
+        }
+
+        .hero-content p {
+            max-width: 620px;
+            color: rgba(255,255,255,.88);
+            font-size: 16px;
+            line-height: 1.7;
+            margin-bottom: 28px;
+        }
+
+        .btn-join {
+            display: inline-flex;
+            align-items: center;
+            gap: 9px;
+            background: var(--brand-yellow);
+            color: var(--brand-blue);
+            padding: 13px 20px;
+            border-radius: 11px;
+            text-decoration: none;
+            font-size: 13px;
+            font-weight: 800;
+            transition: .25s;
+        }
+        .btn-join:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 10px 22px rgba(255,204,0,.22);
+        }
+
+        .slider-dots {
+            position: absolute;
+            left: 50%;
+            bottom: 28px;
+            transform: translateX(-50%);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            z-index: 4;
+        }
+        .dot {
+            width: 9px;
+            height: 9px;
+            border-radius: 50%;
+            background: rgba(255,255,255,.38);
+            cursor: pointer;
+            transition: .25s;
+        }
+        .dot.active {
+            width: 26px;
+            border-radius: 8px;
+            background: var(--brand-yellow);
+        }
+
+        .stats-wrap {
+            width: min(1180px, 92%);
+            margin: -48px auto 0;
+            position: relative;
+            z-index: 5;
+        }
+        .stats-bar {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            background: #fff;
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            box-shadow: 0 18px 38px rgba(0,31,63,.08);
+            overflow: hidden;
+        }
+        .stat-item {
+            padding: 24px 18px;
+            text-align: center;
+            border-right: 1px solid var(--border);
+        }
+        .stat-item:last-child { border-right: 0; }
+        .stat-item i {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--brand-yellow);
+            background: var(--brand-blue);
+            width: 42px;
+            height: 42px;
+            border-radius: 12px;
+            margin: 0 auto 10px;
+        }
+        .stat-item strong {
+            display: block;
+            color: var(--brand-blue);
+            font-size: 24px;
+            font-weight: 800;
+        }
+        .stat-item span {
+            color: #8a99a9;
+            font-size: 11px;
+            font-weight: 700;
+        }
+
+        .home-section {
+            max-width: 1180px;
+            margin: 0 auto;
+            padding: 72px 28px 0;
+        }
+
+        .section-heading {
+            text-align: center;
+            margin-bottom: 28px;
+        }
+        .section-kicker {
+            color: #8b99a9;
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 1.3px;
+            font-weight: 800;
+            margin-bottom: 7px;
+        }
+        .section-heading h2 {
+            color: var(--brand-blue);
+            font-size: 30px;
+            line-height: 1.2;
+            font-weight: 800;
+        }
+        .section-heading p {
+            color: var(--muted);
+            font-size: 13px;
+            max-width: 610px;
+            margin: 8px auto 0;
+        }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 7px 12px;
+            background: var(--brand-yellow-soft);
+            border: 1px solid #ffe68a;
+            border-radius: 999px;
+            color: #8b6900;
+            font-size: 10px;
+            text-transform: uppercase;
+            font-weight: 800;
+            letter-spacing: .7px;
+            margin-bottom: 9px;
+        }
+
+        .promo-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 22px;
+            padding-bottom: 20px;
+        }
+        .promo-card {
+            position: relative;
+            min-height: 205px;
+            padding: 29px 26px;
+            border-radius: 19px;
+            color: #fff;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 12px 28px rgba(0,0,0,.07);
+            transition: .25s;
+            overflow: hidden;
+        }
+        .promo-card::after {
+            content: '';
+            position: absolute;
+            width: 135px;
+            height: 135px;
+            border-radius: 50%;
+            right: -48px;
+            bottom: -58px;
+            background: rgba(255,255,255,.11);
+        }
+        .promo-card:hover {
+            transform: translateY(-6px);
+            box-shadow: 0 18px 35px rgba(0,0,0,.11);
+        }
+        .promo-card .tag {
+            align-self: flex-start;
+            position: relative;
+            z-index: 1;
+            background: rgba(255,255,255,.17);
+            border: 1px solid rgba(255,255,255,.16);
+            padding: 5px 10px;
+            border-radius: 999px;
+            font-size: 9px;
+            text-transform: uppercase;
+            letter-spacing: .7px;
+            font-weight: 800;
+            margin-bottom: 17px;
+        }
+        .promo-card h3 {
+            position: relative;
+            z-index: 1;
+            font-size: 25px;
+            line-height: 1.2;
+            margin-bottom: 9px;
+            font-weight: 800;
+        }
+        .promo-card p {
+            position: relative;
+            z-index: 1;
+            margin-top: auto;
+            font-size: 12px;
+            line-height: 1.65;
+            opacity: .92;
+        }
+        .promo-card.purple { background: linear-gradient(135deg,#9b51e0,#7d31c7); }
+        .promo-card.teal { background: linear-gradient(135deg,#1bbba8,#0b8e80); }
+        .promo-card.red { background: linear-gradient(135deg,#ed6d72,#c92f3b); }
+        .promo-card.orange { background: linear-gradient(135deg,#f39b44,#d86a0a); }
+
+        .service-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 20px;
+            padding-bottom: 20px;
+        }
+        .service-card {
+            background: #fff;
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            padding: 27px 20px;
+            text-align: center;
+            box-shadow: 0 8px 25px rgba(0,31,63,.045);
+            transition: .25s;
+        }
+        .service-card:hover {
+            transform: translateY(-6px);
+            border-color: #d4dee8;
+            box-shadow: 0 17px 32px rgba(0,31,63,.08);
+        }
+        .service-card i {
+            width: 58px;
+            height: 58px;
+            border-radius: 16px;
+            background: var(--brand-yellow-soft);
+            color: var(--brand-blue);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 15px;
+            font-size: 24px;
+        }
+        .service-card h4 {
+            color: var(--brand-blue);
+            font-size: 16px;
+            font-weight: 800;
+            margin-bottom: 9px;
+        }
+        .service-card a {
+            color: #738497;
+            text-decoration: none;
+            font-size: 11px;
+            font-weight: 800;
+        }
+        .service-card a:hover { color: var(--brand-blue); }
+
+        .testimonials {
+            margin-top: 72px;
+            background: #f4f8fc;
+            border-top: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+            padding: 68px 28px 80px;
+        }
+        .testimonial-inner {
+            max-width: 1180px;
+            margin: 0 auto;
+        }
+        .testimonial-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 20px;
+            margin-top: 28px;
+        }
+        .t-card {
+            background: #fff;
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            padding: 23px;
+            box-shadow: 0 8px 25px rgba(0,31,63,.045);
+        }
+        .t-card .stars {
+            color: #f4b900;
+            font-size: 13px;
+            margin-bottom: 13px;
+        }
+        .t-text {
+            color: #435466;
+            font-size: 13px;
+            line-height: 1.7;
+            margin-bottom: 19px;
+        }
+        .t-user {
+            display: flex;
+            align-items: center;
+            gap: 11px;
+            padding-top: 14px;
+            border-top: 1px solid #edf1f5;
+        }
+        .t-avatar {
+            width: 42px;
+            height: 42px;
+            border-radius: 50%;
+            background: var(--brand-yellow-soft);
+            border: 1px solid #ffe081;
+            color: var(--brand-blue);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 800;
+            font-size: 14px;
+        }
+        .t-user strong {
+            display: block;
+            color: var(--brand-blue);
+            font-size: 12px;
+            font-weight: 800;
+        }
+        .t-user small {
+            color: #7d8b9a;
+            font-size: 10px;
+        }
+        .empty-reviews {
+            grid-column: 1 / -1;
+            background: #fff;
+            border: 1px dashed #d8e1eb;
+            border-radius: 18px;
+            padding: 37px 22px;
+            text-align: center;
+            color: var(--muted);
+        }
+        .empty-reviews i {
+            width: 56px;
+            height: 56px;
+            margin: 0 auto 11px;
+            border-radius: 50%;
+            background: var(--brand-yellow-soft);
+            color: #b18400;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 22px;
+        }
+        .empty-reviews h3 {
+            color: var(--brand-blue);
+            font-size: 16px;
+            margin-bottom: 4px;
+        }
+        .empty-reviews p { font-size: 12px; }
+
+        .reviews-link {
+            display: flex;
+            justify-content: center;
+            margin-top: 25px;
+            color: var(--brand-blue);
+            text-decoration: none;
+            font-size: 12px;
+            font-weight: 800;
+        }
+
+        .cta-area {
+            background: var(--brand-blue);
+            padding: 38px 28px 46px;
+        }
+        .cta-box {
+            max-width: 1000px;
+            margin: 0 auto 38px;
+            background: var(--brand-yellow);
+            color: var(--brand-blue);
+            border-radius: 20px;
+            padding: 43px 30px;
+            text-align: center;
+            box-shadow: 0 18px 35px rgba(0,0,0,.17);
+        }
+        .cta-box h2 {
+            font-size: 30px;
+            font-weight: 800;
+            margin-bottom: 9px;
+        }
+        .cta-box p {
+            color: #3b4a55;
+            font-size: 13px;
+        }
+        .cta-buttons {
+            display: flex;
+            justify-content: center;
+            gap: 11px;
+            flex-wrap: wrap;
+            margin: 23px 0 17px;
+        }
+        .btn-blue-solid,
+        .btn-blue-outline {
+            padding: 11px 18px;
+            border-radius: 10px;
+            text-decoration: none;
+            font-size: 12px;
+            font-weight: 800;
+            transition: .25s;
+        }
+        .btn-blue-solid {
+            background: var(--brand-blue);
+            color: var(--brand-yellow);
+        }
+        .btn-blue-outline {
+            border: 2px solid var(--brand-blue);
+            color: var(--brand-blue);
+            background: transparent;
+        }
+        .btn-blue-solid:hover,
+        .btn-blue-outline:hover { transform: translateY(-1px); }
+        .cta-footer {
+            display: flex;
+            justify-content: center;
+            gap: 22px;
+            flex-wrap: wrap;
+            color: var(--brand-blue);
+            font-size: 10px;
+            font-weight: 700;
+        }
+
+        footer {
+            background: var(--brand-blue);
+            padding: 22px 28px 30px;
+            color: #fff;
+        }
+        .footer-main {
+            display: grid;
+            grid-template-columns: 2fr 1fr 1fr 1.5fr;
+            gap: 42px;
+            border-bottom: 1px solid rgba(255,255,255,.12);
+            padding-bottom: 42px;
+            max-width: 1180px;
+            margin: 0 auto;
+        }
+        .footer-main h4 {
+            color: var(--brand-yellow);
+            margin-bottom: 16px;
+            text-transform: uppercase;
+            font-weight: 800;
+            font-size: 12px;
+            letter-spacing: .5px;
+        }
+        .footer-main p,
+        .footer-main a {
+            color: #cbd5e1;
+            text-decoration: none;
+            font-size: 12px;
+            line-height: 1.7;
+            display: block;
+            margin-bottom: 9px;
+        }
+        .footer-main a:hover { color: #fff; }
+        .socials {
+            display: flex;
+            gap: 10px;
+            margin-top: 18px;
+        }
+        .socials a {
+            background: rgba(255,255,255,.09);
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: .25s;
+            color: #fff;
+            margin: 0;
+        }
+        .socials a:hover {
+            background: var(--brand-yellow);
+            color: var(--brand-blue);
+        }
+        .footer-bottom {
+            max-width: 1180px;
+            margin: 0 auto;
+            padding-top: 24px;
+            text-align: center;
+            font-size: 11px;
+            color: #91a1b1;
+        }
+
+        @media (max-width: 980px) {
+            .stats-bar { grid-template-columns: 1fr 1fr; }
+            .stat-item:nth-child(2) { border-right: 0; }
+            .stat-item:nth-child(-n+2) { border-bottom: 1px solid var(--border); }
+            .promo-grid { grid-template-columns: 1fr 1fr; }
+            .service-grid { grid-template-columns: 1fr 1fr; }
+            .testimonial-grid { grid-template-columns: 1fr 1fr; }
+            .footer-main { grid-template-columns: 1fr 1fr; }
+            .hero-content h1 { font-size: 40px; }
+        }
+
+        @media (max-width: 680px) {
+            .slide { min-height: 500px; }
+            .slide-inner { padding-top: 55px; }
+            .hero-content h1 { font-size: 32px; }
+            .hero-content p { font-size: 14px; }
+            .stats-wrap { margin-top: -32px; }
+            .stats-bar { grid-template-columns: 1fr 1fr; }
+            .home-section { padding-top: 55px; }
+            .promo-grid,
+            .service-grid,
+            .testimonial-grid { grid-template-columns: 1fr; }
+            .footer-main { grid-template-columns: 1fr; }
+            .cta-box { padding: 34px 22px; }
+            .cta-box h2 { font-size: 25px; }
+            .cta-footer { gap: 10px; flex-direction: column; }
+            .search-status { top: 186px; }
+        }
+
+
+        /* ===== PUBLIC INDEX: MOBILE RESPONSIVE IMPROVEMENTS ===== */
+        .mobile-menu-btn {
+            display: none;
+            width: 44px;
+            height: 44px;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            background: #fff;
+            color: var(--brand-blue);
+            font-size: 18px;
+            cursor: pointer;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .categories {
+            transition: max-height .25s ease, opacity .25s ease;
+        }
+
+        @media (max-width: 1000px) {
+            .nav-top {
+                grid-template-columns: 1fr auto;
+                gap: 12px 14px;
+                padding: 12px 20px;
+            }
+
+            .mobile-menu-btn {
+                display: inline-flex;
+                justify-self: end;
+            }
+
+            .nav-top .search {
+                grid-column: 1 / -1;
+                grid-row: 2;
+                width: 100%;
+                margin: 0;
+            }
+
+            .nav-links {
+                grid-column: 1 / -1;
+                grid-row: 3;
+                justify-content: center;
+            }
+
+            .categories ul {
+                max-width: none;
+            }
+        }
+
+        @media (max-width: 680px) {
+            .promo-bar {
+                padding: 7px 10px;
+                font-size: 10px;
+            }
+
+            .nav-top {
+                padding: 10px 14px 12px;
+            }
+
+            .nav-logo-img {
+                width: 43px;
+                height: 43px;
+            }
+
+            .logo-text b {
+                font-size: 17px;
+            }
+
+            .logo-text span {
+                font-size: 8px;
+                letter-spacing: .9px;
+            }
+
+            .search {
+                border-radius: 12px;
+            }
+
+            .search input {
+                font-size: 12px;
+                padding: 8px 4px;
+            }
+
+            .search button {
+                width: 36px;
+                height: 36px;
+            }
+
+            .nav-links {
+                gap: 8px;
+            }
+
+            .cart-btn {
+                width: 100%;
+                text-align: center;
+                padding: 10px 14px;
+            }
+
+            .categories {
+                display: none;
+                max-height: 0;
+                overflow: hidden;
+                opacity: 0;
+            }
+
+            .categories.mobile-open {
+                display: block;
+                max-height: 420px;
+                opacity: 1;
+            }
+
+            .categories ul {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 6px;
+                padding: 10px 12px 12px;
+            }
+
+            .categories ul li a {
+                justify-content: center;
+                text-align: center;
+                padding: 10px 8px;
+                min-height: 42px;
+                font-size: 10px;
+                gap: 5px;
+            }
+
+            .categories ul li:last-child {
+                grid-column: 1 / -1;
+            }
+
+            .slide {
+                min-height: 500px;
+            }
+
+            .slide-1,
+            .slide-2 {
+                background-position: 64% center;
+            }
+
+            .slide-inner {
+                width: 100%;
+                padding: 68px 20px 78px;
+            }
+
+            .hero-content {
+                max-width: 100%;
+            }
+
+            .hero-content h1 {
+                font-size: clamp(30px, 9vw, 38px);
+                letter-spacing: -.7px;
+            }
+
+            .hero-content p {
+                font-size: 13px;
+                line-height: 1.65;
+                max-width: 100%;
+            }
+
+            .btn-join {
+                width: 100%;
+                justify-content: center;
+                min-height: 46px;
+            }
+
+            .slider-dots {
+                bottom: 20px;
+            }
+
+            .stats-wrap {
+                width: calc(100% - 24px);
+                margin-top: -30px;
+            }
+
+            .stats-bar {
+                grid-template-columns: 1fr 1fr;
+                border-radius: 16px;
+            }
+
+            .stat-item {
+                padding: 18px 10px;
+            }
+
+            .stat-item:nth-child(2) {
+                border-right: 0;
+            }
+
+            .stat-item:nth-child(-n+2) {
+                border-bottom: 1px solid var(--border);
+            }
+
+            .stat-item i {
+                width: 36px;
+                height: 36px;
+                border-radius: 10px;
+                margin-bottom: 8px;
+            }
+
+            .stat-item strong {
+                font-size: 18px;
+            }
+
+            .stat-item span {
+                font-size: 10px;
+            }
+
+            .home-section {
+                padding: 48px 14px 0;
+            }
+
+            .section-heading {
+                margin-bottom: 24px;
+            }
+
+            .section-heading h2 {
+                font-size: 25px;
+                line-height: 1.2;
+            }
+
+            .section-heading p {
+                font-size: 12px;
+            }
+
+            .promo-grid,
+            .service-grid,
+            .testimonial-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .promo-grid {
+                gap: 14px;
+            }
+
+            .promo-card {
+                padding: 28px 22px;
+            }
+
+            .promo-card h3 {
+                font-size: 24px;
+            }
+
+            .service-grid {
+                gap: 12px;
+            }
+
+            .service-card {
+                min-height: 150px;
+                padding: 30px 20px;
+            }
+
+            .testimonials {
+                padding: 58px 14px;
+            }
+
+            .testimonial-inner {
+                width: 100%;
+            }
+
+            .t-card {
+                padding: 26px 22px;
+            }
+
+            .t-text {
+                font-size: 13px;
+            }
+
+            .cta-area {
+                padding: 28px 14px 36px;
+            }
+
+            .cta-box {
+                padding: 30px 20px;
+                border-radius: 18px;
+            }
+
+            .cta-box h2 {
+                font-size: 24px;
+                line-height: 1.25;
+            }
+
+            .cta-buttons {
+                flex-direction: column;
+            }
+
+            .btn-blue-solid,
+            .btn-blue-outline {
+                width: 100%;
+                text-align: center;
+                min-height: 44px;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+            }
+
+            .cta-footer {
+                gap: 8px;
+                flex-direction: column;
+            }
+
+            footer {
+                padding: 24px 16px 28px;
+            }
+
+            .footer-main {
+                grid-template-columns: 1fr;
+                gap: 26px;
+                padding-bottom: 28px;
+            }
+
+            .footer-bottom {
+                padding-top: 18px;
+                line-height: 1.6;
+            }
+
+            .search-status {
+                top: 150px;
+                max-width: calc(100vw - 28px);
+                min-width: 0;
+                width: calc(100vw - 28px);
+            }
+        }
+
+        @media (max-width: 380px) {
+            .logo-text b { font-size: 16px; }
+            .logo-text span { font-size: 7px; }
+            .hero-content h1 { font-size: 29px; }
+            .stats-wrap { width: calc(100% - 18px); }
+            .stat-item strong { font-size: 16px; }
+        }
+
     </style>
 </head>
 <body>
 
-    <div class="promo-bar">| CALL US: (046) 887 4714</div>
+    <div class="promo-bar"><i class="fa-solid fa-phone"></i> Need help? Call us at (046) 887 4714</div>
 
     <header>
         <div class="nav-top">
             <a href="index.php" class="logo">
-                <img src="bg.png" alt="Logo" class="nav-logo-img">
+                <img src="bg.png" alt="Boogie's Pet Care logo" class="nav-logo-img">
                 <div class="logo-text">
                     <b>Boogie's</b>
                     <span>PET CARE SERVICES</span>
                 </div>
             </a>
-            
-            <div class="search">
-                <input type="text" placeholder="Search for grooming, hotel, or vet services...">
-                <button><i class="fa-solid fa-magnifying-glass"></i></button>
-            </div>
-            
+
+            <button type="button" class="mobile-menu-btn" id="mobileMenuBtn"
+                    aria-label="Open navigation menu" aria-expanded="false" aria-controls="publicCategories">
+                <i class="fa-solid fa-bars"></i>
+            </button>
+
+            <form class="search" id="siteSearchForm" autocomplete="off">
+                <input
+                    type="search"
+                    id="siteSearchInput"
+                    placeholder="Search for grooming, hotel, or vet services..."
+                    aria-label="Search services"
+                >
+                <button type="submit" aria-label="Search">
+                    <i class="fa-solid fa-magnifying-glass"></i>
+                </button>
+            </form>
+
             <div class="nav-links">
-                <!-- ETO YUNG EKSATONG LOGIN/REGISTER BUTTON MULA SA PETSERVICES.PHP -->
                 <a href="login.php" class="cart-btn">Login / Register</a>
             </div>
         </div>
-        
-        <nav class="categories">
+
+        <nav class="categories" id="publicCategories">
             <ul>
-                <li><a href="petservices.php"><i class="fa-solid fa-paw"></i> PET SERVICES</a></li>
+                <li><a href="petservices.php" class="active"><i class="fa-solid fa-paw"></i> PET SERVICES</a></li>
                 <li><a href="grooming.php"><i class="fa-solid fa-scissors"></i> GROOMING</a></li>
                 <li><a href="vetclinic.php"><i class="fa-solid fa-stethoscope"></i> VET CLINIC</a></li>
                 <li><a href="pethotel.php"><i class="fa-solid fa-hotel"></i> PET HOTEL</a></li>
@@ -220,155 +1279,259 @@ try {
         </nav>
     </header>
 
-    <section class="slider-section">
-        <div class="slider-track">
-            <div class="slide slide-1 active">
-                <div class="hero-content">
-                    <h1>Exceptional Care for Your Best Friend</h1>
-                    <p>Dasmariñas' most trusted pet destination for premium grooming, medical care, and luxury boarding.</p>
-                    <a href="register.php" class="btn-join-hero">Get Started Today</a>
-                </div>
-            </div>
-            <div class="slide slide-2">
-                <div class="hero-content">
-                    <h1>Expert Veterinary & Medical Services</h1>
-                    <p>Our licensed professionals are dedicated to keeping your furry family members healthy and happy 24/7.</p>
-                    <a href="login.php" class="btn-join-hero" style="background: var(--brand-yellow); color: var(--brand-blue);">Book an Appointment</a>
-                </div>
-            </div>
-        </div>
-        
-        <div class="slider-dots">
-            <span class="dot active" onclick="setSlide(0)"></span>
-            <span class="dot" onclick="setSlide(1)"></span>
-        </div>
-    </section>
+    <div id="searchStatus" class="search-status" role="status" aria-live="polite"></div>
 
-    <div class="stats-bar">
-        <div class="stat-item"><i class="fa-solid fa-award"></i><strong><?php echo number_format($total_reviews); ?>+</strong><span>Happy Customers</span></div>
-        <div class="stat-item"><i class="fa-solid fa-star"></i><strong><?php echo $avg_rating; ?>/5</strong><span>Average Rating</span></div>
-        <div class="stat-item"><i class="fa-solid fa-clock"></i><strong>9am - 6pm</strong><span>Shop Service</span></div>
-        <div class="stat-item"><i class="fa-solid fa-shield-check"></i><strong>5+</strong><span>Years in Service</span></div>
-    </div>
+    <main>
+        <section class="hero-slider">
+            <div class="slider-track">
 
-    <div class="section-header">
-        <span class="badge">Limited Time Offers</span>
-        <h2>Special Promotions This Month</h2>
-        <p style="color:#64748b;">Don't miss out on these amazing deals for your furry friends!</p>
-    </div>
-
-    <div class="promo-grid">
-        <?php
-        // Loop through the database promotions
-        if (!empty($promos_list)) {
-            foreach ($promos_list as $promo) {
-                // Determine the class name based on theme_color (defaults to purple if empty)
-                $theme_class = !empty($promo['theme_color']) ? htmlspecialchars($promo['theme_color']) : 'purple';
-                
-                echo '<div class="promo-card ' . $theme_class . '">';
-                echo '<span class="tag">' . htmlspecialchars($promo['tag'] ?? 'PROMO') . '</span>';
-                echo '<h3>' . htmlspecialchars($promo['title']) . '</h3>';
-                echo '<p>' . htmlspecialchars($promo['description'] ?? '') . '</p>';
-                echo '</div>';
-            }
-        } else {
-            // Fallback content in case the database is completely empty
-            echo '
-            <div class="promo-card purple">
-                <span class="tag">Vet Clinic Deal</span>
-                <h3>Free Checkup</h3>
-                <p>Get a complimentary wellness consultation when you book a complete vaccination package.</p>
-            </div>
-            <div class="promo-card teal">
-                <span class="tag">Boarding Perk</span>
-                <h3>Stay 5, Get 1</h3>
-                <p>Book 5 nights at our Pet Hotel and get the 6th night FREE, plus a complimentary exit bath!</p>
-            </div>
-            <div class="promo-card red">
-                <span class="tag">Birthday Special</span>
-                <h3>50% OFF</h3>
-                <p>Is it your pet\'s birth month? Bring their records and get half off their next grooming session!</p>
-            </div>';
-        }
-        ?>
-    </div>
-
-    <div class="section-header">
-        <h2>Our Premium Services</h2>
-        <p style="color:#64748b;">Everything your pet needs, all under one roof</p>
-    </div>
-
-    <div class="service-grid">
-        <div class="service-card"><i class="fa-solid fa-scissors"></i><h4>Pet Grooming</h4><a href="grooming.php">View Services →</a></div>
-        <div class="service-card"><i class="fa-solid fa-hotel"></i><h4>Pet Hotel</h4><a href="pethotel.php">View Services →</a></div>
-        <div class="service-card"><i class="fa-solid fa-stethoscope"></i><h4>Veterinary Care</h4><a href="vetclinic.php">View Services →</a></div>
-        <div class="service-card"><i class="fa-solid fa-calendar-check"></i><h4>Easy Booking</h4><a href="petservices.php">Get Started →</a></div>
-    </div>
-
-    <section class="testimonials">
-        <div class="section-header">
-            <h2>What Our Customers Say</h2>
-            <div class="stars" style="font-size:24px; margin-top:10px;">
-                <?php
-                $full_stars = floor($avg_rating);
-                for($i=1; $i<=5; $i++) {
-                    echo $i <= $full_stars ? '<i class="fa-solid fa-star"></i>' : '<i class="fa-regular fa-star"></i>';
-                }
-                ?>
-            </div>
-            <p style="color:#64748b;">
-                Rated <?php echo $avg_rating; ?>/5 by <?php echo number_format($total_reviews); ?> <?php echo $parent_text; ?>
-            </p>
-        </div>
-
-        <div class="testimonial-grid">
-            <?php if ($reviews_result && mysqli_num_rows($reviews_result) > 0): ?>
-                <?php while($row = mysqli_fetch_assoc($reviews_result)): ?>
-                    <div class="t-card">
-                        <div class="stars">
-                            <?php
-                            for($i=1; $i<=5; $i++) {
-                                echo $i <= $row['rating'] ? '<i class="fa-solid fa-star"></i>' : '<i class="fa-regular fa-star"></i>';
-                            }
-                            ?>
-                        </div>
-                        <p class="t-text">"<?php echo htmlspecialchars($row['comment']); ?>"</p>
-                        <div class="t-user">
-                            <div class="t-avatar">
-                                <?php echo strtoupper(substr($row['full_name'], 0, 1)); ?>
+                <article class="slide slide-1 active">
+                    <div class="slide-inner">
+                        <div class="hero-content">
+                            <div class="hero-badge">
+                                <i class="fa-solid fa-paw"></i> Boogie's Pet Care
                             </div>
-                            <div>
-                                <strong><?php echo htmlspecialchars($row['full_name']); ?></strong><br>
-                                <small><?php echo htmlspecialchars($row['service']); ?> Client</small>
-                            </div>
+                            <h1>Exceptional care for your best friend.</h1>
+                            <p>
+                                Dasmariñas' pet care destination for professional grooming,
+                                veterinary services, and a comfortable place to stay.
+                            </p>
+                            <a href="petservices.php" class="btn-join">
+                                Explore Our Services <i class="fa-solid fa-arrow-right"></i>
+                            </a>
                         </div>
                     </div>
-                <?php endwhile; ?>
-            <?php else: ?>
-                <p style="width: 100%; text-align: center; color: #64748b;">No reviews yet. Be the first to leave one!</p>
-            <?php endif; ?>
-        </div>
-        <a href="contactus.php" style="color:var(--brand-blue); font-weight:700; text-decoration:none; display:inline-block;">Read More Reviews <i class="fa-solid fa-arrow-right"></i></a>
-    </section>
+                </article>
 
-    <footer class="cta-section">
+                <article class="slide slide-2">
+                    <div class="slide-inner">
+                        <div class="hero-content">
+                            <div class="hero-badge">
+                                <i class="fa-solid fa-heart-pulse"></i> Pet health & wellness
+                            </div>
+                            <h1>Professional veterinary care for every stage.</h1>
+                            <p>
+                                Help keep your furry family members healthy and happy
+                                with convenient veterinary services and appointment booking.
+                            </p>
+                            <a href="vetclinic.php" class="btn-join">
+                                View Vet Services <i class="fa-solid fa-arrow-right"></i>
+                            </a>
+                        </div>
+                    </div>
+                </article>
+
+            </div>
+
+            <div class="slider-dots" aria-label="Hero slider controls">
+                <span class="dot active" onclick="setSlide(0)"></span>
+                <span class="dot" onclick="setSlide(1)"></span>
+            </div>
+        </section>
+
+        <section class="stats-wrap">
+            <div class="stats-bar">
+                <div class="stat-item">
+                    <i class="fa-solid fa-award"></i>
+                    <strong><?php echo number_format($total_reviews); ?></strong>
+                    <span>Happy Customers</span>
+                </div>
+                <div class="stat-item">
+                    <i class="fa-solid fa-star"></i>
+                    <strong><?php echo $avg_rating; ?>/5</strong>
+                    <span>Average Rating</span>
+                </div>
+                <div class="stat-item">
+                    <i class="fa-solid fa-clock"></i>
+                    <strong>9am - 6pm</strong>
+                    <span>Shop Service</span>
+                </div>
+                <div class="stat-item">
+                    <i class="fa-solid fa-shield-heart"></i>
+                    <strong>5+</strong>
+                    <span>Years in Service</span>
+                </div>
+            </div>
+        </section>
+
+        <section class="home-section">
+            <div class="section-heading">
+                <span class="badge"><i class="fa-solid fa-tag"></i> Limited-time offers</span>
+                <h2>Special Promotions This Month</h2>
+                <p>Don't miss out on current deals for your furry friends.</p>
+            </div>
+
+            <div class="promo-grid">
+                <?php if (!empty($promos_list)): ?>
+                    <?php foreach ($promos_list as $promo): ?>
+                        <?php
+                            $theme_class = !empty($promo['theme_color'])
+                                ? htmlspecialchars($promo['theme_color'])
+                                : 'purple';
+                        ?>
+                        <div class="promo-card <?php echo $theme_class; ?>">
+                            <span class="tag"><?php echo htmlspecialchars($promo['tag'] ?? 'PROMO'); ?></span>
+                            <h3><?php echo htmlspecialchars($promo['title']); ?></h3>
+                            <p><?php echo htmlspecialchars($promo['description'] ?? ''); ?></p>
+                        </div>
+                    <?php endforeach; ?>
+                <?php else: ?>
+                    <div class="promo-card purple">
+                        <span class="tag">Vet Clinic Deal</span>
+                        <h3>Free Checkup</h3>
+                        <p>Get a complimentary wellness consultation when you book a complete vaccination package.</p>
+                    </div>
+                    <div class="promo-card teal">
+                        <span class="tag">Boarding Perk</span>
+                        <h3>Stay 5, Get 1</h3>
+                        <p>Book 5 nights at our Pet Hotel and get the 6th night FREE, plus a complimentary exit bath!</p>
+                    </div>
+                    <div class="promo-card red">
+                        <span class="tag">Birthday Special</span>
+                        <h3>50% OFF</h3>
+                        <p>Is it your pet's birth month? Bring their records and get half off their next grooming session!</p>
+                    </div>
+                <?php endif; ?>
+            </div>
+        </section>
+
+        <section class="home-section">
+            <div class="section-heading">
+                <div class="section-kicker">Everything in one place</div>
+                <h2>Our Premium Services</h2>
+                <p>Explore the care your pet needs, from grooming to veterinary support.</p>
+            </div>
+
+            <div class="service-grid">
+                <div class="service-card">
+                    <i class="fa-solid fa-scissors"></i>
+                    <h4>Pet Grooming</h4>
+                    <a href="grooming.php">View Services <i class="fa-solid fa-arrow-right"></i></a>
+                </div>
+                <div class="service-card">
+                    <i class="fa-solid fa-hotel"></i>
+                    <h4>Pet Hotel</h4>
+                    <a href="pethotel.php">View Services <i class="fa-solid fa-arrow-right"></i></a>
+                </div>
+                <div class="service-card">
+                    <i class="fa-solid fa-stethoscope"></i>
+                    <h4>Veterinary Care</h4>
+                    <a href="vetclinic.php">View Services <i class="fa-solid fa-arrow-right"></i></a>
+                </div>
+                <div class="service-card">
+                    <i class="fa-solid fa-calendar-check"></i>
+                    <h4>Easy Booking</h4>
+                    <a href="petservices.php">Get Started <i class="fa-solid fa-arrow-right"></i></a>
+                </div>
+            </div>
+        </section>
+
+        <section class="testimonials">
+            <div class="testimonial-inner">
+                <div class="section-heading">
+                    <div class="section-kicker">Real customer feedback</div>
+                    <h2>What Our Customers Say</h2>
+
+                    <div style="color:#f4b900;font-size:20px;margin-top:10px;">
+                        <?php
+                            if ($total_reviews > 0) {
+                                $full_stars = floor((float)$avg_rating);
+                                for($i = 0; $i < 5; $i++) {
+                                    if ($i < $full_stars) {
+                                        echo '<i class="fa-solid fa-star"></i>';
+                                    } elseif ($i == $full_stars && ((float)$avg_rating > $full_stars)) {
+                                        echo '<i class="fa-solid fa-star-half-stroke"></i>';
+                                    } else {
+                                        echo '<i class="fa-regular fa-star"></i>';
+                                    }
+                                }
+                            } else {
+                                for($i = 0; $i < 5; $i++) {
+                                    echo '<i class="fa-regular fa-star"></i>';
+                                }
+                            }
+                        ?>
+                    </div>
+
+                    <p>
+                        <?php
+                            if ($total_reviews > 0) {
+                                echo "Rated " . htmlspecialchars($avg_rating) . "/5 by " . number_format($total_reviews) . " " . $parent_text;
+                            } else {
+                                echo "No reviews yet. Be the first to share your experience!";
+                            }
+                        ?>
+                    </p>
+                </div>
+
+                <div class="testimonial-grid">
+                    <?php if (!empty($reviews_list)): ?>
+                        <?php foreach($reviews_list as $row): ?>
+                            <?php
+                                $review_name = $row['full_name'] ?? 'Valued Client';
+                                $initial = strtoupper(substr($review_name, 0, 1));
+                                if (!preg_match('/^[A-Z0-9]$/', $initial)) {
+                                    $initial = 'P';
+                                }
+                            ?>
+                            <article class="t-card">
+                                <div class="stars">
+                                    <?php
+                                        for($i = 1; $i <= 5; $i++) {
+                                            echo $i <= $row['rating']
+                                                ? '<i class="fa-solid fa-star"></i>'
+                                                : '<i class="fa-regular fa-star"></i>';
+                                        }
+                                    ?>
+                                </div>
+                                <p class="t-text">"<?php echo htmlspecialchars($row['comment']); ?>"</p>
+                                <div class="t-user">
+                                    <div class="t-avatar"><?php echo htmlspecialchars($initial); ?></div>
+                                    <div>
+                                        <strong><?php echo htmlspecialchars($review_name); ?></strong>
+                                        <small><?php echo htmlspecialchars($row['service']); ?> Client</small>
+                                    </div>
+                                </div>
+                            </article>
+                        <?php endforeach; ?>
+                    <?php else: ?>
+                        <div class="empty-reviews">
+                            <i class="fa-regular fa-comment-dots"></i>
+                            <h3>No reviews yet</h3>
+                            <p>Customer reviews will appear here automatically once submitted.</p>
+                        </div>
+                    <?php endif; ?>
+                </div>
+
+                <a href="contactus.php" class="reviews-link">
+                    Read More Reviews <i class="fa-solid fa-arrow-right"></i>
+                </a>
+            </div>
+        </section>
+    </main>
+
+    <section class="cta-area">
         <div class="cta-box">
-            <h2>Ready to Give Your Pet the Best Care?</h2>
-            <p>Join thousands of satisfied customers who trust Boogie's Pet Care for all their pet needs</p>
-            <div class="btn-group">
+            <h2>Ready to give your pet the best care?</h2>
+            <p>Choose a service and book your pet's next visit with Boogie's.</p>
+
+            <div class="cta-buttons">
                 <a href="register.php" class="btn-blue-solid">Create Free Account</a>
                 <a href="petservices.php" class="btn-blue-outline">Browse Services</a>
             </div>
+
             <div class="cta-footer">
-                <span><i class="fa-solid fa-check"></i> No credit card required</span>
-                <span><i class="fa-solid fa-check"></i> Reliable Daily Support</span>
+                <span><i class="fa-solid fa-check"></i> Easy online booking</span>
+                <span><i class="fa-solid fa-check"></i> Reliable daily support</span>
                 <span><i class="fa-solid fa-check"></i> SMS notifications</span>
             </div>
         </div>
+    </section>
 
+    <footer>
         <div class="footer-main">
             <div>
-                <h4 style="display:flex; align-items:center; gap:10px;"><i class="fa-solid fa-paw"></i> Boogie's Pet Care</h4>
+                <h4><i class="fa-solid fa-paw"></i> Boogie's Pet Care</h4>
                 <p>Your trusted partner for all your pet care needs in Dasmariñas, Cavite.</p>
                 <div class="socials">
                     <a href="https://www.facebook.com/boogiespetsupplies"><i class="fa-brands fa-facebook-f"></i></a>
@@ -392,41 +1555,145 @@ try {
                 <h4>Contact Us</h4>
                 <p><i class="fa-solid fa-phone"></i> (046) 887 4714</p>
                 <p><i class="fa-solid fa-envelope"></i> boogiespetcareservices@gmail.com</p>
-                <p><i class="fa-solid fa-location-dot"></i> 110 Don Placido Campos Ave San Agustin 3, Dasmariñas, Philippines</p>
+                <p><i class="fa-solid fa-location-dot"></i> 110 Don Placido Campos Ave San Agustin 3, Dasmariñas, Philippines, 4114</p>
             </div>
         </div>
 
         <div class="footer-bottom">
-            <p>© 2026 Boogie's Pet Care & Services - Dasmariñas Branch. All rights reserved.</p>
+            © 2026 Boogie's Pet Care & Services - Dasmariñas Branch. All rights reserved.
             <div style="margin-top:10px;">
-                <a href="staff/stafflogin.php"><i class="fa-solid fa-briefcase"></i> Personal Portal</a> |
-                
+                <a href="staff/stafflogin.php" style="color:#cbd5e1;text-decoration:none;font-weight:700;">
+                    <i class="fa-solid fa-briefcase"></i> Personal Portal
+                </a>
             </div>
         </div>
     </footer>
 
-<script>
-    let currentSlideIndex = 0;
-    const slides = document.querySelectorAll('.slide');
-    const dots = document.querySelectorAll('.dot');
-    const track = document.querySelector('.slider-track');
+    <script>
+        let currentSlideIndex = 0;
+        const slides = document.querySelectorAll('.slide');
+        const dots = document.querySelectorAll('.dot');
+        const track = document.querySelector('.slider-track');
 
-    function setSlide(index) {
-        currentSlideIndex = index;
-        track.style.transform = `translateX(-${index * 100}%)`;
-        
-        slides.forEach(s => s.classList.remove('active'));
-        dots.forEach(d => d.classList.remove('active'));
-        
-        slides[index].classList.add('active');
-        dots[index].classList.add('active');
-    }
+        function setSlide(index) {
+            currentSlideIndex = index;
+            track.style.transform = `translateX(-${index * 100}%)`;
 
-    setInterval(() => {
-        currentSlideIndex = (currentSlideIndex + 1) % slides.length;
-        setSlide(currentSlideIndex);
-    }, 6000);
-</script>
+            slides.forEach(s => s.classList.remove('active'));
+            dots.forEach(d => d.classList.remove('active'));
+
+            if (slides[index]) slides[index].classList.add('active');
+            if (dots[index]) dots[index].classList.add('active');
+        }
+
+        if (slides.length > 1) {
+            setInterval(() => {
+                currentSlideIndex = (currentSlideIndex + 1) % slides.length;
+                setSlide(currentSlideIndex);
+            }, 6000);
+        }
+
+        /* ===== MOBILE MENU ===== */
+        const mobileMenuBtn = document.getElementById('mobileMenuBtn');
+        const publicCategories = document.getElementById('publicCategories');
+
+        if (mobileMenuBtn && publicCategories) {
+            mobileMenuBtn.addEventListener('click', function () {
+                const isOpen = publicCategories.classList.toggle('mobile-open');
+                mobileMenuBtn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+                mobileMenuBtn.setAttribute(
+                    'aria-label',
+                    isOpen ? 'Close navigation menu' : 'Open navigation menu'
+                );
+                mobileMenuBtn.innerHTML = isOpen
+                    ? '<i class="fa-solid fa-xmark"></i>'
+                    : '<i class="fa-solid fa-bars"></i>';
+            });
+        }
+
+        /* ===== WORKING SITE SEARCH ===== */
+        const searchForm = document.getElementById('siteSearchForm');
+        const searchInput = document.getElementById('siteSearchInput');
+        const searchStatus = document.getElementById('searchStatus');
+
+        const searchRoutes = [
+            {
+                keywords: ['grooming', 'groom', 'bath', 'haircut', 'hair cut'],
+                label: 'Grooming Services',
+                url: 'grooming.php'
+            },
+            {
+                keywords: ['vet', 'veterinary', 'clinic', 'checkup', 'check-up', 'vaccination', 'vaccine', 'deworming'],
+                label: 'Vet Clinic',
+                url: 'vetclinic.php'
+            },
+            {
+                keywords: ['hotel', 'boarding', 'daycare', 'day care', 'stay', 'pet hotel'],
+                label: 'Pet Hotel',
+                url: 'pethotel.php'
+            },
+            {
+                keywords: ['service', 'services', 'price', 'prices', 'pet care', 'pet service'],
+                label: 'Pet Services',
+                url: 'petservices.php'
+            },
+            {
+                keywords: ['contact', 'phone', 'email', 'address', 'support'],
+                label: 'Contact Us',
+                url: 'contactus.php'
+            }
+        ];
+
+        function showSearchStatus(message) {
+            if (!searchStatus) return;
+
+            searchStatus.innerHTML = message;
+            searchStatus.classList.add('show');
+
+            clearTimeout(window.searchStatusTimer);
+            window.searchStatusTimer = setTimeout(() => {
+                searchStatus.classList.remove('show');
+            }, 2600);
+        }
+
+        function findSearchRoute(query) {
+            const normalized = query.toLowerCase().trim();
+
+            // Exact/partial keyword match first.
+            for (const route of searchRoutes) {
+                if (route.keywords.some(keyword => normalized.includes(keyword))) {
+                    return route;
+                }
+            }
+
+            return null;
+        }
+
+        if (searchForm && searchInput) {
+            searchForm.addEventListener('submit', function (event) {
+                event.preventDefault();
+
+                const query = searchInput.value.trim();
+
+                if (!query) {
+                    searchInput.focus();
+                    showSearchStatus('Type a service to search, like <strong>grooming</strong>, <strong>vet</strong>, or <strong>hotel</strong>.');
+                    return;
+                }
+
+                const route = findSearchRoute(query);
+
+                if (route) {
+                    showSearchStatus(`Opening <strong>${route.label}</strong>...`);
+                    setTimeout(() => {
+                        window.location.href = route.url;
+                    }, 180);
+                } else {
+                    showSearchStatus('No matching service found. Try <strong>grooming</strong>, <strong>vet</strong>, <strong>hotel</strong>, or <strong>services</strong>.');
+                }
+            });
+        }
+    </script>
 
 </body>
 </html>

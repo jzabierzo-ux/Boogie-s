@@ -1,26 +1,33 @@
 <?php
 session_start();
 
-// Include your database connection
-require_once 'db_connect.php'; 
+// Include Supabase/PostgreSQL database connection
+require_once 'db_supabase.php';
 
 // Check if user is logged in
 $is_logged_in = isset($_SESSION['logged_in']) && $_SESSION['logged_in'] === true;
 $user_name = $is_logged_in ? $_SESSION['user_name'] : "Guest";
 
 // Fetch ONLY grooming services from your services_pricelist table
-$result = false;
-if (isset($conn)) {
-    try {
-        // We filter by the grooming categories shown in your database screenshot
-        $sql = "SELECT * FROM services_pricelist 
-                WHERE category IN ('Basic Pet Grooming', 'Full Grooming Package', 'Bath & Blow Dry') 
-                AND is_available = 1 
-                ORDER BY category ASC, price ASC";
-        $result = $conn->query($sql);
-    } catch (mysqli_sql_exception $e) {
-        $result = false; 
-    }
+$result = [];
+
+try {
+    // PostgreSQL/Supabase boolean column
+    $stmt = $pdo->query("
+        SELECT *
+        FROM services_pricelist
+        WHERE category IN (
+            'Basic Pet Grooming',
+            'Full Grooming Package',
+            'Bath & Blow Dry'
+        )
+        AND is_available = 1
+        ORDER BY category ASC, price ASC
+    ");
+    $result = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    error_log("Grooming service query failed: " . $e->getMessage());
+    $result = [];
 }
 ?>
 <!DOCTYPE html>
@@ -693,8 +700,8 @@ if (isset($conn)) {
 
             <div class="services-grid">
 
-            <?php if ($result && $result->num_rows > 0): ?>
-                <?php while($row = $result->fetch_assoc()): ?>
+            <?php if (!empty($result)): ?>
+                <?php foreach ($result as $row): ?>
                     <?php
                         $category = $row['category'];
                         $category_lower = strtolower($category);
@@ -752,7 +759,7 @@ if (isset($conn)) {
                             </div>
                         </div>
                     </article>
-                <?php endwhile; ?>
+                <?php endforeach; ?>
             <?php else: ?>
                 <div class="no-data">
                     <i class="fa-solid fa-circle-exclamation"></i>

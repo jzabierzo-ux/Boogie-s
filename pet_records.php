@@ -1,38 +1,77 @@
 <?php
 session_start();
-include 'db_connect.php'; 
+require_once 'db_supabase.php';
 
-// 1. SECURITY: Check if logged in
+// Check if user is logged in
 if (!isset($_SESSION['user_id'])) {
     header("Location: login.php");
     exit;
 }
 
-$user_id = $_SESSION['user_id'];
-$full_name = isset($_SESSION['user_name']) ? $_SESSION['user_name'] : (isset($_SESSION['full_name']) ? $_SESSION['full_name'] : 'User');
+$user_id = (int)$_SESSION['user_id'];
+$full_name = $_SESSION['user_name'] ?? ($_SESSION['full_name'] ?? 'User');
 
 // --- FETCH UNREAD NOTIFICATIONS COUNT FOR HEADER ---
-$notif_header_query = "SELECT COUNT(*) as unread FROM notifications WHERE user_id = '$user_id' AND is_read = 0";
-$notif_header_result = @mysqli_query($conn, $notif_header_query);
-$unread_count = ($notif_header_result) ? mysqli_fetch_assoc($notif_header_result)['unread'] : 0;
+$unread_count = 0;
+
+try {
+    $notif_header_stmt = $pdo->prepare("
+        SELECT COUNT(*) AS unread
+        FROM notifications
+        WHERE user_id = :user_id
+          AND is_read = FALSE
+    ");
+    $notif_header_stmt->execute([
+        ':user_id' => $user_id
+    ]);
+
+    $unread_row = $notif_header_stmt->fetch(PDO::FETCH_ASSOC);
+    $unread_count = (int)($unread_row['unread'] ?? 0);
+} catch (PDOException $e) {
+    error_log("Unread notification count failed: " . $e->getMessage());
+}
 
 // --- FETCH LATEST 5 NOTIFICATIONS FOR DROPDOWN ---
 $notifications = [];
-$stmt_notif_list = $conn->prepare("SELECT id, message, created_at, is_read FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 5");
-if ($stmt_notif_list) {
-    $stmt_notif_list->bind_param("i", $user_id);
-    $stmt_notif_list->execute();
-    $res_list = $stmt_notif_list->get_result();
-    if ($res_list) {
-        $notifications = $res_list->fetch_all(MYSQLI_ASSOC);
-    }
-    $stmt_notif_list->close();
+
+try {
+    $stmt_notif_list = $pdo->prepare("
+        SELECT id, message, created_at, is_read
+        FROM notifications
+        WHERE user_id = :user_id
+        ORDER BY created_at DESC
+        LIMIT 5
+    ");
+
+    $stmt_notif_list->execute([
+        ':user_id' => $user_id
+    ]);
+
+    $notifications = $stmt_notif_list->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    error_log("Notification list fetch failed: " . $e->getMessage());
 }
 
 // --- FETCH USER PROFILE IMAGE ---
-$user_query = mysqli_query($conn, "SELECT profile_image FROM users WHERE id = '$user_id'");
-$user_data = mysqli_fetch_assoc($user_query);
-$profile_image = isset($user_data['profile_image']) ? $user_data['profile_image'] : null;
+$profile_image = null;
+
+try {
+    $user_stmt = $pdo->prepare("
+        SELECT profile_image
+        FROM users
+        WHERE id = :user_id
+        LIMIT 1
+    ");
+
+    $user_stmt->execute([
+        ':user_id' => $user_id
+    ]);
+
+    $user_data = $user_stmt->fetch(PDO::FETCH_ASSOC);
+    $profile_image = $user_data['profile_image'] ?? null;
+} catch (PDOException $e) {
+    error_log("Profile image fetch failed: " . $e->getMessage());
+}
 
 // 2. CHECK PET ID
 if (!isset($_GET['id']) || empty($_GET['id'])) {
@@ -40,41 +79,111 @@ if (!isset($_GET['id']) || empty($_GET['id'])) {
     exit;
 }
 
-$pet_id = mysqli_real_escape_string($conn, $_GET['id']);
+$pet_id = (int)$_GET['id'];
 
 // 3. FETCH PET DETAILS
-$pet_query = "SELECT * FROM pets WHERE id = '$pet_id' AND owner_id = '$user_id'";
-$pet_result = mysqli_query($conn, $pet_query);
+try {
+    $pet_stmt = $pdo->prepare("
+        SELECT *
+        FROM pets
+        WHERE id = :pet_id
+          AND owner_id = :user_id
+        LIMIT 1
+    ");
 
-if (!$pet_result || mysqli_num_rows($pet_result) == 0) {
+    $pet_stmt->execute([
+        ':pet_id' => $pet_id,
+        ':user_id' => $user_id
+    ]);
+
+    $pet = $pet_stmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$pet) {
+        die("
+        <div style='text-align:center; padding: 100px; font-family: Poppins, sans-serif; background: #f4f7f6; height: 100vh;'>
+            <h2 style='color: #dc3545;'><i class='fa-solid fa-triangle-exclamation'></i> Pet Not Found</h2>
+            <p>You are not authorized to view this record or it doesn't exist.</p>
+            <a href='petprofile.php' style='display:inline-block; margin-top:15px; padding: 10px 20px; background:#001f3f; color:white; text-decoration:none; border-radius:8px;'>Go Back</a>
+        </div>");
+    }
+} catch (PDOException $e) {
+    error_log("Pet details fetch failed: " . $e->getMessage());
     die("
     <div style='text-align:center; padding: 100px; font-family: Poppins, sans-serif; background: #f4f7f6; height: 100vh;'>
-        <h2 style='color: #dc3545;'><i class='fa-solid fa-triangle-exclamation'></i> Pet Not Found</h2>
-        <p>You are not authorized to view this record or it doesn't exist.</p>
+        <h2 style='color: #dc3545;'><i class='fa-solid fa-triangle-exclamation'></i> Unable to Load Pet</h2>
+        <p>Please try again later.</p>
         <a href='petprofile.php' style='display:inline-block; margin-top:15px; padding: 10px 20px; background:#001f3f; color:white; text-decoration:none; border-radius:8px;'>Go Back</a>
     </div>");
 }
-$pet = mysqli_fetch_assoc($pet_result);
 
 // 4. FETCH RECORDS FROM APPOINTMENTS TABLE (Filtered by 'Completed' booking_status)
 
-// A. VET MEDICAL RECORDS 
-$vet_query = "SELECT * FROM appointments 
-              WHERE pet_id = '$pet_id' AND service LIKE '%Vet%' AND booking_status = 'Completed' 
-              ORDER BY appointment_date DESC";
-$vet_result = mysqli_query($conn, $vet_query);
+$vet_records = [];
+$grooming_records = [];
+$hotel_records = [];
 
-// B. GROOMING HISTORY 
-$grooming_query = "SELECT * FROM appointments 
-                   WHERE pet_id = '$pet_id' AND service LIKE '%Grooming%' AND booking_status = 'Completed' 
-                   ORDER BY appointment_date DESC";
-$grooming_result = mysqli_query($conn, $grooming_query);
+// A. VET MEDICAL RECORDS
+try {
+    $vet_stmt = $pdo->prepare("
+        SELECT *
+        FROM appointments
+        WHERE pet_id = :pet_id
+          AND service ILIKE :service_pattern
+          AND booking_status = 'Completed'
+        ORDER BY appointment_date DESC
+    ");
 
-// C. PET HOTEL HISTORY 
-$hotel_query = "SELECT * FROM appointments 
-                WHERE pet_id = '$pet_id' AND service LIKE '%Hotel%' AND booking_status = 'Completed' 
-                ORDER BY appointment_date DESC";
-$hotel_result = mysqli_query($conn, $hotel_query);
+    $vet_stmt->execute([
+        ':pet_id' => $pet_id,
+        ':service_pattern' => '%Vet%'
+    ]);
+
+    $vet_records = $vet_stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    error_log("Vet records fetch failed: " . $e->getMessage());
+}
+
+// B. GROOMING HISTORY
+try {
+    $grooming_stmt = $pdo->prepare("
+        SELECT *
+        FROM appointments
+        WHERE pet_id = :pet_id
+          AND service ILIKE :service_pattern
+          AND booking_status = 'Completed'
+        ORDER BY appointment_date DESC
+    ");
+
+    $grooming_stmt->execute([
+        ':pet_id' => $pet_id,
+        ':service_pattern' => '%Grooming%'
+    ]);
+
+    $grooming_records = $grooming_stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    error_log("Grooming records fetch failed: " . $e->getMessage());
+}
+
+// C. PET HOTEL HISTORY
+try {
+    $hotel_stmt = $pdo->prepare("
+        SELECT *
+        FROM appointments
+        WHERE pet_id = :pet_id
+          AND service ILIKE :service_pattern
+          AND booking_status = 'Completed'
+        ORDER BY appointment_date DESC
+    ");
+
+    $hotel_stmt->execute([
+        ':pet_id' => $pet_id,
+        ':service_pattern' => '%Hotel%'
+    ]);
+
+    $hotel_records = $hotel_stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    error_log("Hotel records fetch failed: " . $e->getMessage());
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -849,7 +958,7 @@ footer{
                     </div>
                 </div>
 
-                <?php $vet_count = $vet_result ? mysqli_num_rows($vet_result) : 0; ?>
+                <?php $vet_count = count($vet_records); ?>
                 <span class="record-count"><?php echo $vet_count; ?> records</span>
             </div>
 
@@ -866,7 +975,7 @@ footer{
                         </thead>
 
                         <tbody>
-                            <?php while($row = mysqli_fetch_assoc($vet_result)): ?>
+                            <?php foreach ($vet_records as $row): ?>
                                 <tr>
                                     <td class="date-cell">
                                         <strong><?php echo date('M d, Y', strtotime($row['appointment_date'])); ?></strong>
@@ -890,7 +999,7 @@ footer{
                                         ?>
                                     </td>
                                 </tr>
-                            <?php endwhile; ?>
+                            <?php endforeach; ?>
                         </tbody>
                     </table>
                 </div>
@@ -917,7 +1026,7 @@ footer{
                     </div>
                 </div>
 
-                <?php $groom_count = $grooming_result ? mysqli_num_rows($grooming_result) : 0; ?>
+                <?php $groom_count = count($grooming_records); ?>
                 <span class="record-count"><?php echo $groom_count; ?> records</span>
             </div>
 
@@ -934,7 +1043,7 @@ footer{
                         </thead>
 
                         <tbody>
-                            <?php while($row = mysqli_fetch_assoc($grooming_result)): ?>
+                            <?php foreach ($grooming_records as $row): ?>
                                 <tr>
                                     <td class="date-cell">
                                         <strong><?php echo date('M d, Y', strtotime($row['appointment_date'])); ?></strong>
@@ -954,7 +1063,7 @@ footer{
                                         ₱<?php echo number_format($row['total_price'] ?? 0, 2); ?>
                                     </td>
                                 </tr>
-                            <?php endwhile; ?>
+                            <?php endforeach; ?>
                         </tbody>
                     </table>
                 </div>
@@ -981,7 +1090,7 @@ footer{
                     </div>
                 </div>
 
-                <?php $hotel_count = $hotel_result ? mysqli_num_rows($hotel_result) : 0; ?>
+                <?php $hotel_count = count($hotel_records); ?>
                 <span class="record-count"><?php echo $hotel_count; ?> records</span>
             </div>
 
@@ -998,7 +1107,7 @@ footer{
                         </thead>
 
                         <tbody>
-                            <?php while($row = mysqli_fetch_assoc($hotel_result)): ?>
+                            <?php foreach ($hotel_records as $row): ?>
                                 <tr>
                                     <td class="date-cell">
                                         <strong><?php echo date('M d, Y', strtotime($row['appointment_date'])); ?></strong>
@@ -1024,7 +1133,7 @@ footer{
                                         <?php echo !empty($row['remarks']) ? htmlspecialchars($row['remarks']) : '-'; ?>
                                     </td>
                                 </tr>
-                            <?php endwhile; ?>
+                            <?php endforeach; ?>
                         </tbody>
                     </table>
                 </div>

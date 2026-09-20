@@ -1,10 +1,10 @@
 <?php
 session_start();
-include '../db_connect.php'; 
+require_once '../db_supabase.php';
 
 // --- SECURITY CHECK (FIXED PARA SA VET/STAFF) ---
 $current_role = isset($_SESSION['role']) ? strtolower(trim($_SESSION['role'])) : '';
-$is_admin_or_supervisor = isset($_SESSION['logged_in']) && in_array($current_role, ['admin', 'supervisor', 'staff']);
+$is_admin_or_supervisor = isset($_SESSION['logged_in']) && in_array($current_role, ['admin', 'supervisor', 'staff'], true);
 $is_staff = isset($_SESSION['staff_logged_in']) && $_SESSION['staff_logged_in'] === true;
 
 if (!$is_admin_or_supervisor && !$is_staff) {
@@ -23,27 +23,58 @@ $full_display_name = $staff_name;
 
 if (isset($_SESSION['user_id']) || isset($_SESSION['staff_id'])) {
     $uid = $_SESSION['user_id'] ?? $_SESSION['staff_id'];
-    
-    $get_staff = mysqli_query($conn, "SELECT full_name, profile_image FROM users WHERE id = '$uid'");
-    
-    if($get_staff && $staff_data = mysqli_fetch_assoc($get_staff)) {
-        $profile_img_path = $staff_data['profile_image']; 
-        if (!empty($staff_data['full_name'])) {
-            $full_display_name = $staff_data['full_name'];
+
+    try {
+        $get_staff = $pdo->prepare("
+            SELECT full_name, profile_image
+            FROM users
+            WHERE id = :uid
+            LIMIT 1
+        ");
+        $get_staff->execute([
+            ':uid' => (int)$uid
+        ]);
+
+        $staff_data = $get_staff->fetch(PDO::FETCH_ASSOC);
+
+        if ($staff_data) {
+            $profile_img_path = $staff_data['profile_image'] ?? '';
+
+            if (!empty($staff_data['full_name'])) {
+                $full_display_name = $staff_data['full_name'];
+            }
         }
+    } catch (PDOException $e) {
+        error_log("Staff profile query failed: " . $e->getMessage());
     }
 }
 
-// Linisin ang pangalan para sa Avatar Initial 
-$clean_name = trim(str_replace('Dr. ', '', $full_display_name), " ,"); 
-$first_letter = strtoupper(substr($clean_name, 0, 1)); 
+// Linisin ang pangalan para sa Avatar Initial
+$clean_name = trim(str_replace('Dr. ', '', $full_display_name), " ,");
+$first_letter = strtoupper(substr($clean_name, 0, 1));
 
 // Siguraduhing may "Dr. " na nakadikit sa buong pangalan para formal
-$display_with_title = (stripos($full_display_name, 'Dr.') === false) ? 'Dr. ' . $full_display_name : $full_display_name;
+$display_with_title = (stripos($full_display_name, 'Dr.') === false)
+    ? 'Dr. ' . $full_display_name
+    : $full_display_name;
 
 // --- FETCH NOTIFICATIONS ---
-$admin_notif_query = mysqli_query($conn, "SELECT * FROM admin_notifications WHERE is_read = 0 ORDER BY created_at DESC");
-$unread_count = ($admin_notif_query) ? mysqli_num_rows($admin_notif_query) : 0;
+$admin_notifications = [];
+$unread_count = 0;
+
+try {
+    $admin_notif_query = $pdo->query("
+        SELECT *
+        FROM admin_notifications
+        WHERE is_read = 0
+        ORDER BY created_at DESC
+    ");
+
+    $admin_notifications = $admin_notif_query->fetchAll(PDO::FETCH_ASSOC);
+    $unread_count = count($admin_notifications);
+} catch (PDOException $e) {
+    error_log("Admin notifications query failed: " . $e->getMessage());
+}
 
 // --- VIEW RECORD LOGIC ---
 // Check if a valid ID was passed in the URL
@@ -51,17 +82,29 @@ if (!isset($_GET['id']) || !is_numeric($_GET['id'])) {
     die("Invalid Patient ID.");
 }
 
-$pet_id = $_GET['id'];
+$pet_id = (int)$_GET['id'];
 
 // Fetch pet data from the database
-$query = "SELECT * FROM pets WHERE id = ?";
-$stmt = mysqli_prepare($conn, $query);
-mysqli_stmt_bind_param($stmt, "i", $pet_id);
-mysqli_stmt_execute($stmt);
-$result = mysqli_stmt_get_result($stmt);
+try {
+    $stmt = $pdo->prepare("
+        SELECT *
+        FROM pets
+        WHERE id = :pet_id
+        LIMIT 1
+    ");
 
-if (!$row = mysqli_fetch_assoc($result)) {
-    die("Patient not found in the database.");
+    $stmt->execute([
+        ':pet_id' => $pet_id
+    ]);
+
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$row) {
+        die("Patient not found in the database.");
+    }
+} catch (PDOException $e) {
+    error_log("Patient record query failed: " . $e->getMessage());
+    die("Unable to load patient record.");
 }
 
 // Map the data
@@ -74,31 +117,40 @@ $p_weight = $row['weight'] ?? 'Unknown';
 $o_name = $row['owner_name'] ?? 'Unknown';
 
 // --- KINUHA NATIN ANG TAMANG OWNER ID PARA SA NOTIF ---
-$owner_id = $row['owner_id'] ?? 0; 
+$owner_id = $row['owner_id'] ?? 0;
 
 $med_history = $row['medical_history'] ?? '';
-$special_needs = $row['special_needs'] ?? ''; 
+$special_needs = $row['special_needs'] ?? '';
 $p_status = $row['status'] ?? 'Pending';
 
 // --- SEND NOTE TO USER LOGIC (REMOVED MEDICAL HISTORY UPDATE) ---
-if (isset($_POST['add_note']) && !empty(trim($_POST['new_note']))) {
+if (isset($_POST['add_note']) && !empty(trim($_POST['new_note'] ?? ''))) {
     $new_note_text = trim($_POST['new_note']);
     $doctor_name = "Dr. " . str_replace('Dr. ', '', $clean_name);
-    
+
     // --- SEND NOTIFICATION TO THE PET OWNER ONLY ---
-    if ($owner_id > 0) {
+    if ((int)$owner_id > 0) {
         $notif_title = "New Medical Note for " . $p_name;
         $notif_message = "$doctor_name added a note for $p_name: \"$new_note_text\"";
-        
-        $notif_query = "INSERT INTO notifications (user_id, title, message, is_read, created_at) VALUES (?, ?, ?, 0, NOW())";
-        $notif_stmt = mysqli_prepare($conn, $notif_query);
-        
-        if ($notif_stmt) {
-            mysqli_stmt_bind_param($notif_stmt, "iss", $owner_id, $notif_title, $notif_message);
-            mysqli_stmt_execute($notif_stmt);
+
+        try {
+            $notif_stmt = $pdo->prepare("
+                INSERT INTO notifications
+                (user_id, title, message, is_read, created_at)
+                VALUES
+                (:user_id, :title, :message, 0, CURRENT_TIMESTAMP)
+            ");
+
+            $notif_stmt->execute([
+                ':user_id' => (int)$owner_id,
+                ':title' => $notif_title,
+                ':message' => $notif_message
+            ]);
+        } catch (PDOException $e) {
+            error_log("Medical note notification failed: " . $e->getMessage());
         }
     }
-    
+
     // Refresh page
     header("Location: view_records.php?id=" . $pet_id);
     exit;
@@ -313,14 +365,14 @@ if (isset($_POST['add_note']) && !empty(trim($_POST['new_note']))) {
                         </div>
                         
                         <div class="notif-body" id="admin-notif-list">
-                            <?php if($unread_count > 0 && $admin_notif_query): ?>
-                                <?php while($notif = mysqli_fetch_assoc($admin_notif_query)): ?>
+                            <?php if($unread_count > 0 && !empty($admin_notifications)): ?>
+                                <?php foreach($admin_notifications as $notif): ?>
                                     <div class="notif-item">
                                         <i class="fa-solid fa-circle-exclamation" style="color: #ef4444; margin-right: 5px;"></i>
                                         <?php echo htmlspecialchars($notif['message']); ?>
                                         <br><small style="color: #94a3b8; font-size: 11px;"><?php echo date('M d, g:i A', strtotime($notif['created_at'])); ?></small>
                                     </div>
-                                <?php endwhile; ?>
+                                <?php endforeach; ?>
                             <?php else: ?>
                                 <div class="notif-empty">No new clinic alerts.</div>
                             <?php endif; ?>

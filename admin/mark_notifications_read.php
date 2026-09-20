@@ -1,10 +1,14 @@
 <?php
 session_start();
-// Adjust this path if your db_connect is in a different folder!
-include '../db_connect.php'; 
+include '../db_supabase.php';
 
-$query = "UPDATE admin_notifications SET is_read = 1 WHERE is_read = 0";
-mysqli_query($conn, $query);
+// Mark all unread admin notifications as read
+try {
+    $query = "UPDATE admin_notifications SET is_read = TRUE WHERE is_read = FALSE";
+    $pdo->exec($query);
+} catch (PDOException $e) {
+    // Keep database error details out of the browser.
+}
 
 header("Location: managebooking.php");
 exit();

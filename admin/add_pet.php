@@ -1,11 +1,11 @@
 <?php
 session_start();
-include '../db_connect.php';
+require_once '../db_supabase.php';
 
-// --- UNIVERSAL SECURITY CHECK (BAGONG IPAPALIT) ---
+// --- UNIVERSAL SECURITY CHECK ---
 $current_role = isset($_SESSION['role']) ? strtolower(trim($_SESSION['role'])) : '';
 
-if (!isset($_SESSION['logged_in']) || !in_array($current_role, ['admin', 'supervisor', 'staff'])) {
+if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true || !in_array($current_role, ['admin', 'supervisor', 'staff'], true)) {
     header("Location: stafflogin.php");
     exit();
 }
@@ -15,53 +15,79 @@ $error_msg = "";
 
 // 2. HANDLE FORM SUBMISSION (CREATE PET + SEND NOTIFICATION)
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $p_name = $_POST['name'];
-    $p_type = $_POST['pet_type'];
-    $p_breed = $_POST['breed'];
-    $p_gender = $_POST['gender'];
-    $p_age = $_POST['age'];
-    $p_weight = $_POST['weight'];
-    $owner_id = $_POST['owner_id']; 
+    $p_name = trim($_POST['name'] ?? '');
+    $p_type = trim($_POST['pet_type'] ?? '');
+    $p_breed = trim($_POST['breed'] ?? '');
+    $p_gender = trim($_POST['gender'] ?? '');
+    $p_age = trim($_POST['age'] ?? '');
+    $p_weight = trim($_POST['weight'] ?? '');
+    $owner_id = (int)($_POST['owner_id'] ?? 0);
 
-    // Kunin ang full_name ng napiling owner
-    $user_query = "SELECT full_name FROM users WHERE id = ?";
-    $user_stmt = mysqli_prepare($conn, $user_query);
-    mysqli_stmt_bind_param($user_stmt, "i", $owner_id);
-    mysqli_stmt_execute($user_stmt);
-    $user_result = mysqli_stmt_get_result($user_stmt);
-    
-    $owner_name = "Unknown Owner";
-    if ($user_row = mysqli_fetch_assoc($user_result)) {
-        $owner_name = $user_row['full_name']; 
-    }
-
-    // A. INSERT SA PETS TABLE
-    $insert_query = "INSERT INTO pets (owner_id, owner_name, name, pet_type, breed, gender, age, weight) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
-    $insert_stmt = mysqli_prepare($conn, $insert_query);
-    mysqli_stmt_bind_param($insert_stmt, "isssssss", $owner_id, $owner_name, $p_name, $p_type, $p_breed, $p_gender, $p_age, $p_weight);
-    
-    if (mysqli_stmt_execute($insert_stmt)) {
-        
-        // B. AUTO-NOTIFICATION PARA SA CUSTOMER
-        $notif_title = "New Pet Profile Created!";
-        $notif_message = "A new pet profile for '$p_name' has been successfully registered to your account.";
-        $notif_type = "system"; 
-        
-        // Siguraduhin na 'user_id' ang column name sa notifications table mo
-        $notif_query = "INSERT INTO notifications (user_id, title, message, type, is_read, created_at) VALUES (?, ?, ?, ?, 0, NOW())";
-        $notif_stmt = mysqli_prepare($conn, $notif_query);
-        mysqli_stmt_bind_param($notif_stmt, "isss", $owner_id, $notif_title, $notif_message, $notif_type);
-        mysqli_stmt_execute($notif_stmt);
-
-        $success_msg = "New pet successfully added and notification sent to owner!";
+    if ($p_name === '' || $p_type === '' || $p_gender === '' || $owner_id <= 0) {
+        $error_msg = "Please complete all required pet and owner fields.";
     } else {
-        $error_msg = "Error adding record: " . mysqli_error($conn);
+        try {
+            // Kunin ang full_name ng napiling owner
+            $user_stmt = $pdo->prepare("SELECT full_name FROM users WHERE id = :owner_id LIMIT 1");
+            $user_stmt->execute([':owner_id' => $owner_id]);
+            $user_row = $user_stmt->fetch(PDO::FETCH_ASSOC);
+
+            $owner_name = $user_row['full_name'] ?? 'Unknown Owner';
+
+            if (!$user_row) {
+                throw new RuntimeException('Selected customer was not found.');
+            }
+
+            // A. INSERT SA PETS TABLE
+            $insert_stmt = $pdo->prepare("\n                INSERT INTO pets\n                    (owner_id, owner_name, name, pet_type, breed, gender, age, weight)\n                VALUES\n                    (:owner_id, :owner_name, :name, :pet_type, :breed, :gender, :age, :weight)\n            ");
+
+            $insert_stmt->execute([
+                ':owner_id' => $owner_id,
+                ':owner_name' => $owner_name,
+                ':name' => $p_name,
+                ':pet_type' => $p_type,
+                ':breed' => $p_breed,
+                ':gender' => $p_gender,
+                ':age' => $p_age,
+                ':weight' => $p_weight
+            ]);
+
+            // B. AUTO-NOTIFICATION PARA SA CUSTOMER
+            $notif_title = "New Pet Profile Created!";
+            $notif_message = "A new pet profile for '{$p_name}' has been successfully registered to your account.";
+            $notif_type = "system";
+
+            $notif_stmt = $pdo->prepare("\n                INSERT INTO notifications\n                    (user_id, title, message, type, is_read, created_at)\n                VALUES\n                    (:user_id, :title, :message, :type, FALSE, CURRENT_TIMESTAMP)\n            ");
+
+            $notif_stmt->execute([
+                ':user_id' => $owner_id,
+                ':title' => $notif_title,
+                ':message' => $notif_message,
+                ':type' => $notif_type
+            ]);
+
+            $success_msg = "New pet successfully added and notification sent to owner!";
+        } catch (PDOException $e) {
+            error_log("Add pet failed: " . $e->getMessage());
+            $error_msg = "Error adding record. Please try again.";
+        } catch (Throwable $e) {
+            error_log("Add pet failed: " . $e->getMessage());
+            $error_msg = "Error adding record: " . $e->getMessage();
+        }
     }
 }
 
 // 3. FETCH CUSTOMERS ONLY (Para hindi kasama ang Admin at Vet/Staff)
-$users_query = "SELECT id, full_name FROM users WHERE role = 'customer' ORDER BY full_name ASC";
-$users_result = mysqli_query($conn, $users_query);
+$users_result = [];
+
+try {
+    $users_stmt = $pdo->prepare("SELECT id, full_name FROM users WHERE role = 'customer' ORDER BY full_name ASC");
+    $users_stmt->execute();
+    $users_result = $users_stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    error_log("Fetch customers failed: " . $e->getMessage());
+    $error_msg = $error_msg ?: "Unable to load customer records.";
+}
 ?>
 
 <!DOCTYPE html>
@@ -117,11 +143,11 @@ $users_result = mysqli_query($conn, $users_query);
         </div>
 
         <?php if($success_msg): ?>
-            <div class="alert alert-success"><i class="fas fa-check-circle"></i> <?php echo $success_msg; ?></div>
+            <div class="alert alert-success"><i class="fas fa-check-circle"></i> <?php echo htmlspecialchars($success_msg); ?></div>
         <?php endif; ?>
 
         <?php if($error_msg): ?>
-            <div class="alert alert-error"><i class="fas fa-exclamation-circle"></i> <?php echo $error_msg; ?></div>
+            <div class="alert alert-error"><i class="fas fa-exclamation-circle"></i> <?php echo htmlspecialchars($error_msg); ?></div>
         <?php endif; ?>
 
         <div class="card">
@@ -135,10 +161,10 @@ $users_result = mysqli_query($conn, $users_query);
                         <label>Select Pet Owner</label>
                         <select name="owner_id" required>
                             <option value="" disabled selected>-- Select Owner (Customers Only) --</option>
-                            <?php 
-                            if ($users_result && mysqli_num_rows($users_result) > 0) {
-                                while ($u_row = mysqli_fetch_assoc($users_result)) {
-                                    echo '<option value="' . $u_row['id'] . '">' . htmlspecialchars($u_row['full_name']) . '</option>';
+                            <?php
+                            if (!empty($users_result)) {
+                                foreach ($users_result as $u_row) {
+                                    echo '<option value="' . (int)$u_row['id'] . '">' . htmlspecialchars($u_row['full_name'] ?? '') . '</option>';
                                 }
                             } else {
                                 echo '<option value="" disabled>No customer records found</option>';

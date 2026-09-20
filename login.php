@@ -3,7 +3,7 @@ error_reporting(E_ALL);
 ini_set('display_errors', 1);
 
 session_start();
-include('db_connect.php'); 
+include('db_supabase.php'); 
 
 // --- BAGO: EMAIL CREDENTIALS SETUP ---
 if (!defined('SMTP_EMAIL')) define('SMTP_EMAIL', 'prototyp6712@gmail.com'); 
@@ -21,16 +21,36 @@ require 'PHPMailer/src/SMTP.php';
 // --- VERIFICATION LOGIC INSIDE LOGIN ---
 if (isset($_POST['verify_login_btn'])) {
     $email = $_SESSION['login_temp_email'];
-    $entered_otp = mysqli_real_escape_string($conn, $_POST['otp_code']);
-    
-    $query = "SELECT * FROM users WHERE email='$email' AND otp_code='$entered_otp' LIMIT 1";
-    $result = mysqli_query($conn, $query);
+    $entered_otp = $_POST['otp_code'];
 
-    if (mysqli_num_rows($result) > 0) {
-        $user = mysqli_fetch_assoc($result);
+$stmt = $pdo->prepare("
+    SELECT *
+    FROM users
+    WHERE email = :email
+      AND otp_code = :otp
+    LIMIT 1
+");
+
+$stmt->execute([
+    ':email' => $email,
+    ':otp' => $entered_otp
+]);
+
+$user = $stmt->fetch();
+
+    if ($user) {
         
-        // Update to verified
-        mysqli_query($conn, "UPDATE users SET is_verified = 1, email_verified = 1, otp_code = NULL WHERE id = ".$user['id']);
+       $stmt = $pdo->prepare("
+    UPDATE users
+    SET is_verified = 1,
+        email_verified = 1,
+        otp_code = NULL
+    WHERE id = :id
+");
+
+$stmt->execute([
+    ':id' => $user['id']
+]);
         
         // Proceed with Login
         $_SESSION['logged_in'] = true;
@@ -54,14 +74,23 @@ if (isset($_POST['verify_login_btn'])) {
 
 // --- NORMAL LOGIN LOGIC ---
 if (isset($_POST['login_btn'])) {
-    $email = mysqli_real_escape_string($conn, $_POST['email']);
-    $password = $_POST['password'];
+    $email = $_POST['email'];
+$password = $_POST['password'];
 
-    $query = "SELECT * FROM users WHERE email='$email' LIMIT 1";
-    $result = mysqli_query($conn, $query);
+$stmt = $pdo->prepare("
+    SELECT *
+    FROM users
+    WHERE email = :email
+    LIMIT 1
+");
 
-    if (mysqli_num_rows($result) > 0) {
-        $user = mysqli_fetch_assoc($result);
+$stmt->execute([
+    ':email' => $email
+]);
+
+$user = $stmt->fetch();
+
+if ($user) {
         
         if (password_verify($password, $user['password'])) {
             
@@ -72,12 +101,18 @@ if (isset($_POST['login_btn'])) {
             $new_otp = random_int(100000, 999999);
 
             // Save the new OTP in database
-            $update_otp = mysqli_query(
-                $conn,
-                "UPDATE users SET otp_code = '$new_otp' WHERE id = " . $user['id']
-            );
+            $stmt = $pdo->prepare("
+    UPDATE users
+    SET otp_code = :otp
+    WHERE id = :id
+");
 
-            if (!$update_otp) {
+$update_otp = $stmt->execute([
+    ':otp' => $new_otp,
+    ':id' => $user['id']
+]);
+
+if (!$update_otp) {
                 echo "<script>
                         alert('Failed to generate verification code. Please try again.');
                       </script>";

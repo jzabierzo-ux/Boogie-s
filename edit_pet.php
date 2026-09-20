@@ -1,88 +1,197 @@
 <?php
 session_start();
-include 'db_connect.php';
+require_once 'db_supabase.php';
 
 // 1. SECURITY: Check if logged in
-if (!isset($_SESSION['user_id'])) {
+if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
     header("Location: login.php");
-    exit;
+    exit();
 }
 
 // 2. DEFINE USER DATA
-$user_id = $_SESSION['user_id'];
-$full_name = isset($_SESSION['user_name']) ? $_SESSION['user_name'] : (isset($_SESSION['full_name']) ? $_SESSION['full_name'] : 'User');
+$user_id = (int)($_SESSION['user_id'] ?? 0);
+$full_name = $_SESSION['user_name']
+    ?? $_SESSION['full_name']
+    ?? 'User';
+
+if ($user_id <= 0) {
+    header("Location: login.php");
+    exit();
+}
 
 // --- FETCH UNREAD NOTIFICATIONS COUNT FOR HEADER ---
-$notif_header_query = "SELECT COUNT(*) as unread FROM notifications WHERE user_id = '$user_id' AND is_read = 0";
-$notif_header_result = @mysqli_query($conn, $notif_header_query);
-$unread_count = ($notif_header_result) ? mysqli_fetch_assoc($notif_header_result)['unread'] : 0;
+try {
+    $notif_stmt = $pdo->prepare("
+        SELECT COUNT(*) AS unread
+        FROM notifications
+        WHERE user_id = :user_id
+          AND is_read = FALSE
+    ");
+    $notif_stmt->execute([
+        ':user_id' => $user_id
+    ]);
+    $unread_count = (int)($notif_stmt->fetchColumn() ?? 0);
+} catch (PDOException $e) {
+    error_log("Notification count query failed: " . $e->getMessage());
+    $unread_count = 0;
+}
 
 // --- FETCH LATEST 5 NOTIFICATIONS FOR DROPDOWN ---
 $notifications = [];
-$stmt_notif_list = $conn->prepare("SELECT id, message, created_at, is_read FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 5");
-if ($stmt_notif_list) {
-    $stmt_notif_list->bind_param("i", $user_id);
-    $stmt_notif_list->execute();
-    $res_list = $stmt_notif_list->get_result();
-    if ($res_list) {
-        $notifications = $res_list->fetch_all(MYSQLI_ASSOC);
-    }
-    $stmt_notif_list->close();
+
+try {
+    $notif_list_stmt = $pdo->prepare("
+        SELECT id, message, created_at, is_read
+        FROM notifications
+        WHERE user_id = :user_id
+        ORDER BY created_at DESC
+        LIMIT 5
+    ");
+    $notif_list_stmt->execute([
+        ':user_id' => $user_id
+    ]);
+    $notifications = $notif_list_stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    error_log("Notification list query failed: " . $e->getMessage());
 }
 
 // --- FETCH USER PROFILE IMAGE ---
-$user_query = mysqli_query($conn, "SELECT profile_image FROM users WHERE id = '$user_id'");
-$user_data = mysqli_fetch_assoc($user_query);
-$profile_image = isset($user_data['profile_image']) ? $user_data['profile_image'] : null;
+try {
+    $user_stmt = $pdo->prepare("
+        SELECT profile_image
+        FROM users
+        WHERE id = :user_id
+        LIMIT 1
+    ");
+    $user_stmt->execute([
+        ':user_id' => $user_id
+    ]);
+    $user_data = $user_stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+    $profile_image = $user_data['profile_image'] ?? null;
+} catch (PDOException $e) {
+    error_log("Profile image query failed: " . $e->getMessage());
+    $profile_image = null;
+}
 
 // 3. KUNIN ANG PET DATA PARA SA FORM (DISPLAY)
-if (isset($_GET['id'])) {
-    $pet_id = mysqli_real_escape_string($conn, $_GET['id']);
-    $fetch_pet = mysqli_query($conn, "SELECT * FROM pets WHERE id = '$pet_id' AND owner_id = '$user_id'");
-    $pet_data = mysqli_fetch_assoc($fetch_pet);
+if (isset($_GET['id']) && $_GET['id'] !== '') {
+    $pet_id = (int)$_GET['id'];
 
-    // Kung walang nahanap na pet o hindi sa user ang pet, redirect pabalik
-    if (!$pet_data) {
+    try {
+        $fetch_pet_stmt = $pdo->prepare("
+            SELECT *
+            FROM pets
+            WHERE id = :pet_id
+              AND owner_id = :owner_id
+            LIMIT 1
+        ");
+
+        $fetch_pet_stmt->execute([
+            ':pet_id' => $pet_id,
+            ':owner_id' => $user_id
+        ]);
+
+        $pet_data = $fetch_pet_stmt->fetch(PDO::FETCH_ASSOC);
+
+        // Kung walang nahanap na pet o hindi sa user ang pet, redirect pabalik
+        if (!$pet_data) {
+            header("Location: dashboard.php");
+            exit();
+        }
+    } catch (PDOException $e) {
+        error_log("Pet fetch failed: " . $e->getMessage());
         header("Location: dashboard.php");
-        exit;
+        exit();
     }
 } else {
     // Kung walang ID sa URL, hindi pwedeng mag-edit
     header("Location: dashboard.php");
-    exit;
+    exit();
 }
 
 // 4. UPDATE LOGIC (DIRECT UPDATE)
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $pet_id_post = mysqli_real_escape_string($conn, $_POST['pet_id']);
-    
-    // Tugma na ang mga variables sa name="" ng HTML form mo sa ibaba
-    $p_name   = mysqli_real_escape_string($conn, $_POST['p_name']);
-    $p_type   = mysqli_real_escape_string($conn, $_POST['p_type']); 
-    $p_breed  = mysqli_real_escape_string($conn, $_POST['p_breed']);
-    $p_age    = mysqli_real_escape_string($conn, $_POST['p_age']);
-    $p_weight = mysqli_real_escape_string($conn, $_POST['p_weight']);
-    $p_gender = mysqli_real_escape_string($conn, $_POST['p_gender']);
+    $pet_id_post = (int)($_POST['pet_id'] ?? 0);
 
-    // I-update lahat ng fields diretso sa database, kasama ang pet_type
-    $update_query = "UPDATE pets SET 
-                        name = '$p_name', 
-                        pet_type = '$p_type', 
-                        breed = '$p_breed', 
-                        age = '$p_age', 
-                        weight = '$p_weight',
-                        gender = '$p_gender'
-                     WHERE id = '$pet_id_post' AND owner_id = '$user_id'";
+    $p_name   = trim($_POST['p_name'] ?? '');
+    $p_type   = trim($_POST['p_type'] ?? '');
+    $p_breed  = trim($_POST['p_breed'] ?? '');
+    $p_age    = trim($_POST['p_age'] ?? '');
+    $p_weight = trim($_POST['p_weight'] ?? '');
+    $p_gender = trim($_POST['p_gender'] ?? '');
 
-    if (mysqli_query($conn, $update_query)) {
-        // Magpakita ng success alert at ibalik sa petprofile.php
-        echo "<script>
-                alert('Pet profile updated successfully!');
-                window.location.href='petprofile.php';
-              </script>";
-        exit();
+    if ($pet_id_post <= 0) {
+        $error_msg = "Invalid pet ID.";
+    } elseif (
+        $p_name === '' ||
+        $p_type === '' ||
+        $p_breed === '' ||
+        $p_age === '' ||
+        $p_weight === '' ||
+        $p_gender === ''
+    ) {
+        $error_msg = "Please complete all required pet fields.";
     } else {
-        $error_msg = "Error updating profile: " . mysqli_error($conn);
+        try {
+            // Update all pet fields and ensure the pet belongs to the logged-in owner
+            $update_stmt = $pdo->prepare("
+                UPDATE pets
+                SET name = :name,
+                    pet_type = :pet_type,
+                    breed = :breed,
+                    age = :age,
+                    weight = :weight,
+                    gender = :gender
+                WHERE id = :pet_id
+                  AND owner_id = :owner_id
+            ");
+
+            $update_stmt->execute([
+                ':name' => $p_name,
+                ':pet_type' => $p_type,
+                ':breed' => $p_breed,
+                ':age' => $p_age,
+                ':weight' => $p_weight,
+                ':gender' => $p_gender,
+                ':pet_id' => $pet_id_post,
+                ':owner_id' => $user_id
+            ]);
+
+            if ($update_stmt->rowCount() > 0) {
+                echo "<script>
+                        alert('Pet profile updated successfully!');
+                        window.location.href='petprofile.php';
+                      </script>";
+                exit();
+            }
+
+            // If no rows changed, verify the pet still belongs to the user.
+            $verify_stmt = $pdo->prepare("
+                SELECT id
+                FROM pets
+                WHERE id = :pet_id
+                  AND owner_id = :owner_id
+                LIMIT 1
+            ");
+
+            $verify_stmt->execute([
+                ':pet_id' => $pet_id_post,
+                ':owner_id' => $user_id
+            ]);
+
+            if ($verify_stmt->fetchColumn()) {
+                echo "<script>
+                        alert('Pet profile updated successfully!');
+                        window.location.href='petprofile.php';
+                      </script>";
+                exit();
+            }
+
+            $error_msg = "Pet profile was not found or you are not authorized to update it.";
+        } catch (PDOException $e) {
+            error_log("Pet profile update failed: " . $e->getMessage());
+            $error_msg = "Error updating profile.";
+        }
     }
 }
 ?>

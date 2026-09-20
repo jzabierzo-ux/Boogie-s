@@ -1,97 +1,184 @@
 <?php
 session_start();
-include '../db_connect.php'; 
+include '../db_supabase.php';
 
 // --- UNIVERSAL SECURITY CHECK ---
 $current_role = isset($_SESSION['role']) ? strtolower(trim($_SESSION['role'])) : '';
 
 // 1. SECURITY: Allow Admin, Supervisor, and Staff
-if (!isset($_SESSION['logged_in']) || !in_array($current_role, ['admin', 'supervisor', 'staff'])) {
+if (!isset($_SESSION['logged_in']) || !in_array($current_role, ['admin', 'supervisor', 'staff'], true)) {
     header("Location: stafflogin.php");
     exit();
 }
 
-// 2. FETCH ADMIN/SUPERVISOR PROFILE ---
+// 2. FETCH ADMIN/SUPERVISOR PROFILE
 $admin_full_name = "User";
 $profile_img_path = "";
 $first_name = "User";
 
 if (isset($_SESSION['user_id'])) {
-    $uid = $_SESSION['user_id'];
-    $get_admin = mysqli_query($conn, "SELECT full_name, profile_image FROM users WHERE id = '$uid'");
-    if($admin_data = mysqli_fetch_assoc($get_admin)) {
-        $admin_full_name = $admin_data['full_name'];
-        $profile_img_path = $admin_data['profile_image']; 
-        $_SESSION['user_name'] = $admin_full_name; 
-        
-        $first_name = explode(' ', $admin_full_name)[0];
-        $first_name = trim($first_name, ',');
+    $uid = (int)$_SESSION['user_id'];
+
+    try {
+        $get_admin = $pdo->prepare("
+            SELECT full_name, profile_image
+            FROM users
+            WHERE id = :id
+            LIMIT 1
+        ");
+        $get_admin->execute([':id' => $uid]);
+        $admin_data = $get_admin->fetch(PDO::FETCH_ASSOC);
+
+        if ($admin_data) {
+            $admin_full_name = $admin_data['full_name'] ?? 'User';
+            $profile_img_path = $admin_data['profile_image'] ?? '';
+            $_SESSION['user_name'] = $admin_full_name;
+
+            $first_name = trim(explode(' ', $admin_full_name)[0], ',');
+        }
+    } catch (PDOException $e) {
+        $admin_full_name = $_SESSION['user_name'] ?? 'User';
+        $first_name = trim(explode(' ', $admin_full_name)[0], ',');
     }
 }
 
 // Redirect back to manage users if no ID is provided
-if (!isset($_GET['id'])) {
+if (!isset($_GET['id']) || !is_numeric($_GET['id'])) {
     header("Location: manageusers.php");
     exit();
 }
 
-$customer_id = intval($_GET['id']);
+$customer_id = (int)$_GET['id'];
 
 // --- ACTION LOGIC (UPDATE & DELETE) ---
 
 // A. UPDATE CONTACT NUMBER
 if (isset($_POST['update_contact'])) {
-    $new_contact = mysqli_real_escape_string($conn, trim($_POST['new_contact']));
-    
+    $new_contact = trim($_POST['new_contact'] ?? '');
+
     // Strict Validation
     if (!preg_match("/^[0-9]{11}$/", $new_contact)) {
         echo "<script>alert('Invalid contact number. Please enter exactly 11 digits.'); window.history.back();</script>";
         exit();
     }
-    
-    mysqli_query($conn, "UPDATE users SET contact_number = '$new_contact' WHERE id = $customer_id");
-    header("Location: view_customer.php?id=" . $customer_id); 
-    exit();
+
+    try {
+        $stmt_update = $pdo->prepare("
+            UPDATE users
+            SET contact_number = :contact_number
+            WHERE id = :customer_id
+        ");
+        $stmt_update->execute([
+            ':contact_number' => $new_contact,
+            ':customer_id' => $customer_id
+        ]);
+
+        header("Location: view_customer.php?id=" . $customer_id);
+        exit();
+    } catch (PDOException $e) {
+        die("Unable to update the contact number at this time.");
+    }
 }
 
 // B. DELETE USER
 if (isset($_POST['delete_user'])) {
-    // Delete associated pets and appointments first to avoid database errors
-    mysqli_query($conn, "DELETE FROM pets WHERE owner_id = $customer_id");
-    mysqli_query($conn, "DELETE FROM appointments WHERE user_id = $customer_id");
-    // Finally, delete the user
-    mysqli_query($conn, "DELETE FROM users WHERE id = $customer_id");
-    
-    // Redirect back to user list with success message
-    header("Location: manageusers.php"); 
-    exit();
+    try {
+        $pdo->beginTransaction();
+
+        // Delete associated appointments first, then pets, then the user.
+        // This order is safer when foreign keys are enforced in PostgreSQL.
+        $delete_appointments = $pdo->prepare("
+            DELETE FROM appointments
+            WHERE user_id = :customer_id
+        ");
+        $delete_appointments->execute([':customer_id' => $customer_id]);
+
+        $delete_pets = $pdo->prepare("
+            DELETE FROM pets
+            WHERE owner_id = :customer_id
+        ");
+        $delete_pets->execute([':customer_id' => $customer_id]);
+
+        $delete_user = $pdo->prepare("
+            DELETE FROM users
+            WHERE id = :customer_id
+              AND role = 'customer'
+        ");
+        $delete_user->execute([':customer_id' => $customer_id]);
+
+        $pdo->commit();
+
+        header("Location: manageusers.php");
+        exit();
+    } catch (PDOException $e) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+
+        die("Unable to delete this customer account at this time.");
+    }
 }
 
 // --- FETCH DATA ---
 
 // 2. Fetch Customer Details
-$user_query = mysqli_query($conn, "SELECT * FROM users WHERE id = $customer_id AND role = 'customer'");
-$customer = mysqli_fetch_assoc($user_query);
+try {
+    $user_stmt = $pdo->prepare("
+        SELECT *
+        FROM users
+        WHERE id = :customer_id
+          AND role = 'customer'
+        LIMIT 1
+    ");
+    $user_stmt->execute([':customer_id' => $customer_id]);
+    $customer = $user_stmt->fetch(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    $customer = false;
+}
 
 if (!$customer) {
     die("<div style='text-align:center; padding:50px; font-family:sans-serif;'><h2>Customer not found.</h2><a href='manageusers.php'>Go Back</a></div>");
 }
 
 // 3. Fetch Customer's Pets
-$pets_query = mysqli_query($conn, "SELECT * FROM pets WHERE owner_id = $customer_id");
+try {
+    $pets_stmt = $pdo->prepare("
+        SELECT *
+        FROM pets
+        WHERE owner_id = :customer_id
+        ORDER BY id ASC
+    ");
+    $pets_stmt->execute([':customer_id' => $customer_id]);
+    $pets = $pets_stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    $pets = [];
+}
 
-// 4. Fetch Booking History (Joined with pets table to get pet names)
-$bookings_query = mysqli_query($conn, "
-    SELECT a.*, p.name as pet_name 
-    FROM appointments a 
-    LEFT JOIN pets p ON a.pet_id = p.id 
-    WHERE a.user_id = $customer_id 
-    ORDER BY a.appointment_date DESC
-");
+// 4. Fetch Booking History
+try {
+    $bookings_stmt = $pdo->prepare("
+        SELECT
+            a.*,
+            p.name AS pet_name
+        FROM appointments a
+        LEFT JOIN pets p ON a.pet_id = p.id
+        WHERE a.user_id = :customer_id
+        ORDER BY a.appointment_date DESC
+    ");
+    $bookings_stmt->execute([':customer_id' => $customer_id]);
+    $bookings = $bookings_stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    $bookings = [];
+}
 
 // 5. User Category Helper
-$category = isset($customer['user_category']) && !empty($customer['user_category']) ? $customer['user_category'] : 'Pet Owner';
-$cat_class = ($category === 'Pet Breeder') ? 'category-breeder' : 'category-owner';
+$category = isset($customer['user_category']) && !empty($customer['user_category'])
+    ? $customer['user_category']
+    : 'Pet Owner';
+
+$cat_class = ($category === 'Pet Breeder')
+    ? 'category-breeder'
+    : 'category-owner';
 ?>
 
 <!DOCTYPE html>
@@ -398,7 +485,15 @@ $cat_class = ($category === 'Pet Breeder') ? 'category-breeder' : 'category-owne
                 <div class="info-item">
                     <div class="info-label">Account Verification</div>
                     <div class="info-value">
-                        <?php if (isset($customer['is_verified']) && $customer['is_verified'] == 1): ?>
+                        <?php
+                        $verified_raw = $customer['is_verified'] ?? false;
+                        $is_verified = in_array(
+                            strtolower(trim((string)$verified_raw)),
+                            ['1', 'true', 't'],
+                            true
+                        );
+                        ?>
+                        <?php if ($is_verified): ?>
                             <span style="color: #10b981; font-size: 13px;"><i class="fa-solid fa-circle-check"></i> Verified</span>
                         <?php else: ?>
                             <span style="color: #ef4444; font-size: 13px;"><i class="fa-solid fa-circle-xmark"></i> Unverified</span>
@@ -422,8 +517,8 @@ $cat_class = ($category === 'Pet Breeder') ? 'category-breeder' : 'category-owne
 
             <div class="card">
                 <div class="section-title"><i class="fas fa-paw"></i> Registered Pets</div>
-                <?php if($pets_query && mysqli_num_rows($pets_query) > 0): ?>
-                    <?php while($pet = mysqli_fetch_assoc($pets_query)): ?>
+                <?php if(count($pets) > 0): ?>
+                    <?php foreach($pets as $pet): ?>
                         <div class="pet-item">
                             <i class="fas fa-dog" style="color:var(--brand-blue); font-size: 20px; opacity: 0.8;"></i>
                             <div>
@@ -439,7 +534,7 @@ $cat_class = ($category === 'Pet Breeder') ? 'category-breeder' : 'category-owne
                                 </div>
                             </div>
                         </div>
-                    <?php endwhile; ?>
+                    <?php endforeach; ?>
                 <?php else: ?>
                     <div style="text-align: center; padding: 20px;">
                         <i class="fa-solid fa-bone" style="font-size: 30px; color: #cbd5e1; margin-bottom: 10px;"></i>
@@ -464,8 +559,8 @@ $cat_class = ($category === 'Pet Breeder') ? 'category-breeder' : 'category-owne
                             </tr>
                         </thead>
                         <tbody>
-                            <?php if($bookings_query && mysqli_num_rows($bookings_query) > 0): ?>
-                                <?php while($book = mysqli_fetch_assoc($bookings_query)): 
+                            <?php if(count($bookings) > 0): ?>
+                                <?php foreach($bookings as $book): 
                                     // Setup color coding for status
                                     $status = $book['booking_status'] ?? 'Pending';
                                     $s_class = '';
@@ -501,7 +596,7 @@ $cat_class = ($category === 'Pet Breeder') ? 'category-breeder' : 'category-owne
                                             <span class="status-pill <?php echo $s_class; ?>"><?php echo htmlspecialchars($status); ?></span>
                                         </td>
                                     </tr>
-                                <?php endwhile; ?>
+                                <?php endforeach; ?>
                             <?php else: ?>
                                 <tr><td colspan="4" style="text-align: center; padding: 50px; color: var(--text-muted);">No records found.</td></tr>
                             <?php endif; ?>

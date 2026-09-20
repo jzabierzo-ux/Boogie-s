@@ -1,12 +1,15 @@
 <?php
 session_start();
-include '../db_connect.php';
-require_once '../includes/iprog_sms.php'; 
+include '../db_supabase.php';
+require_once '../includes/iprog_sms.php';
+
+// Set default timezone
+date_default_timezone_set('Asia/Manila');
 
 // --- UNIVERSAL SECURITY CHECK ---
 $current_role = isset($_SESSION['role']) ? strtolower(trim($_SESSION['role'])) : '';
 
-if (!isset($_SESSION['logged_in']) || !in_array($current_role, ['admin', 'manager', 'vet'])) {
+if (!isset($_SESSION['logged_in']) || !in_array($current_role, ['admin', 'manager', 'vet'], true)) {
     header("Location: ../staff/stafflogin.php");
     exit();
 }
@@ -17,15 +20,27 @@ $profile_img_path = "";
 $first_name = "User";
 
 if (isset($_SESSION['user_id'])) {
-    $uid = $_SESSION['user_id'];
-    $get_admin = mysqli_query($conn, "SELECT full_name, profile_image FROM users WHERE id = '$uid'");
-    if($admin_data = mysqli_fetch_assoc($get_admin)) {
-        $admin_full_name = $admin_data['full_name'];
-        $profile_img_path = $admin_data['profile_image']; 
-        $_SESSION['user_name'] = $admin_full_name; 
-        
-        $first_name = explode(' ', $admin_full_name)[0];
-        $first_name = trim($first_name, ',');
+    $uid = (int)$_SESSION['user_id'];
+
+    try {
+        $get_admin = $pdo->prepare("
+            SELECT full_name, profile_image
+            FROM users
+            WHERE id = :id
+            LIMIT 1
+        ");
+        $get_admin->execute([':id' => $uid]);
+
+        if ($admin_data = $get_admin->fetch(PDO::FETCH_ASSOC)) {
+            $admin_full_name = $admin_data['full_name'] ?? 'User';
+            $profile_img_path = $admin_data['profile_image'] ?? '';
+            $_SESSION['user_name'] = $admin_full_name;
+
+            $first_name = explode(' ', $admin_full_name)[0];
+            $first_name = trim($first_name, ',');
+        }
+    } catch (PDOException $e) {
+        // Keep page usable even if profile lookup fails.
     }
 }
 
@@ -33,30 +48,109 @@ if (isset($_SESSION['user_id'])) {
 // BAGO: WALK-IN BOOKING LOGIC
 // ==========================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_walkin'])) {
-    $c_name = mysqli_real_escape_string($conn, $_POST['customer_name']);
-    $p_name = mysqli_real_escape_string($conn, $_POST['pet_name']);
-    $service = mysqli_real_escape_string($conn, $_POST['service']);
-    $date = mysqli_real_escape_string($conn, $_POST['appointment_date']);
-    $time = mysqli_real_escape_string($conn, $_POST['appointment_time']);
-    $amount = floatval($_POST['amount']);
+    $c_name = trim($_POST['customer_name'] ?? '');
+    $p_name = trim($_POST['pet_name'] ?? '');
+    $service = trim($_POST['service'] ?? '');
+    $date = trim($_POST['appointment_date'] ?? '');
+    $time = trim($_POST['appointment_time'] ?? '');
+    $amount = floatval($_POST['amount'] ?? 0);
 
-    // 1. Gagawa ng mabilis na "dummy" account para sa walk-in
-    $dummy_email = 'walkin_' . time() . '@boogies.local';
-    $insert_user = "INSERT INTO users (full_name, email, password, role, is_verified) VALUES ('$c_name (Walk-in)', '$dummy_email', 'walkin123', 'user', 1)";
-    mysqli_query($conn, $insert_user);
-    $new_user_id = mysqli_insert_id($conn);
+    if ($c_name !== '' && $p_name !== '' && $service !== '' && $date !== '' && $time !== '' && $amount >= 0) {
+        try {
+            $pdo->beginTransaction();
 
-    // 2. I-save yung alagang hayop
-    $insert_pet = "INSERT INTO pets (owner_id, name, pet_type) VALUES ('$new_user_id', '$p_name', 'Walk-in Pet')";
-    mysqli_query($conn, $insert_pet);
-    $new_pet_id = mysqli_insert_id($conn);
+            // 1. Gagawa ng mabilis na "dummy" account para sa walk-in
+            $dummy_email = 'walkin_' . time() . '_' . bin2hex(random_bytes(3)) . '@boogies.local';
 
-    // 3. I-save sa appointments (Auto-Confirmed at Paid Cash)
-    $insert_appt = "INSERT INTO appointments (user_id, pet_id, service, appointment_date, appointment_time, service_fee, total_price, payment_method, payment_status, booking_status) 
-                    VALUES ('$new_user_id', '$new_pet_id', '$service', '$date', '$time', '$amount', '$amount', 'Cash (Walk-in)', 'Paid', 'Completed')";
-    mysqli_query($conn, $insert_appt);
+            $insert_user = $pdo->prepare("
+                INSERT INTO users
+                    (full_name, email, password, role, is_verified)
+                VALUES
+                    (:full_name, :email, :password, 'user', TRUE)
+                RETURNING id
+            ");
 
-    $_SESSION['alert_msg'] = "Walk-in booking successfully added and marked as completed!";
+            $insert_user->execute([
+                ':full_name' => $c_name . ' (Walk-in)',
+                ':email' => $dummy_email,
+                ':password' => 'walkin123'
+            ]);
+
+            $new_user_id = (int)$insert_user->fetchColumn();
+
+            // 2. I-save yung alagang hayop
+            $insert_pet = $pdo->prepare("
+                INSERT INTO pets
+                    (owner_id, name, pet_type)
+                VALUES
+                    (:owner_id, :name, 'Walk-in Pet')
+                RETURNING id
+            ");
+
+            $insert_pet->execute([
+                ':owner_id' => $new_user_id,
+                ':name' => $p_name
+            ]);
+
+            $new_pet_id = (int)$insert_pet->fetchColumn();
+
+            // 3. I-save sa appointments (Auto-Confirmed at Paid Cash)
+            $insert_appt = $pdo->prepare("
+                INSERT INTO appointments
+                    (
+                        user_id,
+                        pet_id,
+                        service,
+                        appointment_date,
+                        appointment_time,
+                        service_fee,
+                        total_price,
+                        payment_method,
+                        payment_status,
+                        booking_status
+                    )
+                VALUES
+                    (
+                        :user_id,
+                        :pet_id,
+                        :service,
+                        :appointment_date,
+                        :appointment_time,
+                        :service_fee,
+                        :total_price,
+                        'Cash (Walk-in)',
+                        'Paid',
+                        'Completed'
+                    )
+            ");
+
+            $insert_appt->execute([
+                ':user_id' => $new_user_id,
+                ':pet_id' => $new_pet_id,
+                ':service' => $service,
+                ':appointment_date' => $date,
+                ':appointment_time' => $time,
+                ':service_fee' => $amount,
+                ':total_price' => $amount
+            ]);
+
+            $pdo->commit();
+
+            $_SESSION['alert_msg'] = "Walk-in booking successfully added and marked as completed!";
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+
+            error_log('Walk-in booking error: ' . $e->getMessage());
+            $_SESSION['alert_msg'] = "Unable to add the walk-in booking.";
+        }
+
+        header("Location: managebooking.php");
+        exit();
+    }
+
+    $_SESSION['alert_msg'] = "Please complete all walk-in booking fields.";
     header("Location: managebooking.php");
     exit();
 }
@@ -64,192 +158,312 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_walkin'])) {
 
 // --- LOGIC: UPDATE STATUS WITH NOTIFICATIONS, PAYMENT & SMS ---
 if (isset($_GET['action']) && isset($_GET['id'])) {
-    $id = intval($_GET['id']);
-    $new_status = mysqli_real_escape_string($conn, $_GET['action']);
-    
-    // --- MANUAL PAYMENT LOGIC ---
-    if ($new_status === 'pay') {
-        mysqli_query($conn, "UPDATE appointments SET payment_status = 'Paid' WHERE id = $id");
-        $_SESSION['alert_msg'] = "Payment successfully marked as Paid.";
+    $id = (int)$_GET['id'];
+    $requested_status = (string)$_GET['action'];
+
+    // Allow only the actions used by this page.
+    $allowed_actions = ['pay', 'verify_gcash', 'Completed', 'Confirmed', 'Cancelled', 'No-Show'];
+
+    if ($id <= 0 || !in_array($requested_status, $allowed_actions, true)) {
+        $_SESSION['alert_msg'] = "Invalid booking action.";
         header("Location: managebooking.php");
         exit();
     }
 
-    // --- DB UPDATE LOGIC ---
-    if ($new_status === 'verify_gcash') {
-        mysqli_query($conn, "UPDATE appointments SET payment_status = 'Paid', booking_status = 'Confirmed' WHERE id = $id");
-        $new_status = 'Confirmed'; 
-        $_SESSION['alert_msg'] = "GCash Payment Verified and Booking Confirmed!";
-    } else {
-        if ($new_status === 'Completed' || $new_status === 'Confirmed') {
-            mysqli_query($conn, "UPDATE appointments SET booking_status = '$new_status', payment_status = 'Paid' WHERE id = $id");
+    $new_status = $requested_status;
+
+    try {
+        // --- MANUAL PAYMENT LOGIC ---
+        if ($new_status === 'pay') {
+            $stmt = $pdo->prepare("
+                UPDATE appointments
+                SET payment_status = 'Paid'
+                WHERE id = :id
+            ");
+            $stmt->execute([':id' => $id]);
+
+            $_SESSION['alert_msg'] = "Payment successfully marked as Paid.";
+            header("Location: managebooking.php");
+            exit();
+        }
+
+        // --- DB UPDATE LOGIC ---
+        if ($new_status === 'verify_gcash') {
+            $stmt = $pdo->prepare("
+                UPDATE appointments
+                SET payment_status = 'Paid',
+                    booking_status = 'Confirmed'
+                WHERE id = :id
+            ");
+            $stmt->execute([':id' => $id]);
+
+            $new_status = 'Confirmed';
+            $_SESSION['alert_msg'] = "GCash Payment Verified and Booking Confirmed!";
         } else {
-            mysqli_query($conn, "UPDATE appointments SET booking_status = '$new_status' WHERE id = $id");
-        }
-    }
-    
-    // --- NOTIFICATION & SMS BUILDER ---
-    $info_query = mysqli_query($conn, "
-        SELECT 
-            a.*,
-            p.name AS pet_real_name,
-            p.owner_id,
-            u.full_name AS customer_name,
-            u.contact_number
-        FROM appointments a
-        LEFT JOIN pets p ON a.pet_id = p.id
-        LEFT JOIN users u ON a.user_id = u.id
-        WHERE a.id = $id
-        LIMIT 1
-    ");
-
-    if ($info_query && mysqli_num_rows($info_query) > 0) {
-        $booking_info = mysqli_fetch_assoc($info_query);
-
-        // The appointment's user_id is the customer's actual users.id.
-        $u_id = (int)($booking_info['user_id'] ?? 0);
-        if ($u_id <= 0) {
-            $u_id = (int)($booking_info['owner_id'] ?? 0);
-        }
-
-        $service = $booking_info['service'] ?? 'Service';
-        $pet = $booking_info['pet_real_name'] ?? 'your pet';
-        $appt_date = !empty($booking_info['appointment_date'])
-            ? date('M d, Y', strtotime($booking_info['appointment_date']))
-            : '';
-
-        $title = "";
-        $msg = "";
-        $sms_msg = "";
-
-        if ($new_status === 'Confirmed') {
-            $title = "Booking Confirmed!";
-            $msg = "Your booking for $pet ($service) is now confirmed. See you soon!";
-            $sms_msg = "Hi! Your booking for $pet ($service) on $appt_date at Boogie's Pet Care is CONFIRMED. Thank you!";
-        } elseif ($new_status === 'Cancelled') {
-            $title = "Booking Cancelled";
-            $msg = "Sorry, your booking for $pet ($service) was cancelled by the clinic.";
-            $sms_msg = "Hi. Your booking for $pet ($service) on $appt_date was CANCELLED. Please check your portal for details. - Boogie's";
-        } elseif ($new_status === 'Completed') {
-            $title = "Service Completed!";
-            $msg = "The $service for $pet is now marked as complete. Thank you for choosing Boogie's Pet Care!";
-            $sms_msg = "Hi! The $service for $pet is now COMPLETE. Thank you for choosing Boogie's Pet Care!";
-        } elseif ($new_status === 'No-Show') {
-            $title = "Booking Forfeited (No-Show)";
-            $msg = "Your booking for $pet ($service) was marked as No-Show. Payments are non-refundable.";
-            $sms_msg = "Notice: Your booking for $pet ($service) was marked as NO-SHOW. Payments are non-refundable. - Boogie's Pet Care";
-        }
-
-        // INSERT IN-APP NOTIFICATION
-        if (!empty($msg) && $u_id > 0) {
-            $safe_title = mysqli_real_escape_string($conn, $title);
-            $safe_msg = mysqli_real_escape_string($conn, $msg);
-            $notif_query = "INSERT INTO notifications (user_id, title, message, type, is_read, created_at)
-                            VALUES ($u_id, '$safe_title', '$safe_msg', 'booking', 0, NOW())";
-            mysqli_query($conn, $notif_query);
-        }
-
-        // ==========================================
-        // IPROG SMS — ONLY SMS PROVIDER
-        // ==========================================
-        if (!empty($sms_msg)) {
-            // Use the phone number joined from the exact appointment's user_id.
-            $phone_number = trim((string)($booking_info['contact_number'] ?? ''));
-
-            if ($u_id <= 0) {
-                $_SESSION['alert_msg'] = "Booking updated, but SMS was not sent: customer account was not found.";
-            } elseif ($phone_number === '' || strtoupper($phone_number) === 'N/A') {
-                $_SESSION['alert_msg'] = "Booking updated, but SMS was not sent: customer has no contact number.";
+            if ($new_status === 'Completed' || $new_status === 'Confirmed') {
+                $stmt = $pdo->prepare("
+                    UPDATE appointments
+                    SET booking_status = :booking_status,
+                        payment_status = 'Paid'
+                    WHERE id = :id
+                ");
+                $stmt->execute([
+                    ':booking_status' => $new_status,
+                    ':id' => $id
+                ]);
             } else {
-                $sms_result = sendIPROGSMS($phone_number, $sms_msg);
-
-                if (!empty($sms_result['success'])) {
-                    $message_id = '';
-                    $decoded_sms = json_decode($sms_result['response'] ?? '', true);
-                    if (is_array($decoded_sms) && isset($decoded_sms['message_id'])) {
-                        $message_id = (string)$decoded_sms['message_id'];
-                    }
-
-                    $_SESSION['alert_msg'] = "Booking updated successfully. SMS queued for delivery.";
-
-                    error_log(
-                        'IPROG SMS queued for appointment #' . $id .
-                        ' | Phone: ' . $sms_result['phone_number'] .
-                        ($message_id !== '' ? ' | Message ID: ' . $message_id : '')
-                    );
-                } else {
-                    $safe_error = trim((string)($sms_result['response'] ?? 'Unknown IPROG error'));
-                    $_SESSION['alert_msg'] = "Booking updated, but SMS failed (HTTP " .
-                        (int)($sms_result['http_code'] ?? 0) . ": " .
-                        htmlspecialchars($safe_error) . ").";
-
-                    error_log(
-                        'IPROG SMS FAILED for appointment #' . $id .
-                        ' | HTTP ' . ($sms_result['http_code'] ?? 0) .
-                        ' | ' . ($sms_result['response'] ?? 'Unknown error')
-                    );
-                }
+                $stmt = $pdo->prepare("
+                    UPDATE appointments
+                    SET booking_status = :booking_status
+                    WHERE id = :id
+                ");
+                $stmt->execute([
+                    ':booking_status' => $new_status,
+                    ':id' => $id
+                ]);
             }
         }
-    } else {
-        $_SESSION['alert_msg'] = "Booking status was updated, but the booking details could not be loaded for notifications/SMS.";
+
+        // --- NOTIFICATION & SMS BUILDER ---
+        $info_stmt = $pdo->prepare("
+            SELECT
+                a.*,
+                p.name AS pet_real_name,
+                p.owner_id,
+                u.full_name AS customer_name,
+                u.contact_number
+            FROM appointments a
+            LEFT JOIN pets p ON a.pet_id = p.id
+            LEFT JOIN users u ON a.user_id = u.id
+            WHERE a.id = :id
+            LIMIT 1
+        ");
+
+        $info_stmt->execute([':id' => $id]);
+        $booking_info = $info_stmt->fetch(PDO::FETCH_ASSOC);
+
+        if ($booking_info) {
+            // The appointment's user_id is the customer's actual users.id.
+            $u_id = (int)($booking_info['user_id'] ?? 0);
+
+            if ($u_id <= 0) {
+                $u_id = (int)($booking_info['owner_id'] ?? 0);
+            }
+
+            $service = $booking_info['service'] ?? 'Service';
+            $pet = $booking_info['pet_real_name'] ?? 'your pet';
+
+            $appt_date = !empty($booking_info['appointment_date'])
+                ? date('M d, Y', strtotime($booking_info['appointment_date']))
+                : '';
+
+            $title = "";
+            $msg = "";
+            $sms_msg = "";
+
+            if ($new_status === 'Confirmed') {
+                $title = "Booking Confirmed!";
+                $msg = "Your booking for $pet ($service) is now confirmed. See you soon!";
+                $sms_msg = "Hi! Your booking for $pet ($service) on $appt_date at Boogie's Pet Care is CONFIRMED. Thank you!";
+            } elseif ($new_status === 'Cancelled') {
+                $title = "Booking Cancelled";
+                $msg = "Sorry, your booking for $pet ($service) was cancelled by the clinic.";
+                $sms_msg = "Hi. Your booking for $pet ($service) on $appt_date was CANCELLED. Please check your portal for details. - Boogie's";
+            } elseif ($new_status === 'Completed') {
+                $title = "Service Completed!";
+                $msg = "The $service for $pet is now marked as complete. Thank you for choosing Boogie's Pet Care!";
+                $sms_msg = "Hi! The $service for $pet is now COMPLETE. Thank you for choosing Boogie's Pet Care!";
+            } elseif ($new_status === 'No-Show') {
+                $title = "Booking Forfeited (No-Show)";
+                $msg = "Your booking for $pet ($service) was marked as No-Show. Payments are non-refundable.";
+                $sms_msg = "Notice: Your booking for $pet ($service) was marked as NO-SHOW. Payments are non-refundable. - Boogie's Pet Care";
+            }
+
+            // INSERT IN-APP NOTIFICATION
+            if ($msg !== '' && $u_id > 0) {
+                $notif_stmt = $pdo->prepare("
+                    INSERT INTO notifications
+                        (user_id, title, message, type, is_read, created_at)
+                    VALUES
+                        (:user_id, :title, :message, 'booking', FALSE, NOW())
+                ");
+
+                $notif_stmt->execute([
+                    ':user_id' => $u_id,
+                    ':title' => $title,
+                    ':message' => $msg
+                ]);
+            }
+
+            // ==========================================
+            // IPROG SMS — ONLY SMS PROVIDER
+            // ==========================================
+            if ($sms_msg !== '') {
+                $phone_number = trim((string)($booking_info['contact_number'] ?? ''));
+
+                if ($u_id <= 0) {
+                    $_SESSION['alert_msg'] = "Booking updated, but SMS was not sent: customer account was not found.";
+                } elseif ($phone_number === '' || strtoupper($phone_number) === 'N/A') {
+                    $_SESSION['alert_msg'] = "Booking updated, but SMS was not sent: customer has no contact number.";
+                } else {
+                    $sms_result = sendIPROGSMS($phone_number, $sms_msg);
+
+                    if (!empty($sms_result['success'])) {
+                        $message_id = '';
+                        $decoded_sms = json_decode($sms_result['response'] ?? '', true);
+
+                        if (is_array($decoded_sms) && isset($decoded_sms['message_id'])) {
+                            $message_id = (string)$decoded_sms['message_id'];
+                        }
+
+                        $_SESSION['alert_msg'] = "Booking updated successfully. SMS queued for delivery.";
+
+                        error_log(
+                            'IPROG SMS queued for appointment #' . $id .
+                            ' | Phone: ' . ($sms_result['phone_number'] ?? $phone_number) .
+                            ($message_id !== '' ? ' | Message ID: ' . $message_id : '')
+                        );
+                    } else {
+                        $safe_error = trim((string)($sms_result['response'] ?? 'Unknown IPROG error'));
+
+                        $_SESSION['alert_msg'] = "Booking updated, but SMS failed (HTTP " .
+                            (int)($sms_result['http_code'] ?? 0) . ": " .
+                            htmlspecialchars($safe_error, ENT_QUOTES, 'UTF-8') . ").";
+
+                        error_log(
+                            'IPROG SMS FAILED for appointment #' . $id .
+                            ' | HTTP ' . ($sms_result['http_code'] ?? 0) .
+                            ' | ' . ($sms_result['response'] ?? 'Unknown error')
+                        );
+                    }
+                }
+            }
+        } else {
+            $_SESSION['alert_msg'] = "Booking status was updated, but the booking details could not be loaded for notifications/SMS.";
+        }
+
+    } catch (PDOException $e) {
+        error_log('Manage booking database error: ' . $e->getMessage());
+        $_SESSION['alert_msg'] = "Unable to update the booking right now.";
+    } catch (Throwable $e) {
+        error_log('Manage booking error: ' . $e->getMessage());
+        $_SESSION['alert_msg'] = "An unexpected error occurred while updating the booking.";
     }
 
     if (!isset($_SESSION['alert_msg'])) {
-        $_SESSION['alert_msg'] = "Status updated to " . htmlspecialchars($new_status) . " successfully.";
+        $_SESSION['alert_msg'] = "Status updated to " . htmlspecialchars($new_status, ENT_QUOTES, 'UTF-8') . " successfully.";
     }
+
     header("Location: managebooking.php");
     exit();
 }
 
 // --- FETCH ADMIN NOTIFICATIONS ---
-$admin_notif_query = mysqli_query($conn, "SELECT * FROM admin_notifications WHERE is_read = 0 ORDER BY created_at DESC");
-$unread_count = $admin_notif_query ? mysqli_num_rows($admin_notif_query) : 0;
+try {
+    $admin_notif_stmt = $pdo->prepare("
+        SELECT *
+        FROM admin_notifications
+        WHERE is_read = FALSE
+        ORDER BY created_at DESC
+    ");
+    $admin_notif_stmt->execute();
+    $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    $admin_notifications = [];
+}
+
+$unread_count = count($admin_notifications);
 
 // --- DYNAMIC COUNTS ---
-$total_res = mysqli_query($conn, "SELECT COUNT(*) as count FROM appointments");
-$total_count = $total_res ? mysqli_fetch_assoc($total_res)['count'] : 0;
+try {
+    $total_count_stmt = $pdo->query("SELECT COUNT(*) FROM appointments");
+    $total_count = (int)$total_count_stmt->fetchColumn();
 
-$pending_res = mysqli_query($conn, "SELECT COUNT(*) as count FROM appointments WHERE booking_status = 'Pending' OR booking_status IS NULL OR booking_status = ''");
-$pending_count = $pending_res ? mysqli_fetch_assoc($pending_res)['count'] : 0;
+    $pending_count_stmt = $pdo->query("
+        SELECT COUNT(*)
+        FROM appointments
+        WHERE booking_status = 'Pending'
+           OR booking_status IS NULL
+           OR booking_status = ''
+    ");
+    $pending_count = (int)$pending_count_stmt->fetchColumn();
 
-$confirmed_res = mysqli_query($conn, "SELECT COUNT(*) as count FROM appointments WHERE booking_status = 'Confirmed'");
-$confirmed_count = $confirmed_res ? mysqli_fetch_assoc($confirmed_res)['count'] : 0;
+    $confirmed_count_stmt = $pdo->query("
+        SELECT COUNT(*)
+        FROM appointments
+        WHERE booking_status = 'Confirmed'
+    ");
+    $confirmed_count = (int)$confirmed_count_stmt->fetchColumn();
 
-$completed_res = mysqli_query($conn, "SELECT COUNT(*) as count FROM appointments WHERE booking_status = 'Completed'");
-$completed_count = $completed_res ? mysqli_fetch_assoc($completed_res)['count'] : 0;
+    $completed_count_stmt = $pdo->query("
+        SELECT COUNT(*)
+        FROM appointments
+        WHERE booking_status = 'Completed'
+    ");
+    $completed_count = (int)$completed_count_stmt->fetchColumn();
 
-$cancelled_res = mysqli_query($conn, "SELECT COUNT(*) as count FROM appointments WHERE booking_status = 'Cancelled' OR booking_status = 'No-Show'");
-$cancelled_count = $cancelled_res ? mysqli_fetch_assoc($cancelled_res)['count'] : 0;
+    $cancelled_count_stmt = $pdo->query("
+        SELECT COUNT(*)
+        FROM appointments
+        WHERE booking_status = 'Cancelled'
+           OR booking_status = 'No-Show'
+    ");
+    $cancelled_count = (int)$cancelled_count_stmt->fetchColumn();
+} catch (PDOException $e) {
+    $total_count = 0;
+    $pending_count = 0;
+    $confirmed_count = 0;
+    $completed_count = 0;
+    $cancelled_count = 0;
+}
 
 // --- DETERMINE FILTER STATUS FROM URL ---
 $filter_status = isset($_GET['status']) ? $_GET['status'] : 'Active';
 
 $where_clause = "";
+$where_params = [];
+
 if ($filter_status === 'Active') {
-    $where_clause = "WHERE a.booking_status NOT IN ('Completed', 'Cancelled', 'No-Show') OR a.booking_status IS NULL";
-} elseif ($filter_status === 'Pending') {   
+    $where_clause = "WHERE (a.booking_status NOT IN ('Completed', 'Cancelled', 'No-Show') OR a.booking_status IS NULL)";
+} elseif ($filter_status === 'Pending') {
     $where_clause = "WHERE a.booking_status = 'Pending' OR a.booking_status IS NULL OR a.booking_status = ''";
 } elseif ($filter_status === 'All') {
-    $where_clause = ""; 
+    $where_clause = "";
 } elseif ($filter_status === 'Cancelled') {
     $where_clause = "WHERE a.booking_status IN ('Cancelled', 'No-Show')";
+} elseif (in_array($filter_status, ['Confirmed', 'Completed', 'No-Show'], true)) {
+    $where_clause = "WHERE a.booking_status = :filter_status";
+    $where_params[':filter_status'] = $filter_status;
 } else {
-    $safe_status = mysqli_real_escape_string($conn, $filter_status);
-    $where_clause = "WHERE a.booking_status = '$safe_status'";
+    $filter_status = 'Active';
+    $where_clause = "WHERE (a.booking_status NOT IN ('Completed', 'Cancelled', 'No-Show') OR a.booking_status IS NULL)";
 }
 
 // --- FETCH BOOKINGS ---
-$bookings_result = mysqli_query($conn, "SELECT a.*, p.name as pet_display_name 
-                                        FROM appointments a 
-                                        LEFT JOIN pets p ON a.pet_id = p.id 
-                                        $where_clause
-                                        ORDER BY 
-                                            CASE WHEN a.appointment_date >= CURDATE() THEN 0 ELSE 1 END,
-                                            CASE WHEN a.appointment_date >= CURDATE() THEN a.appointment_date END ASC,
-                                            CASE WHEN a.appointment_date < CURDATE() THEN a.appointment_date END DESC,
-                                            a.appointment_time ASC");
-$total_rows_showing = $bookings_result ? mysqli_num_rows($bookings_result) : 0;
+try {
+    $bookings_sql = "
+        SELECT
+            a.*,
+            p.name AS pet_display_name
+        FROM appointments a
+        LEFT JOIN pets p ON a.pet_id = p.id
+        $where_clause
+        ORDER BY
+            CASE WHEN a.appointment_date >= CURRENT_DATE THEN 0 ELSE 1 END,
+            CASE WHEN a.appointment_date >= CURRENT_DATE THEN a.appointment_date END ASC,
+            CASE WHEN a.appointment_date < CURRENT_DATE THEN a.appointment_date END DESC,
+            a.appointment_time ASC
+    ";
+
+    $bookings_stmt = $pdo->prepare($bookings_sql);
+    $bookings_stmt->execute($where_params);
+    $bookings = $bookings_stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    error_log('Manage bookings fetch error: ' . $e->getMessage());
+    $bookings = [];
+}
+
+$total_rows_showing = count($bookings);
 
 ?>
 
@@ -460,13 +674,13 @@ $total_rows_showing = $bookings_result ? mysqli_num_rows($bookings_result) : 0;
                         </div>
                         <div class="notif-body">
                             <?php if($unread_count > 0 && $admin_notif_query): ?>
-                                <?php while($notif = mysqli_fetch_assoc($admin_notif_query)): ?>
+                                <?php foreach ($admin_notifications as $notif): ?>
                                     <div class="notif-item">
                                         <i class="fa-solid fa-circle-exclamation" style="color: #e11d48; margin-right: 5px;"></i>
                                         <?php echo htmlspecialchars($notif['message']); ?>
                                         <br><small style="color: #94a3b8; font-size: 11px;"><?php echo date('M d, g:i A', strtotime($notif['created_at'])); ?></small>
                                     </div>
-                                <?php endwhile; ?>
+                                <?php endforeach; ?>
                             <?php else: ?>
                                 <div class="notif-empty">No new notifications.</div>
                             <?php endif; ?>
@@ -578,7 +792,7 @@ $total_rows_showing = $bookings_result ? mysqli_num_rows($bookings_result) : 0;
                                 </tr>
                             </thead>
                             <tbody>
-                                <?php while($row = mysqli_fetch_assoc($bookings_result)): 
+                                <?php foreach ($bookings as $row): 
                                     $raw_status = $row['booking_status'] ?? '';
                                     $display_status = (empty($raw_status)) ? 'Pending' : $raw_status;
                                     
@@ -686,7 +900,7 @@ $total_rows_showing = $bookings_result ? mysqli_num_rows($bookings_result) : 0;
                                             </div>
                                         </td>
                                     </tr>
-                                <?php endwhile; ?>
+                                <?php endforeach; ?>
                             </tbody>
                         </table>
                     <?php else: ?>

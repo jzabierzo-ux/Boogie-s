@@ -1,6 +1,6 @@
 <?php
 session_start();
-include 'db_connect.php';
+include 'db_supabase.php';
 
 // Set timezone to Philippines
 date_default_timezone_set('Asia/Manila');
@@ -13,105 +13,114 @@ if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
 
 // Get user info
 $full_name = isset($_SESSION['user_name']) ? $_SESSION['user_name'] : (isset($_SESSION['full_name']) ? $_SESSION['full_name'] : 'User');
-$user_id = $_SESSION['user_id']; 
+$user_id = (int)$_SESSION['user_id'];
 
 $success_msg = '';
 $error_msg = '';
 
 // --- FETCH USER DETAILS FOR HEADER (Profile Pic) ---
 $profile_pic = '';
-$stmt_user = $conn->prepare("SELECT profile_image FROM users WHERE id = ?");
-if ($stmt_user) {
-    $stmt_user->bind_param("i", $user_id);
-    $stmt_user->execute();
-    $user_res = $stmt_user->get_result();
-    if ($row = $user_res->fetch_assoc()) {
-        $profile_pic = $row['profile_image']; 
+try {
+    $stmt_user = $pdo->prepare("SELECT profile_image FROM users WHERE id = :id LIMIT 1");
+    $stmt_user->execute([':id' => $user_id]);
+    $row = $stmt_user->fetch();
+    if ($row) {
+        $profile_pic = $row['profile_image'] ?? '';
     }
-    $stmt_user->close();
+} catch (PDOException $e) {
+    $profile_pic = '';
 }
 
 // --- FETCH UNREAD NOTIFICATIONS ---
 $unread_count = 0;
 $notifications = [];
-$stmt_notif = $conn->prepare("SELECT COUNT(*) AS unread_count FROM notifications WHERE user_id = ? AND is_read = 0");
-if ($stmt_notif) {
-    $stmt_notif->bind_param("i", $user_id);
-    $stmt_notif->execute();
-    $notif_res = $stmt_notif->get_result();
-    if ($notif_res) {
-        $unread_count = $notif_res->fetch_assoc()['unread_count'];
+try {
+    $stmt_notif = $pdo->prepare("SELECT COUNT(*) AS unread_count FROM notifications WHERE user_id = :user_id AND is_read = 0");
+    $stmt_notif->execute([':user_id' => $user_id]);
+    $row = $stmt_notif->fetch();
+    if ($row) {
+        $unread_count = (int)($row['unread_count'] ?? 0);
     }
-    $stmt_notif->close();
+} catch (PDOException $e) {
+    $unread_count = 0;
 }
 
 // Fetch latest 5 notifications for dropdown
-$stmt_notif_list = $conn->prepare("SELECT id, message, created_at, is_read FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 5");
-if ($stmt_notif_list) {
-    $stmt_notif_list->bind_param("i", $user_id);
-    $stmt_notif_list->execute();
-    $res_list = $stmt_notif_list->get_result();
-    if ($res_list) {
-        $notifications = $res_list->fetch_all(MYSQLI_ASSOC);
-    }
-    $stmt_notif_list->close();
+try {
+    $stmt_notif_list = $pdo->prepare("SELECT id, message, created_at, is_read FROM notifications WHERE user_id = :user_id ORDER BY created_at DESC LIMIT 5");
+    $stmt_notif_list->execute([':user_id' => $user_id]);
+    $notifications = $stmt_notif_list->fetchAll() ?: [];
+} catch (PDOException $e) {
+    $notifications = [];
 }
 
 // --- CATCH THE CATEGORY FROM THE URL ---
-$pre_selected_category = isset($_GET['category']) ? $_GET['category'] : '';
+$pre_selected_category = isset($_GET['category']) ? trim((string)$_GET['category']) : '';
 
 // Fetch user's registered pets
 $user_pets = [];
-$stmt_pets = $conn->prepare("SELECT id, name, pet_type, gender, weight FROM pets WHERE owner_id = ?");
-$stmt_pets->bind_param("i", $user_id);
-$stmt_pets->execute();
-$res_pets = $stmt_pets->get_result();
-while($row = $res_pets->fetch_assoc()) {
-    $user_pets[] = $row;
+try {
+    $stmt_pets = $pdo->prepare("SELECT id, name, pet_type, gender, weight FROM pets WHERE owner_id = :owner_id ORDER BY id DESC");
+    $stmt_pets->execute([':owner_id' => $user_id]);
+    $user_pets = $stmt_pets->fetchAll() ?: [];
+} catch (PDOException $e) {
+    $user_pets = [];
 }
-$stmt_pets->close();
 
 // Protect Backend
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $pet_name = mysqli_real_escape_string($conn, $_POST['pet_name']);
-    $pet_gender = mysqli_real_escape_string($conn, $_POST['pet_gender']);
-    $pet_type = mysqli_real_escape_string($conn, $_POST['pet_type']);
-    $pet_size = mysqli_real_escape_string($conn, $_POST['pet_size']);
-    
-    $service_category = mysqli_real_escape_string($conn, $_POST['service_category']);
-    $specific_service = mysqli_real_escape_string($conn, $_POST['specific_service']);
-    $haircut_style = isset($_POST['haircut_style']) ? mysqli_real_escape_string($conn, $_POST['haircut_style']) : '';
-    
-    $appointment_date = mysqli_real_escape_string($conn, $_POST['appointment_date']);
-    $appointment_time = mysqli_real_escape_string($conn, $_POST['appointment_time']);
-    $remarks = isset($_POST['remarks']) ? mysqli_real_escape_string($conn, $_POST['remarks']) : '';
-    
-    $gcash_ref = mysqli_real_escape_string($conn, $_POST['gcash_ref']);
+    $pet_name = trim((string)($_POST['pet_name'] ?? ''));
+    $pet_gender = trim((string)($_POST['pet_gender'] ?? ''));
+    $pet_type = trim((string)($_POST['pet_type'] ?? ''));
+    $pet_size = trim((string)($_POST['pet_size'] ?? ''));
 
-    // BAGO: I-check kung chineck ba nila yung Terms and Conditions
+    $service_category = trim((string)($_POST['service_category'] ?? ''));
+    $specific_service = trim((string)($_POST['specific_service'] ?? ''));
+    $haircut_style = trim((string)($_POST['haircut_style'] ?? ''));
+
+    $appointment_date = trim((string)($_POST['appointment_date'] ?? ''));
+    $appointment_time = trim((string)($_POST['appointment_time'] ?? ''));
+    $remarks = trim((string)($_POST['remarks'] ?? ''));
+
+    $gcash_ref = trim((string)($_POST['gcash_ref'] ?? ''));
+
+    // Check Terms and Conditions
     if (!isset($_POST['agree_terms'])) {
         $error_msg = "Error: You must agree to the Terms and Conditions before booking.";
     }
 
-    // --- BACKEND FIELD VALIDATION ---
-    if (empty($error_msg) && (empty(trim($pet_name)) || empty($pet_type) || empty($pet_gender) || empty($pet_size) || empty($service_category) || empty($specific_service) || empty($appointment_date) || empty($appointment_time) || empty(trim($gcash_ref)))) {
+    // Backend Field Validation
+    if (empty($error_msg) && (
+        $pet_name === '' ||
+        $pet_type === '' ||
+        $pet_gender === '' ||
+        $pet_size === '' ||
+        $service_category === '' ||
+        $specific_service === '' ||
+        $appointment_date === '' ||
+        $appointment_time === '' ||
+        $gcash_ref === ''
+    )) {
         $error_msg = "Error: All required information (including GCash Reference Number) must be filled out.";
     }
 
     // --- GCASH RECEIPT UPLOAD HANDLING (REQUIRED) ---
     $receipt_filename = '';
     if (empty($error_msg)) {
-        if (!isset($_FILES['gcash_receipt']) || $_FILES['gcash_receipt']['error'] == UPLOAD_ERR_NO_FILE) {
+        if (!isset($_FILES['gcash_receipt']) || $_FILES['gcash_receipt']['error'] === UPLOAD_ERR_NO_FILE) {
             $error_msg = "Error: Please upload a screenshot of your GCash receipt.";
-        } elseif ($_FILES['gcash_receipt']['error'] == 0) {
+        } elseif ($_FILES['gcash_receipt']['error'] === UPLOAD_ERR_OK) {
             $allowed = ['jpg', 'jpeg', 'png'];
-            $filename = $_FILES['gcash_receipt']['name'];
-            $ext = pathinfo($filename, PATHINFO_EXTENSION);
-            if (in_array(strtolower($ext), $allowed)) {
-                // Ensure uploads directory exists
-                if (!is_dir('uploads')) { mkdir('uploads', 0777, true); }
-                
-                $receipt_filename = 'receipt_' . time() . '_' . $user_id . '.' . $ext;
+            $filename = (string)($_FILES['gcash_receipt']['name'] ?? '');
+            $ext = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
+
+            if (in_array($ext, $allowed, true)) {
+                if (!is_dir('uploads')) {
+                    mkdir('uploads', 0777, true);
+                }
+
+                $receipt_filename = 'receipt_' . time() . '_' . $user_id . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
+
                 if (!move_uploaded_file($_FILES['gcash_receipt']['tmp_name'], 'uploads/' . $receipt_filename)) {
                     $error_msg = "Failed to upload receipt image.";
                 }
@@ -164,43 +173,45 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (isset($pricing_data[$pet_type][$service_category][$specific_service])) {
         $service_prices = $pricing_data[$pet_type][$service_category][$specific_service];
         if (isset($service_prices['default'])) {
-            $service_fee = $service_prices['default'];
+            $service_fee = (float)$service_prices['default'];
         } elseif (isset($service_prices[$pet_size])) {
-            $service_fee = $service_prices[$pet_size];
+            $service_fee = (float)$service_prices[$pet_size];
         }
     }
 
-    // --- TIME TRAVEL & CUT-OFF VALIDATION (BAGO) ---
+    // --- TIME TRAVEL & CUT-OFF VALIDATION ---
     $current_date = date('Y-m-d');
     $current_time = date('H:i:s');
 
     if (empty($error_msg)) {
         if ($appointment_date < $current_date) {
             $error_msg = "Error: Cannot book appointments on past dates.";
-        } 
-        elseif ($appointment_date === $current_date && $current_time >= '18:00:00') {
-            // Cut-off Time Logic: Bawal magbook for same day kapag lampas na ng 6 PM
+        } elseif ($appointment_date === $current_date && $current_time >= '18:00:00') {
             $error_msg = "Error: Cut-off time for same-day bookings is 6:00 PM. Please book for tomorrow or another day.";
-        } 
-        elseif ($appointment_date === $current_date && $appointment_time < $current_time) {
+        } elseif ($appointment_date === $current_date && $appointment_time < $current_time) {
             $error_msg = "Error: The selected time has already passed for today. Please select a different time.";
-        } 
-        elseif ($appointment_time > '18:00:00') {
+        } elseif ($appointment_time > '18:00:00') {
             $error_msg = "Shop is closed at this time. Please select an earlier time.";
         }
     }
 
     // --- SERVICE-SPECIFIC TIME SLOT BLOCKING ---
     if (empty($error_msg)) {
-        $stmt_slot = $conn->prepare("SELECT COUNT(*) as slot_count FROM appointments WHERE appointment_date = ? AND appointment_time = ? AND service LIKE CONCAT(?, '%') AND booking_status != 'Cancelled'");
-        $stmt_slot->bind_param("sss", $appointment_date, $appointment_time, $service_category);
-        $stmt_slot->execute();
-        $slot_result = $stmt_slot->get_result()->fetch_assoc();
-        
-        if ($slot_result['slot_count'] >= 1) {
-            $error_msg = "The " . date("g:i A", strtotime($appointment_time)) . " slot is already taken for " . htmlspecialchars($service_category) . ". Please choose another time.";
+        try {
+            $stmt_slot = $pdo->prepare("SELECT COUNT(*) AS slot_count FROM appointments WHERE appointment_date = :appointment_date AND appointment_time = :appointment_time AND service LIKE :service_prefix AND booking_status <> 'Cancelled'");
+            $stmt_slot->execute([
+                ':appointment_date' => $appointment_date,
+                ':appointment_time' => $appointment_time,
+                ':service_prefix' => $service_category . '%'
+            ]);
+            $slot_result = $stmt_slot->fetch();
+
+            if ((int)($slot_result['slot_count'] ?? 0) >= 1) {
+                $error_msg = "The " . date("g:i A", strtotime($appointment_time)) . " slot is already taken for " . htmlspecialchars($service_category) . ". Please choose another time.";
+            }
+        } catch (PDOException $e) {
+            $error_msg = "Unable to check the selected time slot. Please try again.";
         }
-        $stmt_slot->close();
     }
 
     // --- VET SPECIFIC VALIDATION ---
@@ -208,104 +219,138 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($pet_type !== 'Dog' && $pet_type !== 'Cat') {
             $error_msg = "Error: Only dogs and cats are allowed to book for Vet Services.";
         } else {
-            $day_of_week = date('N', strtotime($appointment_date)); 
-            if ($day_of_week == 3 || $day_of_week == 6) {
+            $day_of_week = (int)date('N', strtotime($appointment_date));
+            if ($day_of_week === 3 || $day_of_week === 6) {
                 $error_msg = "Dr. Faith Casayuran is not available on Wednesdays and Saturdays.";
             } else {
-                $stmt_check = $conn->prepare("SELECT COUNT(*) as vet_count FROM appointments WHERE appointment_date = ? AND service LIKE 'Vet Services%' AND booking_status != 'Cancelled'");
-                $stmt_check->bind_param("s", $appointment_date);
-                $stmt_check->execute();
-                $row_check = $stmt_check->get_result()->fetch_assoc();
-                
-                if ($row_check['vet_count'] >= 24) {
-                    $error_msg = "Dr. Faith Casayuran is fully booked for this date.";
+                try {
+                    $stmt_check = $pdo->prepare("SELECT COUNT(*) AS vet_count FROM appointments WHERE appointment_date = :appointment_date AND service LIKE 'Vet Services%' AND booking_status <> 'Cancelled'");
+                    $stmt_check->execute([':appointment_date' => $appointment_date]);
+                    $row_check = $stmt_check->fetch();
+
+                    if ((int)($row_check['vet_count'] ?? 0) >= 24) {
+                        $error_msg = "Dr. Faith Casayuran is fully booked for this date.";
+                    }
+                } catch (PDOException $e) {
+                    $error_msg = "Unable to check veterinary availability. Please try again.";
                 }
-                $stmt_check->close();
             }
         }
     }
 
     // --- GROOMING SPECIFIC VALIDATION ---
     if (empty($error_msg) && $service_category === 'Grooming') {
-        $stmt_groom_check = $conn->prepare("SELECT COUNT(*) as grooming_count FROM appointments WHERE appointment_date = ? AND service LIKE 'Grooming%' AND booking_status != 'Cancelled'");
-        $stmt_groom_check->bind_param("s", $appointment_date);
-        $stmt_groom_check->execute();
-        $row_groom_check = $stmt_groom_check->get_result()->fetch_assoc();
-        
-        if ($row_groom_check['grooming_count'] >= 30) { 
-            $error_msg = "Grooming services are fully booked for this date.";
+        try {
+            $stmt_groom_check = $pdo->prepare("SELECT COUNT(*) AS grooming_count FROM appointments WHERE appointment_date = :appointment_date AND service LIKE 'Grooming%' AND booking_status <> 'Cancelled'");
+            $stmt_groom_check->execute([':appointment_date' => $appointment_date]);
+            $row_groom_check = $stmt_groom_check->fetch();
+
+            if ((int)($row_groom_check['grooming_count'] ?? 0) >= 30) {
+                $error_msg = "Grooming services are fully booked for this date.";
+            }
+        } catch (PDOException $e) {
+            $error_msg = "Unable to check grooming availability. Please try again.";
         }
-        $stmt_groom_check->close();
     }
 
     if (empty($error_msg)) {
-        // 1. Find or Create the Pet
-        $stmt = $conn->prepare("SELECT id FROM pets WHERE owner_id = ? AND name = ?");
-        $stmt->bind_param("is", $user_id, $pet_name);
-        $stmt->execute();
-        $result = $stmt->get_result();
-        
-        if ($result->num_rows > 0) {
-            $pet = $result->fetch_assoc();
-            $pet_id = $pet['id'];
-            
-            $update_pet = $conn->prepare("UPDATE pets SET weight = ?, pet_type = ?, gender = ? WHERE id = ?");
-            $update_pet->bind_param("sssi", $pet_size, $pet_type, $pet_gender, $pet_id);
-            $update_pet->execute();
-        } else {
-            $insert_pet = $conn->prepare("INSERT INTO pets (owner_id, name, pet_type, gender, weight) VALUES (?, ?, ?, ?, ?)");
-            $insert_pet->bind_param("issss", $user_id, $pet_name, $pet_type, $pet_gender, $pet_size);
-            if ($insert_pet->execute()) {
-                $pet_id = $insert_pet->insert_id;
+        try {
+            // 1. Find or Create the Pet
+            $stmt = $pdo->prepare("SELECT id FROM pets WHERE owner_id = :owner_id AND name = :name LIMIT 1");
+            $stmt->execute([
+                ':owner_id' => $user_id,
+                ':name' => $pet_name
+            ]);
+            $pet = $stmt->fetch();
+
+            if ($pet) {
+                $pet_id = (int)$pet['id'];
+
+                $update_pet = $pdo->prepare("UPDATE pets SET weight = :weight, pet_type = :pet_type, gender = :gender WHERE id = :id");
+                $update_pet->execute([
+                    ':weight' => $pet_size,
+                    ':pet_type' => $pet_type,
+                    ':gender' => $pet_gender,
+                    ':id' => $pet_id
+                ]);
+            } else {
+                $insert_pet = $pdo->prepare("INSERT INTO pets (owner_id, name, pet_type, gender, weight) VALUES (:owner_id, :name, :pet_type, :gender, :weight) RETURNING id");
+                $insert_pet->execute([
+                    ':owner_id' => $user_id,
+                    ':name' => $pet_name,
+                    ':pet_type' => $pet_type,
+                    ':gender' => $pet_gender,
+                    ':weight' => $pet_size
+                ]);
+                $new_pet = $insert_pet->fetch();
+                $pet_id = $new_pet ? (int)$new_pet['id'] : 0;
             }
-        }
 
-        // 2. Format Service Name
-        $final_service_name = $service_category . " - " . $specific_service;
-        if (!empty($haircut_style) && $specific_service === 'Full Grooming Package') {
-            $final_service_name .= " (" . $haircut_style . ")";
-        }
+            if ($pet_id <= 0) {
+                throw new RuntimeException('Unable to create or find the pet record.');
+            }
 
-        // 3. Insert Appointment with GCash Details
-        $payment_method = 'GCash'; 
-        $payment_status = 'Pending Verification';
-        $booking_status = 'Pending'; 
+            // 2. Format Service Name
+            $final_service_name = $service_category . " - " . $specific_service;
+            if ($haircut_style !== '' && $specific_service === 'Full Grooming Package') {
+                $final_service_name .= " (" . $haircut_style . ")";
+            }
 
-        $insert_appt = $conn->prepare("INSERT INTO appointments (user_id, pet_id, service, appointment_date, appointment_time, service_fee, total_price, gcash_ref, gcash_receipt, payment_method, payment_status, booking_status, remarks) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-        $insert_appt->bind_param("iisssddssssss", $user_id, $pet_id, $final_service_name, $appointment_date, $appointment_time, $service_fee, $service_fee, $gcash_ref, $receipt_filename, $payment_method, $payment_status, $booking_status, $remarks);
-        
-        if ($insert_appt->execute()) {
-            
+            // 3. Insert Appointment with GCash Details
+            $payment_method = 'GCash';
+            $payment_status = 'Pending Verification';
+            $booking_status = 'Pending';
+
+            $insert_appt = $pdo->prepare("INSERT INTO appointments (user_id, pet_id, service, appointment_date, appointment_time, service_fee, total_price, gcash_ref, gcash_receipt, payment_method, payment_status, booking_status, remarks) VALUES (:user_id, :pet_id, :service, :appointment_date, :appointment_time, :service_fee, :total_price, :gcash_ref, :gcash_receipt, :payment_method, :payment_status, :booking_status, :remarks) RETURNING id");
+            $insert_appt->execute([
+                ':user_id' => $user_id,
+                ':pet_id' => $pet_id,
+                ':service' => $final_service_name,
+                ':appointment_date' => $appointment_date,
+                ':appointment_time' => $appointment_time,
+                ':service_fee' => $service_fee,
+                ':total_price' => $service_fee,
+                ':gcash_ref' => $gcash_ref,
+                ':gcash_receipt' => $receipt_filename,
+                ':payment_method' => $payment_method,
+                ':payment_status' => $payment_status,
+                ':booking_status' => $booking_status,
+                ':remarks' => $remarks
+            ]);
+            $appointment_row = $insert_appt->fetch();
+            $appointment_id = $appointment_row ? (int)$appointment_row['id'] : 0;
+
+            if ($appointment_id <= 0) {
+                throw new RuntimeException('The appointment could not be created.');
+            }
+
             // --- START: AUTOMATIC TASK FOR VET ---
             if ($service_category === 'Vet Services') {
                 $formatted_time = date("g:i A", strtotime($appointment_time));
                 $task_msg = "Upcoming Appointment: " . $pet_name . " (" . $specific_service . ") on " . $appointment_date . " at " . $formatted_time;
-                
-                $vet_staff_name = "Dr. Faith Casayuran"; 
-                
-                $stmt_task = $conn->prepare("INSERT INTO tasks (staff_name, task_text) VALUES (?, ?)");
-                $stmt_task->bind_param("ss", $vet_staff_name, $task_msg);
-                $stmt_task->execute();
-                $stmt_task->close();
+                $vet_staff_name = "Dr. Faith Casayuran";
+
+                $stmt_task = $pdo->prepare("INSERT INTO tasks (staff_name, task_text) VALUES (:staff_name, :task_text)");
+                $stmt_task->execute([
+                    ':staff_name' => $vet_staff_name,
+                    ':task_text' => $task_msg
+                ]);
             }
 
             // --- START: ADMIN NOTIFICATION ---
             $admin_msg = $full_name . " booked a new appointment for " . $pet_name . " via GCash. Pending Payment Verification.";
-            $stmt_admin_notif = $conn->prepare("INSERT INTO admin_notifications (message) VALUES (?)");
-            if ($stmt_admin_notif) {
-                $stmt_admin_notif->bind_param("s", $admin_msg);
-                $stmt_admin_notif->execute();
-                $stmt_admin_notif->close();
-            }
+            $stmt_admin_notif = $pdo->prepare("INSERT INTO admin_notifications (message) VALUES (:message)");
+            $stmt_admin_notif->execute([':message' => $admin_msg]);
 
             header("Location: bookings.php?msg=success");
             exit();
-        } else {
-            $error_msg = "Error booking appointment: " . $conn->error;
+        } catch (PDOException | RuntimeException $e) {
+            $error_msg = "Error booking appointment: " . htmlspecialchars($e->getMessage());
         }
     }
 }
 ?>
+
 <!DOCTYPE html>
 <html lang="en">
 <head>

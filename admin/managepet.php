@@ -1,33 +1,52 @@
 <?php
 session_start();
-include '../db_connect.php'; 
+include '../db_supabase.php';
 
 // --- UNIVERSAL SECURITY CHECK ---
 $current_role = isset($_SESSION['role']) ? strtolower(trim($_SESSION['role'])) : '';
 
-// 1. SECURITY: Payagan ang 'admin', 'supervisor', AT 'staff'
-if (!isset($_SESSION['logged_in']) || !in_array($current_role, ['admin', 'manager', 'vet'])) {
+// 1. SECURITY: Payagan ang 'admin', 'manager', at 'vet'
+if (!isset($_SESSION['logged_in']) || !in_array($current_role, ['admin', 'manager', 'vet'], true)) {
     header("Location: stafflogin.php");
     exit();
 }
 
-// 2. FETCH ADMIN PROFILE (Updated with Profile Image Logic)
+// 2. FETCH ADMIN PROFILE
 $admin_full_name = "User";
 $profile_img_path = "";
 $first_name = "User";
 
-if (isset($_SESSION['user_id'])) {
-    $uid = $_SESSION['user_id'];
-    $get_admin = mysqli_query($conn, "SELECT full_name, profile_image FROM users WHERE id = '$uid'");
-    if($admin_data = mysqli_fetch_assoc($get_admin)) {
-        $admin_full_name = $admin_data['full_name'];
-        $profile_img_path = $admin_data['profile_image']; 
-        $_SESSION['user_name'] = $admin_full_name; 
-        
-        // Inayos ang first name para walang comma sa avatar fallback
-        $first_name = explode(' ', $admin_full_name)[0];
-        $first_name = trim($first_name, ',');
+try {
+    if (isset($_SESSION['user_id'])) {
+        $uid = (int)$_SESSION['user_id'];
+
+        $get_admin = $pdo->prepare("
+            SELECT full_name, profile_image
+            FROM users
+            WHERE id = :id
+            LIMIT 1
+        ");
+        $get_admin->execute([':id' => $uid]);
+        $admin_data = $get_admin->fetch(PDO::FETCH_ASSOC);
+
+        if ($admin_data) {
+            $admin_full_name = $admin_data['full_name'] ?? 'User';
+            $profile_img_path = $admin_data['profile_image'] ?? '';
+            $_SESSION['user_name'] = $admin_full_name;
+
+            $first_name = explode(' ', $admin_full_name)[0];
+            $first_name = trim($first_name, ',');
+        } else {
+            $admin_full_name = $_SESSION['user_name'] ?? 'User';
+            $first_name = trim(explode(' ', $admin_full_name)[0], ',');
+        }
+    } else {
+        $admin_full_name = $_SESSION['user_name'] ?? 'User';
+        $first_name = trim(explode(' ', $admin_full_name)[0], ',');
     }
+} catch (PDOException $e) {
+    $admin_full_name = $_SESSION['user_name'] ?? 'User';
+    $first_name = trim(explode(' ', $admin_full_name)[0], ',');
 }
 
 $success_msg = '';
@@ -35,66 +54,128 @@ $error_msg = '';
 
 // --- ADD NEW PET LOGIC ---
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_pet'])) {
-    $owner_id = mysqli_real_escape_string($conn, $_POST['owner_id']);
-    $pet_name = mysqli_real_escape_string($conn, $_POST['pet_name']);
-    $pet_type = mysqli_real_escape_string($conn, $_POST['pet_type']);
-    $pet_breed = mysqli_real_escape_string($conn, $_POST['pet_breed']);
-    $pet_gender = mysqli_real_escape_string($conn, $_POST['pet_gender']);
-    $pet_weight = mysqli_real_escape_string($conn, $_POST['pet_weight']);
+    $owner_id = (int)($_POST['owner_id'] ?? 0);
+    $pet_name = trim($_POST['pet_name'] ?? '');
+    $pet_type = trim($_POST['pet_type'] ?? '');
+    $pet_breed = trim($_POST['pet_breed'] ?? '');
+    $pet_gender = trim($_POST['pet_gender'] ?? '');
+    $pet_weight = trim($_POST['pet_weight'] ?? '');
 
-    $insert_query = "INSERT INTO pets (owner_id, name, pet_type, breed, gender, weight) 
-                     VALUES ('$owner_id', '$pet_name', '$pet_type', '$pet_breed', '$pet_gender', '$pet_weight')";
-    
-    if (mysqli_query($conn, $insert_query)) {
-        $success_msg = "New pet '$pet_name' successfully registered to Owner ID #$owner_id!";
+    if ($owner_id > 0 && $pet_name !== '' && $pet_type !== '' && $pet_gender !== '' && $pet_weight !== '') {
+        try {
+            $insert_query = "
+                INSERT INTO pets (owner_id, name, pet_type, breed, gender, weight)
+                VALUES (:owner_id, :name, :pet_type, :breed, :gender, :weight)
+            ";
+
+            $insert_stmt = $pdo->prepare($insert_query);
+            $insert_stmt->execute([
+                ':owner_id' => $owner_id,
+                ':name' => $pet_name,
+                ':pet_type' => $pet_type,
+                ':breed' => $pet_breed,
+                ':gender' => $pet_gender,
+                ':weight' => $pet_weight
+            ]);
+
+            $success_msg = "New pet '$pet_name' successfully registered to Owner ID #$owner_id!";
+        } catch (PDOException $e) {
+            $error_msg = "Error adding pet. Please check the pet details and try again.";
+        }
     } else {
-        $error_msg = "Error adding pet: " . mysqli_error($conn);
+        $error_msg = "Please complete all required pet fields.";
     }
 }
 
 // FETCH USERS FOR DROPDOWN (For the Add Pet Modal)
-$users_list_query = mysqli_query($conn, "SELECT id, full_name FROM users ORDER BY full_name ASC");
+try {
+    $users_list_stmt = $pdo->query("
+        SELECT id, full_name
+        FROM users
+        ORDER BY full_name ASC
+    ");
+    $users_list = $users_list_stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    $users_list = [];
+    $error_msg = $error_msg ?: "Unable to load customer list.";
+}
 
 // 3. DATABASE INITIALIZATION & SAFETY CHECK
-$table_name = "pets";
-$check_table = mysqli_query($conn, "SHOW TABLES LIKE '$table_name'");
-
-// Initialize variables to prevent "Undefined Variable" notices
+// PostgreSQL/Supabase does not use MySQL's SHOW TABLES syntax.
+// We query the pets table directly and gracefully handle database errors.
 $total_pets = $male_pets = $female_pets = 0;
-$breeds_query = false;
-$pets_list = false;
+$breeds = [];
+$pets_list = [];
 $showing_count = 0;
 $filter_gender = $_GET['gender'] ?? '';
 
-if (mysqli_num_rows($check_table) > 0) {
+try {
     // 4. FETCH PET STATISTICS
-    $total_pets_q  = mysqli_query($conn, "SELECT COUNT(*) as count FROM $table_name");
-    $male_pets_q   = mysqli_query($conn, "SELECT COUNT(*) as count FROM $table_name WHERE gender = 'Male'");
-    $female_pets_q = mysqli_query($conn, "SELECT COUNT(*) as count FROM $table_name WHERE gender = 'Female'");
+    $total_pets_stmt = $pdo->query("SELECT COUNT(*) AS count FROM pets");
+    $male_pets_stmt = $pdo->query("SELECT COUNT(*) AS count FROM pets WHERE gender = 'Male'");
+    $female_pets_stmt = $pdo->query("SELECT COUNT(*) AS count FROM pets WHERE gender = 'Female'");
 
-    $total_pets  = mysqli_fetch_assoc($total_pets_q)['count'] ?? 0;
-    $male_pets   = mysqli_fetch_assoc($male_pets_q)['count'] ?? 0;
-    $female_pets = mysqli_fetch_assoc($female_pets_q)['count'] ?? 0;
+    $total_pets = (int)($total_pets_stmt->fetch(PDO::FETCH_ASSOC)['count'] ?? 0);
+    $male_pets = (int)($male_pets_stmt->fetch(PDO::FETCH_ASSOC)['count'] ?? 0);
+    $female_pets = (int)($female_pets_stmt->fetch(PDO::FETCH_ASSOC)['count'] ?? 0);
 
     // 5. FETCH BREEDS FOR FILTER
-    $breeds_query = mysqli_query($conn, "SELECT DISTINCT breed FROM $table_name WHERE breed IS NOT NULL AND breed != '' ORDER BY breed ASC");
+    $breeds_stmt = $pdo->query("
+        SELECT DISTINCT breed
+        FROM pets
+        WHERE breed IS NOT NULL
+          AND breed <> ''
+        ORDER BY breed ASC
+    ");
+    $breeds = $breeds_stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    // 6. FETCH ALL PETS WITH PHP FILTERING
-    if ($filter_gender === 'Male') {
-        $pets_list = mysqli_query($conn, "SELECT * FROM $table_name WHERE gender = 'Male' ORDER BY id DESC");
-    } elseif ($filter_gender === 'Female') {
-        $pets_list = mysqli_query($conn, "SELECT * FROM $table_name WHERE gender = 'Female' ORDER BY id DESC");
-    } else {
-        $pets_list = mysqli_query($conn, "SELECT * FROM $table_name ORDER BY id DESC");
+    // 6. FETCH ALL PETS WITH GENDER FILTER
+    $pets_query = "SELECT * FROM pets";
+    $pets_params = [];
+
+    if ($filter_gender === 'Male' || $filter_gender === 'Female') {
+        $pets_query .= " WHERE gender = :gender";
+        $pets_params[':gender'] = $filter_gender;
     }
-    
-    $showing_count = ($pets_list) ? mysqli_num_rows($pets_list) : 0;
+
+    $pets_query .= " ORDER BY id DESC";
+
+    $pets_stmt = $pdo->prepare($pets_query);
+    $pets_stmt->execute($pets_params);
+    $pets_list = $pets_stmt->fetchAll(PDO::FETCH_ASSOC);
+    $showing_count = count($pets_list);
+} catch (PDOException $e) {
+    $total_pets = 0;
+    $male_pets = 0;
+    $female_pets = 0;
+    $breeds = [];
+    $pets_list = [];
+    $showing_count = 0;
+
+    if ($error_msg === '') {
+        $error_msg = "Unable to load pet data from the database.";
+    }
 }
 
 // --- FETCH ADMIN NOTIFICATIONS ---
-$admin_notif_query = mysqli_query($conn, "SELECT * FROM admin_notifications WHERE is_read = 0 ORDER BY created_at DESC");
-$unread_count = ($admin_notif_query) ? mysqli_num_rows($admin_notif_query) : 0;
+$admin_notifications = [];
+
+try {
+    $admin_notif_stmt = $pdo->prepare("
+        SELECT *
+        FROM admin_notifications
+        WHERE is_read = FALSE
+        ORDER BY created_at DESC
+    ");
+    $admin_notif_stmt->execute();
+    $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    $admin_notifications = [];
+}
+
+$unread_count = count($admin_notifications);
 ?>
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -301,13 +382,13 @@ $unread_count = ($admin_notif_query) ? mysqli_num_rows($admin_notif_query) : 0;
                         
                         <div class="notif-body" id="admin-notif-list">
                             <?php if($unread_count > 0): ?>
-                                <?php while($notif = mysqli_fetch_assoc($admin_notif_query)): ?>
+                                <?php foreach($admin_notifications as $notif): ?>
                                     <div class="notif-item">
                                         <i class="fa-solid fa-circle-exclamation" style="color: #e11d48; margin-right: 5px;"></i>
                                         <?php echo htmlspecialchars($notif['message']); ?>
                                         <br><small style="color: #94a3b8; font-size: 11px;"><?php echo date('M d, g:i A', strtotime($notif['created_at'])); ?></small>
                                     </div>
-                                <?php endwhile; ?>
+                                <?php endforeach; ?>
                             <?php else: ?>
                                 <div class="notif-empty">No new alerts.</div>
                             <?php endif; ?>
@@ -382,13 +463,12 @@ $unread_count = ($admin_notif_query) ? mysqli_num_rows($admin_notif_query) : 0;
                     <input type="text" id="petSearch" class="search-input" placeholder="Search by pet name, breed, or owner ID...">
                     <select id="breedFilter" class="breed-select">
                         <option value="">All Breeds</option>
-                        <?php if ($breeds_query): ?>
-                            <?php while($breed = mysqli_fetch_assoc($breeds_query)): ?>
+                        <?php if (!empty($breeds)): ?>
+                            <?php foreach($breeds as $breed): ?>
                                 <option value="<?php echo htmlspecialchars($breed['breed']); ?>">
                                     <?php echo htmlspecialchars($breed['breed']); ?>
                                 </option>
-                            <?php endwhile; ?>
-                            <?php mysqli_data_seek($breeds_query, 0); ?>
+                            <?php endforeach; ?>
                         <?php endif; ?>
                     </select>
                     <span class="result-count" id="showingCountText">Showing <?php echo $showing_count; ?> of <?php echo $showing_count; ?> pets</span>
@@ -410,7 +490,7 @@ $unread_count = ($admin_notif_query) ? mysqli_num_rows($admin_notif_query) : 0;
                         </tr>
                     </thead>
                     <tbody>
-                        <?php while($pet = mysqli_fetch_assoc($pets_list)): ?>
+                        <?php foreach($pets_list as $pet): ?>
                         <tr class="pet-row" data-breed="<?php echo htmlspecialchars($pet['breed']); ?>">
                             <td>
                                 <div style="display: flex; align-items: center; gap: 12px;">
@@ -440,7 +520,7 @@ $unread_count = ($admin_notif_query) ? mysqli_num_rows($admin_notif_query) : 0;
                                 </a>
                             </td>
                         </tr>
-                        <?php endwhile; ?>
+                        <?php endforeach; ?>
                     </tbody>
                 </table>
             <?php else: ?>
@@ -466,13 +546,11 @@ $unread_count = ($admin_notif_query) ? mysqli_num_rows($admin_notif_query) : 0;
                     <label>Select Owner (Customer) *</label>
                     <select name="owner_id" required>
                         <option value="">-- Search / Choose Customer --</option>
-                        <?php 
-                        if ($users_list_query) {
-                            while($user = mysqli_fetch_assoc($users_list_query)) {
-                                echo "<option value='".$user['id']."'>ID: ".$user['id']." - ".htmlspecialchars($user['full_name'])."</option>";
-                            }
-                        }
-                        ?>
+                        <?php foreach ($users_list as $user): ?>
+                            <option value="<?php echo (int)$user['id']; ?>">
+                                ID: <?php echo (int)$user['id']; ?> - <?php echo htmlspecialchars($user['full_name']); ?>
+                            </option>
+                        <?php endforeach; ?>
                     </select>
                 </div>
 

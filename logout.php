@@ -1,6 +1,6 @@
 <?php
 session_start();
-include 'db_connect.php';
+require_once 'db_supabase.php';
 
 // Kunin muna ang session details bago i-destroy
 $user_id = $_SESSION['user_id'] ?? null;
@@ -21,50 +21,44 @@ if ($role === 'admin') {
     // Admin logout → Admin login page
     $redirect_page = 'admin_login.php';
 
-    if ($user_id !== null) {
+    try {
+        if ($user_id !== null) {
 
-        $stmt = $conn->prepare("
-            INSERT INTO admin_account_logs
-            (user_id, action, status, ip_address, user_agent)
-            VALUES (?, 'LOGOUT', 'SUCCESS', ?, ?)
-        ");
+            $stmt = $pdo->prepare("
+                INSERT INTO admin_account_logs
+                (user_id, action, status, ip_address, user_agent)
+                VALUES (:user_id, 'LOGOUT', 'SUCCESS', :ip_address, :user_agent)
+            ");
 
-        if ($stmt) {
-            $stmt->bind_param(
-                "iss",
-                $user_id,
-                $ip_address,
-                $user_agent
-            );
+            $stmt->execute([
+                ':user_id' => (int)$user_id,
+                ':ip_address' => $ip_address,
+                ':user_agent' => $user_agent
+            ]);
 
-            $stmt->execute();
-            $stmt->close();
+        } else {
+
+            $stmt = $pdo->prepare("
+                INSERT INTO admin_account_logs
+                (user_id, action, status, ip_address, user_agent)
+                VALUES (NULL, 'LOGOUT', 'SUCCESS', :ip_address, :user_agent)
+            ");
+
+            $stmt->execute([
+                ':ip_address' => $ip_address,
+                ':user_agent' => $user_agent
+            ]);
         }
 
-    } else {
-
-        $stmt = $conn->prepare("
-            INSERT INTO admin_account_logs
-            (user_id, action, status, ip_address, user_agent)
-            VALUES (NULL, 'LOGOUT', 'SUCCESS', ?, ?)
-        ");
-
-        if ($stmt) {
-            $stmt->bind_param(
-                "ss",
-                $ip_address,
-                $user_agent
-            );
-
-            $stmt->execute();
-            $stmt->close();
-        }
+    } catch (PDOException $e) {
+        // Logout should still continue even if logging fails.
+        error_log("Admin logout logging failed: " . $e->getMessage());
     }
 
 // ================================
 // MANAGER / VET LOGOUT
 // ================================
-} elseif (in_array($role, ['manager', 'vet', 'supervisor', 'staff'])) {
+} elseif (in_array($role, ['manager', 'vet', 'supervisor', 'staff'], true)) {
 
     // Personnel → Staff Login
     $redirect_page = 'staff/stafflogin.php';

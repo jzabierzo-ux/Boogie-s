@@ -8,51 +8,74 @@ if (!isset($_SESSION['user_id'])) {
 }
 
 // 2. DATABASE CONNECTION
-include('db_connect.php'); 
+include 'db_supabase.php';
 
 $user_id = $_SESSION['user_id'] ?? 1;
-// Kunin ang full name gaya ng sa dashboard
-$full_name = isset($_SESSION['user_name']) ? $_SESSION['user_name'] : (isset($_SESSION['full_name']) ? $_SESSION['full_name'] : 'User');
+
+$full_name = isset($_SESSION['user_name'])
+    ? $_SESSION['user_name']
+    : (isset($_SESSION['full_name']) ? $_SESSION['full_name'] : 'User');
 
 // --- FETCH PROFILE IMAGE ---
-$user_query = mysqli_query($conn, "SELECT profile_image FROM users WHERE id = '$user_id'");
-$user_data = mysqli_fetch_assoc($user_query);
-$profile_image = isset($user_data['profile_image']) ? $user_data['profile_image'] : null;
+$user_stmt = $pdo->prepare("
+    SELECT profile_image
+    FROM users
+    WHERE id = :user_id
+    LIMIT 1
+");
+$user_stmt->execute([':user_id' => $user_id]);
+$user_data = $user_stmt->fetch();
+
+$profile_image = $user_data['profile_image'] ?? null;
 
 // Match the existing header markup, which uses $profile_pic.
 $profile_pic = $profile_image ?: ($_SESSION['profile_image'] ?? '');
 
-// --- NEW LOGIC: MARK ALL NOTIFICATIONS AS READ UPON PAGE LOAD ---
-// Kapag pinuntahan ni user ang page na ito, automatic mababasa lahat ng unread notifs.
-$update_read_status = $conn->prepare("UPDATE notifications SET is_read = 1 WHERE user_id = ? AND is_read = 0");
-if ($update_read_status) {
-    $update_read_status->bind_param("i", $user_id);
-    $update_read_status->execute();
-    $update_read_status->close();
-}
+// --- MARK ALL NOTIFICATIONS AS READ UPON PAGE LOAD ---
+$update_read_status = $pdo->prepare("
+    UPDATE notifications
+    SET is_read = 1
+    WHERE user_id = :user_id
+      AND is_read = 0
+");
+$update_read_status->execute([':user_id' => $user_id]);
 
 // --- FETCH UNREAD NOTIFICATIONS COUNT FOR HEADER ---
-// (Dapat 0 na ito palagi kapag nag-load dahil ginawa na nating read lahat sa itaas)
-$count_query = mysqli_query($conn, "SELECT COUNT(*) as unread_count FROM notifications WHERE user_id = '$user_id' AND is_read = 0");
-$count_row = mysqli_fetch_assoc($count_query);
-$unread_count = $count_row['unread_count']; 
+$count_stmt = $pdo->prepare("
+    SELECT COUNT(*) AS unread_count
+    FROM notifications
+    WHERE user_id = :user_id
+      AND is_read = 0
+");
+$count_stmt->execute([':user_id' => $user_id]);
+$count_row = $count_stmt->fetch();
+
+$unread_count = (int)($count_row['unread_count'] ?? 0);
 
 // --- FETCH LATEST 5 NOTIFICATIONS FOR DROPDOWN ---
-$notifications = [];
-$stmt_notif_list = $conn->prepare("SELECT id, message, created_at, is_read FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 5");
-if ($stmt_notif_list) {
-    $stmt_notif_list->bind_param("i", $user_id);
-    $stmt_notif_list->execute();
-    $res_list = $stmt_notif_list->get_result();
-    if ($res_list) {
-        $notifications = $res_list->fetch_all(MYSQLI_ASSOC);
-    }
-    $stmt_notif_list->close();
-}
+$notif_list_stmt = $pdo->prepare("
+    SELECT id, message, created_at, is_read
+    FROM notifications
+    WHERE user_id = :user_id
+    ORDER BY created_at DESC
+    LIMIT 5
+");
+$notif_list_stmt->execute([':user_id' => $user_id]);
 
-// 4. FETCH ALL NOTIFICATIONS FOR THIS USER (MAIN CONTENT)
-$notifs_query = mysqli_query($conn, "SELECT * FROM notifications WHERE user_id = '$user_id' ORDER BY created_at DESC");
+$notifications = $notif_list_stmt->fetchAll();
 
+// --- FETCH ALL NOTIFICATIONS FOR THIS USER (MAIN CONTENT) ---
+$notifs_stmt = $pdo->prepare("
+    SELECT *
+    FROM notifications
+    WHERE user_id = :user_id
+    ORDER BY created_at DESC
+");
+$notifs_stmt->execute([':user_id' => $user_id]);
+
+$notifs_list = $notifs_stmt->fetchAll();
+
+$notification_total = count($notifs_list);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -816,15 +839,15 @@ $notifs_query = mysqli_query($conn, "SELECT * FROM notifications WHERE user_id =
 
                 <div class="notification-count">
                     Total Notifications
-                    <strong><?php echo mysqli_num_rows($notifs_query); ?></strong>
+                    <strong><?php echo $notification_total; ?></strong>
                 </div>
             </div>
         </div>
 
-        <?php if (mysqli_num_rows($notifs_query) > 0): ?>
+        <?php if ($notification_total > 0): ?>
 
             <section class="notifications-list">
-                <?php while ($notif = mysqli_fetch_assoc($notifs_query)): ?>
+                <?php foreach ($notifs_list as $notif): ?>
 
                     <?php
                         $icon = 'fa-solid fa-stethoscope';
@@ -850,14 +873,14 @@ $notifs_query = mysqli_query($conn, "SELECT * FROM notifications WHERE user_id =
 
                         <div class="notif-content">
                             <div class="notif-head">
-                                <h3><?php echo htmlspecialchars($notif['title']); ?></h3>
+                                <h3><?php echo htmlspecialchars($notif['title'] ?? 'Notification'); ?></h3>
                                 <span class="notif-time">
                                     <?php echo date("M j, Y • g:i A", strtotime($notif['created_at'])); ?>
                                 </span>
                             </div>
 
                             <p class="notif-message">
-                                <?php echo htmlspecialchars($notif['message']); ?>
+                                <?php echo htmlspecialchars($notif['message'] ?? ''); ?>
                             </p>
 
                             <div class="notif-meta">
@@ -867,7 +890,7 @@ $notifs_query = mysqli_query($conn, "SELECT * FROM notifications WHERE user_id =
                         </div>
                     </article>
 
-                <?php endwhile; ?>
+                <?php endforeach; ?>
             </section>
 
         <?php else: ?>

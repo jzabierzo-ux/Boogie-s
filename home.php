@@ -1,56 +1,124 @@
 <?php
+
 session_start();
 
-$is_logged_in = isset($_SESSION['logged_in']) && $_SESSION['logged_in'] === true;
-$user_name = $is_logged_in ? ($_SESSION['user_name'] ?? 'Guest') : 'Guest';
+$is_logged_in = isset($_SESSION['logged_in'])
+    && $_SESSION['logged_in'] === true;
 
-include 'db_connect.php'; // Make sure this path is correct
+$user_name = $is_logged_in
+    ? ($_SESSION['user_name'] ?? 'Guest')
+    : 'Guest';
+
+include 'db_supabase.php';
 
 // Security: Redirect to login if not logged in
-if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
+if (!$is_logged_in) {
     header("Location: login.php");
     exit();
 }
 
-// --- FETCH REAL REVIEWS ---
-$review_query = "SELECT r.*, u.full_name, a.service
-                 FROM reviews r
-                 JOIN users u ON r.user_id = u.id
-                 JOIN appointments a ON r.appointment_id = a.id
-                 WHERE r.rating >= 4
-                 ORDER BY r.review_date DESC
-                 LIMIT 3";
-$reviews_result = @mysqli_query($conn, $review_query);
 
-// --- FETCH AGGREGATE STATS ---
-$stats_query = "SELECT COUNT(*) as total_reviews, AVG(rating) as avg_rating FROM reviews";
-$stats_result = @mysqli_query($conn, $stats_query);
-$stats_row = @mysqli_fetch_assoc($stats_result);
+// ============================================================
+// FETCH REVIEWS
+// ============================================================
 
-$total_reviews = $stats_row['total_reviews'] ?? 0;
-$avg_rating = ($total_reviews > 0) ? number_format($stats_row['avg_rating'], 1) : "0.0";
-$parent_text = ($total_reviews == 1) ? "happy fur-parent" : "happy fur-parents";
+$reviews_list = [];
 
-// --- FETCH DYNAMIC PROMOTIONS ---
-$promos_list = [];
 try {
-    $current_date = date('Y-m-d');
-    // Fetch from the updated promos table where status is active and not expired
-    $promo_query = "SELECT * FROM promos 
-                    WHERE status = 'active' 
-                    AND (expiry_date >= '$current_date' OR expiry_date IS NULL OR expiry_date = '0000-00-00') 
-                    ORDER BY id DESC LIMIT 3";
-    
-    $promo_result = @mysqli_query($conn, $promo_query);
-    
-    if ($promo_result && mysqli_num_rows($promo_result) > 0) {
-        while($row = mysqli_fetch_assoc($promo_result)) {
-            $promos_list[] = $row;
-        }
-    }
-} catch (Exception $e) {
-    // Failsafe: Table doesn't exist yet, it will use fallbacks below
+
+    $review_stmt = $pdo->prepare("
+        SELECT
+            r.*,
+            u.full_name,
+            a.service
+        FROM reviews r
+        JOIN users u
+            ON r.user_id = u.id
+        JOIN appointments a
+            ON r.appointment_id = a.id
+        WHERE r.rating >= 4
+        ORDER BY r.review_date DESC
+        LIMIT 3
+    ");
+
+    $review_stmt->execute();
+
+    $reviews_list = $review_stmt->fetchAll();
+
+} catch (PDOException $e) {
+
+    $reviews_list = [];
 }
+
+
+// ============================================================
+// FETCH AGGREGATE REVIEW STATS
+// ============================================================
+
+$total_reviews = 0;
+$avg_rating = "0.0";
+
+try {
+
+    $stats_stmt = $pdo->query("
+        SELECT
+            COUNT(*) AS total_reviews,
+            AVG(rating) AS avg_rating
+        FROM reviews
+    ");
+
+    $stats_row = $stats_stmt->fetch();
+
+    $total_reviews = (int)($stats_row['total_reviews'] ?? 0);
+
+    $avg_rating = ($total_reviews > 0)
+        ? number_format((float)$stats_row['avg_rating'], 1)
+        : "0.0";
+
+} catch (PDOException $e) {
+
+    $total_reviews = 0;
+    $avg_rating = "0.0";
+}
+
+$parent_text = ($total_reviews == 1)
+    ? "happy fur-parent"
+    : "happy fur-parents";
+
+
+// ============================================================
+// FETCH DYNAMIC PROMOTIONS
+// ============================================================
+
+$promos_list = [];
+
+try {
+
+    $current_date = date('Y-m-d');
+
+    $promo_stmt = $pdo->prepare("
+        SELECT *
+        FROM promos
+        WHERE status = 'active'
+          AND (
+                expiry_date >= :current_date
+                OR expiry_date IS NULL
+              )
+        ORDER BY id DESC
+        LIMIT 3
+    ");
+
+    $promo_stmt->execute([
+        ':current_date' => $current_date
+    ]);
+
+    $promos_list = $promo_stmt->fetchAll();
+
+} catch (PDOException $e) {
+
+    $promos_list = [];
+}
+
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -736,22 +804,311 @@ try {
             .hero-content h1 { font-size: 40px; }
         }
 
+        /* MOBILE NAVIGATION */
+        .menu-toggle {
+            display: none;
+            width: 42px;
+            height: 42px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: #fff;
+            color: var(--brand-blue);
+            cursor: pointer;
+            font-size: 18px;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .menu-toggle:focus-visible {
+            outline: 3px solid rgba(255, 204, 0, .45);
+            outline-offset: 2px;
+        }
+
         @media (max-width: 680px) {
-            .slide { min-height: 500px; }
-            .slide-inner { padding-top: 55px; }
-            .hero-content h1 { font-size: 32px; }
-            .hero-content p { font-size: 14px; }
-            .stats-wrap { margin-top: -32px; }
-            .stats-bar { grid-template-columns: 1fr 1fr; }
-            .home-section { padding-top: 55px; }
+            body { overflow-x: hidden; }
+
+            .promo-bar {
+                padding: 7px 10px;
+                font-size: 10px;
+            }
+
+            .nav-top {
+                grid-template-columns: 1fr auto;
+                gap: 10px;
+                padding: 10px 14px;
+            }
+
+            .logo {
+                gap: 8px;
+            }
+
+            .nav-logo-img {
+                width: 42px;
+                height: 42px;
+            }
+
+            .logo-text b {
+                font-size: 16px;
+            }
+
+            .logo-text span {
+                font-size: 7px;
+                letter-spacing: .9px;
+            }
+
+            .nav-links {
+                gap: 7px;
+                flex-wrap: nowrap;
+            }
+
+            .hello-user {
+                display: none;
+            }
+
+            .nav-links .cart-btn {
+                padding: 9px 11px;
+                font-size: 11px;
+            }
+
+            .logout-link {
+                font-size: 11px;
+                padding: 8px 2px;
+            }
+
+            .menu-toggle {
+                display: inline-flex;
+            }
+
+            .search {
+                grid-column: 1 / -1;
+                width: 100%;
+            }
+
+            .search input {
+                font-size: 12px;
+                padding: 8px 5px;
+            }
+
+            .search button {
+                width: 36px;
+                height: 36px;
+            }
+
+            .categories {
+                position: relative;
+            }
+
+            .categories ul {
+                display: none;
+                flex-direction: column;
+                align-items: stretch;
+                gap: 2px;
+                padding: 8px 12px 10px;
+                max-width: none;
+            }
+
+            .categories.open ul {
+                display: flex;
+            }
+
+            .categories ul li a {
+                justify-content: flex-start;
+                padding: 10px 12px;
+                font-size: 12px;
+            }
+
+            .slide {
+                min-height: 470px;
+            }
+
+            .slide-inner {
+                width: 100%;
+                padding: 54px 18px 82px;
+            }
+
+            .hero-content {
+                max-width: 100%;
+            }
+
+            .hero-badge {
+                font-size: 9px;
+                padding: 7px 10px;
+            }
+
+            .hero-content h1 {
+                font-size: 31px;
+                letter-spacing: -.6px;
+                margin-top: 14px;
+            }
+
+            .hero-content p {
+                font-size: 13px;
+                line-height: 1.65;
+                max-width: 100%;
+            }
+
+            .btn-join {
+                width: 100%;
+                justify-content: center;
+                padding: 13px 16px;
+                font-size: 12px;
+            }
+
+            .slider-dots {
+                bottom: 20px;
+            }
+
+            .stats-wrap {
+                width: calc(100% - 24px);
+                margin-top: -28px;
+            }
+
+            .stats-bar {
+                grid-template-columns: 1fr 1fr;
+                border-radius: 16px;
+            }
+
+            .stat-item {
+                padding: 17px 8px;
+                border-right: 1px solid var(--border);
+                border-bottom: 1px solid var(--border);
+            }
+
+            .stat-item:nth-child(2),
+            .stat-item:nth-child(4) {
+                border-right: 0;
+            }
+
+            .stat-item:nth-child(3),
+            .stat-item:nth-child(4) {
+                border-bottom: 0;
+            }
+
+            .stat-item i {
+                width: 36px;
+                height: 36px;
+                border-radius: 10px;
+                margin-bottom: 7px;
+                font-size: 13px;
+            }
+
+            .stat-item strong {
+                font-size: 18px;
+            }
+
+            .stat-item span {
+                font-size: 9px;
+            }
+
+            .home-section {
+                width: 100%;
+                padding: 50px 14px 0;
+            }
+
+            .section-heading {
+                margin-bottom: 22px;
+            }
+
+            .section-heading h2 {
+                font-size: 24px;
+            }
+
+            .section-heading p {
+                font-size: 11px;
+            }
+
             .promo-grid,
             .service-grid,
-            .testimonial-grid { grid-template-columns: 1fr; }
-            .footer-main { grid-template-columns: 1fr; }
-            .cta-box { padding: 34px 22px; }
-            .cta-box h2 { font-size: 25px; }
-            .cta-footer { gap: 10px; flex-direction: column; }
-            .search-status { top: 186px; }
+            .testimonial-grid {
+                grid-template-columns: 1fr;
+                gap: 14px;
+            }
+
+            .promo-card {
+                min-height: 180px;
+                padding: 24px 20px;
+            }
+
+            .promo-card h3 {
+                font-size: 22px;
+            }
+
+            .service-card {
+                padding: 24px 18px;
+            }
+
+            .testimonials {
+                margin-top: 52px;
+                padding: 52px 14px 62px;
+            }
+
+            .t-card {
+                padding: 19px;
+            }
+
+            .t-text {
+                font-size: 12px;
+            }
+
+            .cta-area {
+                padding: 28px 14px 34px;
+            }
+
+            .cta-box {
+                padding: 30px 18px;
+                border-radius: 16px;
+            }
+
+            .cta-box h2 {
+                font-size: 23px;
+            }
+
+            .cta-box p {
+                font-size: 11px;
+            }
+
+            .cta-buttons {
+                flex-direction: column;
+            }
+
+            .btn-blue-solid,
+            .btn-blue-outline {
+                width: 100%;
+                text-align: center;
+                padding: 12px 16px;
+            }
+
+            .cta-footer {
+                gap: 9px;
+                flex-direction: column;
+                font-size: 9px;
+            }
+
+            footer {
+                padding: 20px 14px 26px;
+            }
+
+            .footer-main {
+                grid-template-columns: 1fr;
+                gap: 25px;
+            }
+
+            .footer-main h4 {
+                font-size: 11px;
+            }
+
+            .footer-main p,
+            .footer-main a {
+                font-size: 11px;
+            }
+
+            .search-status {
+                top: auto;
+                bottom: 16px;
+                left: 12px;
+                right: 12px;
+                width: auto;
+            }
         }
 
     </style>
@@ -784,17 +1141,22 @@ try {
             
             <div class="nav-links">
                 <?php if($is_logged_in): ?>
-                    <span style="color: var(--brand-blue); font-weight: 600; font-size: 14px;"><i class="fa-regular fa-user"></i> Hi, <?php echo htmlspecialchars($user_name); ?></span>
+                    <span class="hello-user"><i class="fa-regular fa-user"></i> Hi, <?php echo htmlspecialchars($user_name); ?></span>
                     <a href="dashboard.php" class="cart-btn">Dashboard</a>
-                    <a href="logout.php" style="color: #ef4444; text-decoration:none; font-weight: 600; font-size: 14px; margin-left:10px;">Logout</a>
+                    <a href="logout.php" class="logout-link">Logout</a>
                 <?php else: ?>
                     <a href="login.php" class="cart-btn">Login / Register</a>
                 <?php endif; ?>
+
+                <button type="button" class="menu-toggle" id="menuToggle"
+                        aria-label="Open navigation menu" aria-expanded="false" aria-controls="categoryMenu">
+                    <i class="fa-solid fa-bars"></i>
+                </button>
             </div>
         </div>
         
-        <nav class="categories">
-            <ul>
+        <nav class="categories" id="categoryNav">
+            <ul id="categoryMenu">
                 <li><a href="petservices.php" class="active"><i class="fa-solid fa-paw"></i> PET SERVICES</a></li>
                 <li><a href="grooming.php"><i class="fa-solid fa-scissors"></i> GROOMING</a></li>
                 <li><a href="vetclinic.php"><i class="fa-solid fa-stethoscope"></i> VET CLINIC</a></li>
@@ -988,42 +1350,73 @@ try {
                 </div>
 
                 <div class="testimonial-grid">
-                    <?php if ($reviews_result && mysqli_num_rows($reviews_result) > 0): ?>
-                        <?php while($row = mysqli_fetch_assoc($reviews_result)): ?>
-                            <?php
-                                $review_name = $row['full_name'] ?? 'Valued Client';
-                                $initial = strtoupper(substr($review_name, 0, 1));
-                                if (!preg_match('/^[A-Z0-9]$/', $initial)) {
-                                    $initial = 'P';
-                                }
-                            ?>
-                            <article class="t-card">
-                                <div class="stars">
-                                    <?php
-                                        for($i = 1; $i <= 5; $i++) {
-                                            echo $i <= $row['rating']
-                                                ? '<i class="fa-solid fa-star"></i>'
-                                                : '<i class="fa-regular fa-star"></i>';
-                                        }
-                                    ?>
-                                </div>
-                                <p class="t-text">"<?php echo htmlspecialchars($row['comment']); ?>"</p>
-                                <div class="t-user">
-                                    <div class="t-avatar"><?php echo htmlspecialchars($initial); ?></div>
-                                    <div>
-                                        <strong><?php echo htmlspecialchars($review_name); ?></strong>
-                                        <small><?php echo htmlspecialchars($row['service']); ?> Client</small>
-                                    </div>
-                                </div>
-                            </article>
-                        <?php endwhile; ?>
-                    <?php else: ?>
-                        <div class="empty-reviews">
-                            <i class="fa-regular fa-comment-dots"></i>
-                            <h3>No reviews yet</h3>
-                            <p>Customer reviews will appear here automatically once submitted.</p>
-                        </div>
-                    <?php endif; ?>
+                    <?php if (!empty($reviews_list)): ?>
+
+    <?php foreach ($reviews_list as $row): ?>
+
+        <?php
+            $review_name = $row['full_name'] ?? 'Valued Client';
+            $initial = strtoupper(substr($review_name, 0, 1));
+
+            if (!preg_match('/^[A-Z0-9]$/', $initial)) {
+                $initial = 'P';
+            }
+        ?>
+
+        <article class="t-card">
+
+            <div class="stars">
+                <?php
+                    for ($i = 1; $i <= 5; $i++) {
+                        echo $i <= (int)$row['rating']
+                            ? '<i class="fa-solid fa-star"></i>'
+                            : '<i class="fa-regular fa-star"></i>';
+                    }
+                ?>
+            </div>
+
+            <p class="t-text">
+                "<?php echo htmlspecialchars($row['comment'] ?? ''); ?>"
+            </p>
+
+            <div class="t-user">
+
+                <div class="t-avatar">
+                    <?php echo htmlspecialchars($initial); ?>
+                </div>
+
+                <div>
+                    <strong>
+                        <?php echo htmlspecialchars($review_name); ?>
+                    </strong>
+
+                    <small>
+                        <?php echo htmlspecialchars($row['service'] ?? ''); ?>
+                        Client
+                    </small>
+                </div>
+
+            </div>
+
+        </article>
+
+    <?php endforeach; ?>
+
+<?php else: ?>
+
+    <div class="empty-reviews">
+
+        <i class="fa-regular fa-comment-dots"></i>
+
+        <h3>No reviews yet</h3>
+
+        <p>
+            Customer reviews will appear here automatically once submitted.
+        </p>
+
+    </div>
+
+<?php endif; ?>
                 </div>
 
                 <a href="contactus.php" class="reviews-link">
@@ -1114,6 +1507,38 @@ try {
                 currentSlideIndex = (currentSlideIndex + 1) % slides.length;
                 setSlide(currentSlideIndex);
             }, 6000);
+        }
+
+        /* ===== RESPONSIVE MOBILE MENU ===== */
+        const menuToggle = document.getElementById('menuToggle');
+        const categoryNav = document.getElementById('categoryNav');
+
+        if (menuToggle && categoryNav) {
+            menuToggle.addEventListener('click', function () {
+                const isOpen = categoryNav.classList.toggle('open');
+                menuToggle.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+                menuToggle.setAttribute('aria-label', isOpen ? 'Close navigation menu' : 'Open navigation menu');
+
+                const icon = menuToggle.querySelector('i');
+                if (icon) {
+                    icon.classList.toggle('fa-bars', !isOpen);
+                    icon.classList.toggle('fa-xmark', isOpen);
+                }
+            });
+
+            categoryNav.querySelectorAll('a').forEach(function (link) {
+                link.addEventListener('click', function () {
+                    categoryNav.classList.remove('open');
+                    menuToggle.setAttribute('aria-expanded', 'false');
+                    menuToggle.setAttribute('aria-label', 'Open navigation menu');
+
+                    const icon = menuToggle.querySelector('i');
+                    if (icon) {
+                        icon.classList.remove('fa-xmark');
+                        icon.classList.add('fa-bars');
+                    }
+                });
+            });
         }
 
         /* ===== WORKING SITE SEARCH ===== */

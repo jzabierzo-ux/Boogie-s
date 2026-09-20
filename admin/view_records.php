@@ -1,33 +1,49 @@
 <?php
 session_start();
-include '../db_connect.php'; 
+include '../db_supabase.php';
 
-// --- 1. SECURITY CHECK: ALLOW ADMIN, SUPERVISOR, AND STAFF ---
-$is_admin_or_supervisor = isset($_SESSION['logged_in']) && in_array($_SESSION['role'], ['admin', 'supervisor', 'staff']);
-$is_staff = isset($_SESSION['staff_logged_in']) && $_SESSION['staff_logged_in'] === true;
+// --- 1. SECURITY CHECK: ALLOW ADMIN, MANAGER, VET, AND STAFF ---
+$current_role = isset($_SESSION['role']) ? strtolower(trim($_SESSION['role'])) : '';
 
-if (!$is_admin_or_supervisor && !$is_staff) {
+$is_admin_or_staff = isset($_SESSION['logged_in']) &&
+    $_SESSION['logged_in'] === true &&
+    in_array($current_role, ['admin', 'manager', 'vet', 'supervisor', 'staff'], true);
+
+$is_staff_logged_in = isset($_SESSION['staff_logged_in']) &&
+    $_SESSION['staff_logged_in'] === true;
+
+if (!$is_admin_or_staff && !$is_staff_logged_in) {
     header("Location: stafflogin.php");
-    exit;
+    exit();
 }
 
 // --- 2. DYNAMIC BACK BUTTON ---
-$back_link = $is_admin_or_supervisor ? "managepet.php" : "pets.php";
+$back_link = $is_admin_or_staff ? "managepet.php" : "pets.php";
 
 if (!isset($_GET['id']) || !is_numeric($_GET['id'])) {
     die("Invalid Pet ID.");
 }
 
-$pet_id = $_GET['id'];
+$pet_id = (int)$_GET['id'];
 
 // --- 3. FETCH PET DATA ---
-$query = "SELECT * FROM pets WHERE id = ?";
-$stmt = mysqli_prepare($conn, $query);
-mysqli_stmt_bind_param($stmt, "i", $pet_id);
-mysqli_stmt_execute($stmt);
-$result = mysqli_stmt_get_result($stmt);
+try {
+    $query = "
+        SELECT *
+        FROM pets
+        WHERE id = :pet_id
+        LIMIT 1
+    ";
 
-if (!$row = mysqli_fetch_assoc($result)) {
+    $stmt = $pdo->prepare($query);
+    $stmt->execute([':pet_id' => $pet_id]);
+
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    die("Unable to load the pet record at this time.");
+}
+
+if (!$row) {
     die("Pet not found in the database.");
 }
 
@@ -44,13 +60,23 @@ $special_needs = $row['special_needs'] ?? 'No special care instructions provided
 $p_status = $row['status'] ?? 'Pending';
 
 // --- 4. FETCH APPOINTMENT & TRANSACTION HISTORY ---
-// Dito natin kukunin yung schedule at gagawan natin ng Transaction ID
-$appt_query = "SELECT * FROM appointments WHERE pet_id = ? ORDER BY appointment_date DESC, appointment_time DESC";
-$stmt_appt = mysqli_prepare($conn, $appt_query);
-mysqli_stmt_bind_param($stmt_appt, "i", $pet_id);
-mysqli_stmt_execute($stmt_appt);
-$appt_result = mysqli_stmt_get_result($stmt_appt);
+try {
+    $appt_query = "
+        SELECT *
+        FROM appointments
+        WHERE pet_id = :pet_id
+        ORDER BY appointment_date DESC, appointment_time DESC
+    ";
+
+    $stmt_appt = $pdo->prepare($appt_query);
+    $stmt_appt->execute([':pet_id' => $pet_id]);
+
+    $appointments = $stmt_appt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    $appointments = [];
+}
 ?>
+
 
 <!DOCTYPE html>
 <html lang="en">
@@ -186,8 +212,8 @@ $appt_result = mysqli_stmt_get_result($stmt_appt);
                         </tr>
                     </thead>
                     <tbody>
-                        <?php if (mysqli_num_rows($appt_result) > 0): ?>
-                            <?php while ($appt = mysqli_fetch_assoc($appt_result)): 
+                        <?php if (count($appointments) > 0): ?>
+                            <?php foreach ($appointments as $appt): 
                                 // Gagawa tayo ng Unique Transaction ID gamit ang Year-Month at ID ng booking
                                 $date_part = date('Ym', strtotime($appt['appointment_date']));
                                 $trn_id = "TRN-" . $date_part . "-" . str_pad($appt['id'], 4, '0', STR_PAD_LEFT);
@@ -215,7 +241,7 @@ $appt_result = mysqli_stmt_get_result($stmt_appt);
                                     <td style="font-weight: 800; color: #10b981; font-size: 15px;"><?php echo $fee; ?></td>
                                     <td><span class="status-pill status-<?php echo $status_class; ?>"><?php echo htmlspecialchars($status); ?></span></td>
                                 </tr>
-                            <?php endwhile; ?>
+                            <?php endforeach; ?>
                         <?php else: ?>
                             <tr>
                                 <td colspan="5" style="text-align: center; color: #94a3b8; padding: 60px 30px;">

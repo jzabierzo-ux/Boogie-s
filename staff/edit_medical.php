@@ -1,9 +1,13 @@
 <?php
 session_start();
-include '../db_connect.php'; 
+require_once '../db_supabase.php';
 
 // --- SECURITY CHECK (FIXED PARA SA VET/STAFF) ---
-$is_admin_or_supervisor = isset($_SESSION['logged_in']) && in_array(strtolower(trim($_SESSION['role'] ?? '')), ['admin', 'supervisor', 'staff']);
+$is_admin_or_supervisor = isset($_SESSION['logged_in']) && in_array(
+    strtolower(trim($_SESSION['role'] ?? '')),
+    ['admin', 'supervisor', 'staff'],
+    true
+);
 $is_staff = isset($_SESSION['staff_logged_in']) && $_SESSION['staff_logged_in'] === true;
 
 if (!$is_admin_or_supervisor && !$is_staff) {
@@ -22,11 +26,13 @@ $full_display_name = $staff_name;
 
 if (isset($_SESSION['user_id']) || isset($_SESSION['staff_id'])) {
     $uid = $_SESSION['user_id'] ?? $_SESSION['staff_id'];
-    
-    $get_staff = mysqli_query($conn, "SELECT full_name, profile_image FROM users WHERE id = '$uid'");
-    
-    if($get_staff && $staff_data = mysqli_fetch_assoc($get_staff)) {
-        $profile_img_path = $staff_data['profile_image']; 
+
+    $get_staff = $pdo->prepare("SELECT full_name, profile_image FROM users WHERE id = :id LIMIT 1");
+    $get_staff->execute([':id' => $uid]);
+    $staff_data = $get_staff->fetch(PDO::FETCH_ASSOC);
+
+    if ($staff_data) {
+        $profile_img_path = $staff_data['profile_image'] ?? '';
         if (!empty($staff_data['full_name'])) {
             $full_display_name = $staff_data['full_name'];
         }
@@ -34,33 +40,43 @@ if (isset($_SESSION['user_id']) || isset($_SESSION['staff_id'])) {
 }
 
 // Linisin ang pangalan para sa Initial
-$clean_name = trim(str_replace('Dr. ', '', $full_display_name), " ,"); 
-$first_letter = strtoupper(substr($clean_name, 0, 1)); 
+$clean_name = trim(str_replace('Dr. ', '', $full_display_name), " ,");
+$first_letter = strtoupper(substr($clean_name, 0, 1));
 
 // Display with title
-$display_with_title = (stripos($full_display_name, 'Dr.') === false) ? 'Dr. ' . $full_display_name : $full_display_name;
+$display_with_title = (stripos($full_display_name, 'Dr.') === false)
+    ? 'Dr. ' . $full_display_name
+    : $full_display_name;
 
 // --- FETCH NOTIFICATIONS ---
-$admin_notif_query = mysqli_query($conn, "SELECT * FROM admin_notifications WHERE is_read = 0 ORDER BY created_at DESC");
-$unread_count = ($admin_notif_query) ? mysqli_num_rows($admin_notif_query) : 0;
+$admin_notif_query = $pdo->query("SELECT * FROM admin_notifications WHERE is_read = 0 ORDER BY created_at DESC");
+$admin_notifications = $admin_notif_query ? $admin_notif_query->fetchAll(PDO::FETCH_ASSOC) : [];
+$unread_count = count($admin_notifications);
 
 // Check ID
 if (!isset($_GET['id']) || !is_numeric($_GET['id'])) {
     die("Invalid Patient ID.");
 }
 
-$pet_id = $_GET['id'];
+$pet_id = (int) $_GET['id'];
 
 // --- UPDATE LOGIC ---
 if (isset($_POST['update_medical'])) {
-    $updated_history = mysqli_real_escape_string($conn, $_POST['medical_history']);
-    $updated_needs = mysqli_real_escape_string($conn, $_POST['special_needs']);
-    
-    $update_query = "UPDATE pets SET medical_history = ?, special_needs = ? WHERE id = ?";
-    $update_stmt = mysqli_prepare($conn, $update_query);
-    mysqli_stmt_bind_param($update_stmt, "ssi", $updated_history, $updated_needs, $pet_id);
-    
-    if (mysqli_stmt_execute($update_stmt)) {
+    $updated_history = $_POST['medical_history'] ?? '';
+    $updated_needs = $_POST['special_needs'] ?? '';
+
+    $update_query = "UPDATE pets
+                     SET medical_history = :medical_history,
+                         special_needs = :special_needs
+                     WHERE id = :id";
+
+    $update_stmt = $pdo->prepare($update_query);
+
+    if ($update_stmt->execute([
+        ':medical_history' => $updated_history,
+        ':special_needs' => $updated_needs,
+        ':id' => $pet_id
+    ])) {
         header("Location: view_records.php?id=" . $pet_id);
         exit;
     } else {
@@ -69,21 +85,20 @@ if (isset($_POST['update_medical'])) {
 }
 
 // Fetch pet data
-$query = "SELECT * FROM pets WHERE id = ?";
-$stmt = mysqli_prepare($conn, $query);
-mysqli_stmt_bind_param($stmt, "i", $pet_id);
-mysqli_stmt_execute($stmt);
-$result = mysqli_stmt_get_result($stmt);
+$query = "SELECT * FROM pets WHERE id = :id LIMIT 1";
+$stmt = $pdo->prepare($query);
+$stmt->execute([':id' => $pet_id]);
 
-if (!$row = mysqli_fetch_assoc($result)) {
+$row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+if (!$row) {
     die("Patient not found.");
 }
 
 $p_name = $row['name'] ?? 'Unknown';
 $med_history = $row['medical_history'] ?? '';
-$special_needs = $row['special_needs'] ?? ''; 
+$special_needs = $row['special_needs'] ?? '';
 ?>
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
