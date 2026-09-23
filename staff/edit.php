@@ -2,8 +2,13 @@
 session_start();
 require_once '../db_supabase.php';
 
-// Check if staff is logged in
-if (!isset($_SESSION['staff_id']) && !isset($_SESSION['user_id'])) {
+// Check if authorized staff is logged in
+$current_role = strtolower(trim($_SESSION['role'] ?? ''));
+
+if (
+    (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) ||
+    !in_array($current_role, ['admin', 'manager', 'vet', 'supervisor', 'staff'], true)
+) {
     header("Location: stafflogin.php");
     exit;
 }
@@ -159,6 +164,113 @@ try {
 
         .alert-box { margin-bottom: 20px; padding: 12px 15px; border-radius: 8px; font-size: 13px; }
         .alert-error { background: #fee2e2; color: #b91c1c; border: 1px solid #fecaca; }
+
+        /* ===== EXTRA MOBILE RESPONSIVENESS ===== */
+        @media (max-width: 700px) {
+            body {
+                overflow-x: hidden;
+            }
+
+            .container {
+                width: 100%;
+                max-width: 100%;
+                margin: 24px auto;
+                padding: 0 14px;
+            }
+
+            .back-link {
+                font-size: 13px;
+                margin-bottom: 15px;
+                min-height: 42px;
+            }
+
+            .form-card {
+                padding: 24px 16px;
+                border-radius: 14px;
+            }
+
+            .form-header {
+                margin-bottom: 22px;
+            }
+
+            .form-header .icon-circle {
+                width: 46px;
+                height: 46px;
+                font-size: 18px;
+            }
+
+            .form-header h2 {
+                font-size: 21px;
+                line-height: 1.3;
+            }
+
+            .form-header p {
+                font-size: 12px !important;
+                line-height: 1.5;
+            }
+
+            .form-group {
+                margin-bottom: 17px;
+            }
+
+            .form-group label {
+                font-size: 12px;
+                line-height: 1.4;
+            }
+
+            .form-control {
+                min-height: 46px;
+                padding: 11px 12px;
+                font-size: 14px;
+            }
+
+            textarea.form-control {
+                min-height: 150px;
+                line-height: 1.6;
+            }
+
+            .grid-2 {
+                grid-template-columns: 1fr;
+                gap: 0;
+            }
+
+            .submit-btn {
+                min-height: 48px;
+                padding: 13px 18px;
+                font-size: 14px;
+                margin-top: 8px;
+            }
+
+            .alert-box {
+                font-size: 12px;
+                line-height: 1.5;
+                overflow-wrap: anywhere;
+            }
+        }
+
+        @media (max-width: 400px) {
+            .container {
+                padding: 0 10px;
+                margin: 16px auto;
+            }
+
+            .form-card {
+                padding: 20px 12px;
+            }
+
+            .form-header h2 {
+                font-size: 19px;
+            }
+
+            .form-control {
+                font-size: 13px;
+            }
+
+            textarea.form-control {
+                min-height: 135px;
+            }
+        }
+
     </style>
 </head>
 <body>
@@ -216,14 +328,14 @@ try {
                     </div>
                     <div class="form-group">
                         <label>Age *</label>
-                        <input type="text" name="age" class="form-control" value="<?php echo htmlspecialchars($pet_data['age'] ?? ''); ?>" required>
+                        <input type="text" inputmode="decimal" name="age" class="form-control" value="<?php echo htmlspecialchars($pet_data['age'] ?? ''); ?>" required>
                     </div>
                 </div>
 
                 <div class="grid-2">
                     <div class="form-group">
                         <label>Weight *</label>
-                        <input type="text" name="weight" class="form-control" value="<?php echo htmlspecialchars($pet_data['weight'] ?? ''); ?>" required>
+                        <input type="text" inputmode="decimal" name="weight" class="form-control" value="<?php echo htmlspecialchars($pet_data['weight'] ?? ''); ?>" required>
                     </div>
                     <div class="form-group">
                         <label>Gender *</label>

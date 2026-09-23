@@ -303,9 +303,413 @@ $progress = ($total_tasks > 0)
         .empty-state p { font-weight: 500; }
 
         footer { text-align: center; padding: 30px; color: var(--text-muted); font-size: 12px; margin-top: auto; border-top: 1px solid var(--border);}
+
+        /* --- MOBILE RESPONSIVE --- */
+        .mobile-menu-btn {
+            display: none;
+            width: 42px;
+            height: 42px;
+            border: 1px solid var(--border);
+            background: var(--white);
+            color: var(--sidebar-navy);
+            border-radius: 10px;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            font-size: 18px;
+            flex-shrink: 0;
+        }
+
+        .sidebar-overlay {
+            display: none;
+        }
+
+        .profile-name-text {
+            min-width: 0;
+        }
+
+        @media (max-width: 1100px) {
+            .sidebar {
+                width: 230px;
+            }
+
+            .main-content {
+                margin-left: 230px;
+                width: calc(100% - 230px);
+            }
+
+            header {
+                padding: 0 24px;
+            }
+
+            .container {
+                padding: 28px 24px;
+            }
+
+            .profile-wrapper {
+                gap: 10px;
+                padding-left: 15px;
+            }
+
+            .role-label {
+                padding: 4px 9px;
+            }
+
+            .profile-name-text {
+                max-width: 180px;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+        }
+
+        @media (max-width: 900px) {
+            .sidebar {
+                width: 260px;
+                left: -270px;
+                transition: left 0.25s ease;
+                box-shadow: 8px 0 30px rgba(0,0,0,0.15);
+            }
+
+            .sidebar.mobile-open {
+                left: 0;
+            }
+
+            .sidebar-overlay {
+                position: fixed;
+                inset: 0;
+                background: rgba(0,0,0,0.38);
+                z-index: 90;
+                display: none;
+            }
+
+            .sidebar-overlay.show {
+                display: block;
+            }
+
+            .main-content {
+                margin-left: 0;
+                width: 100%;
+            }
+
+            .mobile-menu-btn {
+                display: inline-flex;
+                position: fixed;
+                top: 12px;
+                left: 12px;
+                z-index: 1100;
+            }
+
+            header {
+                height: 66px;
+                padding: 0 16px 0 66px;
+                gap: 12px;
+            }
+
+            .breadcrumb {
+                min-width: 0;
+                flex: 1;
+                overflow: hidden;
+            }
+
+            .breadcrumb {
+                white-space: nowrap;
+                text-overflow: ellipsis;
+            }
+
+            .breadcrumb i {
+                flex-shrink: 0;
+            }
+
+            .top-right-actions {
+                gap: 12px;
+                flex-shrink: 0;
+            }
+
+            .profile-wrapper {
+                gap: 8px;
+                padding-left: 12px;
+            }
+
+            .profile-name-text {
+                display: none !important;
+            }
+
+            .role-label {
+                font-size: 10px;
+                padding: 4px 8px;
+            }
+
+            .notif-dropdown {
+                position: fixed;
+                top: 70px;
+                right: 12px;
+                width: min(340px, calc(100vw - 24px));
+            }
+
+            .profile-dropdown {
+                position: fixed;
+                top: 70px;
+                right: 12px;
+                width: min(220px, calc(100vw - 24px));
+            }
+
+            .container {
+                max-width: none;
+                padding: 22px 16px 28px;
+            }
+
+            .container > div:first-child {
+                margin-bottom: 22px !important;
+            }
+
+            .container > div:first-child h1 {
+                font-size: 22px !important;
+                line-height: 1.3;
+            }
+
+            .container > div:first-child p {
+                font-size: 13px !important;
+                line-height: 1.5;
+            }
+
+            .stats-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 14px;
+                margin-bottom: 22px;
+            }
+
+            .stat-card {
+                padding: 18px;
+                border-radius: 15px;
+                min-width: 0;
+            }
+
+            .stat-card h3 {
+                font-size: 10px;
+                line-height: 1.35;
+                padding-right: 34px;
+            }
+
+            .stat-card p {
+                font-size: 27px;
+            }
+
+            .stat-card i {
+                right: 18px;
+                top: 18px;
+                font-size: 26px;
+            }
+
+            .card {
+                padding: 20px 16px;
+                border-radius: 16px;
+            }
+
+            .card > h2 {
+                font-size: 16px !important;
+                line-height: 1.4;
+            }
+
+            .task-list {
+                gap: 12px;
+                margin-top: 20px;
+            }
+
+            .task-item {
+                display: flex;
+                flex-direction: column;
+                align-items: stretch;
+                gap: 14px;
+                padding: 16px;
+                border-radius: 14px;
+            }
+
+            .task-content {
+                gap: 13px;
+                min-width: 0;
+                align-items: flex-start;
+            }
+
+            .task-title {
+                font-size: 14px;
+                line-height: 1.4;
+                overflow-wrap: anywhere;
+            }
+
+            .task-text {
+                font-size: 12px;
+                line-height: 1.45;
+                overflow-wrap: anywhere;
+            }
+
+            .task-date {
+                font-size: 11px;
+                line-height: 1.5;
+                gap: 8px;
+                flex-wrap: wrap;
+            }
+
+            .btn-toggle {
+                width: 40px;
+                height: 40px;
+                flex: 0 0 40px;
+            }
+
+            .task-item > div:last-child {
+                align-self: flex-start;
+            }
+
+            .status-badge {
+                font-size: 9px;
+                padding: 6px 10px;
+            }
+
+            .progress-bar-bg {
+                margin: 16px 0;
+            }
+
+            .empty-state {
+                padding: 45px 8px;
+            }
+
+            footer {
+                padding: 24px 16px;
+                line-height: 1.5;
+            }
+        }
+
+        @media (max-width: 560px) {
+            .top-right-actions {
+                gap: 8px;
+            }
+
+            .role-label {
+                display: none;
+            }
+
+            .top-avatar,
+            .top-avatar-fallback {
+                width: 34px;
+                height: 34px;
+            }
+
+            .container {
+                padding-left: 12px;
+                padding-right: 12px;
+            }
+
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .stat-card {
+                display: grid;
+                grid-template-columns: 40px minmax(0, 1fr) auto;
+                grid-template-rows: auto auto;
+                column-gap: 12px;
+                align-items: center;
+                padding: 15px 16px;
+            }
+
+            .stat-card i {
+                position: static;
+                grid-row: 1 / 3;
+                grid-column: 1;
+                margin: 0;
+                font-size: 24px;
+                opacity: 0.16;
+            }
+
+            .stat-card h3 {
+                grid-column: 2;
+                grid-row: 1 / 3;
+                padding-right: 0;
+                margin: 0;
+            }
+
+            .stat-card p {
+                grid-column: 3;
+                grid-row: 1 / 3;
+                margin: 0;
+                font-size: 24px;
+            }
+
+            .card {
+                padding: 18px 12px;
+            }
+
+            .task-item {
+                padding: 14px;
+            }
+
+            .task-content {
+                gap: 10px;
+            }
+
+            .task-date {
+                display: flex;
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 4px;
+            }
+
+            .empty-state i {
+                font-size: 42px;
+            }
+        }
+
+        @media (max-width: 380px) {
+            .mobile-menu-btn {
+                width: 38px;
+                height: 38px;
+                top: 11px;
+                left: 10px;
+            }
+
+            header {
+                padding-left: 58px;
+            }
+
+            .breadcrumb {
+                font-size: 12px;
+                gap: 6px;
+            }
+
+            .top-avatar,
+            .top-avatar-fallback {
+                width: 32px;
+                height: 32px;
+            }
+
+            .task-content {
+                align-items: flex-start;
+            }
+
+            .btn-toggle {
+                width: 36px;
+                height: 36px;
+                flex-basis: 36px;
+            }
+
+            .task-item > div:last-child {
+                width: 100%;
+            }
+
+            .status-badge {
+                width: fit-content;
+            }
+        }
+
     </style>
 </head>
 <body>
+
+    <button class="mobile-menu-btn" id="mobileMenuBtn" type="button" aria-label="Open menu" aria-expanded="false">
+        <i class="fas fa-bars"></i>
+    </button>
+    <div class="sidebar-overlay" id="sidebarOverlay"></div>
+
 
     <aside class="sidebar">
         <div class="sidebar-header">
@@ -370,7 +774,7 @@ $progress = ($total_tasks > 0)
                         <div class="top-avatar-fallback"><?php echo $first_letter; ?></div>
                     <?php endif; ?>
                     
-                    <span style="font-size: 14px; font-weight: 700; color: var(--sidebar-navy); display: flex; align-items: center; gap: 6px;">
+                    <span class="profile-name-text" style="font-size: 14px; font-weight: 700; color: var(--sidebar-navy); display: flex; align-items: center; gap: 6px;">
                         <?php echo htmlspecialchars($display_with_title); ?>
                         <i class="fas fa-chevron-down" style="font-size: 10px; color: var(--text-muted); opacity: 0.5;"></i>
                     </span>
@@ -467,6 +871,39 @@ $progress = ($total_tasks > 0)
     </main>
 
     <script>
+
+        // --- MOBILE SIDEBAR ---
+        const mobileMenuBtn = document.getElementById('mobileMenuBtn');
+        const sidebar = document.querySelector('.sidebar');
+        const sidebarOverlay = document.getElementById('sidebarOverlay');
+
+        function toggleMobileMenu() {
+            const isOpen = sidebar.classList.toggle('mobile-open');
+            sidebarOverlay.classList.toggle('show', isOpen);
+            mobileMenuBtn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+            mobileMenuBtn.innerHTML = isOpen
+                ? '<i class="fas fa-times"></i>'
+                : '<i class="fas fa-bars"></i>';
+        }
+
+        function closeMobileMenu() {
+            sidebar.classList.remove('mobile-open');
+            sidebarOverlay.classList.remove('show');
+            mobileMenuBtn.setAttribute('aria-expanded', 'false');
+            mobileMenuBtn.innerHTML = '<i class="fas fa-bars"></i>';
+        }
+
+        mobileMenuBtn.addEventListener('click', toggleMobileMenu);
+        sidebarOverlay.addEventListener('click', closeMobileMenu);
+
+        document.querySelectorAll('.nav-item').forEach(function(link) {
+            link.addEventListener('click', function() {
+                if (window.innerWidth <= 900) {
+                    closeMobileMenu();
+                }
+            });
+        });
+
         // --- Notification & Profile Toggle Logic ---
         function toggleNotif(event) {
             event.stopPropagation();
@@ -495,6 +932,13 @@ $progress = ($total_tasks > 0)
                 }
             }
         }
+
+
+        window.addEventListener('resize', function() {
+            if (window.innerWidth > 900) {
+                closeMobileMenu();
+            }
+        });
 
         // --- REAL-TIME NOTIFICATION FETCHER ---
         let previousUnreadCount = <?php echo $unread_count; ?>;

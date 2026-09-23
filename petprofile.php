@@ -264,6 +264,7 @@ body{
     color:var(--text);
     line-height:1.6;
     overflow-y:scroll;
+    overflow-x:hidden;
 }
 
 a{color:inherit}
@@ -1062,6 +1063,381 @@ footer{
     }
 }
 
+
+/* ===== ENHANCED MOBILE RESPONSIVE ===== */
+@media (max-width:680px){
+    .promo-bar{
+        padding:7px 10px;
+        font-size:10px;
+    }
+
+    .nav-top{
+        width:calc(100% - 24px);
+        min-height:64px;
+        padding:10px 0;
+        gap:8px;
+    }
+
+    .logo{
+        min-width:0;
+        gap:8px;
+        flex:1;
+        max-width:calc(100% - 104px);
+    }
+
+    .nav-logo-img{
+        width:42px;
+        height:42px;
+    }
+
+    .logo-text b{
+        font-size:16px;
+    }
+
+    .logo-text span{
+        font-size:7px;
+        letter-spacing:.8px;
+        white-space:nowrap;
+    }
+
+    .user-controls{
+        flex:0 0 auto;
+        gap:7px;
+    }
+
+    .notification-bell{
+        width:40px;
+        height:40px;
+        border-radius:10px;
+    }
+
+    .notification-badge{
+        top:-3px;
+        right:-3px;
+        min-width:17px;
+        height:17px;
+    }
+
+    .profile-trigger{
+        min-height:40px;
+        padding:4px;
+        gap:0;
+        border-radius:10px;
+    }
+
+    .profile-trigger span,
+    .profile-trigger > i:last-child{
+        display:none;
+    }
+
+    .profile-avatar{
+        width:32px;
+        height:32px;
+    }
+
+    .dropdown-menu{
+        position:fixed;
+        top:74px;
+        left:12px;
+        right:12px;
+        width:auto !important;
+        max-width:none;
+        max-height:calc(100vh - 88px);
+        overflow-y:auto;
+        border-radius:14px;
+    }
+
+    main{
+        width:calc(100% - 24px);
+        padding:26px 0 48px;
+    }
+
+    .page-top{
+        margin-bottom:20px;
+    }
+
+    .back-link{
+        font-size:10px;
+        margin-bottom:12px;
+    }
+
+    .page-heading-row{
+        align-items:stretch;
+    }
+
+    .page-kicker{
+        font-size:9px;
+        padding:6px 10px;
+    }
+
+    .page-heading h1{
+        font-size:25px;
+        line-height:1.2;
+        overflow-wrap:anywhere;
+    }
+
+    .page-heading p{
+        font-size:11px;
+        line-height:1.55;
+    }
+
+    .page-heading-row > div:last-child{
+        gap:8px;
+    }
+
+    .page-heading-row > div:last-child .btn-primary{
+        min-height:44px;
+        font-size:10px;
+        padding:0 12px;
+    }
+
+    .header-stat{
+        min-width:118px;
+        padding:9px 10px;
+        border-radius:11px;
+    }
+
+    .header-stat span{
+        font-size:7px;
+    }
+
+    .header-stat strong{
+        font-size:19px;
+    }
+
+    .alert{
+        padding:10px 11px;
+        font-size:9px;
+        margin-bottom:14px;
+    }
+
+    .pet-grid{
+        grid-template-columns:1fr;
+        gap:12px;
+    }
+
+    .pet-card{
+        padding:17px;
+        border-radius:15px;
+    }
+
+    .pet-card-top{
+        gap:10px;
+        margin-bottom:14px;
+    }
+
+    .pet-icon{
+        width:44px;
+        height:44px;
+        flex:0 0 44px;
+        border-radius:12px;
+        font-size:18px;
+    }
+
+    .pet-type-label{
+        font-size:7px;
+    }
+
+    .pet-heading h2{
+        font-size:16px;
+        overflow-wrap:anywhere;
+    }
+
+    .pet-info-grid{
+        gap:8px;
+        padding-top:12px;
+    }
+
+    .info-item{
+        padding:9px;
+    }
+
+    .info-item label{
+        font-size:7px;
+    }
+
+    .info-item span{
+        font-size:9px;
+        overflow-wrap:anywhere;
+    }
+
+    .pet-actions{
+        gap:6px;
+        margin-top:13px;
+    }
+
+    .pet-action{
+        min-height:42px;
+        font-size:9px;
+        padding:0 4px;
+        text-align:center;
+    }
+
+    .empty-state{
+        padding:48px 18px;
+    }
+
+    .empty-icon{
+        width:60px;
+        height:60px;
+        font-size:24px;
+    }
+
+    .empty-state h2{
+        font-size:18px;
+    }
+
+    .empty-state p{
+        font-size:10px;
+        line-height:1.6;
+    }
+
+    .modal{
+        padding:10px;
+        align-items:flex-start;
+    }
+
+    .modal-content{
+        width:100%;
+        max-width:500px;
+        max-height:calc(100vh - 20px);
+        margin-top:10px;
+        border-radius:15px;
+    }
+
+    .modal-head{
+        padding:16px 15px;
+    }
+
+    .modal-head h2{
+        font-size:18px;
+    }
+
+    .modal-head p{
+        font-size:9px;
+    }
+
+    .modal-close{
+        width:34px;
+        height:34px;
+        flex:0 0 34px;
+    }
+
+    .modal-body{
+        padding:16px 15px 18px;
+    }
+
+    .form-grid{
+        grid-template-columns:1fr;
+        gap:0;
+    }
+
+    .form-group{
+        margin-bottom:13px;
+    }
+
+    .form-group label{
+        font-size:9px;
+    }
+
+    .form-control{
+        min-height:44px;
+        padding:9px 11px;
+        font-size:11px;
+    }
+
+    .modal-actions{
+        display:grid;
+        grid-template-columns:1fr 1.4fr;
+        gap:8px;
+        margin-top:14px;
+    }
+
+    .modal-cancel,
+    .modal-submit{
+        min-height:44px;
+        width:100%;
+        padding:0 10px;
+        font-size:9px;
+    }
+
+    footer{
+        padding:40px 14px 24px;
+    }
+
+    .footer-main{
+        grid-template-columns:1fr;
+        gap:24px;
+    }
+
+    .footer-main h4{
+        font-size:11px;
+    }
+
+    .footer-main p,
+    .footer-main a{
+        font-size:11px;
+    }
+
+    .footer-bottom{
+        font-size:9px;
+        line-height:1.6;
+    }
+}
+
+@media (max-width:380px){
+    .nav-top{
+        width:calc(100% - 18px);
+    }
+
+    .logo{
+        max-width:calc(100% - 96px);
+    }
+
+    .logo-text b{
+        font-size:14px;
+    }
+
+    .logo-text span{
+        font-size:6px;
+    }
+
+    .notification-bell{
+        width:38px;
+        height:38px;
+    }
+
+    .profile-avatar{
+        width:30px;
+        height:30px;
+    }
+
+    main{
+        width:calc(100% - 18px);
+        padding-top:22px;
+    }
+
+    .page-heading h1{
+        font-size:22px;
+    }
+
+    .header-stat{
+        min-width:104px;
+    }
+
+    .pet-actions{
+        grid-template-columns:1fr;
+    }
+
+    .pet-action{
+        min-height:40px;
+    }
+
+    .modal-actions{
+        grid-template-columns:1fr;
+    }
+}
+
 @media (max-width:680px){
     .nav-top{
         width:92%;
@@ -1441,6 +1817,7 @@ footer{
                                 min="0"
                                 id="age"
                                 name="age"
+                                inputmode="decimal"
                                 class="form-control"
                                 required
                                 placeholder="e.g. 2"

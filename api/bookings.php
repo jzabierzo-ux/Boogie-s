@@ -19,9 +19,9 @@ if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
     exit;
 }
 
-require_once '../db_connect.php';
+require_once '../db_supabase.php';
 
-if (!isset($conn) || !$conn) {
+if (!isset($pdo) || !($pdo instanceof PDO)) {
     http_response_code(500);
     echo json_encode([
         'success' => false,
@@ -78,15 +78,18 @@ if ($plain_token === '') {
 */
 $token_hash = hash('sha256', $plain_token);
 
-$stmt_auth = $conn->prepare("
-    SELECT user_id
-    FROM api_tokens
-    WHERE token_hash = ?
-      AND expires_at > NOW()
-    LIMIT 1
-");
+try {
+    $stmt_auth = $pdo->prepare("
+        SELECT user_id
+        FROM api_tokens
+        WHERE token_hash = :token_hash
+          AND expires_at > CURRENT_TIMESTAMP
+        LIMIT 1
+    ");
 
-if (!$stmt_auth) {
+    $stmt_auth->execute([':token_hash' => $token_hash]);
+    $auth_row = $stmt_auth->fetch(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
     http_response_code(500);
     echo json_encode([
         'success' => false,
@@ -94,13 +97,6 @@ if (!$stmt_auth) {
     ]);
     exit;
 }
-
-$stmt_auth->bind_param('s', $token_hash);
-$stmt_auth->execute();
-
-$auth_result = $stmt_auth->get_result();
-$auth_row = $auth_result ? $auth_result->fetch_assoc() : null;
-$stmt_auth->close();
 
 if (!$auth_row) {
     http_response_code(401);
@@ -123,28 +119,35 @@ $user_id = (int) $auth_row['user_id'];
 $booking_id = isset($_GET['id']) ? (int) $_GET['id'] : 0;
 
 if ($booking_id > 0) {
-    $stmt = $conn->prepare("
-        SELECT
-            a.id,
-            a.pet_id,
-            COALESCE(p.name, 'Unknown Pet') AS pet_name,
-            a.service,
-            a.appointment_date,
-            a.appointment_time,
-            a.service_fee,
-            a.total_price,
-            a.payment_method,
-            a.payment_status,
-            a.booking_status,
-            a.remarks
-        FROM appointments a
-        LEFT JOIN pets p ON a.pet_id = p.id
-        WHERE a.id = ?
-          AND a.user_id = ?
-        LIMIT 1
-    ");
+    try {
+        $stmt = $pdo->prepare("
+            SELECT
+                a.id,
+                a.pet_id,
+                COALESCE(p.name, 'Unknown Pet') AS pet_name,
+                a.service,
+                a.appointment_date,
+                a.appointment_time,
+                a.service_fee,
+                a.total_price,
+                a.payment_method,
+                a.payment_status,
+                a.booking_status,
+                a.remarks
+            FROM appointments a
+            LEFT JOIN pets p ON a.pet_id = p.id
+            WHERE a.id = :booking_id
+              AND a.user_id = :user_id
+            LIMIT 1
+        ");
 
-    if (!$stmt) {
+        $stmt->execute([
+            ':booking_id' => $booking_id,
+            ':user_id' => $user_id
+        ]);
+
+        $booking = $stmt->fetch(PDO::FETCH_ASSOC);
+    } catch (PDOException $e) {
         http_response_code(500);
         echo json_encode([
             'success' => false,
@@ -152,13 +155,6 @@ if ($booking_id > 0) {
         ]);
         exit;
     }
-
-    $stmt->bind_param('ii', $booking_id, $user_id);
-    $stmt->execute();
-
-    $result = $stmt->get_result();
-    $booking = $result ? $result->fetch_assoc() : null;
-    $stmt->close();
 
     if (!$booking) {
         http_response_code(404);
@@ -195,27 +191,30 @@ if ($booking_id > 0) {
 | Get all bookings belonging to authenticated customer
 |--------------------------------------------------------------------------
 */
-$stmt = $conn->prepare("
-    SELECT
-        a.id,
-        a.pet_id,
-        COALESCE(p.name, 'Unknown Pet') AS pet_name,
-        a.service,
-        a.appointment_date,
-        a.appointment_time,
-        a.service_fee,
-        a.total_price,
-        a.payment_method,
-        a.payment_status,
-        a.booking_status,
-        a.remarks
-    FROM appointments a
-    LEFT JOIN pets p ON a.pet_id = p.id
-    WHERE a.user_id = ?
-    ORDER BY a.appointment_date DESC, a.appointment_time DESC
-");
+try {
+    $stmt = $pdo->prepare("
+        SELECT
+            a.id,
+            a.pet_id,
+            COALESCE(p.name, 'Unknown Pet') AS pet_name,
+            a.service,
+            a.appointment_date,
+            a.appointment_time,
+            a.service_fee,
+            a.total_price,
+            a.payment_method,
+            a.payment_status,
+            a.booking_status,
+            a.remarks
+        FROM appointments a
+        LEFT JOIN pets p ON a.pet_id = p.id
+        WHERE a.user_id = :user_id
+        ORDER BY a.appointment_date DESC, a.appointment_time DESC
+    ");
 
-if (!$stmt) {
+    $stmt->execute([':user_id' => $user_id]);
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
     http_response_code(500);
     echo json_encode([
         'success' => false,
@@ -224,14 +223,9 @@ if (!$stmt) {
     exit;
 }
 
-$stmt->bind_param('i', $user_id);
-$stmt->execute();
-
-$result = $stmt->get_result();
-
 $bookings = [];
 
-while ($row = $result->fetch_assoc()) {
+foreach ($rows as $row) {
     $bookings[] = [
         'id' => (int) $row['id'],
         'pet_id' => (int) $row['pet_id'],
@@ -247,8 +241,6 @@ while ($row = $result->fetch_assoc()) {
         'remarks' => $row['remarks']
     ];
 }
-
-$stmt->close();
 
 echo json_encode([
     'success' => true,

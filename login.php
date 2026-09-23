@@ -1,7 +1,4 @@
 <?php
-error_reporting(E_ALL);
-ini_set('display_errors', 1);
-
 session_start();
 include('db_supabase.php'); 
 
@@ -318,6 +315,156 @@ if (!$update_otp) {
         .footer-links a:hover { color: var(--brand-blue); }
         .brand-footer { margin-top: 15px; font-size: 11px; color: var(--brand-blue-light); opacity: 0.7; }
         .otp-input { text-align: center; font-size: 24px; letter-spacing: 5px; font-weight: bold; }
+    
+        * { box-sizing: border-box; }
+
+        /* ===== MOBILE RESPONSIVE LOGIN / OTP ===== */
+        @media (max-width: 600px) {
+            html, body {
+                width: 100%;
+                min-height: 100%;
+            }
+
+            body {
+                min-height: 100vh;
+                height: auto;
+                padding: 72px 14px 24px;
+                align-items: flex-start;
+                overflow-x: hidden;
+            }
+
+            .back-home {
+                top: 16px;
+                left: 14px;
+                right: 14px;
+                font-size: 12px;
+                gap: 6px;
+                padding: 8px 0;
+            }
+
+            .login-card {
+                width: 100%;
+                max-width: 420px;
+                margin: 0 auto;
+                padding: 30px 20px 24px;
+                border-radius: 16px;
+                border-bottom-width: 4px;
+            }
+
+            .login-icon {
+                font-size: 40px;
+                margin-bottom: 12px;
+            }
+
+            h2 {
+                font-size: 23px;
+                line-height: 1.2;
+            }
+
+            .branch-tag {
+                font-size: 10px;
+                margin-bottom: 20px;
+            }
+
+            .form-group {
+                margin-bottom: 16px;
+            }
+
+            label {
+                font-size: 12px;
+                margin-bottom: 7px;
+            }
+
+            input {
+                width: 100%;
+                min-height: 48px;
+                padding: 12px 13px;
+                font-size: 15px;
+            }
+
+            .otp-input {
+                min-height: 56px;
+                font-size: 24px;
+                letter-spacing: 6px;
+            }
+
+            .login-btn {
+                width: 100%;
+                min-height: 50px;
+                padding: 13px 14px;
+                font-size: 14px;
+                margin-top: 6px;
+            }
+
+            .divider {
+                margin: 17px 0;
+                font-size: 11px;
+            }
+
+            .google-btn {
+                width: 100%;
+                min-height: 48px;
+                padding: 12px 14px;
+                font-size: 14px;
+            }
+
+            .register-link {
+                margin-top: 20px;
+                font-size: 13px;
+                line-height: 1.6;
+            }
+
+            .footer-links {
+                margin-top: 24px;
+                padding-top: 16px;
+            }
+
+            .footer-links a {
+                display: inline-block;
+                margin: 4px 7px;
+                font-size: 11px;
+            }
+
+            .brand-footer {
+                font-size: 10px;
+            }
+
+            .login-card p {
+                font-size: 12px !important;
+                line-height: 1.6;
+            }
+        }
+
+        @media (max-width: 380px) {
+            body {
+                padding-left: 10px;
+                padding-right: 10px;
+            }
+
+            .login-card {
+                padding: 26px 15px 20px;
+            }
+
+            h2 {
+                font-size: 21px;
+            }
+
+            .otp-input {
+                font-size: 21px;
+                letter-spacing: 4px;
+            }
+
+            .google-btn,
+            .login-btn {
+                font-size: 13px;
+            }
+
+            .footer-links a {
+                margin-left: 4px;
+                margin-right: 4px;
+            }
+        }
+
     </style>
 </head>
 <body>
@@ -334,7 +481,7 @@ if (!$update_otp) {
 
             <form action="login.php" method="POST">
                 <div class="form-group">
-                    <input type="text" name="otp_code" class="otp-input" maxlength="6" pattern="[0-9]{6}" required placeholder="000000" oninput="this.value = this.value.replace(/[^0-9]/g, '')">
+                    <input type="text" name="otp_code" class="otp-input" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" required placeholder="000000" oninput="this.value = this.value.replace(/[^0-9]/g, '')">
                 </div>
                 <button type="submit" name="verify_login_btn" class="login-btn">Verify & Login</button>
             </form>
@@ -350,11 +497,11 @@ if (!$update_otp) {
             <form action="login.php" method="POST">
                 <div class="form-group">
                     <label for="email">Email Address</label>
-                    <input type="email" name="email" id="email" placeholder="Enter your email" required>
+                    <input type="email" name="email" id="email" placeholder="Enter your email" autocomplete="email" required>
                 </div>
                 <div class="form-group">
                     <label for="password">Password</label>
-                    <input type="password" name="password" id="password" placeholder="Enter your password" required>
+                    <input type="password" name="password" id="password" placeholder="Enter your password" autocomplete="current-password" required>
                 </div>
                 <button type="submit" name="login_btn" class="login-btn">Login to Account</button>
             </form>

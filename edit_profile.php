@@ -197,6 +197,7 @@ body{
     color:var(--text);
     font-family:'Poppins',sans-serif;
     line-height:1.6;
+    overflow-x:hidden;
 }
 a{color:inherit}
 button,input,select{font:inherit}
@@ -785,6 +786,376 @@ footer{
 @media (max-width:440px){
     .form-actions{grid-template-columns:1fr}
 }
+
+/* ===== EXTRA MOBILE RESPONSIVE TUNING ===== */
+@media (max-width: 980px){
+    .nav-top{
+        width:calc(100% - 32px);
+        padding-top:11px;
+        padding-bottom:11px;
+        gap:14px;
+    }
+
+    .logo{
+        min-width:0;
+    }
+
+    .logo-text{
+        min-width:0;
+    }
+
+    .logo-text b,
+    .logo-text span{
+        overflow:hidden;
+        text-overflow:ellipsis;
+        white-space:nowrap;
+    }
+
+    .user-controls{
+        flex:0 0 auto;
+    }
+
+    .profile-layout{
+        gap:18px;
+    }
+}
+
+@media (max-width: 680px){
+    .promo-bar{
+        padding:6px 12px;
+        font-size:10px;
+        line-height:1.4;
+    }
+
+    .nav-top{
+        width:calc(100% - 24px);
+        min-height:58px;
+        padding:8px 0;
+        gap:8px;
+    }
+
+    .nav-logo-img{
+        width:40px;
+        height:40px;
+        border-radius:9px;
+    }
+
+    .logo{
+        gap:8px;
+        flex:1 1 auto;
+        min-width:0;
+    }
+
+    .logo-text b{
+        font-size:16px;
+    }
+
+    .logo-text span{
+        font-size:7px;
+        letter-spacing:.9px;
+    }
+
+    .user-controls{
+        gap:6px;
+    }
+
+    .notification-btn,
+    .profile-link{
+        width:40px;
+        min-width:40px;
+        height:40px;
+    }
+
+    .notification-btn{
+        padding:0;
+    }
+
+    .profile-link{
+        padding:3px;
+        justify-content:center;
+    }
+
+    .profile-link span{
+        display:none;
+    }
+
+    .logout-link{
+        width:40px;
+        min-width:40px;
+        height:40px;
+        padding:0;
+        border:1px solid #f0c4c8;
+        border-radius:10px;
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        font-size:0;
+    }
+
+    .logout-link::before{
+        content:"\\f2f5";
+        font-family:"Font Awesome 6 Free";
+        font-weight:900;
+        font-size:14px;
+    }
+
+    main{
+        width:calc(100% - 22px);
+        padding:24px 0 46px;
+    }
+
+    .page-top{
+        margin-bottom:18px;
+    }
+
+    .back-link{
+        font-size:10px;
+        margin-bottom:10px;
+    }
+
+    .page-heading-row{
+        display:block;
+    }
+
+    .page-heading h1{
+        font-size:27px;
+        letter-spacing:-.4px;
+    }
+
+    .page-heading p{
+        font-size:11px;
+        line-height:1.55;
+    }
+
+    .page-heading .kicker{
+        padding:6px 10px;
+        font-size:9px;
+        margin-bottom:8px;
+    }
+
+    .security-chip{
+        width:100%;
+        margin-top:12px;
+        padding:9px 11px;
+        font-size:9px;
+        justify-content:center;
+    }
+
+    .profile-layout{
+        grid-template-columns:1fr;
+        gap:15px;
+    }
+
+    .profile-card{
+        position:static;
+        border-radius:17px;
+    }
+
+    .profile-cover{
+        height:88px;
+    }
+
+    .profile-card-body{
+        padding:0 16px 19px;
+    }
+
+    .avatar-wrap{
+        width:105px;
+        height:105px;
+        margin:-50px auto 12px;
+    }
+
+    .profile-photo{
+        width:105px;
+        height:105px;
+        border-width:4px;
+    }
+
+    .camera-badge{
+        width:30px;
+        height:30px;
+        font-size:11px;
+    }
+
+    .profile-card-body h2{
+        font-size:17px;
+    }
+
+    .profile-role{
+        font-size:9px;
+    }
+
+    .photo-label{
+        min-height:44px;
+        font-size:10px;
+        margin-top:13px;
+    }
+
+    .photo-help{
+        font-size:8px;
+    }
+
+    .summary-item{
+        padding:9px;
+        gap:7px;
+    }
+
+    .summary-item span{
+        font-size:8px;
+        line-height:1.55;
+    }
+
+    .form-card{
+        padding:16px;
+        border-radius:17px;
+    }
+
+    .form-card-head{
+        display:block;
+        margin-bottom:17px;
+    }
+
+    .form-card-head h2{
+        font-size:19px;
+    }
+
+    .form-card-head p{
+        font-size:9px;
+    }
+
+    .status-chip{
+        margin-top:11px;
+        width:max-content;
+    }
+
+    .form-divider{
+        margin-bottom:18px;
+    }
+
+    .form-grid{
+        grid-template-columns:1fr;
+    }
+
+    .form-group{
+        margin-bottom:15px;
+    }
+
+    .form-group label{
+        font-size:10px;
+        margin-bottom:6px;
+    }
+
+    .field-note,
+    .field-help{
+        font-size:8px;
+    }
+
+    .form-control{
+        min-height:45px;
+        padding:10px 11px;
+        font-size:11px;
+    }
+
+    .info-box{
+        padding:10px 11px;
+        font-size:8px;
+        line-height:1.55;
+    }
+
+    .form-actions{
+        display:grid;
+        grid-template-columns:1fr 1fr;
+        gap:8px;
+        margin-top:17px;
+    }
+
+    .btn-save,
+    .btn-cancel{
+        width:100%;
+        min-height:44px;
+        padding:0 10px;
+        font-size:10px;
+    }
+
+    .alert{
+        font-size:9px;
+        line-height:1.55;
+        padding:10px 11px;
+    }
+
+    footer{
+        padding:42px 15px 24px;
+    }
+
+    .footer-main{
+        grid-template-columns:1fr;
+        gap:22px;
+        padding-bottom:28px;
+    }
+
+    .footer-main h4{
+        font-size:11px;
+    }
+
+    .footer-main p,
+    .footer-main a{
+        font-size:10px;
+    }
+
+    .footer-bottom{
+        font-size:8.5px;
+        line-height:1.5;
+        padding-top:18px;
+    }
+}
+
+@media (max-width: 440px){
+    .nav-top{
+        width:calc(100% - 18px);
+    }
+
+    .logo-text b{
+        font-size:15px;
+    }
+
+    .logo-text span{
+        font-size:6.5px;
+    }
+
+    main{
+        width:calc(100% - 16px);
+    }
+
+    .page-heading h1{
+        font-size:24px;
+    }
+
+    .page-heading p{
+        font-size:10px;
+    }
+
+    .form-card{
+        padding:14px;
+    }
+
+    .form-actions{
+        grid-template-columns:1fr;
+    }
+
+    .profile-card-body{
+        padding-left:13px;
+        padding-right:13px;
+    }
+
+    .summary-item span{
+        font-size:8px;
+    }
+
+    .security-chip{
+        font-size:8px;
+    }
+}
+
 </style>
 </head>
 <body>
@@ -950,6 +1321,7 @@ footer{
                                 id="full_name"
                                 name="full_name"
                                 class="form-control"
+                                autocomplete="name"
                                 value="<?php echo htmlspecialchars($user_data['full_name']); ?>"
                                 required
                             >

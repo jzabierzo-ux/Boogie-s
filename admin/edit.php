@@ -294,6 +294,105 @@ if (!$row) {
             .form-group.full-width { grid-column: span 1; }
             .container { padding: 0; }
         }
+
+        /* ===== EXTRA MOBILE RESPONSIVENESS ===== */
+        @media (max-width: 700px) {
+            body {
+                padding: 20px 14px;
+            }
+
+            .container {
+                max-width: 100%;
+            }
+
+            .header {
+                margin-bottom: 16px;
+            }
+
+            .btn-back {
+                width: 100%;
+                justify-content: center;
+                padding: 12px 16px;
+                font-size: 13px;
+            }
+
+            .card {
+                padding: 22px 16px;
+                border-radius: 14px;
+            }
+
+            .card-title {
+                font-size: 19px;
+                gap: 9px;
+                line-height: 1.35;
+                margin-bottom: 20px;
+                padding-bottom: 13px;
+            }
+
+            .form-grid {
+                grid-template-columns: 1fr;
+                gap: 0;
+            }
+
+            .form-group,
+            .form-group.full-width {
+                grid-column: span 1;
+                margin-bottom: 16px;
+            }
+
+            label {
+                font-size: 11px;
+                margin-bottom: 7px;
+            }
+
+            input[type="text"],
+            input[type="number"],
+            select,
+            textarea {
+                min-height: 46px;
+                padding: 11px 12px;
+                font-size: 14px;
+            }
+
+            .btn-save {
+                min-height: 48px;
+                padding: 13px 18px;
+                font-size: 14px;
+                margin-top: 8px;
+            }
+
+            .alert {
+                padding: 12px 13px;
+                font-size: 12px;
+                line-height: 1.5;
+            }
+
+            small {
+                line-height: 1.5;
+            }
+        }
+
+        @media (max-width: 400px) {
+            body {
+                padding: 14px 10px;
+            }
+
+            .card {
+                padding: 18px 13px;
+            }
+
+            .card-title {
+                font-size: 17px;
+            }
+
+            input[type="text"],
+            input[type="number"],
+            select,
+            textarea {
+                font-size: 13px;
+            }
+        }
+
     </style>
 </head>
 <body>
@@ -341,11 +440,11 @@ if (!$row) {
 
                     <div class="form-group">
                         <label>Age (Years)</label>
-                        <input type="text" name="age" value="<?php echo htmlspecialchars($row['age']); ?>">
+                        <input type="text" inputmode="decimal" name="age" value="<?php echo htmlspecialchars($row['age']); ?>">
                     </div>
                     <div class="form-group">
                         <label>Weight</label>
-                        <input type="text" name="weight" value="<?php echo htmlspecialchars($row['weight']); ?>" placeholder="e.g. 5kg">
+                        <input type="text" inputmode="decimal" name="weight" value="<?php echo htmlspecialchars($row['weight']); ?>" placeholder="e.g. 5kg">
                     </div>
 
                     <div class="form-group full-width">

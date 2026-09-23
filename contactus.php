@@ -144,6 +144,7 @@ $parent_text = ($total_reviews == 1) ? "happy fur-parent" : "happy fur-parents";
             color: var(--text);
             background: #f7f9fc;
             line-height: 1.6;
+            overflow-x: hidden;
         }
 
 
@@ -770,6 +771,479 @@ $parent_text = ($total_reviews == 1) ? "happy fur-parent" : "happy fur-parents";
             }
         }
 
+
+        /* ===== EXTRA MOBILE RESPONSIVE TUNING ===== */
+        @media (max-width: 1000px) {
+            .nav-top {
+                grid-template-columns: 1fr;
+                gap: 12px;
+                padding-left: 20px;
+                padding-right: 20px;
+            }
+
+            .search {
+                width: 100%;
+                order: 2;
+            }
+
+            .nav-links {
+                width: 100%;
+                justify-content: flex-start;
+                order: 3;
+            }
+
+            .categories ul {
+                justify-content: flex-start;
+                overflow-x: auto;
+                scrollbar-width: thin;
+            }
+
+            .contact-hero-inner {
+                grid-template-columns: 1fr;
+                padding-top: 50px;
+            }
+
+            .contact-hero-art {
+                justify-self: start;
+                width: 165px;
+                height: 165px;
+            }
+
+            .contact-hero-art i {
+                font-size: 58px;
+            }
+
+            .contact-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .reviews-grid {
+                grid-template-columns: 1fr 1fr;
+            }
+
+            .footer-main {
+                grid-template-columns: 1fr 1fr;
+            }
+        }
+
+        @media (max-width: 680px) {
+            .promo-bar {
+                padding: 6px 10px;
+                font-size: 10px;
+                line-height: 1.4;
+            }
+
+            .nav-top {
+                width: 100%;
+                padding: 9px 12px;
+                gap: 8px;
+            }
+
+            .logo {
+                width: 100%;
+                gap: 8px;
+            }
+
+            .nav-logo-img {
+                width: 42px;
+                height: 42px;
+            }
+
+            .logo-text b {
+                font-size: 17px;
+            }
+
+            .logo-text span {
+                font-size: 7px;
+                letter-spacing: .9px;
+            }
+
+            .search {
+                padding: 4px 6px 4px 11px;
+                border-radius: 11px;
+            }
+
+            .search input {
+                min-width: 0;
+                padding: 8px 5px;
+                font-size: 11px;
+            }
+
+            .search button {
+                width: 36px;
+                height: 36px;
+                flex: 0 0 36px;
+            }
+
+            .nav-links {
+                gap: 7px;
+                flex-wrap: wrap;
+            }
+
+            .nav-links .cart-btn,
+            .nav-links .login-btn {
+                min-height: 42px;
+                padding: 10px 13px;
+                font-size: 10px;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+            }
+
+            .nav-links > span {
+                width: 100%;
+                font-size: 10px !important;
+                line-height: 1.4;
+            }
+
+            .nav-links a[style*="ef4444"] {
+                font-size: 11px !important;
+                margin-left: 0 !important;
+                padding: 9px 4px !important;
+            }
+
+            .categories {
+                overflow: hidden;
+            }
+
+            .categories ul {
+                width: 100%;
+                justify-content: flex-start;
+                gap: 4px;
+                padding: 6px 10px;
+                overflow-x: auto;
+                -webkit-overflow-scrolling: touch;
+                scrollbar-width: none;
+            }
+
+            .categories ul::-webkit-scrollbar {
+                display: none;
+            }
+
+            .categories ul li {
+                flex: 0 0 auto;
+            }
+
+            .categories ul li a {
+                padding: 9px 11px;
+                font-size: 9px;
+                gap: 6px;
+                white-space: nowrap;
+            }
+
+            .categories i {
+                font-size: 11px;
+            }
+
+            .contact-hero-inner {
+                padding: 38px 17px 34px;
+                gap: 22px;
+            }
+
+            .eyebrow {
+                font-size: 9px;
+                padding: 6px 10px;
+            }
+
+            .contact-hero h1 {
+                font-size: 29px;
+                line-height: 1.18;
+                letter-spacing: -.5px;
+                margin: 14px 0 11px;
+            }
+
+            .contact-hero p {
+                font-size: 12px;
+                line-height: 1.65;
+            }
+
+            .contact-hero-note {
+                display: grid;
+                grid-template-columns: 1fr;
+                gap: 7px;
+                margin-top: 16px;
+                font-size: 9px;
+            }
+
+            .contact-hero-art {
+                width: 125px;
+                height: 125px;
+                justify-self: center;
+            }
+
+            .contact-hero-art i {
+                font-size: 43px;
+            }
+
+            .contact-section {
+                padding: 38px 15px 50px;
+            }
+
+            .contact-grid {
+                gap: 14px;
+            }
+
+            .info-card,
+            .form-card {
+                border-radius: 17px;
+                padding: 18px;
+            }
+
+            .card-heading {
+                margin-bottom: 17px;
+            }
+
+            .card-heading .kicker {
+                font-size: 9px;
+                margin-bottom: 5px;
+            }
+
+            .card-heading h2 {
+                font-size: 21px;
+            }
+
+            .card-heading p {
+                font-size: 10px;
+                line-height: 1.55;
+                margin-top: 6px;
+            }
+
+            .info-item {
+                gap: 10px;
+                padding: 12px 0;
+            }
+
+            .info-icon {
+                width: 38px;
+                height: 38px;
+                flex-basis: 38px;
+                border-radius: 10px;
+                font-size: 14px;
+            }
+
+            .info-item h4 {
+                font-size: 11px;
+            }
+
+            .info-item p {
+                font-size: 10px;
+                line-height: 1.55;
+                overflow-wrap: anywhere;
+            }
+
+            .form-group {
+                margin-bottom: 14px;
+            }
+
+            .form-group label {
+                font-size: 10px;
+                margin-bottom: 6px;
+            }
+
+            .form-group input,
+            .form-group textarea {
+                width: 100%;
+                font-size: 11px;
+                padding: 11px 12px;
+            }
+
+            .form-group input {
+                min-height: 44px;
+            }
+
+            .form-group textarea {
+                min-height: 130px;
+                height: 130px;
+            }
+
+            .send-btn {
+                min-height: 44px;
+                padding: 11px 13px;
+                font-size: 10px;
+            }
+
+            .reviews-section {
+                padding: 42px 15px 52px;
+            }
+
+            .reviews-header {
+                margin-bottom: 22px;
+            }
+
+            .reviews-kicker {
+                font-size: 9px;
+            }
+
+            .reviews-header h2 {
+                font-size: 23px;
+                line-height: 1.25;
+            }
+
+            .overall-stars {
+                font-size: 18px;
+                gap: 3px;
+                margin: 8px 0 6px;
+            }
+
+            .overall-rating-text {
+                font-size: 9px;
+                line-height: 1.5;
+            }
+
+            .reviews-grid {
+                grid-template-columns: 1fr;
+                gap: 11px;
+            }
+
+            .review-card {
+                min-height: auto;
+                border-radius: 15px;
+                padding: 17px;
+            }
+
+            .card-stars {
+                font-size: 11px;
+                margin-bottom: 10px;
+            }
+
+            .review-quote {
+                font-size: 10px;
+                line-height: 1.65;
+                margin-bottom: 15px;
+            }
+
+            .reviewer-info {
+                padding-top: 11px;
+                gap: 9px;
+            }
+
+            .reviewer-avatar {
+                width: 36px;
+                height: 36px;
+                flex-basis: 36px;
+                font-size: 12px;
+            }
+
+            .reviewer-details h4 {
+                font-size: 10px;
+            }
+
+            .reviewer-details p {
+                font-size: 8px;
+            }
+
+            .reviews-empty {
+                padding: 34px 14px;
+                border-radius: 15px;
+            }
+
+            .reviews-empty-icon {
+                width: 52px;
+                height: 52px;
+                font-size: 21px;
+            }
+
+            .reviews-empty h3 {
+                font-size: 16px;
+            }
+
+            .reviews-empty p {
+                font-size: 9px;
+                line-height: 1.6;
+            }
+
+            .read-more-container {
+                margin-top: 19px;
+            }
+
+            .read-more-link {
+                font-size: 10px;
+            }
+
+            footer {
+                padding: 42px 15px 24px;
+            }
+
+            .footer-main {
+                grid-template-columns: 1fr;
+                gap: 22px;
+                padding-bottom: 28px;
+            }
+
+            .footer-main h4 {
+                font-size: 10px;
+                margin-bottom: 11px;
+            }
+
+            .footer-main p,
+            .footer-main a {
+                font-size: 10px;
+                line-height: 1.65;
+            }
+
+            .socials {
+                margin-top: 13px;
+            }
+
+            .socials a {
+                width: 34px;
+                height: 34px;
+            }
+
+            .footer-bottom {
+                font-size: 8.5px;
+                line-height: 1.5;
+                padding-top: 18px;
+            }
+        }
+
+        @media (max-width: 420px) {
+            .nav-top {
+                padding-left: 9px;
+                padding-right: 9px;
+            }
+
+            .nav-logo-img {
+                width: 38px;
+                height: 38px;
+            }
+
+            .logo-text b {
+                font-size: 15px;
+            }
+
+            .logo-text span {
+                font-size: 6px;
+                letter-spacing: .7px;
+            }
+
+            .categories ul li a {
+                font-size: 8px;
+                padding: 8px 10px;
+            }
+
+            .contact-hero h1 {
+                font-size: 26px;
+            }
+
+            .contact-hero p {
+                font-size: 11px;
+            }
+
+            .card-heading h2 {
+                font-size: 19px;
+            }
+
+            .info-card,
+            .form-card {
+                padding: 15px;
+            }
+
+            .review-card {
+                padding: 15px;
+            }
+        }
+
     </style>
 </head>
 
@@ -906,7 +1380,7 @@ $parent_text = ($total_reviews == 1) ? "happy fur-parent" : "happy fur-parents";
 
                         <div class="form-group">
                             <label>Email Address</label>
-                            <input type="email" name="email" placeholder="example@gmail.com" required>
+                            <input type="email" name="email" autocomplete="email" inputmode="email" placeholder="example@gmail.com" required>
                         </div>
 
                         <div class="form-group">

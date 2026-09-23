@@ -19,9 +19,9 @@ if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
     exit;
 }
 
-require_once '../db_connect.php';
+require_once '../db_supabase.php';
 
-if (!isset($conn) || !$conn) {
+if (!isset($pdo) || !$pdo) {
     http_response_code(500);
     echo json_encode([
         'success' => false,
@@ -78,15 +78,21 @@ if ($plain_token === '') {
 */
 $token_hash = hash('sha256', $plain_token);
 
-$stmt_auth = $conn->prepare("
-    SELECT user_id
-    FROM api_tokens
-    WHERE token_hash = ?
-      AND expires_at > NOW()
-    LIMIT 1
-");
+try {
+    $stmt_auth = $pdo->prepare("
+        SELECT user_id
+        FROM api_tokens
+        WHERE token_hash = :token_hash
+          AND expires_at > CURRENT_TIMESTAMP
+        LIMIT 1
+    ");
 
-if (!$stmt_auth) {
+    $stmt_auth->execute([
+        ':token_hash' => $token_hash
+    ]);
+
+    $auth_row = $stmt_auth->fetch(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
     http_response_code(500);
     echo json_encode([
         'success' => false,
@@ -94,13 +100,6 @@ if (!$stmt_auth) {
     ]);
     exit;
 }
-
-$stmt_auth->bind_param('s', $token_hash);
-$stmt_auth->execute();
-
-$auth_result = $stmt_auth->get_result();
-$auth_row = $auth_result ? $auth_result->fetch_assoc() : null;
-$stmt_auth->close();
 
 if (!$auth_row) {
     http_response_code(401);
@@ -123,15 +122,22 @@ $user_id = (int) $auth_row['user_id'];
 $notification_id = isset($_GET['id']) ? (int) $_GET['id'] : 0;
 
 if ($notification_id > 0) {
-    $stmt = $conn->prepare("
-        SELECT id, title, message, type, is_read, created_at
-        FROM notifications
-        WHERE id = ?
-          AND user_id = ?
-        LIMIT 1
-    ");
+    try {
+        $stmt = $pdo->prepare("
+            SELECT id, title, message, type, is_read, created_at
+            FROM notifications
+            WHERE id = :notification_id
+              AND user_id = :user_id
+            LIMIT 1
+        ");
 
-    if (!$stmt) {
+        $stmt->execute([
+            ':notification_id' => $notification_id,
+            ':user_id' => $user_id
+        ]);
+
+        $notification = $stmt->fetch(PDO::FETCH_ASSOC);
+    } catch (PDOException $e) {
         http_response_code(500);
         echo json_encode([
             'success' => false,
@@ -139,13 +145,6 @@ if ($notification_id > 0) {
         ]);
         exit;
     }
-
-    $stmt->bind_param('ii', $notification_id, $user_id);
-    $stmt->execute();
-
-    $result = $stmt->get_result();
-    $notification = $result ? $result->fetch_assoc() : null;
-    $stmt->close();
 
     if (!$notification) {
         http_response_code(404);
@@ -176,14 +175,21 @@ if ($notification_id > 0) {
 | Get unread count
 |--------------------------------------------------------------------------
 */
-$stmt_count = $conn->prepare("
-    SELECT COUNT(*) AS unread_count
-    FROM notifications
-    WHERE user_id = ?
-      AND is_read = 0
-");
+try {
+    $stmt_count = $pdo->prepare("
+        SELECT COUNT(*) AS unread_count
+        FROM notifications
+        WHERE user_id = :user_id
+          AND is_read = 0
+    ");
 
-if (!$stmt_count) {
+    $stmt_count->execute([
+        ':user_id' => $user_id
+    ]);
+
+    $count_row = $stmt_count->fetch(PDO::FETCH_ASSOC);
+    $unread_count = (int) ($count_row['unread_count'] ?? 0);
+} catch (PDOException $e) {
     http_response_code(500);
     echo json_encode([
         'success' => false,
@@ -192,29 +198,36 @@ if (!$stmt_count) {
     exit;
 }
 
-$stmt_count->bind_param('i', $user_id);
-$stmt_count->execute();
-
-$count_result = $stmt_count->get_result();
-$count_row = $count_result ? $count_result->fetch_assoc() : ['unread_count' => 0];
-
-$stmt_count->close();
-
-$unread_count = (int) ($count_row['unread_count'] ?? 0);
-
 /*
 |--------------------------------------------------------------------------
 | Get latest notifications
 |--------------------------------------------------------------------------
 */
-$stmt = $conn->prepare("
-    SELECT id, title, message, type, is_read, created_at
-    FROM notifications
-    WHERE user_id = ?
-    ORDER BY created_at DESC
-");
+try {
+    $stmt = $pdo->prepare("
+        SELECT id, title, message, type, is_read, created_at
+        FROM notifications
+        WHERE user_id = :user_id
+        ORDER BY created_at DESC
+    ");
 
-if (!$stmt) {
+    $stmt->execute([
+        ':user_id' => $user_id
+    ]);
+
+    $notifications = [];
+
+    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        $notifications[] = [
+            'id' => (int) $row['id'],
+            'title' => $row['title'],
+            'message' => $row['message'],
+            'type' => $row['type'],
+            'is_read' => (bool) $row['is_read'],
+            'created_at' => $row['created_at']
+        ];
+    }
+} catch (PDOException $e) {
     http_response_code(500);
     echo json_encode([
         'success' => false,
@@ -222,26 +235,6 @@ if (!$stmt) {
     ]);
     exit;
 }
-
-$stmt->bind_param('i', $user_id);
-$stmt->execute();
-
-$result = $stmt->get_result();
-
-$notifications = [];
-
-while ($row = $result->fetch_assoc()) {
-    $notifications[] = [
-        'id' => (int) $row['id'],
-        'title' => $row['title'],
-        'message' => $row['message'],
-        'type' => $row['type'],
-        'is_read' => (bool) $row['is_read'],
-        'created_at' => $row['created_at']
-    ];
-}
-
-$stmt->close();
 
 echo json_encode([
     'success' => true,

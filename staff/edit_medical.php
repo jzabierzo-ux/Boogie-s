@@ -201,6 +201,249 @@ $special_needs = $row['special_needs'] ?? '';
         .btn-submit:hover { transform: translateY(-2px); box-shadow: 0 6px 12px rgba(0,0,0,0.1); }
         
         footer { text-align: center; padding: 30px; color: var(--text-muted); font-size: 12px; margin-top: auto; border-top: 1px solid var(--border);}
+
+        /* ===== EXTRA MOBILE RESPONSIVENESS ===== */
+        @media (max-width: 900px) {
+            .sidebar {
+                width: 220px;
+            }
+
+            .main-content {
+                margin-left: 220px;
+                width: calc(100% - 220px);
+            }
+
+            header {
+                padding: 0 22px;
+            }
+
+            .container {
+                padding: 28px 22px;
+            }
+        }
+
+        @media (max-width: 680px) {
+            body {
+                display: block;
+                overflow-x: hidden;
+            }
+
+            .sidebar {
+                position: relative;
+                width: 100%;
+                height: auto;
+            }
+
+            .sidebar-header {
+                padding: 18px 15px;
+            }
+
+            .sidebar-logo-img {
+                width: 52px;
+                margin-bottom: 6px;
+            }
+
+            .sidebar-header h2 {
+                font-size: 13px;
+            }
+
+            .nav-links {
+                padding: 8px 10px 12px;
+                display: grid;
+                grid-template-columns: repeat(4, 1fr);
+                gap: 6px;
+            }
+
+            .nav-item {
+                padding: 10px 6px;
+                justify-content: center;
+                flex-direction: column;
+                gap: 4px;
+                text-align: center;
+                font-size: 9px;
+                line-height: 1.2;
+            }
+
+            .nav-item i {
+                width: auto;
+                font-size: 16px;
+            }
+
+            .nav-item:hover {
+                transform: none;
+            }
+
+            .nav-item.active::before {
+                left: 8px;
+                right: 8px;
+                top: auto;
+                bottom: 2px;
+                width: auto;
+                height: 3px;
+                border-radius: 4px;
+            }
+
+            .main-content {
+                margin-left: 0;
+                width: 100%;
+                min-height: auto;
+            }
+
+            header {
+                height: auto;
+                min-height: 64px;
+                padding: 11px 14px;
+                gap: 10px;
+                flex-wrap: wrap;
+            }
+
+            .breadcrumb {
+                font-size: 11px;
+                line-height: 1.35;
+                flex: 1 1 100%;
+            }
+
+            .top-right-actions {
+                width: 100%;
+                justify-content: flex-end;
+                gap: 12px;
+            }
+
+            .role-label {
+                font-size: 9px;
+                padding: 4px 8px;
+            }
+
+            .profile-wrapper {
+                gap: 8px;
+                padding-left: 10px;
+            }
+
+            .profile-wrapper > span {
+                max-width: 145px;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+                font-size: 12px !important;
+            }
+
+            .top-avatar,
+            .top-avatar-fallback {
+                width: 32px;
+                height: 32px;
+                font-size: 12px;
+            }
+
+            .notif-dropdown {
+                position: fixed;
+                top: 115px;
+                right: 10px;
+                left: 10px;
+                width: auto;
+            }
+
+            .profile-dropdown {
+                right: 0;
+            }
+
+            .container {
+                padding: 22px 13px 20px;
+            }
+
+            .header-actions {
+                margin-bottom: 16px;
+            }
+
+            .btn-back {
+                width: 100%;
+                justify-content: center;
+                min-height: 44px;
+                padding: 10px 14px;
+                font-size: 12px;
+            }
+
+            .card {
+                padding: 22px 15px;
+                border-radius: 15px;
+            }
+
+            .pet-title {
+                font-size: 18px;
+                line-height: 1.4;
+                align-items: flex-start;
+                gap: 9px;
+                padding-bottom: 15px;
+                margin-bottom: 20px;
+            }
+
+            .pet-title > div {
+                width: 40px !important;
+                height: 40px !important;
+                flex: 0 0 40px;
+            }
+
+            .form-group {
+                margin-bottom: 19px;
+            }
+
+            .form-group label {
+                font-size: 13px;
+                line-height: 1.4;
+            }
+
+            .form-group textarea {
+                min-height: 180px;
+                padding: 13px;
+                font-size: 13px;
+                line-height: 1.6;
+            }
+
+            .btn-submit {
+                min-height: 48px;
+                padding: 13px 18px;
+                font-size: 13px;
+            }
+
+            footer {
+                padding: 22px 13px;
+                font-size: 10px;
+            }
+        }
+
+        @media (max-width: 400px) {
+            .nav-links {
+                grid-template-columns: repeat(2, 1fr);
+            }
+
+            .nav-item {
+                flex-direction: row;
+                justify-content: flex-start;
+                padding: 9px 10px;
+                font-size: 10px;
+            }
+
+            .nav-item i {
+                width: 18px;
+                font-size: 14px;
+            }
+
+            .profile-wrapper > span {
+                max-width: 95px;
+            }
+
+            .card {
+                padding: 18px 12px;
+            }
+
+            .pet-title {
+                font-size: 16px;
+            }
+
+            .form-group textarea {
+                min-height: 160px;
+            }
+        }
+
     </style>
 </head>
 <body>

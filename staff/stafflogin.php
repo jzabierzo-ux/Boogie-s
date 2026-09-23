@@ -436,6 +436,164 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                 font-size: 24px;
             }
         }
+
+        /* --- MOBILE RESPONSIVE --- */
+        @media (max-width: 600px) {
+            body {
+                align-items: flex-start;
+                min-height: 100svh;
+                padding: 72px 14px 20px;
+            }
+
+            .back-home {
+                top: 18px;
+                left: 14px;
+                right: 14px;
+                width: auto;
+                font-size: 11px;
+            }
+
+            .login-card {
+                width: 100%;
+                max-width: 420px;
+                padding: 30px 20px 22px;
+                border-radius: 16px;
+            }
+
+            .login-icon {
+                font-size: 42px;
+                margin-bottom: 12px;
+            }
+
+            h2 {
+                font-size: 24px;
+                line-height: 1.25;
+            }
+
+            .branch-tag {
+                font-size: 11px;
+                margin-bottom: 22px;
+            }
+
+            .form-group {
+                margin-bottom: 17px;
+            }
+
+            label {
+                font-size: 13px;
+                margin-bottom: 7px;
+            }
+
+            input {
+                min-height: 50px;
+                padding: 13px 14px;
+                font-size: 16px;
+            }
+
+            .login-btn {
+                min-height: 52px;
+                padding: 14px 16px;
+                font-size: 14px;
+                margin-top: 7px;
+            }
+
+            .staff-note {
+                font-size: 11.5px;
+                padding: 12px 11px;
+                margin-top: 18px;
+                gap: 8px;
+            }
+
+            .staff-note i {
+                flex-shrink: 0;
+            }
+
+            .footer-links {
+                margin-top: 24px;
+                padding-top: 17px;
+                gap: 8px;
+            }
+
+            .footer-links a {
+                font-size: 12px;
+                text-align: center;
+            }
+
+            .brand-footer {
+                margin-top: 13px;
+                font-size: 10px;
+                line-height: 1.4;
+            }
+        }
+
+        @media (max-width: 380px) {
+            body {
+                padding-left: 10px;
+                padding-right: 10px;
+            }
+
+            .login-card {
+                padding: 26px 16px 20px;
+            }
+
+            .back-home {
+                left: 10px;
+                right: 10px;
+                top: 14px;
+            }
+
+            .login-icon {
+                font-size: 38px;
+            }
+
+            h2 {
+                font-size: 22px;
+            }
+
+            .branch-tag {
+                font-size: 10px;
+                letter-spacing: 0.7px;
+            }
+
+            .staff-note {
+                font-size: 11px;
+            }
+
+            .footer-links a {
+                font-size: 11px;
+            }
+        }
+
+        @media (max-height: 650px) and (max-width: 600px) {
+            body {
+                align-items: flex-start;
+                padding-top: 58px;
+            }
+
+            .login-card {
+                padding-top: 22px;
+                padding-bottom: 18px;
+            }
+
+            .login-icon {
+                font-size: 34px;
+                margin-bottom: 8px;
+            }
+
+            .branch-tag {
+                margin-bottom: 15px;
+            }
+
+            .form-group {
+                margin-bottom: 12px;
+            }
+
+            .staff-note,
+            .footer-links {
+                margin-top: 14px;
+            }
+        }
+
     </style>
 </head>
 

@@ -331,9 +331,392 @@ try {
         .btn-view-all:hover { background: var(--brand-blue); color: white; }
 
         footer { text-align: center; padding: 30px; color: var(--text-muted); font-size: 12px; margin-top: auto; border-top: 1px solid var(--border);}
+
+        /* --- MOBILE RESPONSIVE --- */
+        .mobile-menu-btn {
+            display: none;
+            width: 42px;
+            height: 42px;
+            border: 1px solid var(--border);
+            background: var(--white);
+            color: var(--sidebar-navy);
+            border-radius: 10px;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            font-size: 18px;
+            flex-shrink: 0;
+        }
+
+        .sidebar-overlay {
+            display: none;
+        }
+
+        @media (max-width: 1100px) {
+            .sidebar { width: 230px; }
+            .main-content {
+                margin-left: 230px;
+                width: calc(100% - 230px);
+            }
+            header { padding: 0 24px; }
+            .container { padding: 28px 24px; }
+            .stats-grid-3 { gap: 18px; }
+            .profile-wrapper { gap: 10px; padding-left: 15px; }
+            .role-label { padding: 4px 9px; }
+            .profile-name-text { max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        }
+
+        @media (max-width: 900px) {
+            .sidebar {
+                width: 260px;
+                left: -270px;
+                transition: left 0.25s ease;
+                box-shadow: 8px 0 30px rgba(0,0,0,0.15);
+            }
+
+            .sidebar.mobile-open {
+                left: 0;
+            }
+
+            .sidebar-overlay {
+                position: fixed;
+                inset: 0;
+                background: rgba(0,0,0,0.38);
+                z-index: 90;
+                display: none;
+            }
+
+            .sidebar-overlay.show {
+                display: block;
+            }
+
+            .main-content {
+                margin-left: 0;
+                width: 100%;
+            }
+
+            .mobile-menu-btn {
+                display: inline-flex;
+            }
+
+            header {
+                height: 66px;
+                padding: 0 16px;
+                gap: 12px;
+            }
+
+            .breadcrumb {
+                min-width: 0;
+                flex: 1;
+            }
+
+            .breadcrumb span {
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+
+            .top-right-actions {
+                gap: 12px;
+            }
+
+            .profile-wrapper {
+                gap: 8px;
+                padding-left: 12px;
+            }
+
+            .profile-name-text {
+                display: none !important;
+            }
+
+            .role-label {
+                font-size: 10px;
+                padding: 4px 8px;
+            }
+
+            .notif-dropdown {
+                position: fixed;
+                top: 70px;
+                right: 12px;
+                width: min(340px, calc(100vw - 24px));
+            }
+
+            .profile-dropdown {
+                position: fixed;
+                top: 70px;
+                right: 12px;
+                width: min(220px, calc(100vw - 24px));
+            }
+
+            .container {
+                padding: 22px 16px 28px;
+            }
+
+            .hero-banner {
+                padding: 26px 22px;
+                border-radius: 16px;
+                margin-bottom: 22px;
+            }
+
+            .hero-banner h2 {
+                font-size: 23px;
+                line-height: 1.3;
+                padding-right: 20px;
+            }
+
+            .hero-banner p {
+                font-size: 13px;
+                line-height: 1.55;
+            }
+
+            .stats-grid-3 {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 14px;
+                margin-bottom: 22px;
+            }
+
+            .stat-card {
+                padding: 20px 18px;
+                border-radius: 16px;
+            }
+
+            .stat-card i {
+                font-size: 21px;
+                margin-bottom: 11px;
+            }
+
+            .stat-card h4 {
+                font-size: 10px;
+                letter-spacing: 0.6px;
+            }
+
+            .stat-card p {
+                font-size: 28px;
+            }
+
+            .schedule-card {
+                border-radius: 16px;
+            }
+
+            .schedule-header {
+                padding: 18px 16px;
+                gap: 12px;
+                align-items: flex-start;
+                flex-direction: column;
+            }
+
+            .schedule-header h3 {
+                font-size: 15px;
+                line-height: 1.4;
+            }
+
+            .btn-view-all {
+                width: 100%;
+                text-align: center;
+            }
+
+            .schedule-list {
+                padding: 0 16px;
+            }
+
+            .schedule-item {
+                display: grid;
+                grid-template-columns: 82px 42px minmax(0, 1fr);
+                gap: 12px;
+                align-items: center;
+                padding: 16px 0;
+            }
+
+            .time-box {
+                width: 100%;
+                margin-right: 0;
+                font-size: 12px;
+                padding: 8px 5px;
+            }
+
+            .pet-icon {
+                width: 42px;
+                height: 42px;
+                margin-right: 0;
+                border-radius: 11px;
+            }
+
+            .schedule-info strong {
+                font-size: 14px;
+                overflow-wrap: anywhere;
+            }
+
+            .schedule-info span {
+                font-size: 12px;
+                line-height: 1.4;
+                display: block;
+                overflow-wrap: anywhere;
+            }
+
+            .schedule-status {
+                grid-column: 1 / -1;
+                justify-self: start;
+                margin-left: 0;
+            }
+
+            footer {
+                padding: 24px 16px;
+                line-height: 1.5;
+            }
+        }
+
+
+        @media (max-width: 900px) {
+            .mobile-menu-btn {
+                position: fixed;
+                top: 12px;
+                left: 12px;
+                z-index: 1100;
+            }
+
+            header {
+                padding-left: 66px;
+            }
+        }
+
+        @media (max-width: 560px) {
+            .top-right-actions {
+                gap: 8px;
+            }
+
+            .role-label {
+                display: none;
+            }
+
+            .top-avatar,
+            .top-avatar-fallback {
+                width: 34px;
+                height: 34px;
+            }
+
+            .container {
+                padding-left: 12px;
+                padding-right: 12px;
+            }
+
+            .hero-banner {
+                padding: 22px 18px;
+            }
+
+            .hero-banner h2 {
+                font-size: 20px;
+            }
+
+            .stats-grid-3 {
+                grid-template-columns: 1fr;
+            }
+
+            .stat-card {
+                display: grid;
+                grid-template-columns: 42px minmax(0, 1fr) auto;
+                grid-template-rows: auto auto;
+                column-gap: 12px;
+                align-items: center;
+                padding: 15px 16px;
+            }
+
+            .stat-card i {
+                grid-row: 1 / 3;
+                margin: 0;
+            }
+
+            .stat-card h4 {
+                margin: 0;
+            }
+
+            .stat-card p {
+                grid-column: 3;
+                grid-row: 1 / 3;
+                margin: 0;
+                font-size: 25px;
+            }
+
+            .schedule-header h3 {
+                font-size: 14px;
+            }
+
+            .schedule-item {
+                grid-template-columns: 72px 40px minmax(0, 1fr);
+                gap: 10px;
+            }
+
+            .time-box {
+                font-size: 11px;
+            }
+
+            .pet-icon {
+                width: 40px;
+                height: 40px;
+                font-size: 16px;
+            }
+
+            .schedule-info strong {
+                font-size: 13px;
+            }
+
+            .schedule-info span {
+                font-size: 11px;
+            }
+        }
+
+        @media (max-width: 380px) {
+            header {
+                padding: 0 10px;
+            }
+
+            .breadcrumb {
+                font-size: 12px;
+            }
+
+            .mobile-menu-btn {
+                width: 38px;
+                height: 38px;
+            }
+
+            .top-avatar,
+            .top-avatar-fallback {
+                width: 32px;
+                height: 32px;
+            }
+
+            .schedule-item {
+                grid-template-columns: 1fr 40px;
+            }
+
+            .time-box {
+                grid-column: 1 / -1;
+                justify-self: start;
+                width: auto;
+                min-width: 82px;
+            }
+
+            .pet-icon {
+                grid-row: 2;
+            }
+
+            .schedule-info {
+                grid-row: 2;
+            }
+
+            .schedule-status {
+                grid-column: 1 / -1;
+            }
+        }
+
     </style>
 </head>
 <body>
+
+    <button class="mobile-menu-btn" id="mobileMenuBtn" type="button" aria-label="Open menu" aria-expanded="false">
+        <i class="fas fa-bars"></i>
+    </button>
+    <div class="sidebar-overlay" id="sidebarOverlay"></div>
+
 
     <aside class="sidebar">
         <div class="sidebar-header">
@@ -397,7 +780,7 @@ try {
                         <div class="top-avatar-fallback"><?php echo $first_letter; ?></div>
                     <?php endif; ?>
                     
-                    <span style="font-size: 14px; font-weight: 700; color: var(--sidebar-navy); display: flex; align-items: center; gap: 6px;">
+                    <span class="profile-name-text" style="font-size: 14px; font-weight: 700; color: var(--sidebar-navy); display: flex; align-items: center; gap: 6px;">
                         <?php echo htmlspecialchars($display_with_title); ?>
                         <i class="fas fa-chevron-down" style="font-size: 10px; color: var(--text-muted); opacity: 0.5;"></i>
                     </span>
@@ -484,6 +867,36 @@ try {
     </main>
 
     <script>
+
+        const mobileMenuBtn = document.getElementById('mobileMenuBtn');
+        const sidebar = document.querySelector('.sidebar');
+        const sidebarOverlay = document.getElementById('sidebarOverlay');
+
+        function toggleMobileMenu() {
+            const isOpen = sidebar.classList.toggle('mobile-open');
+            sidebarOverlay.classList.toggle('show', isOpen);
+            mobileMenuBtn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+            mobileMenuBtn.innerHTML = isOpen
+                ? '<i class="fas fa-times"></i>'
+                : '<i class="fas fa-bars"></i>';
+        }
+
+        function closeMobileMenu() {
+            sidebar.classList.remove('mobile-open');
+            sidebarOverlay.classList.remove('show');
+            mobileMenuBtn.setAttribute('aria-expanded', 'false');
+            mobileMenuBtn.innerHTML = '<i class="fas fa-bars"></i>';
+        }
+
+        mobileMenuBtn.addEventListener('click', toggleMobileMenu);
+        sidebarOverlay.addEventListener('click', closeMobileMenu);
+
+        document.querySelectorAll('.nav-item').forEach(function(link) {
+            link.addEventListener('click', function() {
+                if (window.innerWidth <= 900) closeMobileMenu();
+            });
+        });
+
         function toggleNotif(event) {
             event.stopPropagation();
             document.getElementById("notifBox").classList.toggle("show");
@@ -503,6 +916,13 @@ try {
             }
         }
         
+
+        window.addEventListener('resize', function() {
+            if (window.innerWidth > 900) {
+                closeMobileMenu();
+            }
+        });
+
         let previousUnreadCount = <?php echo $unread_count; ?>;
         
         function fetchAdminNotifs() {

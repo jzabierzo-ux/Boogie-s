@@ -201,6 +201,7 @@ try {
             color: var(--text);
             line-height: 1.6;
             overflow-y: scroll;
+            overflow-x: hidden;
         }
 
         /* ===== HEADER ===== */
@@ -404,6 +405,38 @@ try {
         .dropdown-item:last-child { border-bottom: 0; }
         .view-all-link { text-align: center; color: var(--brand-blue); font-weight: 800; }
 
+
+
+        /* ===== ALERTS ===== */
+        .alert {
+            display: flex;
+            align-items: flex-start;
+            gap: 9px;
+            width: 100%;
+            margin: 0 0 20px;
+            padding: 12px 14px;
+            border-radius: 12px;
+            font-size: 11px;
+            line-height: 1.55;
+            font-weight: 600;
+        }
+
+        .alert i {
+            margin-top: 2px;
+            flex: 0 0 auto;
+        }
+
+        .alert-success {
+            background: #eaf8f0;
+            border: 1px solid #b8e4ca;
+            color: #1e7e49;
+        }
+
+        .alert-error {
+            background: #fff0f1;
+            border: 1px solid #efb8bd;
+            color: #a92734;
+        }
 
         /* ===== MY SCHEDULE PAGE ===== */
         main {
@@ -1200,6 +1233,397 @@ try {
             }
         }
 
+
+        /* ===== EXTRA RESPONSIVE TUNING ===== */
+        @media (max-width: 980px) {
+            .nav-top {
+                padding-left: 20px;
+                padding-right: 20px;
+                gap: 14px;
+            }
+
+            .logo {
+                min-width: 0;
+                flex: 1 1 auto;
+            }
+
+            .logo-text {
+                min-width: 0;
+            }
+
+            .logo-text b,
+            .logo-text span {
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+
+            .user-controls {
+                flex: 0 0 auto;
+            }
+        }
+
+        @media (max-width: 720px) {
+            .promo-bar {
+                padding: 6px 12px;
+                font-size: 10px;
+            }
+
+            .nav-top {
+                padding: 10px 14px;
+                gap: 8px;
+            }
+
+            .nav-logo-img {
+                width: 40px;
+                height: 40px;
+                border-radius: 9px;
+            }
+
+            .logo {
+                gap: 8px;
+            }
+
+            .logo-text b {
+                font-size: 16px;
+            }
+
+            .logo-text span {
+                font-size: 7px;
+                letter-spacing: .9px;
+            }
+
+            .user-controls {
+                gap: 7px;
+            }
+
+            .notification-bell,
+            .profile-trigger {
+                width: 40px;
+                min-width: 40px;
+                height: 40px;
+            }
+
+            .notification-bell {
+                padding: 0;
+            }
+
+            .profile-trigger {
+                justify-content: center;
+                padding: 3px;
+            }
+
+            .profile-trigger span,
+            .profile-trigger > .fa-chevron-down {
+                display: none;
+            }
+
+            .profile-img {
+                width: 32px !important;
+                height: 32px !important;
+            }
+
+            .dropdown-menu {
+                top: calc(100% + 8px);
+                right: 0;
+                max-width: calc(100vw - 28px);
+                width: 270px;
+            }
+
+            .dropdown-menu[style*="width:210px"] {
+                width: 210px !important;
+            }
+
+            main {
+                width: calc(100% - 24px);
+                padding: 24px 0 48px;
+            }
+
+            .schedule-intro {
+                margin-bottom: 18px;
+            }
+
+            .back-nav {
+                margin-bottom: 10px;
+            }
+
+            .schedule-title h1 {
+                font-size: 27px;
+                letter-spacing: -.4px;
+            }
+
+            .schedule-title p {
+                font-size: 11px;
+                line-height: 1.55;
+            }
+
+            .schedule-kicker {
+                font-size: 9px;
+                padding: 6px 10px;
+                margin-bottom: 8px;
+            }
+
+            .book-new-btn {
+                width: 100%;
+                min-height: 44px;
+                padding: 11px 14px;
+                justify-content: center;
+                font-size: 11px;
+            }
+
+            .filter-card {
+                padding: 11px;
+                border-radius: 14px;
+                margin-bottom: 17px;
+            }
+
+            .filter-row {
+                gap: 8px;
+            }
+
+            .filter-search input,
+            .filter-select,
+            .filter-btn {
+                height: 44px;
+                font-size: 11px;
+            }
+
+            .filter-btn {
+                width: 100%;
+            }
+
+            .section-card {
+                padding: 15px;
+                border-radius: 17px;
+                margin-bottom: 17px;
+            }
+
+            .section-head {
+                display: block;
+                margin-bottom: 14px;
+            }
+
+            .section-head h2 {
+                font-size: 18px;
+            }
+
+            .section-head p {
+                font-size: 9px;
+            }
+
+            .section-count {
+                display: inline-block;
+                margin-top: 7px;
+            }
+
+            .schedule-list {
+                gap: 9px;
+            }
+
+            .schedule-item {
+                grid-template-columns: 1fr;
+                gap: 10px;
+                padding: 12px;
+                border-radius: 13px;
+            }
+
+            .date-box {
+                width: 90px;
+            }
+
+            .date-box .date-day {
+                font-size: 22px;
+            }
+
+            .schedule-service {
+                font-size: 14px;
+            }
+
+            .schedule-details {
+                gap: 7px 10px;
+                margin-top: 5px;
+            }
+
+            .schedule-detail {
+                font-size: 9px;
+            }
+
+            .schedule-note {
+                font-size: 8px;
+                line-height: 1.45;
+            }
+
+            .schedule-status {
+                display: flex;
+                flex-direction: row;
+                flex-wrap: wrap;
+                align-items: center;
+                gap: 7px;
+            }
+
+            .payment-status {
+                font-size: 8px;
+                text-align: left;
+            }
+
+            .schedule-action {
+                width: 100%;
+                gap: 7px;
+            }
+
+            .btn-cancel-schedule,
+            .btn-review-schedule {
+                min-width: 0;
+                flex: 1 1 0;
+                min-height: 42px;
+                padding: 9px 10px;
+                font-size: 9px;
+            }
+
+            .feedback-schedule {
+                font-size: 9px;
+            }
+
+            .schedule-empty {
+                padding: 40px 12px;
+            }
+
+            .schedule-empty h3 {
+                font-size: 17px;
+            }
+
+            .schedule-empty p {
+                font-size: 9px;
+            }
+
+            .schedule-info {
+                grid-template-columns: 1fr;
+                gap: 9px;
+            }
+
+            .info-mini {
+                padding: 12px;
+            }
+
+            .info-mini-icon {
+                width: 36px;
+                height: 36px;
+                flex-basis: 36px;
+            }
+
+            .modal-overlay {
+                padding: 12px;
+                align-items: flex-end;
+            }
+
+            .modal-content {
+                width: 100%;
+                max-width: 520px;
+                max-height: 92vh;
+                overflow-y: auto;
+                padding: 18px;
+                border-radius: 18px 18px 12px 12px;
+            }
+
+            .booking-details-box {
+                padding: 12px;
+                margin-bottom: 14px;
+            }
+
+            .modal-form-group {
+                margin-bottom: 13px;
+            }
+
+            .modal-form-group select {
+                height: 44px;
+                font-size: 11px;
+            }
+
+            .important-warning {
+                font-size: 9px;
+                padding: 10px;
+                margin-bottom: 14px;
+            }
+
+            .modal-actions {
+                flex-direction: column;
+                gap: 8px;
+            }
+
+            .modal-actions button {
+                width: 100%;
+                min-height: 44px;
+            }
+
+            footer {
+                padding: 42px 16px 24px;
+            }
+
+            .footer-main {
+                grid-template-columns: 1fr;
+                gap: 22px;
+                padding-bottom: 28px;
+            }
+
+            .footer-main p,
+            .footer-main a {
+                font-size: 11px;
+            }
+
+            .footer-bottom {
+                font-size: 9px;
+                line-height: 1.5;
+            }
+        }
+
+        @media (max-width: 420px) {
+            .logo-text b {
+                font-size: 15px;
+            }
+
+            .logo-text span {
+                font-size: 6.5px;
+            }
+
+            main {
+                width: calc(100% - 18px);
+            }
+
+            .schedule-title h1 {
+                font-size: 24px;
+            }
+
+            .schedule-title p {
+                font-size: 10px;
+            }
+
+            .section-card {
+                padding: 13px;
+            }
+
+            .schedule-item {
+                padding: 10px;
+            }
+
+            .schedule-details {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+            }
+
+            .schedule-detail:last-child {
+                grid-column: 1 / -1;
+            }
+
+            .btn-cancel-schedule,
+            .btn-review-schedule {
+                font-size: 8px;
+            }
+
+            .dropdown-menu {
+                max-width: calc(100vw - 18px);
+            }
+        }
+
     </style>
 </head>
 
@@ -1224,7 +1648,7 @@ try {
                     <div class="notification-bell" onclick="toggleDropdown('notifDropdown')" aria-label="Notifications">
                         <i class="fa-solid fa-bell"></i>
                         <?php if($unread_count > 0): ?>
-                            <span class="notification-badge"><?php echo $unread_count; ?></span>
+                            <span id="notif-badge" class="notification-badge" style="<?php echo $unread_count > 0 ? '' : 'display:none;'; ?>"><?php echo $unread_count; ?></span>
                         <?php endif; ?>
                     </div>
 

@@ -10,9 +10,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit;
 }
 
-require_once '../db_connect.php';
+require_once '../db_supabase.php';
 
-if (!isset($conn) || !$conn) {
+if (!isset($pdo) || !$pdo) {
     http_response_code(500);
     echo json_encode([
         'success' => false,
@@ -63,15 +63,21 @@ if ($plain_token === '') {
 
 $token_hash = hash('sha256', $plain_token);
 
-$stmt_auth = $conn->prepare("
-    SELECT user_id
-    FROM api_tokens
-    WHERE token_hash = ?
-      AND expires_at > NOW()
-    LIMIT 1
-");
+try {
+    $stmt_auth = $pdo->prepare("
+        SELECT user_id
+        FROM api_tokens
+        WHERE token_hash = :token_hash
+          AND expires_at > CURRENT_TIMESTAMP
+        LIMIT 1
+    ");
 
-if (!$stmt_auth) {
+    $stmt_auth->execute([
+        ':token_hash' => $token_hash
+    ]);
+
+    $auth_row = $stmt_auth->fetch(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
     http_response_code(500);
     echo json_encode([
         'success' => false,
@@ -80,13 +86,6 @@ if (!$stmt_auth) {
     ]);
     exit;
 }
-
-$stmt_auth->bind_param('s', $token_hash);
-$stmt_auth->execute();
-
-$auth_result = $stmt_auth->get_result();
-$auth_row = $auth_result ? $auth_result->fetch_assoc() : null;
-$stmt_auth->close();
 
 if (!$auth_row) {
     http_response_code(401);
@@ -102,20 +101,29 @@ $user_id = (int) $auth_row['user_id'];
 $pet_id = isset($_GET['id']) ? (int) $_GET['id'] : 0;
 
 if ($pet_id > 0) {
-    $stmt = $conn->prepare("
-        SELECT id, name, pet_type, breed, gender, age, weight
-        FROM pets
-        WHERE id = ?
-          AND owner_id = ?
-        LIMIT 1
-    ");
+    try {
+        $stmt = $pdo->prepare("
+            SELECT id, name, pet_type, breed, gender, age, weight
+            FROM pets
+            WHERE id = :pet_id
+              AND owner_id = :user_id
+            LIMIT 1
+        ");
 
-    $stmt->bind_param('ii', $pet_id, $user_id);
-    $stmt->execute();
+        $stmt->execute([
+            ':pet_id' => $pet_id,
+            ':user_id' => $user_id
+        ]);
 
-    $result = $stmt->get_result();
-    $pet = $result ? $result->fetch_assoc() : null;
-    $stmt->close();
+        $pet = $stmt->fetch(PDO::FETCH_ASSOC);
+    } catch (PDOException $e) {
+        http_response_code(500);
+        echo json_encode([
+            'success' => false,
+            'message' => 'Failed to fetch pet.'
+        ]);
+        exit;
+    }
 
     if (!$pet) {
         http_response_code(404);
@@ -142,33 +150,39 @@ if ($pet_id > 0) {
     exit;
 }
 
-$stmt = $conn->prepare("
-    SELECT id, name, pet_type, breed, gender, age, weight
-    FROM pets
-    WHERE owner_id = ?
-    ORDER BY name ASC
-");
+try {
+    $stmt = $pdo->prepare("
+        SELECT id, name, pet_type, breed, gender, age, weight
+        FROM pets
+        WHERE owner_id = :user_id
+        ORDER BY name ASC
+    ");
 
-$stmt->bind_param('i', $user_id);
-$stmt->execute();
+    $stmt->execute([
+        ':user_id' => $user_id
+    ]);
 
-$result = $stmt->get_result();
+    $pets = [];
 
-$pets = [];
-
-while ($row = $result->fetch_assoc()) {
-    $pets[] = [
-        'id' => (int) $row['id'],
-        'name' => $row['name'],
-        'pet_type' => $row['pet_type'],
-        'breed' => $row['breed'],
-        'gender' => $row['gender'],
-        'age' => $row['age'],
-        'weight' => $row['weight']
-    ];
+    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        $pets[] = [
+            'id' => (int) $row['id'],
+            'name' => $row['name'],
+            'pet_type' => $row['pet_type'],
+            'breed' => $row['breed'],
+            'gender' => $row['gender'],
+            'age' => $row['age'],
+            'weight' => $row['weight']
+        ];
+    }
+} catch (PDOException $e) {
+    http_response_code(500);
+    echo json_encode([
+        'success' => false,
+        'message' => 'Failed to fetch pets.'
+    ]);
+    exit;
 }
-
-$stmt->close();
 
 echo json_encode([
     'success' => true,

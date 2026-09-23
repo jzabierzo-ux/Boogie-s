@@ -222,6 +222,7 @@ $has_upcoming = $upcoming !== null;
             background: var(--page-bg);
             color: var(--text);
             overflow-y: scroll;
+            overflow-x: hidden;
             line-height: 1.6;
         }
 
@@ -935,6 +936,367 @@ $has_upcoming = $upcoming !== null;
             font-size: 11px;
         }
 
+
+        /* ===== ENHANCED MOBILE RESPONSIVE ===== */
+        @media (max-width: 680px) {
+            .promo-bar {
+                padding: 7px 10px;
+                font-size: 10px;
+            }
+
+            .nav-top {
+                padding: 10px 14px;
+                gap: 10px;
+            }
+
+            .logo {
+                min-width: 0;
+                gap: 8px;
+                flex: 1;
+                max-width: calc(100% - 110px);
+            }
+
+            .nav-logo-img {
+                width: 42px;
+                height: 42px;
+            }
+
+            .logo-text b {
+                font-size: 16px;
+            }
+
+            .logo-text span {
+                font-size: 7px;
+                letter-spacing: .8px;
+                white-space: nowrap;
+            }
+
+            .user-controls {
+                width: auto;
+                flex: 0 0 auto;
+                gap: 7px;
+            }
+
+            .notification-bell {
+                width: 40px;
+                height: 40px;
+                border-radius: 10px;
+            }
+
+            .notification-badge {
+                top: -3px;
+                right: -3px;
+                min-width: 17px;
+                height: 17px;
+            }
+
+            .profile-trigger {
+                min-height: 40px;
+                padding: 4px;
+                gap: 0;
+                border-radius: 10px;
+            }
+
+            .profile-trigger img {
+                width: 32px !important;
+                height: 32px !important;
+            }
+
+            .profile-trigger .profile-name,
+            .profile-trigger .chevron {
+                display: none;
+            }
+
+            .dropdown-menu {
+                position: fixed;
+                top: 74px;
+                left: 12px;
+                right: 12px;
+                width: auto !important;
+                max-width: none;
+                max-height: calc(100vh - 88px);
+                overflow-y: auto;
+                border-radius: 14px;
+            }
+
+            main {
+                width: calc(100% - 24px);
+                padding: 28px 0 50px;
+            }
+
+            .welcome-area {
+                display: block;
+                margin-bottom: 18px;
+            }
+
+            .welcome-copy .eyebrow {
+                font-size: 9px;
+                padding: 6px 10px;
+                margin-bottom: 9px;
+            }
+
+            .welcome-copy h1 {
+                font-size: 25px;
+                line-height: 1.2;
+                overflow-wrap: anywhere;
+            }
+
+            .welcome-copy p {
+                font-size: 11px;
+                margin-top: 6px;
+            }
+
+            .welcome-action {
+                margin-top: 14px;
+            }
+
+            .primary-action {
+                width: 100%;
+                min-height: 46px;
+                padding: 11px 14px;
+                font-size: 12px;
+            }
+
+            .dashboard-cards {
+                grid-template-columns: 1fr 1fr;
+                gap: 10px;
+                margin-bottom: 18px;
+            }
+
+            .dash-card {
+                padding: 15px;
+                border-radius: 15px;
+                min-width: 0;
+            }
+
+            .dash-icon {
+                width: 40px;
+                height: 40px;
+                border-radius: 11px;
+                font-size: 17px;
+                margin-bottom: 11px;
+            }
+
+            .dash-card h3 {
+                font-size: 12px;
+                line-height: 1.35;
+            }
+
+            .dash-card p {
+                font-size: 9px;
+                line-height: 1.45;
+                min-height: 27px;
+            }
+
+            .dash-value {
+                font-size: 18px;
+            }
+
+            .dash-link {
+                font-size: 9px;
+            }
+
+            .overview-grid {
+                grid-template-columns: 1fr;
+                gap: 14px;
+            }
+
+            .panel {
+                border-radius: 16px;
+            }
+
+            .panel-header {
+                padding: 17px 15px 13px;
+                align-items: center;
+            }
+
+            .panel-heading .kicker {
+                font-size: 8px;
+            }
+
+            .panel-heading h2 {
+                font-size: 17px;
+            }
+
+            .panel-link {
+                font-size: 9px;
+            }
+
+            .panel-body {
+                padding: 14px 15px 17px;
+            }
+
+            .pet-item {
+                gap: 10px;
+                padding: 10px;
+                border-radius: 11px;
+            }
+
+            .pet-avatar {
+                width: 42px;
+                height: 42px;
+                flex: 0 0 42px;
+                border-radius: 12px;
+                font-size: 17px;
+            }
+
+            .pet-info h4 {
+                font-size: 12px;
+            }
+
+            .pet-info p {
+                font-size: 9px;
+                line-height: 1.45;
+            }
+
+            .pet-arrow {
+                font-size: 10px;
+            }
+
+            .notice-box {
+                gap: 8px;
+                padding: 10px 11px;
+                margin-top: 12px;
+            }
+
+            .notice-box span {
+                font-size: 9px;
+            }
+
+            .appointment-card {
+                padding: 15px;
+                border-radius: 13px;
+            }
+
+            .appointment-top {
+                display: block;
+            }
+
+            .appointment-service {
+                font-size: 16px;
+                margin-bottom: 7px;
+            }
+
+            .appointment-meta p {
+                font-size: 10px;
+            }
+
+            .status-pill {
+                margin-top: 10px;
+                font-size: 8px;
+                padding: 6px 9px;
+            }
+
+            .appointment-footer {
+                margin-top: 14px;
+                padding-top: 13px;
+                align-items: flex-start;
+                flex-direction: column;
+            }
+
+            .appointment-action {
+                font-size: 10px;
+            }
+
+            .quick-actions {
+                grid-template-columns: 1fr;
+                gap: 8px;
+                margin-top: 12px;
+            }
+
+            .quick-action {
+                min-height: 42px;
+                font-size: 10px;
+            }
+
+            footer {
+                padding: 40px 14px 24px;
+            }
+
+            .footer-main {
+                grid-template-columns: 1fr;
+                gap: 24px;
+                padding-bottom: 26px;
+            }
+
+            .footer-main h4 {
+                font-size: 11px;
+            }
+
+            .footer-main p,
+            .footer-main a {
+                font-size: 11px;
+            }
+
+            .footer-bottom {
+                font-size: 9px;
+                line-height: 1.6;
+            }
+        }
+
+        @media (max-width: 380px) {
+            .nav-top {
+                padding-left: 10px;
+                padding-right: 10px;
+            }
+
+            .logo {
+                max-width: calc(100% - 104px);
+            }
+
+            .logo-text b {
+                font-size: 14px;
+            }
+
+            .logo-text span {
+                font-size: 6px;
+                letter-spacing: .7px;
+            }
+
+            .notification-bell {
+                width: 38px;
+                height: 38px;
+            }
+
+            .profile-trigger {
+                min-height: 38px;
+            }
+
+            .profile-trigger img {
+                width: 30px !important;
+                height: 30px !important;
+            }
+
+            main {
+                width: calc(100% - 20px);
+                padding-top: 22px;
+            }
+
+            .dashboard-cards {
+                gap: 8px;
+            }
+
+            .dash-card {
+                padding: 13px;
+            }
+
+            .dash-card h3 {
+                font-size: 11px;
+            }
+
+            .dash-card p {
+                font-size: 8px;
+            }
+
+            .dash-value {
+                font-size: 17px;
+            }
+
+            .welcome-copy h1 {
+                font-size: 22px;
+            }
+        }
+
         /* RESPONSIVE */
         @media (max-width: 1000px) {
             .nav-top { flex-wrap: wrap; }
@@ -1298,60 +1660,8 @@ $has_upcoming = $upcoming !== null;
         </div>
     </footer>
 
-    <script>
-        // --- DROPDOWN LOGIC ---
-        function toggleDropdown(id) {
-            document.querySelectorAll('.dropdown-menu').forEach(menu => {
-                if (menu.id !== id) {
-                    menu.classList.remove('active');
-                }
-            });
-            document.getElementById(id).classList.toggle('active');
-        }
-
-        window.addEventListener('click', function(e) {
-            if (!document.querySelector('.notification-wrapper').contains(e.target) && 
-                !document.querySelector('.profile-wrapper').contains(e.target)) {
-                document.querySelectorAll('.dropdown-menu').forEach(menu => {
-                    menu.classList.remove('active');
-                });
-            }
-        });
-
-        // --- REAL-TIME AJAX SCRIPT WITH SOUND ---
-        const notifSound = new Audio('notification.mp3'); 
-        let previousUnreadCount = <?php echo $unread_count; ?>;
-
-        function updateNotifications() {
-            fetch('get_unread_notifs.php')
-                .then(response => response.json())
-                .then(data => {
-                    const badge = document.getElementById('notif-badge');
-                    const cardCount = document.getElementById('notif-card-count');
-                    
-                    if (data.unread > previousUnreadCount) {
-                        notifSound.play().catch(err => console.log("User needs to interact with the page first to play sound."));
-                    }
-                    
-                    previousUnreadCount = data.unread;
-                    
-                    if (data.unread > 0) {
-                        badge.style.display = 'inline-block';
-                        badge.innerText = data.unread;
-                        if(cardCount) cardCount.innerText = data.unread;
-                    } else {
-                        badge.style.display = 'none';
-                        if(cardCount) cardCount.innerText = "0";
-                    }
-                })
-                .catch(error => console.error('Error fetching notifications:', error));
-        }
-
-        setInterval(updateNotifications, 3000);
-    </script>
-</body>
-
-    <script>
+    
+<script>
         // ===== DROPDOWN LOGIC =====
         function toggleDropdown(id) {
             document.querySelectorAll('.dropdown-menu').forEach(menu => {

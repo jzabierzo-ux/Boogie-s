@@ -114,25 +114,47 @@ try {
             color: var(--text-main);
             padding: 40px;
             margin: 0;
+            overflow-x: hidden;
         }
 
-        .container { max-width: 800px; margin: 0 auto; }
+        .container { max-width: 800px; width: 100%; margin: 0 auto; }
         .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 25px; }
-        .btn-back { background: var(--white); color: var(--navy-dark); padding: 10px 20px; border-radius: 8px; border: 1px solid var(--border); text-decoration: none; font-weight: 600; display: inline-flex; align-items: center; gap: 8px; transition: 0.2s; }
+        .btn-back { background: var(--white); color: var(--navy-dark); padding: 10px 20px; border-radius: 8px; border: 1px solid var(--border); text-decoration: none; font-weight: 600; display: inline-flex; align-items: center; gap: 8px; transition: 0.2s; min-height: 42px; }
         .btn-back:hover { background: #e2e8f0; }
         .card { background: var(--white); padding: 30px; border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.05); border: 1px solid var(--border); }
-        .card-title { font-size: 20px; color: var(--navy-dark); font-weight: 700; margin-bottom: 20px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--border); padding-bottom: 15px; }
+        .card-title { font-size: 20px; color: var(--navy-dark); font-weight: 700; margin-bottom: 20px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--border); padding-bottom: 15px; line-height: 1.35; }
         .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-        .form-group { margin-bottom: 15px; }
+        .form-group { margin-bottom: 15px; min-width: 0; }
         .form-group.full-width { grid-column: span 2; }
         label { display: block; font-size: 13px; font-weight: 600; color: #64748b; margin-bottom: 8px; text-transform: uppercase; }
-        input[type="text"], select { width: 100%; padding: 12px 15px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; outline: none; box-sizing: border-box; }
+        input[type="text"], select { width: 100%; min-height: 46px; padding: 12px 15px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; outline: none; box-sizing: border-box; background: #fff; }
         input:focus, select:focus { border-color: var(--admin-purple); box-shadow: 0 0 0 3px rgba(139, 44, 245, 0.1); }
-        .btn-submit { background: var(--admin-purple); color: white; padding: 12px 25px; border: none; border-radius: 8px; font-size: 15px; font-weight: 600; cursor: pointer; transition: 0.2s; width: 100%; margin-top: 10px; }
+        .btn-submit { background: var(--admin-purple); color: white; padding: 12px 25px; border: none; border-radius: 8px; font-size: 15px; font-weight: 600; cursor: pointer; transition: 0.2s; width: 100%; min-height: 46px; margin-top: 10px; }
         .btn-submit:hover { background: #7322cc; }
-        .alert { padding: 15px; border-radius: 8px; margin-bottom: 20px; font-weight: 600; font-size: 14px; }
+        .alert { padding: 15px; border-radius: 8px; margin-bottom: 20px; font-weight: 600; font-size: 14px; line-height: 1.55; overflow-wrap: anywhere; }
         .alert-success { background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; }
         .alert-error { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
+
+        @media (max-width: 700px) {
+            body { padding: 20px 14px; }
+            .header { margin-bottom: 16px; }
+            .btn-back { width: 100%; justify-content: center; padding: 11px 14px; }
+            .card { padding: 20px 16px; border-radius: 10px; }
+            .card-title { font-size: 18px; margin-bottom: 18px; }
+            .form-grid { grid-template-columns: 1fr; gap: 0; }
+            .form-group.full-width { grid-column: auto; }
+            .form-group { margin-bottom: 14px; }
+            label { font-size: 12px; }
+            input[type="text"], select { font-size: 16px; min-height: 48px; }
+            .btn-submit { font-size: 14px; min-height: 48px; }
+            .alert { font-size: 13px; padding: 13px; }
+        }
+
+        @media (max-width: 380px) {
+            body { padding: 14px 10px; }
+            .card { padding: 16px 13px; }
+            .card-title { font-size: 16px; }
+        }
     </style>
 </head>
 <body>
@@ -175,15 +197,15 @@ try {
 
                     <div class="form-group">
                         <label>Pet Name</label>
-                        <input type="text" name="name" placeholder="Enter pet's name" required>
+                        <input type="text" name="name" placeholder="Enter pet's name" autocomplete="off" required>
                     </div>
                     <div class="form-group">
                         <label>Pet Type</label>
-                        <input type="text" name="pet_type" placeholder="e.g. Dog, Cat" required>
+                        <input type="text" name="pet_type" placeholder="e.g. Dog, Cat" autocomplete="off" required>
                     </div>
                     <div class="form-group">
                         <label>Breed</label>
-                        <input type="text" name="breed" placeholder="e.g. Bulldog">
+                        <input type="text" name="breed" placeholder="e.g. Bulldog" autocomplete="off">
                     </div>
                     <div class="form-group">
                         <label>Gender</label>
@@ -195,11 +217,11 @@ try {
                     </div>
                     <div class="form-group">
                         <label>Age (Years)</label>
-                        <input type="text" name="age" placeholder="e.g. 6 yrs">
+                        <input type="text" name="age" placeholder="e.g. 6 yrs" inputmode="decimal" autocomplete="off">
                     </div>
                     <div class="form-group">
                         <label>Weight</label>
-                        <input type="text" name="weight" placeholder="e.g. 20">
+                        <input type="text" name="weight" placeholder="e.g. 20" inputmode="decimal" autocomplete="off">
                     </div>
                 </div>
                 <button type="submit" class="btn-submit"><i class="fas fa-save"></i> Add Pet Profile</button>

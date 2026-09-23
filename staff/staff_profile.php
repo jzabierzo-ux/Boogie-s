@@ -320,6 +320,281 @@ try {
             .form-grid { grid-template-columns: 1fr; }
             .form-group.full-width { grid-column: span 1; }
         }
+
+        /* ===== EXTRA MOBILE RESPONSIVENESS ===== */
+        @media (max-width: 900px) {
+            .sidebar {
+                width: 220px;
+            }
+
+            .main-content {
+                margin-left: 220px;
+                width: calc(100% - 220px);
+            }
+
+            header {
+                padding: 0 22px;
+            }
+
+            .container {
+                padding: 28px 22px;
+            }
+
+            .profile-card {
+                max-width: 100%;
+            }
+
+            .form-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .form-group.full-width {
+                grid-column: span 1;
+            }
+        }
+
+        @media (max-width: 680px) {
+            body {
+                display: block;
+                overflow-x: hidden;
+            }
+
+            .sidebar {
+                position: relative;
+                width: 100%;
+                height: auto;
+            }
+
+            .sidebar-header {
+                padding: 18px 15px;
+            }
+
+            .sidebar-logo-img {
+                width: 52px;
+                margin-bottom: 6px;
+            }
+
+            .sidebar-header h2 {
+                font-size: 13px;
+            }
+
+            .nav-links {
+                padding: 8px 10px 12px;
+                display: grid;
+                grid-template-columns: repeat(4, 1fr);
+                gap: 6px;
+            }
+
+            .nav-item {
+                padding: 10px 6px;
+                justify-content: center;
+                flex-direction: column;
+                gap: 4px;
+                text-align: center;
+                font-size: 9px;
+                line-height: 1.2;
+            }
+
+            .nav-item i {
+                width: auto;
+                font-size: 16px;
+            }
+
+            .nav-item:hover {
+                transform: none;
+            }
+
+            .nav-item.active::before {
+                left: 8px;
+                right: 8px;
+                top: auto;
+                bottom: 2px;
+                width: auto;
+                height: 3px;
+                border-radius: 4px;
+            }
+
+            .main-content {
+                margin-left: 0;
+                width: 100%;
+                min-height: auto;
+            }
+
+            header {
+                height: auto;
+                min-height: 64px;
+                padding: 11px 14px;
+                gap: 10px;
+                flex-wrap: wrap;
+            }
+
+            .breadcrumb {
+                font-size: 11px;
+                line-height: 1.35;
+                flex: 1 1 100%;
+            }
+
+            .top-right-actions {
+                width: 100%;
+                justify-content: flex-end;
+                gap: 12px;
+            }
+
+            .role-label {
+                font-size: 9px;
+                padding: 4px 8px;
+            }
+
+            .profile-wrapper {
+                gap: 8px;
+                padding-left: 10px;
+            }
+
+            .profile-wrapper > span {
+                max-width: 145px;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+                font-size: 12px !important;
+            }
+
+            .top-avatar,
+            .top-avatar-fallback {
+                width: 32px;
+                height: 32px;
+                font-size: 12px;
+            }
+
+            .notif-dropdown {
+                position: fixed;
+                top: 115px;
+                right: 10px;
+                left: 10px;
+                width: auto;
+            }
+
+            .profile-dropdown {
+                right: 0;
+                top: 44px;
+            }
+
+            .container {
+                padding: 22px 13px 18px;
+            }
+
+            .profile-card {
+                padding: 24px 16px;
+                border-radius: 15px;
+            }
+
+            .card-header {
+                margin-bottom: 22px;
+                padding-bottom: 16px;
+            }
+
+            .card-header h1 {
+                font-size: 21px;
+                line-height: 1.3;
+            }
+
+            .card-header p {
+                font-size: 12px;
+                line-height: 1.5;
+            }
+
+            .avatar-upload-container {
+                width: 112px;
+                height: 112px;
+                margin-bottom: 24px;
+            }
+
+            .avatar-fallback-large {
+                font-size: 36px;
+            }
+
+            .avatar-edit-btn {
+                width: 36px;
+                height: 36px;
+                font-size: 14px;
+                bottom: 2px;
+                right: 2px;
+            }
+
+            .form-grid {
+                grid-template-columns: 1fr;
+                gap: 15px;
+            }
+
+            .form-group.full-width {
+                grid-column: span 1;
+            }
+
+            .form-group label {
+                font-size: 12px;
+                line-height: 1.4;
+            }
+
+            .form-group input {
+                min-height: 46px;
+                padding: 11px 12px;
+                font-size: 14px;
+            }
+
+            .btn-save {
+                min-height: 48px;
+                font-size: 13px;
+                padding: 13px 16px;
+            }
+
+            .alert {
+                padding: 12px 13px;
+                font-size: 12px;
+                line-height: 1.5;
+                overflow-wrap: anywhere;
+            }
+
+            footer {
+                padding: 22px 13px;
+                font-size: 10px;
+            }
+        }
+
+        @media (max-width: 400px) {
+            .nav-links {
+                grid-template-columns: repeat(2, 1fr);
+            }
+
+            .nav-item {
+                flex-direction: row;
+                justify-content: flex-start;
+                gap: 7px;
+                padding: 9px 10px;
+                font-size: 10px;
+            }
+
+            .nav-item i {
+                width: 18px;
+                font-size: 14px;
+            }
+
+            .profile-wrapper > span {
+                max-width: 95px;
+            }
+
+            .profile-card {
+                padding: 20px 12px;
+            }
+
+            .avatar-upload-container {
+                width: 100px;
+                height: 100px;
+            }
+
+            .card-header h1 {
+                font-size: 19px;
+            }
+        }
+
     </style>
 </head>
 <body>
@@ -447,7 +722,7 @@ try {
 
                         <div class="form-group">
                             <label>Contact Number</label>
-                            <input type="text" name="contact_number" value="<?php echo htmlspecialchars($staff_contact); ?>" placeholder="e.g. 09123456789">
+                            <input type="text" name="contact_number" inputmode="numeric" value="<?php echo htmlspecialchars($staff_contact); ?>" placeholder="e.g. 09123456789">
                         </div>
 
                         <div class="form-group full-width">

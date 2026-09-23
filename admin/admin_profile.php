@@ -7,7 +7,7 @@ $current_role = isset($_SESSION['role']) ? strtolower(trim($_SESSION['role'])) :
 
 // Payagan ang admin, supervisor, at staff
 if (!isset($_SESSION['logged_in']) || !in_array($current_role, ['admin', 'supervisor', 'staff'], true)) {
-    header("Location: stafflogin.php");
+    header("Location: ../staff/stafflogin.php");
     exit();
 }
 
@@ -279,11 +279,136 @@ if ($current_role === 'staff') {
         }
         .btn-submit:hover { opacity: 0.9; transform: translateY(-2px); box-shadow: 0 4px 10px rgba(0, 31, 63, 0.2); }
         
-        /* Mobile Responsiveness */
+        /* ===== RESPONSIVE ===== */
         @media (max-width: 900px) {
             .profile-wrapper { grid-template-columns: 1fr; }
             .form-grid { grid-template-columns: 1fr; }
             .form-group.full-width { grid-column: span 1; }
+        }
+
+        @media (max-width: 680px) {
+            body {
+                display: block;
+            }
+
+            .container {
+                padding: 24px 16px 30px;
+            }
+
+            .page-header {
+                display: flex;
+                flex-direction: column;
+                align-items: stretch;
+                gap: 14px;
+                margin-bottom: 22px;
+            }
+
+            .page-header h2 {
+                font-size: 23px;
+            }
+
+            .btn-back {
+                justify-content: center;
+                width: 100%;
+            }
+
+            .alert {
+                align-items: flex-start;
+                font-size: 13px;
+                line-height: 1.5;
+            }
+
+            .profile-wrapper {
+                gap: 18px;
+            }
+
+            .card {
+                padding: 22px 18px;
+                border-radius: 16px;
+                margin-bottom: 18px;
+            }
+
+            .profile-avatar {
+                width: 105px;
+                height: 105px;
+                font-size: 40px;
+                margin-bottom: 16px;
+            }
+
+            .profile-card h3 {
+                font-size: 20px;
+                overflow-wrap: anywhere;
+            }
+
+            .admin-badge {
+                padding: 6px 14px;
+                font-size: 10px;
+                line-height: 1.3;
+            }
+
+            .info-list {
+                font-size: 12px;
+            }
+
+            .info-list div {
+                align-items: flex-start;
+                gap: 10px;
+                overflow-wrap: anywhere;
+            }
+
+            .info-list i {
+                flex: 0 0 16px;
+                margin-top: 3px;
+            }
+
+            .section-title {
+                font-size: 16px;
+                margin-bottom: 20px;
+                padding-bottom: 12px;
+            }
+
+            .form-group label {
+                font-size: 12px;
+            }
+
+            .form-control {
+                min-height: 46px;
+                font-size: 14px;
+            }
+
+            input[type="file"].form-control {
+                min-height: 48px;
+                padding: 9px;
+            }
+
+            .btn-submit {
+                width: 100%;
+                min-height: 46px;
+                justify-content: center;
+            }
+
+            .card form > div[style*="text-align: right"] {
+                text-align: stretch !important;
+            }
+        }
+
+        @media (max-width: 420px) {
+            .container {
+                padding-left: 12px;
+                padding-right: 12px;
+            }
+
+            .card {
+                padding: 20px 15px;
+            }
+
+            .page-header h2 {
+                font-size: 21px;
+            }
+
+            .section-title {
+                font-size: 15px;
+            }
         }
     </style>
 </head>
@@ -333,15 +458,15 @@ if ($current_role === 'staff') {
                                 </div>
                                 <div class="form-group full-width">
                                     <label>Full Name</label>
-                                    <input type="text" name="full_name" class="form-control" value="<?php echo $display_name; ?>" required>
+                                    <input type="text" name="full_name" class="form-control" value="<?php echo $display_name; ?>" autocomplete="name" required>
                                 </div>
                                 <div class="form-group">
                                     <label>Username</label>
-                                    <input type="text" name="username" class="form-control" value="<?php echo $display_username; ?>" required>
+                                    <input type="text" name="username" class="form-control" value="<?php echo $display_username; ?>" autocomplete="username" required>
                                 </div>
                                 <div class="form-group">
                                     <label>Contact Number</label>
-                                    <input type="tel" name="contact_number" class="form-control" value="<?php echo $display_phone; ?>" placeholder="e.g. 09123456789" maxlength="11" pattern="[0-9]{11}" oninput="this.value = this.value.replace(/[^0-9]/g, '')">
+                                    <input type="tel" name="contact_number" class="form-control" inputmode="numeric" autocomplete="tel" value="<?php echo $display_phone; ?>" placeholder="e.g. 09123456789" maxlength="11" pattern="[0-9]{11}" oninput="this.value = this.value.replace(/[^0-9]/g, '')">
                                 </div>
                             </div>
                             <div style="text-align: right;">
@@ -360,15 +485,15 @@ if ($current_role === 'staff') {
                             <div class="form-grid">
                                 <div class="form-group full-width">
                                     <label>Current Password</label>
-                                    <input type="password" name="current_password" class="form-control" required placeholder="Enter current password">
+                                    <input type="password" name="current_password" class="form-control" autocomplete="current-password" required placeholder="Enter current password">
                                 </div>
                                 <div class="form-group">
                                     <label>New Password</label>
-                                    <input type="password" name="new_password" class="form-control" minlength="8" required placeholder="Enter new password">
+                                    <input type="password" name="new_password" class="form-control" autocomplete="new-password" minlength="8" required placeholder="Enter new password">
                                 </div>
                                 <div class="form-group">
                                     <label>Confirm New Password</label>
-                                    <input type="password" name="confirm_password" class="form-control" minlength="8" required placeholder="Confirm new password">
+                                    <input type="password" name="confirm_password" class="form-control" autocomplete="new-password" minlength="8" required placeholder="Confirm new password">
                                 </div>
                             </div>
                             <div style="text-align: right;">

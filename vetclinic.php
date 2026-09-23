@@ -55,7 +55,7 @@ try {
         }
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Poppins', sans-serif; color: #1e293b; background: #fff; line-height: 1.6; display: flex; flex-direction: column; min-height: 100vh;}
+        body { font-family: 'Poppins', sans-serif; color: #1e293b; background: #fff; line-height: 1.6; display: flex; flex-direction: column; min-height: 100vh; overflow-x: hidden;}
 
         /* TOP BAR */
         .promo-bar {
@@ -579,6 +579,437 @@ try {
             .card-footer { align-items: stretch; }
             .btn-book { min-width: 105px; }
             .footer-main { grid-template-columns: 1fr; }
+        }
+
+
+        /* ===== EXTRA MOBILE RESPONSIVE TUNING ===== */
+        @media (max-width: 980px) {
+            .nav-top {
+                grid-template-columns: 1fr;
+                gap: 12px;
+                padding-left: 20px;
+                padding-right: 20px;
+            }
+
+            .search {
+                width: 100%;
+                order: 2;
+            }
+
+            .nav-links {
+                width: 100%;
+                justify-content: flex-start;
+                order: 3;
+            }
+
+            .categories ul {
+                justify-content: flex-start;
+                overflow-x: auto;
+                scrollbar-width: thin;
+            }
+
+            .hero-inner {
+                grid-template-columns: 1fr;
+                padding-top: 50px;
+            }
+
+            .hero-art {
+                justify-self: start;
+                width: 165px;
+                height: 165px;
+            }
+
+            .hero-art i {
+                font-size: 58px;
+            }
+
+            .services-grid {
+                grid-template-columns: 1fr 1fr;
+                gap: 16px;
+            }
+
+            .care-strip {
+                grid-template-columns: 1fr;
+            }
+
+            .footer-main {
+                grid-template-columns: 1fr 1fr;
+            }
+        }
+
+        @media (max-width: 680px) {
+            .promo-bar {
+                padding: 6px 10px;
+                font-size: 10px;
+                line-height: 1.4;
+            }
+
+            .nav-top {
+                width: 100%;
+                padding: 9px 12px;
+                gap: 8px;
+            }
+
+            .logo {
+                width: 100%;
+                gap: 8px;
+            }
+
+            .nav-logo-img {
+                width: 42px;
+                height: 42px;
+            }
+
+            .logo-text b {
+                font-size: 17px;
+            }
+
+            .logo-text span {
+                font-size: 7px;
+                letter-spacing: .9px;
+            }
+
+            .search {
+                padding: 4px 6px 4px 11px;
+                border-radius: 11px;
+            }
+
+            .search input {
+                min-width: 0;
+                padding: 8px 5px;
+                font-size: 11px;
+            }
+
+            .search button {
+                width: 36px;
+                height: 36px;
+                flex: 0 0 36px;
+            }
+
+            .nav-links {
+                gap: 7px;
+                flex-wrap: wrap;
+            }
+
+            .nav-links .cart-btn,
+            .nav-links .login-btn {
+                min-height: 42px;
+                padding: 10px 13px;
+                font-size: 10px;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+            }
+
+            .nav-links .hello-user {
+                width: 100%;
+                font-size: 10px;
+                line-height: 1.4;
+            }
+
+            .logout-link {
+                font-size: 11px !important;
+                margin-left: 0 !important;
+                padding: 9px 4px !important;
+            }
+
+            .categories {
+                overflow: hidden;
+            }
+
+            .categories ul {
+                width: 100%;
+                justify-content: flex-start;
+                gap: 4px;
+                padding: 6px 10px;
+                overflow-x: auto;
+                -webkit-overflow-scrolling: touch;
+                scrollbar-width: none;
+            }
+
+            .categories ul::-webkit-scrollbar {
+                display: none;
+            }
+
+            .categories ul li {
+                flex: 0 0 auto;
+            }
+
+            .categories ul li a {
+                padding: 9px 11px;
+                font-size: 9px;
+                gap: 6px;
+                white-space: nowrap;
+            }
+
+            .categories i {
+                font-size: 11px;
+            }
+
+            .hero-inner {
+                padding: 38px 17px 34px;
+                gap: 22px;
+            }
+
+            .eyebrow {
+                font-size: 9px;
+                padding: 6px 10px;
+            }
+
+            .hero h1 {
+                font-size: 29px;
+                line-height: 1.18;
+                letter-spacing: -.5px;
+                margin: 14px 0 11px;
+            }
+
+            .hero p {
+                font-size: 12px;
+                line-height: 1.65;
+            }
+
+            .hero-note {
+                display: grid;
+                grid-template-columns: 1fr;
+                gap: 7px;
+                margin-top: 16px;
+                font-size: 9px;
+            }
+
+            .hero-art {
+                width: 125px;
+                height: 125px;
+                justify-self: center;
+            }
+
+            .hero-art i {
+                font-size: 43px;
+            }
+
+            .services-wrap {
+                padding: 37px 15px 55px;
+            }
+
+            .section-heading {
+                display: block;
+                margin-bottom: 18px;
+            }
+
+            .section-kicker {
+                font-size: 9px;
+                margin-bottom: 5px;
+            }
+
+            .section-heading h2 {
+                font-size: 22px;
+                line-height: 1.25;
+            }
+
+            .section-heading p {
+                text-align: left;
+                font-size: 10px;
+                line-height: 1.55;
+                margin-top: 7px;
+            }
+
+            .services-grid {
+                grid-template-columns: 1fr;
+                gap: 14px;
+            }
+
+            .service-card {
+                min-height: auto;
+                border-radius: 17px;
+            }
+
+            .service-visual {
+                height: 135px;
+            }
+
+            .visual-icon {
+                width: 70px;
+                height: 70px;
+                font-size: 29px;
+            }
+
+            .service-body {
+                padding: 18px 16px 17px;
+            }
+
+            .service-tag {
+                font-size: 8px;
+                padding: 5px 9px;
+                margin-bottom: 8px;
+            }
+
+            .service-body h3 {
+                font-size: 18px;
+                line-height: 1.3;
+            }
+
+            .service-name {
+                font-size: 10px;
+                margin-bottom: 10px;
+            }
+
+            .service-description {
+                font-size: 10px;
+                line-height: 1.65;
+                margin-bottom: 14px;
+            }
+
+            .card-footer {
+                align-items: stretch;
+                gap: 9px;
+                padding-top: 13px;
+            }
+
+            .price-label {
+                font-size: 8px;
+            }
+
+            .price {
+                font-size: 19px;
+            }
+
+            .btn-book {
+                min-width: 0;
+                width: auto;
+                min-height: 42px;
+                padding: 10px 12px;
+                font-size: 10px;
+                white-space: nowrap;
+            }
+
+            .care-strip {
+                margin-top: 17px;
+                border-radius: 16px;
+                padding: 15px;
+                gap: 12px;
+            }
+
+            .care-item {
+                gap: 9px;
+                align-items: flex-start;
+            }
+
+            .care-item i {
+                width: 34px;
+                height: 34px;
+                flex: 0 0 34px;
+                border-radius: 10px;
+                font-size: 12px;
+            }
+
+            .care-item strong {
+                font-size: 10px;
+            }
+
+            .care-item span {
+                font-size: 8px;
+                line-height: 1.5;
+            }
+
+            .no-data {
+                padding: 42px 16px;
+                border-radius: 17px;
+                font-size: 10px;
+                line-height: 1.6;
+            }
+
+            .no-data i {
+                font-size: 34px !important;
+            }
+
+            footer {
+                padding: 42px 15px 24px;
+            }
+
+            .footer-main {
+                grid-template-columns: 1fr;
+                gap: 22px;
+                padding-bottom: 28px;
+            }
+
+            .footer-main h4 {
+                font-size: 10px;
+                margin-bottom: 11px;
+            }
+
+            .footer-main p,
+            .footer-main a {
+                font-size: 10px;
+                line-height: 1.65;
+            }
+
+            .socials {
+                margin-top: 13px;
+            }
+
+            .socials a {
+                width: 34px;
+                height: 34px;
+            }
+
+            .footer-bottom {
+                font-size: 8.5px;
+                line-height: 1.5;
+                padding-top: 18px;
+            }
+        }
+
+        @media (max-width: 420px) {
+            .nav-top {
+                padding-left: 9px;
+                padding-right: 9px;
+            }
+
+            .nav-logo-img {
+                width: 38px;
+                height: 38px;
+            }
+
+            .logo-text b {
+                font-size: 15px;
+            }
+
+            .logo-text span {
+                font-size: 6px;
+                letter-spacing: .7px;
+            }
+
+            .categories ul li a {
+                font-size: 8px;
+                padding: 8px 10px;
+            }
+
+            .hero h1 {
+                font-size: 26px;
+            }
+
+            .hero p {
+                font-size: 11px;
+            }
+
+            .section-heading h2 {
+                font-size: 20px;
+            }
+
+            .service-body h3 {
+                font-size: 17px;
+            }
+
+            .service-description {
+                font-size: 9.5px;
+            }
+
+            .card-footer {
+                flex-direction: column;
+            }
+
+            .btn-book {
+                width: 100%;
+            }
         }
 
     </style>

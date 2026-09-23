@@ -606,6 +606,358 @@ $notification_total = count($notifs_list);
             font-size: 10px;
         }
 
+
+        /* ===== MOBILE RESPONSIVE ENHANCEMENTS ===== */
+        @media (max-width: 680px) {
+            body {
+                overflow-x: hidden;
+            }
+
+            .promo-bar {
+                padding: 7px 10px;
+                font-size: 10px;
+                line-height: 1.45;
+            }
+
+            header {
+                position: sticky;
+                top: 0;
+            }
+
+            .nav-top {
+                width: 100%;
+                padding: 10px 12px;
+                gap: 8px;
+            }
+
+            .logo {
+                min-width: 0;
+                flex: 1;
+                gap: 8px;
+                overflow: hidden;
+            }
+
+            .nav-logo-img {
+                width: 40px;
+                height: 40px;
+                flex: 0 0 40px;
+            }
+
+            .logo-text {
+                min-width: 0;
+            }
+
+            .logo-text b {
+                font-size: 16px;
+                white-space: nowrap;
+            }
+
+            .logo-text span {
+                font-size: 7px;
+                letter-spacing: .8px;
+                white-space: nowrap;
+            }
+
+            .user-controls {
+                flex: 0 0 auto;
+                gap: 6px;
+            }
+
+            .notification-bell {
+                width: 40px;
+                height: 40px;
+                border-radius: 11px;
+            }
+
+            .profile-trigger {
+                width: 40px;
+                min-height: 40px;
+                padding: 3px;
+                justify-content: center;
+                gap: 0;
+                border-radius: 11px;
+            }
+
+            .profile-trigger span,
+            .profile-trigger > .fa-chevron-down {
+                display: none;
+            }
+
+            .profile-img {
+                width: 32px !important;
+                height: 32px !important;
+            }
+
+            .dropdown-menu {
+                width: min(300px, calc(100vw - 24px));
+                right: 0;
+                top: calc(100% + 8px);
+                max-height: 70vh;
+                overflow-y: auto;
+            }
+
+            .dropdown-item {
+                padding: 12px 14px;
+                font-size: 11px;
+                line-height: 1.5;
+            }
+
+            main {
+                width: calc(100% - 24px);
+                padding: 24px 0 52px;
+            }
+
+            .notification-intro {
+                margin-bottom: 20px;
+            }
+
+            .back-nav {
+                margin-bottom: 11px;
+            }
+
+            .back-nav a {
+                font-size: 10px;
+            }
+
+            .notification-title {
+                display: block;
+            }
+
+            .notification-kicker {
+                padding: 6px 10px;
+                font-size: 9px;
+                margin-bottom: 8px;
+            }
+
+            .notification-title h1 {
+                font-size: 28px;
+                letter-spacing: -.35px;
+            }
+
+            .notification-title p {
+                font-size: 11px;
+                line-height: 1.6;
+                margin-top: 7px;
+            }
+
+            .notification-count {
+                display: inline-block;
+                min-width: 0;
+                width: 100%;
+                margin-top: 13px;
+                padding: 10px 12px;
+                text-align: left;
+                font-size: 9px;
+            }
+
+            .notification-count strong {
+                display: inline;
+                font-size: 18px;
+                margin-left: 6px;
+            }
+
+            .notifications-list {
+                gap: 10px;
+            }
+
+            .notification-card {
+                gap: 11px;
+                padding: 14px;
+                border-radius: 14px;
+            }
+
+            .notification-card::before {
+                width: 3px;
+            }
+
+            .notif-icon {
+                width: 40px;
+                height: 40px;
+                flex: 0 0 40px;
+                border-radius: 11px;
+                font-size: 16px;
+            }
+
+            .notif-content {
+                min-width: 0;
+            }
+
+            .notif-head {
+                display: block;
+                margin-bottom: 6px;
+            }
+
+            .notif-head h3 {
+                font-size: 12px;
+                line-height: 1.45;
+                overflow-wrap: anywhere;
+            }
+
+            .notif-time {
+                display: block;
+                margin-top: 3px;
+                font-size: 8px;
+                white-space: normal;
+            }
+
+            .notif-message {
+                font-size: 10px;
+                line-height: 1.65;
+                margin-bottom: 7px;
+                overflow-wrap: anywhere;
+            }
+
+            .notif-meta {
+                font-size: 8px;
+                flex-wrap: wrap;
+            }
+
+            .empty-notifications {
+                padding: 42px 16px;
+                border-radius: 15px;
+            }
+
+            .empty-notifications-icon {
+                width: 56px;
+                height: 56px;
+                font-size: 22px;
+            }
+
+            .empty-notifications h3 {
+                font-size: 16px;
+            }
+
+            .empty-notifications p {
+                font-size: 9px;
+                line-height: 1.6;
+            }
+
+            .about-box {
+                margin-top: 14px;
+                padding: 16px;
+                border-radius: 14px;
+            }
+
+            .about-box-head {
+                gap: 8px;
+                margin-bottom: 12px;
+            }
+
+            .about-box-head i {
+                width: 32px;
+                height: 32px;
+                flex: 0 0 32px;
+                border-radius: 9px;
+            }
+
+            .about-box h4 {
+                font-size: 12px;
+            }
+
+            .about-box p {
+                font-size: 9px;
+                line-height: 1.5;
+            }
+
+            .about-grid {
+                grid-template-columns: 1fr;
+                gap: 8px;
+            }
+
+            .about-item {
+                gap: 7px;
+                font-size: 9px;
+                line-height: 1.55;
+            }
+
+            footer {
+                padding: 42px 16px 24px;
+            }
+
+            .footer-main {
+                grid-template-columns: 1fr;
+                gap: 22px;
+                padding-bottom: 26px;
+            }
+
+            .footer-main h4 {
+                font-size: 11px;
+                margin-bottom: 10px;
+            }
+
+            .footer-main p,
+            .footer-main a {
+                font-size: 10px;
+                line-height: 1.65;
+                overflow-wrap: anywhere;
+            }
+
+            .socials a {
+                width: 34px;
+                height: 34px;
+            }
+
+            .footer-bottom {
+                font-size: 9px;
+                line-height: 1.6;
+                padding-top: 18px;
+            }
+        }
+
+        @media (max-width: 380px) {
+            .nav-top {
+                padding-left: 9px;
+                padding-right: 9px;
+            }
+
+            .logo-text b {
+                font-size: 15px;
+            }
+
+            .logo-text span {
+                font-size: 6px;
+            }
+
+            .notification-bell,
+            .profile-trigger {
+                width: 38px;
+                height: 38px;
+                min-height: 38px;
+            }
+
+            .profile-img {
+                width: 30px !important;
+                height: 30px !important;
+            }
+
+            main {
+                width: calc(100% - 18px);
+            }
+
+            .notification-title h1 {
+                font-size: 25px;
+            }
+
+            .notification-card {
+                padding: 12px;
+            }
+
+            .notif-icon {
+                width: 36px;
+                height: 36px;
+                flex-basis: 36px;
+                font-size: 14px;
+            }
+
+            .notif-head h3 {
+                font-size: 11px;
+            }
+
+            .notif-message {
+                font-size: 9.5px;
+            }
+        }
+
         @media (max-width: 720px) {
             main {
                 width: 92%;
@@ -752,9 +1104,9 @@ $notification_total = count($notifs_list);
                 <div class="notification-wrapper">
                     <div class="notification-bell" onclick="toggleDropdown('notifDropdown')" aria-label="Notifications">
                         <i class="fa-solid fa-bell"></i>
-                        <?php if($unread_count > 0): ?>
-                            <span class="notification-badge"><?php echo $unread_count; ?></span>
-                        <?php endif; ?>
+                        <span id="notif-badge" class="notification-badge" style="<?php echo $unread_count > 0 ? 'display:inline-flex;' : 'display:none;'; ?>">
+                            <?php echo $unread_count; ?>
+                        </span>
                     </div>
 
                     <div class="dropdown-menu" id="notifDropdown">

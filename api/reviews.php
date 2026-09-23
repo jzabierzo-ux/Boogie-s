@@ -10,9 +10,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit;
 }
 
-require_once '../db_connect.php';
+require_once '../db_supabase.php';
 
-if (!isset($conn) || !$conn) {
+if (!isset($pdo) || !$pdo) {
     http_response_code(500);
     echo json_encode([
         'success' => false,
@@ -29,14 +29,16 @@ if (!isset($conn) || !$conn) {
 */
 if ($_SERVER['REQUEST_METHOD'] === 'GET') {
 
-    $stats_query = $conn->query("
-        SELECT
-            COUNT(*) AS total_reviews,
-            COALESCE(AVG(rating), 0) AS average_rating
-        FROM reviews
-    ");
+    try {
+        $stats_query = $pdo->query("
+            SELECT
+                COUNT(*) AS total_reviews,
+                COALESCE(AVG(rating), 0) AS average_rating
+            FROM reviews
+        ");
 
-    if (!$stats_query) {
+        $stats = $stats_query->fetch(PDO::FETCH_ASSOC);
+    } catch (PDOException $e) {
         http_response_code(500);
         echo json_encode([
             'success' => false,
@@ -45,30 +47,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         exit;
     }
 
-    $stats = $stats_query->fetch_assoc();
-
     /*
      * IMPORTANT:
      * The existing users table uses full_name.
      * Do not reference u.name or u.username because those
      * columns are not present in the current database.
      */
-    $stmt = $conn->prepare("
-        SELECT
-            r.id,
-            r.rating,
-            r.comment,
-            r.review_date,
-            COALESCE(NULLIF(u.full_name, ''), 'Valued Client') AS reviewer_name,
-            COALESCE(NULLIF(a.service, ''), 'Pet Care') AS service_type
-        FROM reviews r
-        LEFT JOIN users u ON u.id = r.user_id
-        LEFT JOIN appointments a ON a.id = r.appointment_id
-        ORDER BY r.review_date DESC, r.id DESC
-        LIMIT 20
-    ");
+    try {
+        $stmt = $pdo->prepare("
+            SELECT
+                r.id,
+                r.rating,
+                r.comment,
+                r.review_date,
+                COALESCE(NULLIF(u.full_name, ''), 'Valued Client') AS reviewer_name,
+                COALESCE(NULLIF(a.service, ''), 'Pet Care') AS service_type
+            FROM reviews r
+            LEFT JOIN users u ON u.id = r.user_id
+            LEFT JOIN appointments a ON a.id = r.appointment_id
+            ORDER BY r.review_date DESC, r.id DESC
+            LIMIT 20
+        ");
 
-    if (!$stmt) {
+        $stmt->execute();
+
+        $reviews = [];
+
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $reviews[] = [
+                'id' => (int) $row['id'],
+                'rating' => max(1, min(5, (int) $row['rating'])),
+                'comment' => $row['comment'] ?? '',
+                'review_date' => $row['review_date'] ?? '',
+                'reviewer_name' => $row['reviewer_name'] ?? 'Valued Client',
+                'service_type' => $row['service_type'] ?? 'Pet Care'
+            ];
+        }
+    } catch (PDOException $e) {
         http_response_code(500);
         echo json_encode([
             'success' => false,
@@ -76,24 +91,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         ]);
         exit;
     }
-
-    $stmt->execute();
-    $result = $stmt->get_result();
-
-    $reviews = [];
-
-    while ($row = $result->fetch_assoc()) {
-        $reviews[] = [
-            'id' => (int) $row['id'],
-            'rating' => max(1, min(5, (int) $row['rating'])),
-            'comment' => $row['comment'] ?? '',
-            'review_date' => $row['review_date'] ?? '',
-            'reviewer_name' => $row['reviewer_name'] ?? 'Valued Client',
-            'service_type' => $row['service_type'] ?? 'Pet Care'
-        ];
-    }
-
-    $stmt->close();
 
     echo json_encode([
         'success' => true,
@@ -172,15 +169,21 @@ if ($plain_token === '') {
 
 $token_hash = hash('sha256', $plain_token);
 
-$stmt_auth = $conn->prepare("
-    SELECT user_id
-    FROM api_tokens
-    WHERE token_hash = ?
-      AND expires_at > NOW()
-    LIMIT 1
-");
+try {
+    $stmt_auth = $pdo->prepare("
+        SELECT user_id
+        FROM api_tokens
+        WHERE token_hash = :token_hash
+          AND expires_at > CURRENT_TIMESTAMP
+        LIMIT 1
+    ");
 
-if (!$stmt_auth) {
+    $stmt_auth->execute([
+        ':token_hash' => $token_hash
+    ]);
+
+    $auth_row = $stmt_auth->fetch(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
     http_response_code(500);
     echo json_encode([
         'success' => false,
@@ -188,13 +191,6 @@ if (!$stmt_auth) {
     ]);
     exit;
 }
-
-$stmt_auth->bind_param('s', $token_hash);
-$stmt_auth->execute();
-
-$auth_result = $stmt_auth->get_result();
-$auth_row = $auth_result ? $auth_result->fetch_assoc() : null;
-$stmt_auth->close();
 
 if (!$auth_row) {
     http_response_code(401);
@@ -213,6 +209,10 @@ $user_id = (int) $auth_row['user_id'];
 |--------------------------------------------------------------------------
 */
 $input = json_decode(file_get_contents('php://input'), true);
+
+if (!is_array($input)) {
+    $input = [];
+}
 
 $appointment_id = (int) ($input['appointment_id'] ?? 0);
 $rating = (int) ($input['rating'] ?? 0);
@@ -241,16 +241,23 @@ if (strlen($comment) > 1000) {
 | Appointment must belong to this customer and be completed.
 |--------------------------------------------------------------------------
 */
-$stmt_booking = $conn->prepare("
-    SELECT id, service
-    FROM appointments
-    WHERE id = ?
-      AND user_id = ?
-      AND booking_status = 'Completed'
-    LIMIT 1
-");
+try {
+    $stmt_booking = $pdo->prepare("
+        SELECT id, service
+        FROM appointments
+        WHERE id = :appointment_id
+          AND user_id = :user_id
+          AND booking_status = 'Completed'
+        LIMIT 1
+    ");
 
-if (!$stmt_booking) {
+    $stmt_booking->execute([
+        ':appointment_id' => $appointment_id,
+        ':user_id' => $user_id
+    ]);
+
+    $booking = $stmt_booking->fetch(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
     http_response_code(500);
     echo json_encode([
         'success' => false,
@@ -258,13 +265,6 @@ if (!$stmt_booking) {
     ]);
     exit;
 }
-
-$stmt_booking->bind_param('ii', $appointment_id, $user_id);
-$stmt_booking->execute();
-
-$booking_result = $stmt_booking->get_result();
-$booking = $booking_result ? $booking_result->fetch_assoc() : null;
-$stmt_booking->close();
 
 if (!$booking) {
     http_response_code(403);
@@ -280,20 +280,29 @@ if (!$booking) {
 | Prevent duplicate reviews for the same appointment.
 |--------------------------------------------------------------------------
 */
-$stmt_existing = $conn->prepare("
-    SELECT id
-    FROM reviews
-    WHERE user_id = ?
-      AND appointment_id = ?
-    LIMIT 1
-");
+try {
+    $stmt_existing = $pdo->prepare("
+        SELECT id
+        FROM reviews
+        WHERE user_id = :user_id
+          AND appointment_id = :appointment_id
+        LIMIT 1
+    ");
 
-$stmt_existing->bind_param('ii', $user_id, $appointment_id);
-$stmt_existing->execute();
+    $stmt_existing->execute([
+        ':user_id' => $user_id,
+        ':appointment_id' => $appointment_id
+    ]);
 
-$existing_result = $stmt_existing->get_result();
-$existing_review = $existing_result ? $existing_result->fetch_assoc() : null;
-$stmt_existing->close();
+    $existing_review = $stmt_existing->fetch(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    http_response_code(500);
+    echo json_encode([
+        'success' => false,
+        'message' => 'Failed to check existing review.'
+    ]);
+    exit;
+}
 
 if ($existing_review) {
     http_response_code(409);
@@ -309,33 +318,24 @@ if ($existing_review) {
 | Insert review
 |--------------------------------------------------------------------------
 */
-$stmt_insert = $conn->prepare("
-    INSERT INTO reviews
-        (user_id, appointment_id, rating, comment, review_date)
-    VALUES
-        (?, ?, ?, ?, NOW())
-");
+try {
+    $stmt_insert = $pdo->prepare("
+        INSERT INTO reviews
+            (user_id, appointment_id, rating, comment, review_date)
+        VALUES
+            (:user_id, :appointment_id, :rating, :comment, CURRENT_TIMESTAMP)
+        RETURNING id
+    ");
 
-if (!$stmt_insert) {
-    http_response_code(500);
-    echo json_encode([
-        'success' => false,
-        'message' => 'Failed to prepare review insert.'
+    $stmt_insert->execute([
+        ':user_id' => $user_id,
+        ':appointment_id' => $appointment_id,
+        ':rating' => $rating,
+        ':comment' => $comment
     ]);
-    exit;
-}
 
-$stmt_insert->bind_param(
-    'iiis',
-    $user_id,
-    $appointment_id,
-    $rating,
-    $comment
-);
-
-if (!$stmt_insert->execute()) {
-    $stmt_insert->close();
-
+    $review_id = $stmt_insert->fetchColumn();
+} catch (PDOException $e) {
     http_response_code(500);
     echo json_encode([
         'success' => false,
@@ -343,9 +343,6 @@ if (!$stmt_insert->execute()) {
     ]);
     exit;
 }
-
-$review_id = $stmt_insert->insert_id;
-$stmt_insert->close();
 
 echo json_encode([
     'success' => true,

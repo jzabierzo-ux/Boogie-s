@@ -7,7 +7,7 @@ $current_role = isset($_SESSION['role']) ? strtolower(trim($_SESSION['role'])) :
 
 // 1. SECURITY: Allow Admin, Supervisor, and Staff
 if (!isset($_SESSION['logged_in']) || !in_array($current_role, ['admin', 'supervisor', 'staff'], true)) {
-    header("Location: stafflogin.php");
+    header("Location: ../staff/stafflogin.php");
     exit();
 }
 
@@ -435,6 +435,126 @@ $cat_class = ($category === 'Pet Breeder')
     @media (max-width: 900px) {
         .profile-grid { grid-template-columns: 1fr; }
     }
+
+        /* ===== EXTRA MOBILE RESPONSIVENESS ===== */
+        @media (max-width: 700px) {
+            body {
+                padding: 18px 12px;
+            }
+
+            .back-btn {
+                width: 100%;
+                justify-content: center;
+                margin-bottom: 16px;
+                padding: 12px 14px;
+                font-size: 13px;
+            }
+
+            .profile-grid {
+                grid-template-columns: 1fr;
+                gap: 16px;
+                max-width: 100%;
+            }
+
+            .card {
+                padding: 20px 15px;
+                border-radius: 16px;
+                margin-bottom: 16px;
+            }
+
+            .section-title {
+                font-size: 16px;
+                line-height: 1.35;
+            }
+
+            .profile-header {
+                margin-bottom: 20px;
+            }
+
+            .avatar-large {
+                width: 86px;
+                height: 86px;
+                font-size: 34px;
+            }
+
+            .info-label {
+                gap: 8px;
+                flex-wrap: wrap;
+            }
+
+            .info-value {
+                font-size: 13px;
+                overflow-wrap: anywhere;
+            }
+
+            .edit-input {
+                width: 100%;
+                min-width: 0;
+                min-height: 44px;
+                padding: 9px 10px;
+            }
+
+            #contactForm > div {
+                flex-direction: column;
+                gap: 8px;
+            }
+
+            .btn-save {
+                width: 100%;
+                min-height: 44px;
+            }
+
+            .btn-delete {
+                min-height: 46px;
+                font-size: 13px;
+            }
+
+            .pet-item {
+                align-items: flex-start;
+                padding: 13px;
+            }
+
+            /* Keep appointment history usable on phones via horizontal scrolling. */
+            .main-col .card > div[style*="overflow-x"] {
+                overflow-x: auto;
+                -webkit-overflow-scrolling: touch;
+            }
+
+            .main-col table {
+                min-width: 620px;
+            }
+
+            th,
+            td {
+                white-space: nowrap;
+            }
+
+            td strong,
+            td .status-pill {
+                white-space: normal;
+            }
+        }
+
+        @media (max-width: 400px) {
+            body {
+                padding: 12px 9px;
+            }
+
+            .card {
+                padding: 18px 12px;
+            }
+
+            .section-title {
+                font-size: 15px;
+            }
+
+            .avatar-large {
+                width: 78px;
+                height: 78px;
+                font-size: 30px;
+            }
+        }
+
     </style>
 </head>
 <body>
@@ -476,7 +596,7 @@ $cat_class = ($category === 'Pet Breeder')
                     
                     <form method="POST" id="contactForm" style="display:none; margin-top: 8px;">
                         <div style="display: flex; gap: 5px;">
-                            <input type="tel" name="new_contact" class="edit-input" value="<?php echo htmlspecialchars($customer['contact_number'] ?? ''); ?>" required maxlength="11" pattern="[0-9]{11}" oninput="this.value = this.value.replace(/[^0-9]/g, '')">
+                            <input type="tel" inputmode="numeric" name="new_contact" class="edit-input" value="<?php echo htmlspecialchars($customer['contact_number'] ?? ''); ?>" required maxlength="11" pattern="[0-9]{11}" oninput="this.value = this.value.replace(/[^0-9]/g, '')">
                             <button type="submit" name="update_contact" class="btn-save">Save</button>
                         </div>
                     </form>

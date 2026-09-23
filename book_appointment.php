@@ -395,6 +395,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             color: var(--text);
             line-height: 1.6;
             overflow-y: scroll;
+            overflow-x: hidden;
         }
 
         /* ===== HEADER ===== */
@@ -1104,6 +1105,463 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             .footer-main { grid-template-columns: 1fr; gap: 25px; }
         }
 
+
+        /* ===== EXTRA MOBILE RESPONSIVE TUNING ===== */
+        @media (max-width: 1100px) {
+            .nav-top {
+                gap: 15px;
+            }
+
+            .logo {
+                min-width: 205px;
+            }
+
+            .booking-layout {
+                grid-template-columns: minmax(0, 1fr) 250px;
+            }
+
+            .booking-card {
+                padding: 25px;
+            }
+        }
+
+        @media (max-width: 900px) {
+            .nav-top {
+                flex-wrap: wrap;
+                padding: 11px 20px;
+            }
+
+            .logo {
+                min-width: 0;
+                flex: 1 1 auto;
+            }
+
+            .user-controls {
+                flex: 0 0 auto;
+            }
+
+            .booking-layout {
+                grid-template-columns: 1fr;
+                gap: 16px;
+            }
+
+            .side-card {
+                position: static;
+            }
+
+            .page-title-row {
+                align-items: flex-start;
+            }
+        }
+
+        @media (max-width: 680px) {
+            .promo-bar {
+                padding: 6px 10px;
+                font-size: 10px;
+                line-height: 1.4;
+            }
+
+            header {
+                position: sticky;
+                top: 0;
+            }
+
+            .nav-top {
+                width: 100%;
+                padding: 9px 12px;
+                gap: 8px;
+            }
+
+            .logo {
+                width: 100%;
+                gap: 8px;
+            }
+
+            .nav-logo-img {
+                width: 40px;
+                height: 40px;
+                border-radius: 9px;
+            }
+
+            .logo-text b {
+                font-size: 16px;
+            }
+
+            .logo-text span {
+                font-size: 7px;
+                letter-spacing: .85px;
+            }
+
+            .user-controls {
+                width: 100%;
+                justify-content: flex-end;
+                gap: 7px;
+            }
+
+            .notification-bell,
+            .profile-trigger {
+                width: 40px;
+                min-width: 40px;
+                height: 40px;
+            }
+
+            .notification-badge {
+                min-width: 17px;
+                height: 17px;
+                font-size: 8px;
+            }
+
+            .profile-trigger {
+                justify-content: center;
+                padding: 3px;
+            }
+
+            .profile-trigger span,
+            .profile-trigger > .fa-chevron-down {
+                display: none;
+            }
+
+            .profile-img {
+                width: 32px !important;
+                height: 32px !important;
+            }
+
+            .dropdown-menu {
+                top: calc(100% + 8px);
+                right: 0;
+                width: 270px;
+                max-width: calc(100vw - 18px);
+            }
+
+            .dropdown-menu[style*="width:210px"] {
+                width: 210px !important;
+            }
+
+            main {
+                width: calc(100% - 22px);
+                padding: 24px 0 48px;
+            }
+
+            .page-intro {
+                margin-bottom: 18px;
+            }
+
+            .back-nav {
+                margin-bottom: 10px;
+            }
+
+            .back-nav a {
+                font-size: 10px;
+            }
+
+            .page-title-row {
+                display: block;
+            }
+
+            .page-kicker {
+                font-size: 8px;
+                padding: 6px 10px;
+                margin-bottom: 8px;
+            }
+
+            .page-title h1 {
+                font-size: 26px;
+                line-height: 1.2;
+                letter-spacing: -.35px;
+            }
+
+            .page-title p {
+                font-size: 10px;
+                line-height: 1.55;
+            }
+
+            .booking-summary-pill {
+                width: 100%;
+                margin-top: 11px;
+                justify-content: center;
+                white-space: normal;
+                text-align: center;
+                padding: 9px 10px;
+                font-size: 8px;
+                line-height: 1.45;
+            }
+
+            .booking-layout {
+                gap: 13px;
+            }
+
+            .booking-card,
+            .side-card {
+                border-radius: 17px;
+            }
+
+            .booking-card {
+                padding: 15px;
+            }
+
+            .form-group {
+                margin-bottom: 14px;
+            }
+
+            .form-row {
+                grid-template-columns: 1fr;
+                gap: 0;
+            }
+
+            .booking-card label {
+                font-size: 10px;
+                margin-bottom: 6px;
+            }
+
+            .booking-card input[type="text"],
+            .booking-card input[type="date"],
+            .booking-card select,
+            .booking-card textarea,
+            .booking-card input[type="file"] {
+                min-height: 44px;
+                padding: 10px 11px;
+                font-size: 11px;
+            }
+
+            .booking-card input[type="file"] {
+                padding: 9px;
+                font-size: 9px;
+            }
+
+            .booking-card textarea {
+                min-height: 105px;
+            }
+
+            .booking-card .header-section {
+                padding-bottom: 14px;
+                margin-bottom: 16px;
+            }
+
+            .booking-card .header-section h1 {
+                font-size: 18px;
+            }
+
+            .booking-card .header-section p {
+                font-size: 9px;
+                line-height: 1.5;
+            }
+
+            .booking-card .walkin-notice,
+            .booking-card .vet-info-box {
+                font-size: 9px;
+                line-height: 1.5;
+            }
+
+            .booking-card .vet-info-box {
+                padding: 10px;
+            }
+
+            .booking-card .price-display {
+                padding: 15px 12px;
+                margin-bottom: 15px;
+                border-radius: 13px;
+            }
+
+            .booking-card .price-display p {
+                font-size: 8px;
+                line-height: 1.45;
+            }
+
+            .booking-card .price-display h2 {
+                font-size: 25px;
+            }
+
+            .booking-card .gcash-section {
+                padding: 14px;
+                border-radius: 13px;
+                margin-bottom: 15px;
+            }
+
+            .booking-card .gcash-section h4 {
+                font-size: 12px;
+                line-height: 1.35;
+            }
+
+            .booking-card .gcash-section p {
+                font-size: 9px;
+                line-height: 1.6;
+            }
+
+            .booking-card .gcash-number {
+                display: block;
+                width: 100%;
+                overflow-wrap: anywhere;
+                word-break: break-word;
+                padding: 8px 9px;
+                margin-bottom: 12px;
+                font-size: 11px;
+                line-height: 1.45;
+            }
+
+            .booking-card .terms-container {
+                padding: 11px;
+                margin-bottom: 15px;
+                font-size: 8px;
+                line-height: 1.55;
+            }
+
+            .booking-card .terms-container label {
+                gap: 8px;
+            }
+
+            .booking-card .terms-container input[type="checkbox"] {
+                width: 17px;
+                height: 17px;
+                flex-basis: 17px;
+            }
+
+            .booking-card .btn-submit {
+                min-height: 46px;
+                padding: 11px 12px;
+                font-size: 10px;
+                line-height: 1.3;
+            }
+
+            .side-card {
+                padding: 15px;
+            }
+
+            .side-kicker {
+                font-size: 8px;
+            }
+
+            .side-card h3 {
+                font-size: 17px;
+            }
+
+            .side-card > p {
+                font-size: 9px;
+                line-height: 1.55;
+                margin-bottom: 14px;
+            }
+
+            .step-list {
+                gap: 11px;
+            }
+
+            .step-item {
+                gap: 8px;
+            }
+
+            .step-icon {
+                width: 32px;
+                height: 32px;
+                flex-basis: 32px;
+                border-radius: 9px;
+                font-size: 12px;
+            }
+
+            .step-item strong {
+                font-size: 9px;
+            }
+
+            .step-item span {
+                font-size: 8px;
+                line-height: 1.5;
+            }
+
+            .side-note {
+                margin-top: 15px;
+                padding: 10px;
+                font-size: 8px;
+                line-height: 1.55;
+            }
+
+            footer {
+                padding: 42px 15px 24px;
+            }
+
+            .footer-main {
+                grid-template-columns: 1fr;
+                gap: 22px;
+                padding-bottom: 28px;
+            }
+
+            .footer-main h4 {
+                font-size: 10px;
+                margin-bottom: 11px;
+            }
+
+            .footer-main p,
+            .footer-main a {
+                font-size: 10px;
+                line-height: 1.65;
+            }
+
+            .socials {
+                margin-top: 13px;
+            }
+
+            .socials a {
+                width: 34px;
+                height: 34px;
+            }
+
+            .footer-bottom {
+                font-size: 8.5px;
+                line-height: 1.5;
+                padding-top: 18px;
+            }
+        }
+
+        @media (max-width: 420px) {
+            .nav-top {
+                padding-left: 9px;
+                padding-right: 9px;
+            }
+
+            .nav-logo-img {
+                width: 38px;
+                height: 38px;
+            }
+
+            .logo-text b {
+                font-size: 15px;
+            }
+
+            .logo-text span {
+                font-size: 6px;
+                letter-spacing: .7px;
+            }
+
+            main {
+                width: calc(100% - 16px);
+            }
+
+            .page-title h1 {
+                font-size: 23px;
+            }
+
+            .page-title p {
+                font-size: 9px;
+            }
+
+            .booking-card {
+                padding: 13px;
+            }
+
+            .side-card {
+                padding: 13px;
+            }
+
+            .booking-card .gcash-number {
+                font-size: 10px;
+            }
+
+            .booking-card .terms-container {
+                font-size: 7.5px;
+            }
+
+            .booking-card .btn-submit {
+                font-size: 9px;
+            }
+        }
+
     </style>
 </head>
 
@@ -1238,7 +1696,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 <div class="form-group">
                     <label>Pet's Name *</label>
-                    <input type="text" name="pet_name" id="pet_name" placeholder="e.g., Kyle" required>
+                    <input type="text" name="pet_name" id="pet_name" autocomplete="off" placeholder="e.g., Kyle" required>
                 </div>
 
                 <div class="form-row">
@@ -1346,7 +1804,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                     <div class="form-group">
                         <label>GCash Reference Number *</label>
-                        <input type="text" name="gcash_ref" placeholder="e.g., 1001234567890" id="gcash_ref_input">
+                        <input type="text" name="gcash_ref" placeholder="e.g., 1001234567890" id="gcash_ref_input" inputmode="numeric" autocomplete="off">
                     </div>
                     <div class="form-group">
                         <label>Upload Screenshot of Receipt *</label>
@@ -1723,7 +2181,5 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             gcashReceiptInput.required = false;
         }
     </script>
-</body>
-
 </body>
 </html>

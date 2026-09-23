@@ -19,9 +19,9 @@ if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
     exit;
 }
 
-require_once '../db_connect.php';
+require_once '../db_supabase.php';
 
-if (!isset($conn) || !$conn) {
+if (!isset($pdo) || !$pdo) {
     http_response_code(500);
     echo json_encode([
         'success' => false,
@@ -43,64 +43,52 @@ if (!isset($conn) || !$conn) {
 */
 $category = trim($_GET['category'] ?? '');
 
-if ($category !== '') {
+try {
+    if ($category !== '') {
 
-    $stmt = $conn->prepare("
-        SELECT id, service_name, category, price
-        FROM services_pricelist
-        WHERE category = ?
-          AND is_available = 1
-        ORDER BY service_name ASC, price ASC
-    ");
+        $stmt = $pdo->prepare("
+            SELECT id, service_name, category, price
+            FROM services_pricelist
+            WHERE category = :category
+              AND is_available = 1
+            ORDER BY service_name ASC, price ASC
+        ");
 
-    if (!$stmt) {
-        http_response_code(500);
-        echo json_encode([
-            'success' => false,
-            'message' => 'Failed to prepare services query.'
+        $stmt->execute([
+            ':category' => $category
         ]);
-        exit;
+
+    } else {
+
+        $stmt = $pdo->prepare("
+            SELECT id, service_name, category, price
+            FROM services_pricelist
+            WHERE is_available = 1
+            ORDER BY category ASC, service_name ASC, price ASC
+        ");
+
+        $stmt->execute();
     }
 
-    $stmt->bind_param('s', $category);
-    $stmt->execute();
+    $services = [];
 
-    $result = $stmt->get_result();
-
-} else {
-
-    $stmt = $conn->prepare("
-        SELECT id, service_name, category, price
-        FROM services_pricelist
-        WHERE is_available = 1
-        ORDER BY category ASC, service_name ASC, price ASC
-    ");
-
-    if (!$stmt) {
-        http_response_code(500);
-        echo json_encode([
-            'success' => false,
-            'message' => 'Failed to prepare services query.'
-        ]);
-        exit;
+    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        $services[] = [
+            'id' => (int) $row['id'],
+            'service_name' => $row['service_name'],
+            'category' => $row['category'],
+            'price' => (float) $row['price']
+        ];
     }
 
-    $stmt->execute();
-    $result = $stmt->get_result();
+} catch (PDOException $e) {
+    http_response_code(500);
+    echo json_encode([
+        'success' => false,
+        'message' => 'Failed to fetch services.'
+    ]);
+    exit;
 }
-
-$services = [];
-
-while ($row = $result->fetch_assoc()) {
-    $services[] = [
-        'id' => (int) $row['id'],
-        'service_name' => $row['service_name'],
-        'category' => $row['category'],
-        'price' => (float) $row['price']
-    ];
-}
-
-$stmt->close();
 
 echo json_encode([
     'success' => true,

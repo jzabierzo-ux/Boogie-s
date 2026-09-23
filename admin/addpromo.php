@@ -7,7 +7,7 @@ if (
     $_SESSION['logged_in'] !== true ||
     ($_SESSION['role'] ?? '') !== 'admin'
 ) {
-    header("Location: adminlogin.php");
+    header("Location: ../admin_login.php");
     exit();
 }
 
@@ -76,40 +76,163 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
     <title>Add New Promo | Boogie's Pet Care</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
-        :root {
-            --navy-dark: #001f3f;
-            --admin-purple: #8b2cf5;
-            --bg-light: #f4f7f6;
-            --white: #ffffff;
-            --text-main: #2d3436;
-            --text-muted: #636e72;
+        :root{
+            --navy-dark:#001f3f;
+            --admin-purple:#8b2cf5;
+            --bg-light:#f4f7f6;
+            --white:#ffffff;
+            --text-main:#2d3436;
+            --text-muted:#636e72;
+            --border:#e2e8f0;
         }
-
-        body { font-family: 'Segoe UI', Tahoma, sans-serif; background-color: var(--bg-light); padding: 40px; display: flex; justify-content: center; }
-
-        .form-container { background: var(--white); border-radius: 12px; padding: 40px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); width: 100%; max-width: 600px; }
-        .form-container h2 { color: var(--navy-dark); margin-bottom: 5px; }
-        .form-container p { color: var(--text-muted); font-size: 14px; margin-bottom: 25px; }
-
-        .form-row { display: flex; gap: 15px; }
-        .form-row .form-group { flex: 1; }
-
-        .form-group { margin-bottom: 20px; }
-        .form-group label { display: block; font-size: 13px; font-weight: 600; color: var(--text-main); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
-        .form-group input, .form-group select, .form-group textarea { width: 100%; padding: 12px 15px; border: 1px solid #e2e8f0; border-radius: 8px; font-size: 14px; box-sizing: border-box; outline: none; transition: border-color 0.3s; font-family: inherit; }
-        .form-group input:focus, .form-group select:focus, .form-group textarea:focus { border-color: var(--admin-purple); }
-        .form-group textarea { resize: vertical; min-height: 80px; }
-
-        .btn-submit { background-color: var(--admin-purple); color: white; border: none; padding: 14px 24px; border-radius: 8px; font-size: 15px; font-weight: 700; cursor: pointer; width: 100%; transition: 0.3s; margin-top: 10px; }
-        .btn-submit:hover { opacity: 0.9; transform: translateY(-2px); }
-
-        .btn-back { display: block; text-align: center; margin-top: 15px; color: var(--text-muted); text-decoration: none; font-size: 14px; }
-        .btn-back:hover { color: var(--admin-purple); text-decoration: underline; }
-
-        .alert { padding: 15px; border-radius: 8px; margin-bottom: 20px; font-size: 14px; font-weight: 600; text-align: center; }
-        .alert.success { background-color: #d1fae5; color: #059669; border: 1px solid #10b981; }
-        .alert.error { background-color: #fee2e2; color: #ef4444; border: 1px solid #f87171; }
-        .alert a { color: inherit; text-decoration: underline; }
+        *{box-sizing:border-box}
+        html{scroll-behavior:smooth}
+        body{
+            font-family:'Segoe UI',Tahoma,sans-serif;
+            background:var(--bg-light);
+            min-height:100vh;
+            margin:0;
+            padding:40px 20px;
+            display:flex;
+            justify-content:center;
+            align-items:flex-start;
+        }
+        .form-container{
+            background:var(--white);
+            border-radius:14px;
+            padding:40px;
+            box-shadow:0 4px 15px rgba(0,0,0,.05);
+            width:100%;
+            max-width:600px;
+            border:1px solid rgba(226,232,240,.8);
+        }
+        .form-container h2{
+            color:var(--navy-dark);
+            margin:0 0 6px;
+            font-size:26px;
+            line-height:1.25;
+        }
+        .form-container > p{
+            color:var(--text-muted);
+            font-size:14px;
+            margin:0 0 25px;
+            line-height:1.6;
+        }
+        .form-row{
+            display:flex;
+            gap:15px;
+        }
+        .form-row .form-group{flex:1;min-width:0}
+        .form-group{margin-bottom:20px}
+        .form-group label{
+            display:block;
+            font-size:13px;
+            font-weight:600;
+            color:var(--text-main);
+            margin-bottom:8px;
+            text-transform:uppercase;
+            letter-spacing:.5px;
+        }
+        .form-group input,
+        .form-group select,
+        .form-group textarea{
+            width:100%;
+            min-height:46px;
+            padding:12px 15px;
+            border:1px solid var(--border);
+            border-radius:8px;
+            font-size:14px;
+            outline:none;
+            transition:border-color .2s,box-shadow .2s;
+            font-family:inherit;
+            background:#fff;
+        }
+        .form-group input:focus,
+        .form-group select:focus,
+        .form-group textarea:focus{
+            border-color:var(--admin-purple);
+            box-shadow:0 0 0 3px rgba(139,44,245,.10);
+        }
+        .form-group textarea{
+            resize:vertical;
+            min-height:110px;
+            line-height:1.5;
+        }
+        .btn-submit{
+            min-height:48px;
+            background-color:var(--admin-purple);
+            color:#fff;
+            border:none;
+            padding:14px 24px;
+            border-radius:8px;
+            font-size:15px;
+            font-weight:700;
+            cursor:pointer;
+            width:100%;
+            transition:.2s;
+            margin-top:5px;
+            touch-action:manipulation;
+        }
+        .btn-submit:hover{opacity:.92;transform:translateY(-1px)}
+        .btn-back{
+            display:block;
+            text-align:center;
+            margin-top:15px;
+            color:var(--text-muted);
+            text-decoration:none;
+            font-size:14px;
+            padding:8px;
+        }
+        .btn-back:hover{color:var(--admin-purple);text-decoration:underline}
+        .alert{
+            padding:14px 15px;
+            border-radius:8px;
+            margin-bottom:20px;
+            font-size:14px;
+            font-weight:600;
+            text-align:center;
+            line-height:1.5;
+            overflow-wrap:anywhere;
+        }
+        .alert.success{background:#d1fae5;color:#059669;border:1px solid #10b981}
+        .alert.error{background:#fee2e2;color:#ef4444;border:1px solid #f87171}
+        .alert a{color:inherit;text-decoration:underline}
+        @media(max-width:680px){
+            body{padding:22px 14px}
+            .form-container{
+                padding:24px 18px;
+                border-radius:12px;
+            }
+            .form-container h2{font-size:22px}
+            .form-container > p{font-size:13px;margin-bottom:21px}
+            .form-row{
+                display:grid;
+                grid-template-columns:1fr;
+                gap:0;
+            }
+            .form-group{margin-bottom:17px}
+            .form-group label{font-size:11px;margin-bottom:7px}
+            .form-group input,
+            .form-group select,
+            .form-group textarea{
+                min-height:47px;
+                font-size:14px;
+                padding:12px 13px;
+            }
+            .form-group textarea{min-height:125px}
+            .btn-submit{min-height:50px;font-size:15px}
+            .btn-back{font-size:13px;margin-top:13px}
+            .alert{font-size:13px}
+        }
+        @media(max-width:380px){
+            body{padding:14px 10px}
+            .form-container{padding:20px 14px}
+            .form-container h2{font-size:20px}
+            .form-container > p{font-size:12px}
+            .form-group input,
+            .form-group select,
+            .form-group textarea{font-size:13px}
+        }
     </style>
 </head>
 <body>

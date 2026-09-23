@@ -324,9 +324,336 @@ if (isset($_POST['add_note']) && !empty(trim($_POST['new_note'] ?? ''))) {
         @media (max-width: 600px) {
             .info-grid { grid-template-columns: 1fr; }
         }
+
+        /* --- MOBILE RESPONSIVE --- */
+        .mobile-menu-btn {
+            display: none;
+            width: 42px;
+            height: 42px;
+            border: 1px solid var(--border);
+            background: var(--white);
+            color: var(--sidebar-navy);
+            border-radius: 10px;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            font-size: 18px;
+            flex-shrink: 0;
+        }
+
+        .sidebar-overlay {
+            display: none;
+        }
+
+        .profile-name-text {
+            max-width: 260px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        @media (max-width: 1100px) {
+            .sidebar { width: 230px; }
+            .main-content {
+                margin-left: 230px;
+                width: calc(100% - 230px);
+            }
+            header { padding: 0 24px; }
+            .container {
+                padding: 28px 24px;
+            }
+            .info-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+            .profile-wrapper {
+                gap: 10px;
+                padding-left: 15px;
+            }
+            .role-label {
+                padding: 4px 9px;
+            }
+            .profile-name-text {
+                max-width: 170px;
+            }
+        }
+
+        @media (max-width: 900px) {
+            .sidebar {
+                width: 260px;
+                left: -270px;
+                transition: left 0.25s ease;
+                box-shadow: 8px 0 30px rgba(0,0,0,0.15);
+            }
+
+            .sidebar.mobile-open {
+                left: 0;
+            }
+
+            .sidebar-overlay {
+                position: fixed;
+                inset: 0;
+                background: rgba(0,0,0,0.38);
+                z-index: 90;
+                display: none;
+            }
+
+            .sidebar-overlay.show {
+                display: block;
+            }
+
+            .main-content {
+                margin-left: 0;
+                width: 100%;
+            }
+
+            .mobile-menu-btn {
+                display: inline-flex;
+                position: fixed;
+                top: 12px;
+                left: 12px;
+                z-index: 1100;
+            }
+
+            header {
+                height: 66px;
+                padding: 0 16px 0 66px;
+                gap: 12px;
+            }
+
+            .breadcrumb {
+                min-width: 0;
+                flex: 1;
+                overflow: hidden;
+                white-space: nowrap;
+                text-overflow: ellipsis;
+            }
+
+            .breadcrumb-text {
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+
+            .top-right-actions {
+                gap: 12px;
+            }
+
+            .profile-wrapper {
+                gap: 8px;
+                padding-left: 12px;
+            }
+
+            .profile-name-text {
+                display: none !important;
+            }
+
+            .role-label {
+                font-size: 10px;
+                padding: 4px 8px;
+            }
+
+            .notif-dropdown {
+                position: fixed;
+                top: 70px;
+                right: 12px;
+                width: min(340px, calc(100vw - 24px));
+            }
+
+            .profile-dropdown {
+                position: fixed;
+                top: 70px;
+                right: 12px;
+                width: min(220px, calc(100vw - 24px));
+            }
+
+            .container {
+                padding: 22px 16px 28px;
+            }
+
+            .header-actions {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 12px;
+            }
+
+            .btn-back,
+            .btn-edit {
+                width: 100%;
+                justify-content: center;
+            }
+
+            .card {
+                padding: 24px 20px;
+                border-radius: 16px;
+            }
+
+            .pet-header {
+                gap: 18px;
+            }
+
+            .pet-title h1 {
+                font-size: 23px;
+                gap: 12px;
+                flex-wrap: wrap;
+            }
+
+            .pet-title p {
+                margin-left: 0 !important;
+                font-size: 13px;
+                line-height: 1.5;
+            }
+
+            .status-badge {
+                width: 100%;
+                justify-content: flex-start;
+                line-height: 1.4;
+                overflow-wrap: anywhere;
+            }
+
+            .info-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 12px;
+                margin-bottom: 28px;
+            }
+
+            .info-item {
+                padding: 16px 14px;
+            }
+
+            .info-item strong {
+                font-size: 16px;
+                overflow-wrap: anywhere;
+            }
+
+            .section-title {
+                font-size: 16px;
+                line-height: 1.4;
+                flex-wrap: wrap;
+            }
+
+            .note-form {
+                padding: 18px;
+            }
+
+            textarea {
+                min-height: 130px;
+                font-size: 14px;
+            }
+
+            .btn-submit {
+                width: 100%;
+                justify-content: center;
+            }
+
+            .text-box {
+                padding: 18px;
+                font-size: 13px;
+                min-height: 90px;
+                margin-bottom: 28px;
+                overflow-wrap: anywhere;
+            }
+
+            footer {
+                padding: 24px 16px;
+                line-height: 1.5;
+            }
+        }
+
+        @media (max-width: 600px) {
+            .container {
+                padding-left: 12px;
+                padding-right: 12px;
+            }
+
+            .info-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .card {
+                padding: 20px 15px;
+            }
+
+            .pet-title h1 {
+                font-size: 20px;
+            }
+
+            .pet-title h1 > div {
+                width: 40px !important;
+                height: 40px !important;
+            }
+
+            .pet-title h1 i {
+                font-size: 20px !important;
+            }
+
+            .status-badge {
+                font-size: 12px;
+                padding: 8px 12px;
+            }
+
+            .info-item strong {
+                font-size: 15px;
+            }
+
+            .section-title {
+                font-size: 15px;
+            }
+        }
+
+        @media (max-width: 380px) {
+            header {
+                padding-left: 58px;
+                padding-right: 10px;
+            }
+
+            .mobile-menu-btn {
+                width: 38px;
+                height: 38px;
+            }
+
+            .breadcrumb {
+                font-size: 12px;
+            }
+
+            .top-right-actions {
+                gap: 8px;
+            }
+
+            .role-label {
+                display: none;
+            }
+
+            .top-avatar,
+            .top-avatar-fallback {
+                width: 32px;
+                height: 32px;
+            }
+
+            .card {
+                padding: 18px 12px;
+            }
+
+            .header-actions {
+                gap: 10px;
+            }
+
+            .btn-back,
+            .btn-edit {
+                padding: 10px 14px;
+                font-size: 13px;
+            }
+        }
+
     </style>
 </head>
 <body>
+
+    <button class="mobile-menu-btn" id="mobileMenuBtn" type="button"
+            aria-label="Open menu" aria-expanded="false">
+        <i class="fas fa-bars"></i>
+    </button>
+    <div class="sidebar-overlay" id="sidebarOverlay"></div>
+
 
     <aside class="sidebar">
         <div class="sidebar-header">
@@ -391,7 +718,7 @@ if (isset($_POST['add_note']) && !empty(trim($_POST['new_note'] ?? ''))) {
                         <div class="top-avatar-fallback"><?php echo $first_letter; ?></div>
                     <?php endif; ?>
                     
-                    <span style="font-size: 14px; font-weight: 700; color: var(--sidebar-navy); display: flex; align-items: center; gap: 6px;">
+                    <span class="profile-name-text" style="font-size: 14px; font-weight: 700; color: var(--sidebar-navy); display: flex; align-items: center; gap: 6px;">
                         <?php echo htmlspecialchars($display_with_title); ?>
                         <i class="fas fa-chevron-down" style="font-size: 10px; color: var(--text-muted); opacity: 0.5;"></i>
                     </span>
@@ -480,6 +807,50 @@ if (isset($_POST['add_note']) && !empty(trim($_POST['new_note'] ?? ''))) {
     </main>
 
     <script>
+
+        // --- Mobile Sidebar Logic ---
+        const mobileMenuBtn = document.getElementById('mobileMenuBtn');
+        const sidebar = document.querySelector('.sidebar');
+        const sidebarOverlay = document.getElementById('sidebarOverlay');
+
+        function toggleMobileMenu() {
+            const isOpen = sidebar.classList.toggle('mobile-open');
+            sidebarOverlay.classList.toggle('show', isOpen);
+            mobileMenuBtn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+            mobileMenuBtn.setAttribute('aria-label', isOpen ? 'Close menu' : 'Open menu');
+            mobileMenuBtn.innerHTML = isOpen
+                ? '<i class="fas fa-times"></i>'
+                : '<i class="fas fa-bars"></i>';
+        }
+
+        function closeMobileMenu() {
+            sidebar.classList.remove('mobile-open');
+            sidebarOverlay.classList.remove('show');
+            mobileMenuBtn.setAttribute('aria-expanded', 'false');
+            mobileMenuBtn.setAttribute('aria-label', 'Open menu');
+            mobileMenuBtn.innerHTML = '<i class="fas fa-bars"></i>';
+        }
+
+        mobileMenuBtn.addEventListener('click', function () {
+            toggleMobileMenu();
+        });
+
+        sidebarOverlay.addEventListener('click', closeMobileMenu);
+
+        document.querySelectorAll('.nav-item').forEach(function (link) {
+            link.addEventListener('click', function () {
+                if (window.innerWidth <= 900) {
+                    closeMobileMenu();
+                }
+            });
+        });
+
+        window.addEventListener('resize', function () {
+            if (window.innerWidth > 900) {
+                closeMobileMenu();
+            }
+        });
+
         // --- Notification & Profile Toggle Logic ---
         function toggleNotif(event) {
             event.stopPropagation();

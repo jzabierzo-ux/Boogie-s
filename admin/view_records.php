@@ -13,7 +13,7 @@ $is_staff_logged_in = isset($_SESSION['staff_logged_in']) &&
     $_SESSION['staff_logged_in'] === true;
 
 if (!$is_admin_or_staff && !$is_staff_logged_in) {
-    header("Location: stafflogin.php");
+    header("Location: ../staff/stafflogin.php");
     exit();
 }
 
@@ -150,6 +150,160 @@ try {
         @media (max-width: 600px) {
             .info-grid { grid-template-columns: 1fr; }
         }
+
+        /* ===== EXTRA MOBILE RESPONSIVENESS ===== */
+        @media (max-width: 700px) {
+            body {
+                padding: 18px 12px;
+                overflow-x: hidden;
+            }
+
+            .container {
+                max-width: 100%;
+            }
+
+            .header-actions {
+                margin-bottom: 16px;
+            }
+
+            .btn-back {
+                width: 100%;
+                justify-content: center;
+                padding: 12px 14px;
+                font-size: 13px;
+            }
+
+            .card {
+                padding: 22px 15px;
+                border-radius: 14px;
+                margin-bottom: 16px;
+            }
+
+            .pet-header {
+                gap: 14px;
+                margin-bottom: 20px;
+                padding-bottom: 16px;
+            }
+
+            .pet-title h1 {
+                font-size: 23px;
+                line-height: 1.3;
+                gap: 10px;
+                flex-wrap: wrap;
+            }
+
+            .pet-title h1 > div {
+                width: 40px !important;
+                height: 40px !important;
+                flex: 0 0 40px;
+            }
+
+            .pet-title h1 > div i {
+                font-size: 20px !important;
+            }
+
+            .pet-title p {
+                margin-left: 50px !important;
+                font-size: 12px;
+                line-height: 1.5;
+            }
+
+            .status-badge {
+                width: 100%;
+                justify-content: center;
+                text-align: center;
+                padding: 10px 12px;
+                font-size: 12px;
+                line-height: 1.4;
+                white-space: normal;
+            }
+
+            .info-grid {
+                grid-template-columns: 1fr;
+                gap: 10px;
+                margin-bottom: 25px;
+            }
+
+            .info-item {
+                padding: 15px;
+            }
+
+            .info-item strong {
+                font-size: 16px;
+            }
+
+            .section-title {
+                font-size: 16px;
+                line-height: 1.4;
+                align-items: flex-start;
+            }
+
+            .text-box {
+                padding: 18px 15px;
+                min-height: 80px;
+                font-size: 13px;
+                line-height: 1.7;
+                overflow-wrap: anywhere;
+                margin-bottom: 25px;
+            }
+
+            .table-responsive {
+                overflow-x: auto;
+                -webkit-overflow-scrolling: touch;
+            }
+
+            .history-table {
+                min-width: 680px;
+            }
+
+            .history-table th,
+            .history-table td {
+                white-space: nowrap;
+                padding: 12px;
+                font-size: 12px;
+            }
+
+            .history-table td strong,
+            .history-table td small {
+                white-space: normal;
+            }
+
+            .trn-id {
+                font-size: 11px;
+            }
+
+            .status-pill {
+                white-space: nowrap;
+            }
+        }
+
+        @media (max-width: 400px) {
+            body {
+                padding: 12px 9px;
+            }
+
+            .card {
+                padding: 18px 12px;
+            }
+
+            .pet-title h1 {
+                font-size: 20px;
+            }
+
+            .pet-title p {
+                margin-left: 0 !important;
+            }
+
+            .info-item {
+                padding: 13px;
+            }
+
+            .text-box {
+                padding: 15px 13px;
+                font-size: 12px;
+            }
+        }
+
     </style>
 </head>
 <body>

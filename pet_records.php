@@ -753,6 +753,71 @@ footer{
     footer{padding:50px 20px 25px}
     .footer-main{grid-template-columns:1fr;gap:25px}
 }
+
+/* ===== MOBILE POLISH ===== */
+@media (max-width:520px){
+    .promo-bar{font-size:10px;padding:7px 10px;}
+    .nav-top{width:94%;min-height:68px;padding:9px 0;gap:10px;}
+    .nav-logo-img{width:42px;height:42px;}
+    .logo{gap:8px;min-width:0;}
+    .logo-text b{font-size:17px;}
+    .logo-text span{font-size:7px;letter-spacing:.8px;}
+    .user-controls{gap:7px;}
+    .notification-bell{width:38px;height:38px;border-radius:10px;}
+    .profile-trigger{width:38px;min-height:38px;padding:2px;border-radius:10px;justify-content:center;}
+    .profile-avatar{width:30px;height:30px;}
+    .profile-trigger > i:last-child{display:none;}
+    .dropdown-menu{max-width:calc(100vw - 28px);}
+
+    main{width:94%;padding:24px 0 55px;}
+    .back-nav{margin-bottom:10px;}
+    .page-heading h1{font-size:26px;line-height:1.2;}
+    .page-heading p{font-size:11px;line-height:1.6;}
+    .owner-chip{font-size:9px;padding:8px 10px;}
+
+    .pet-hero{padding:18px;border-radius:16px;margin-bottom:16px;}
+    .pet-main{gap:12px;}
+    .pet-info{min-width:0;}
+    .pet-info h2{font-size:20px;overflow-wrap:anywhere;}
+    .pet-details{gap:5px;}
+    .pet-details span{font-size:8px;padding:5px 7px;}
+    .pet-profile-action{width:100%;justify-content:center;margin-top:13px;padding:11px 12px;font-size:10px;}
+    .medical-alert{padding:11px 12px;}
+    .medical-alert h3{font-size:11px;}
+    .medical-alert p{font-size:9px;}
+
+    .record-section{border-radius:15px;margin-bottom:14px;}
+    .record-head{padding:14px;gap:10px;align-items:center;}
+    .record-title{gap:8px;min-width:0;}
+    .record-icon{width:34px;height:34px;flex-basis:34px;font-size:13px;}
+    .record-head h2{font-size:14px;}
+    .record-head p{font-size:8px;}
+    .record-count{font-size:7px;padding:5px 7px;flex:0 0 auto;}
+    .table-wrap{padding-bottom:3px;-webkit-overflow-scrolling:touch;}
+    table{min-width:620px;}
+    th{padding:10px 12px;font-size:7px;}
+    td{padding:11px 12px;font-size:9px;}
+
+    footer{padding:42px 18px 24px;}
+    .footer-main{gap:22px;}
+    .footer-main p,.footer-main a{font-size:10px;}
+    .footer-main h4{font-size:11px;margin-bottom:11px;}
+    .footer-bottom{font-size:9px;line-height:1.6;}
+}
+
+@media (max-width:360px){
+    .logo-text span{display:none;}
+    .logo-text b{font-size:16px;}
+    .nav-logo-img{width:39px;height:39px;}
+    .notification-bell,.profile-trigger{width:36px;height:36px;min-height:36px;}
+    .profile-avatar{width:28px;height:28px;}
+    .page-heading h1{font-size:23px;}
+    .pet-icon{width:56px;height:56px;flex-basis:56px;font-size:24px;}
+    .pet-info h2{font-size:18px;}
+    .record-head{display:block;}
+    .record-count{display:inline-block;margin-top:8px;}
+}
+
 </style>
 </head>
 <body>

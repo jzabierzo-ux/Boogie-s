@@ -4,11 +4,6 @@ require_once 'db_supabase.php';
 
 $error_msg = '';
 
-/*
-|--------------------------------------------------------------------------
-| ADMIN ACCOUNT LOGGING
-|--------------------------------------------------------------------------
-*/
 function logAdminAccount(PDO $pdo, $user_id, string $action, string $status): void
 {
     $ip_address = $_SERVER['REMOTE_ADDR'] ?? 'UNKNOWN';
@@ -29,11 +24,6 @@ function logAdminAccount(PDO $pdo, $user_id, string $action, string $status): vo
     }
 }
 
-/*
-|--------------------------------------------------------------------------
-| ADMIN LOGIN
-|--------------------------------------------------------------------------
-*/
 if ($_SERVER["REQUEST_METHOD"] === "POST") {
     $username = trim($_POST['username'] ?? '');
     $password = $_POST['password'] ?? '';
@@ -49,7 +39,6 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
             if ($user) {
                 if (isset($user['password']) && password_verify($password, $user['password'])) {
                     logAdminAccount($pdo, (int)$user['id'], 'LOGIN', 'SUCCESS');
-
                     session_regenerate_id(true);
 
                     $_SESSION['logged_in'] = true;
@@ -76,110 +65,154 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
     }
 }
 ?>
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="robots" content="noindex, nofollow">
     <title>Admin Portal - Boogie's</title>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
-        * { box-sizing: border-box; }
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: #0f172a;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            min-height: 100vh;
-            margin: 0;
-            padding: 20px;
+        :root{
+            --brand-blue:#001f3f;
+            --brand-blue-2:#0b3b66;
+            --brand-yellow:#ffcc00;
+            --page-bg:#eef3f8;
+            --white:#fff;
+            --text:#17324d;
+            --muted:#6b7c8f;
+            --line:#d9e2eb;
+            --danger:#c73b47;
+            --danger-bg:#fff0f1;
         }
-        .login-box {
-            background: #fff;
-            padding: 40px;
-            border-radius: 8px;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
-            width: 100%;
-            max-width: 350px;
-            text-align: center;
+        *{box-sizing:border-box;margin:0;padding:0}
+        body{
+            min-height:100vh;
+            padding:20px;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            font-family:'Poppins',sans-serif;
+            background:
+                radial-gradient(circle at top left, rgba(255,204,0,.18), transparent 32%),
+                linear-gradient(135deg,#071a2d,#0f2741 55%,#001f3f);
+            color:var(--text);
         }
-        .login-box h2 { color: #1e293b; margin-bottom: 20px; }
-        .form-group { margin-bottom: 15px; text-align: left; }
-        .form-group label {
-            display: block;
-            font-size: 13px;
-            font-weight: bold;
-            color: #475569;
-            margin-bottom: 5px;
+        .admin-shell{width:100%;max-width:430px}
+        .brand-bar{
+            display:flex;align-items:center;justify-content:center;gap:10px;
+            color:#fff;margin-bottom:14px;font-size:12px;font-weight:700;letter-spacing:.6px;
+            text-transform:uppercase;text-align:center;
         }
-        .form-control {
-            width: 100%;
-            padding: 10px;
-            border: 1px solid #cbd5e1;
-            border-radius: 4px;
-            outline: none;
+        .brand-bar i{color:var(--brand-yellow)}
+        .login-box{
+            width:100%;background:var(--white);padding:34px;border-radius:20px;
+            border:1px solid rgba(255,255,255,.5);
+            border-top:5px solid var(--brand-yellow);
+            box-shadow:0 22px 55px rgba(0,0,0,.28);
+            text-align:center;
         }
-        .form-control:focus { border-color: #6366f1; }
-        .btn-login {
-            width: 100%;
-            padding: 10px;
-            background: #6366f1;
-            color: white;
-            border: none;
-            border-radius: 4px;
-            font-weight: bold;
-            cursor: pointer;
-            margin-top: 10px;
+        .security-icon{
+            width:62px;height:62px;margin:0 auto 14px;border-radius:18px;
+            display:flex;align-items:center;justify-content:center;
+            background:#eef5fb;color:var(--brand-blue);font-size:25px;
         }
-        .btn-login:hover { background: #4f46e5; }
-        .error {
-            color: #ef4444;
-            font-size: 13px;
-            margin-bottom: 15px;
-            background: #fee2e2;
-            padding: 10px;
-            border-radius: 4px;
+        .login-box h2{color:var(--brand-blue);font-size:27px;line-height:1.2;margin-bottom:5px;font-weight:800}
+        .subtitle{color:var(--muted);font-size:11px;line-height:1.6;margin-bottom:24px}
+        .form-group{margin-bottom:17px;text-align:left}
+        .form-group label{display:block;font-size:11px;font-weight:800;color:var(--brand-blue);margin-bottom:7px}
+        .input-wrap{position:relative}
+        .input-wrap i{position:absolute;left:13px;top:50%;transform:translateY(-50%);color:#91a0ae;font-size:12px}
+        .form-control{
+            width:100%;min-height:46px;padding:11px 13px 11px 38px;
+            border:1px solid var(--line);border-radius:11px;background:#fbfcfe;
+            color:var(--text);font-size:13px;outline:none;transition:.2s;
+        }
+        .form-control:focus{border-color:#91acc3;background:#fff;box-shadow:0 0 0 3px rgba(0,31,63,.06)}
+        .btn-login{
+            width:100%;min-height:47px;margin-top:5px;border:0;border-radius:11px;
+            background:var(--brand-blue);color:var(--brand-yellow);font-size:13px;font-weight:800;
+            cursor:pointer;transition:.2s;box-shadow:0 8px 20px rgba(0,31,63,.18)
+        }
+        .btn-login:hover{background:var(--brand-blue-2);transform:translateY(-1px)}
+        .error{
+            display:flex;align-items:flex-start;gap:8px;text-align:left;color:#a92734;
+            font-size:10px;line-height:1.5;font-weight:600;background:var(--danger-bg);
+            border:1px solid #f1c4c9;padding:11px 12px;border-radius:10px;margin-bottom:16px;
+        }
+        .notice{
+            margin-top:18px;padding-top:16px;border-top:1px solid #edf1f5;
+            color:#8493a2;font-size:9px;line-height:1.6;
+        }
+        .notice i{color:var(--brand-blue);margin-right:4px}
+        .footer-note{text-align:center;color:rgba(255,255,255,.65);font-size:9px;margin-top:14px}
+        @media (max-width:480px){
+            body{padding:14px}
+            .login-box{padding:27px 20px;border-radius:16px}
+            .login-box h2{font-size:23px}
+            .security-icon{width:55px;height:55px;border-radius:15px;font-size:22px}
+            .brand-bar{font-size:10px}
+        }
+        @media (max-width:350px){
+            body{padding:10px}
+            .login-box{padding:23px 16px}
+            .form-control{min-height:44px;font-size:12px}
+            .btn-login{min-height:45px}
         }
     </style>
 </head>
 <body>
-    <div class="login-box">
-        <h2>Admin Portal</h2>
+    <div class="admin-shell">
+        <div class="brand-bar">
+            <i class="fa-solid fa-paw"></i>
+            Boogie's Pet Care • Admin Access
+        </div>
 
-        <?php if (!empty($error_msg)): ?>
-            <div class="error">
-                <?php echo htmlspecialchars($error_msg); ?>
+        <div class="login-box">
+            <div class="security-icon"><i class="fa-solid fa-user-shield"></i></div>
+            <h2>Admin Portal</h2>
+            <p class="subtitle">Authorized administrators only. Sign in to access the management dashboard.</p>
+
+            <?php if (!empty($error_msg)): ?>
+                <div class="error">
+                    <i class="fa-solid fa-circle-exclamation"></i>
+                    <div><?php echo htmlspecialchars($error_msg); ?></div>
+                </div>
+            <?php endif; ?>
+
+            <form method="POST" action="">
+                <div class="form-group">
+                    <label for="username">Username</label>
+                    <div class="input-wrap">
+                        <i class="fa-solid fa-user"></i>
+                        <input type="text" id="username" name="username" class="form-control"
+                               autocomplete="username" autocapitalize="none" spellcheck="false" required>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="password">Password</label>
+                    <div class="input-wrap">
+                        <i class="fa-solid fa-lock"></i>
+                        <input type="password" id="password" name="password" class="form-control"
+                               autocomplete="current-password" required>
+                    </div>
+                </div>
+
+                <button type="submit" class="btn-login">
+                    <i class="fa-solid fa-right-to-bracket"></i> Login to Dashboard
+                </button>
+            </form>
+
+            <div class="notice">
+                <i class="fa-solid fa-shield-halved"></i>
+                Admin login activity is recorded in the account logs.
             </div>
-        <?php endif; ?>
+        </div>
 
-        <form method="POST" action="">
-            <div class="form-group">
-                <label for="username">Username</label>
-                <input
-                    type="text"
-                    id="username"
-                    name="username"
-                    class="form-control"
-                    autocomplete="username"
-                    required
-                >
-            </div>
-
-            <div class="form-group">
-                <label for="password">Password</label>
-                <input
-                    type="password"
-                    id="password"
-                    name="password"
-                    class="form-control"
-                    autocomplete="current-password"
-                    required
-                >
-            </div>
-
-            <button type="submit" class="btn-login">Login to Dashboard</button>
-        </form>
+        <div class="footer-note">© <?php echo date('Y'); ?> Boogie's Pet Care & Services</div>
     </div>
 </body>
 </html>

@@ -361,6 +361,167 @@ if (isset($_POST['register_btn'])) {
         .google-btn { width: 100%; padding: 14px; background-color: #ffffff; color: var(--text-main); border: 2px solid #dddfe2; border-radius: 8px; font-size: 15px; font-weight: 700; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 10px; transition: all 0.3s ease; }
         .google-btn:hover { border-color: #cbd5e1; background-color: #f8fafc; }
         .otp-input { text-align: center; font-size: 24px; letter-spacing: 5px; font-weight: bold; }
+    
+        /* ===== MOBILE RESPONSIVE REGISTER / OTP ===== */
+        @media (max-width: 600px) {
+            html, body {
+                width: 100%;
+                min-height: 100%;
+            }
+
+            body {
+                min-height: 100vh;
+                height: auto;
+                padding: 72px 12px 24px;
+                align-items: flex-start;
+                overflow-x: hidden;
+            }
+
+            .back-nav {
+                top: 15px;
+                left: 14px;
+                right: 14px;
+                font-size: 12px;
+                gap: 6px;
+                padding: 8px 0;
+            }
+
+            .register-card {
+                width: 100%;
+                max-width: 500px;
+                margin: 0 auto;
+                padding: 30px 20px 24px;
+                border-radius: 15px;
+            }
+
+            .user-icon {
+                font-size: 38px;
+                margin-bottom: 12px;
+            }
+
+            h2 {
+                font-size: 23px;
+                line-height: 1.2;
+            }
+
+            .subtitle {
+                font-size: 12px;
+                line-height: 1.6;
+                margin-bottom: 22px;
+            }
+
+            .form-group {
+                margin-bottom: 15px;
+            }
+
+            label {
+                font-size: 12px;
+                margin-bottom: 7px;
+            }
+
+            input,
+            select {
+                width: 100%;
+                min-height: 48px;
+                padding: 12px 13px;
+                font-size: 15px;
+            }
+
+            .terms-box {
+                padding: 13px;
+                margin-bottom: 20px;
+            }
+
+            .terms-box h4 {
+                font-size: 11px;
+                line-height: 1.4;
+            }
+
+            .terms-box p {
+                font-size: 10px;
+                line-height: 1.5;
+            }
+
+            .checkbox-row {
+                align-items: flex-start;
+                gap: 8px;
+                font-size: 11px;
+                line-height: 1.5;
+            }
+
+            .checkbox-row input {
+                width: auto;
+                min-height: auto;
+                margin-top: 2px;
+                flex: 0 0 auto;
+            }
+
+            .checkbox-row label {
+                font-size: 11px;
+                line-height: 1.5;
+            }
+
+            .btn-submit,
+            .google-btn {
+                width: 100%;
+                min-height: 50px;
+                padding: 13px 14px;
+                font-size: 14px;
+            }
+
+            .divider {
+                margin: 17px 0;
+                font-size: 11px;
+            }
+
+            .login-link {
+                margin-top: 18px;
+                font-size: 12px;
+                line-height: 1.6;
+            }
+
+            .otp-input {
+                min-height: 56px;
+                font-size: 24px;
+                letter-spacing: 6px;
+                text-align: center;
+            }
+        }
+
+        @media (max-width: 380px) {
+            body {
+                padding-left: 9px;
+                padding-right: 9px;
+            }
+
+            .register-card {
+                padding: 25px 15px 20px;
+            }
+
+            h2 {
+                font-size: 21px;
+            }
+
+            .subtitle {
+                font-size: 11px;
+            }
+
+            input,
+            select {
+                font-size: 14px;
+            }
+
+            .otp-input {
+                font-size: 21px;
+                letter-spacing: 4px;
+            }
+
+            .btn-submit,
+            .google-btn {
+                font-size: 13px;
+            }
+        }
+
     </style>
 </head>
 <body>
@@ -377,7 +538,7 @@ if (isset($_POST['register_btn'])) {
 
             <form action="register.php" method="POST">
                 <div class="form-group">
-                    <input type="text" name="otp_code" class="otp-input" maxlength="6" pattern="[0-9]{6}" required placeholder="000000" oninput="this.value = this.value.replace(/[^0-9]/g, '')">
+                    <input type="text" name="otp_code" class="otp-input" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" required placeholder="000000" oninput="this.value = this.value.replace(/[^0-9]/g, '')">
                 </div>
                 <button type="submit" name="verify_btn" class="btn-submit">Verify Now</button>
             </form>
@@ -400,12 +561,12 @@ if (isset($_POST['register_btn'])) {
 
                 <div class="form-group">
                     <label>Contact Number <span>*</span></label>
-                    <input type="tel" name="contact" placeholder="09XXXXXXXXX" required maxlength="11" pattern="09[0-9]{9}" title="Must start with 09 and be exactly 11 digits" oninput="this.value = this.value.replace(/[^0-9]/g, '')">
+                    <input type="tel" name="contact" inputmode="numeric" autocomplete="tel" placeholder="09XXXXXXXXX" required maxlength="11" pattern="09[0-9]{9}" title="Must start with 09 and be exactly 11 digits" oninput="this.value = this.value.replace(/[^0-9]/g, '')">
                 </div>
 
                 <div class="form-group">
                     <label>Email Address <span>*</span></label>
-                    <input type="email" name="email" placeholder="Enter your email" required>
+                    <input type="email" name="email" autocomplete="email" placeholder="Enter your email" required>
                 </div>
 
                 <div class="form-group">
@@ -419,12 +580,12 @@ if (isset($_POST['register_btn'])) {
 
                 <div class="form-group">
                     <label>Password <span>*</span></label>
-                    <input type="password" name="password" placeholder="Create a password" required minlength="8" pattern="(?=.*[A-Z]).{8,}" title="Must contain at least 8 characters, including at least 1 uppercase letter">
+                    <input type="password" name="password" autocomplete="new-password" placeholder="Create a password" required minlength="8" pattern="(?=.*[A-Z]).{8,}" title="Must contain at least 8 characters, including at least 1 uppercase letter">
                 </div>
 
                 <div class="form-group">
                     <label>Confirm Password <span>*</span></label>
-                    <input type="password" name="confirm_password" placeholder="Confirm your password" required minlength="8">
+                    <input type="password" name="confirm_password" autocomplete="new-password" placeholder="Confirm your password" required minlength="8">
                 </div>
 
                 <div class="terms-box">

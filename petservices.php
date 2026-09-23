@@ -41,6 +41,7 @@ $book_hotel    = $is_logged_in ? 'book_appointment.php?category=Pet Hotel' : 'lo
             background: var(--bg);
             line-height: 1.6;
             min-height: 100vh;
+            overflow-x: hidden;
         }
         a { color: inherit; }
 
@@ -207,6 +208,375 @@ $book_hotel    = $is_logged_in ? 'book_appointment.php?category=Pet Hotel' : 'lo
             .button-group { grid-template-columns:1fr; }
             .hello-user { width:100%; }
         }
+
+        /* ===== EXTRA MOBILE RESPONSIVE TUNING ===== */
+        @media (max-width: 980px) {
+            .nav-top {
+                grid-template-columns: 1fr;
+                gap: 12px;
+                padding-left: 20px;
+                padding-right: 20px;
+            }
+
+            .search {
+                width: 100%;
+                order: 2;
+            }
+
+            .nav-links {
+                width: 100%;
+                justify-content: flex-start;
+                order: 3;
+            }
+
+            .hello-user {
+                font-size: 12px;
+            }
+
+            .categories ul {
+                justify-content: flex-start;
+                overflow-x: auto;
+                scrollbar-width: thin;
+            }
+
+            .services-grid {
+                gap: 18px;
+            }
+        }
+
+        @media (max-width: 680px) {
+            .promo-bar {
+                padding: 6px 10px;
+                font-size: 10px;
+                line-height: 1.4;
+            }
+
+            .nav-top {
+                width: 100%;
+                padding: 9px 12px;
+                gap: 9px;
+            }
+
+            .logo {
+                width: 100%;
+                gap: 8px;
+            }
+
+            .nav-logo-img {
+                width: 42px;
+                height: 42px;
+            }
+
+            .logo-text b {
+                font-size: 17px;
+            }
+
+            .logo-text span {
+                font-size: 7px;
+                letter-spacing: .9px;
+            }
+
+            .search {
+                padding: 4px 6px 4px 11px;
+                border-radius: 11px;
+            }
+
+            .search input {
+                min-width: 0;
+                padding: 8px 5px;
+                font-size: 11px;
+            }
+
+            .search button {
+                flex: 0 0 36px;
+                width: 36px;
+                height: 36px;
+            }
+
+            .nav-links {
+                gap: 7px;
+                flex-wrap: wrap;
+            }
+
+            .nav-links .cart-btn,
+            .nav-links .login-btn {
+                min-height: 42px;
+                padding: 10px 13px;
+                font-size: 11px;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+            }
+
+            .hello-user {
+                width: 100%;
+                font-size: 10px;
+                line-height: 1.4;
+            }
+
+            .logout-link {
+                font-size: 11px !important;
+                margin-left: 0 !important;
+                padding: 9px 4px !important;
+            }
+
+            .categories {
+                overflow: hidden;
+            }
+
+            .categories ul {
+                width: 100%;
+                justify-content: flex-start;
+                gap: 4px;
+                padding: 6px 10px;
+                overflow-x: auto;
+                -webkit-overflow-scrolling: touch;
+                scrollbar-width: none;
+            }
+
+            .categories ul::-webkit-scrollbar {
+                display: none;
+            }
+
+            .categories ul li {
+                flex: 0 0 auto;
+            }
+
+            .categories ul li a {
+                padding: 9px 11px;
+                font-size: 9px;
+                gap: 6px;
+                white-space: nowrap;
+            }
+
+            .categories i {
+                font-size: 11px;
+            }
+
+            .hero-inner {
+                padding: 39px 18px 34px;
+            }
+
+            .eyebrow {
+                font-size: 9px;
+                padding: 6px 10px;
+            }
+
+            .hero h1 {
+                font-size: 29px;
+                line-height: 1.18;
+                letter-spacing: -.5px;
+                margin: 15px 0 11px;
+            }
+
+            .hero p {
+                font-size: 12px;
+                line-height: 1.65;
+            }
+
+            .hero-note {
+                display: grid;
+                grid-template-columns: 1fr;
+                gap: 7px;
+                margin-top: 17px;
+                font-size: 9px;
+            }
+
+            .services-wrap {
+                padding: 38px 15px 55px;
+            }
+
+            .section-heading {
+                margin-bottom: 18px;
+            }
+
+            .section-kicker {
+                font-size: 9px;
+                margin-bottom: 5px;
+            }
+
+            .section-heading h2 {
+                font-size: 22px;
+                line-height: 1.25;
+            }
+
+            .section-heading p {
+                font-size: 10px;
+                line-height: 1.55;
+                margin-top: 7px;
+            }
+
+            .services-grid {
+                grid-template-columns: 1fr;
+                gap: 14px;
+            }
+
+            .service-card {
+                min-height: auto;
+                border-radius: 17px;
+            }
+
+            .service-visual {
+                height: 145px;
+            }
+
+            .visual-icon {
+                width: 72px;
+                height: 72px;
+                font-size: 30px;
+            }
+
+            .service-body {
+                padding: 19px 17px 18px;
+            }
+
+            .service-tag {
+                font-size: 8px;
+                padding: 5px 9px;
+                margin-bottom: 9px;
+            }
+
+            .service-card h3 {
+                font-size: 20px;
+                margin-bottom: 7px;
+            }
+
+            .service-card p.desc {
+                font-size: 11px;
+                line-height: 1.65;
+                margin-bottom: 15px;
+            }
+
+            .button-group {
+                grid-template-columns: 1fr;
+                gap: 7px;
+            }
+
+            .btn-book,
+            .btn-secondary {
+                width: 100%;
+                min-height: 43px;
+                padding: 10px 12px;
+                font-size: 10px;
+            }
+
+            .booking-hint {
+                font-size: 8px;
+                margin-top: 8px;
+            }
+
+            .trust-strip {
+                margin-top: 17px;
+                border-radius: 16px;
+                padding: 15px;
+                gap: 12px;
+            }
+
+            .trust-item {
+                gap: 9px;
+                align-items: flex-start;
+            }
+
+            .trust-item i {
+                width: 34px;
+                height: 34px;
+                flex: 0 0 34px;
+                border-radius: 10px;
+                font-size: 12px;
+            }
+
+            .trust-item strong {
+                font-size: 10px;
+            }
+
+            .trust-item span {
+                font-size: 8px;
+                line-height: 1.5;
+            }
+
+            footer {
+                padding: 43px 15px 24px;
+            }
+
+            .footer-main {
+                grid-template-columns: 1fr;
+                gap: 22px;
+                padding-bottom: 28px;
+            }
+
+            .footer-main h4 {
+                font-size: 10px;
+                margin-bottom: 11px;
+            }
+
+            .footer-main p,
+            .footer-main a {
+                font-size: 10px;
+                line-height: 1.65;
+            }
+
+            .socials {
+                margin-top: 13px;
+            }
+
+            .socials a {
+                width: 34px;
+                height: 34px;
+            }
+
+            .footer-bottom {
+                font-size: 8.5px;
+                line-height: 1.5;
+                padding-top: 18px;
+            }
+        }
+
+        @media (max-width: 420px) {
+            .nav-top {
+                padding-left: 9px;
+                padding-right: 9px;
+            }
+
+            .nav-logo-img {
+                width: 38px;
+                height: 38px;
+            }
+
+            .logo-text b {
+                font-size: 15px;
+            }
+
+            .logo-text span {
+                font-size: 6px;
+                letter-spacing: .8px;
+            }
+
+            .categories ul li a {
+                font-size: 8px;
+                padding: 8px 10px;
+            }
+
+            .hero h1 {
+                font-size: 26px;
+            }
+
+            .hero p {
+                font-size: 11px;
+            }
+
+            .section-heading h2 {
+                font-size: 20px;
+            }
+
+            .service-card h3 {
+                font-size: 18px;
+            }
+
+            .service-card p.desc {
+                font-size: 10px;
+            }
+        }
+
     </style>
 </head>
 <body>
