@@ -457,14 +457,13 @@ try {
 
         .promo-grid {
             display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 22px;
+            grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+            gap: 24px;
             padding-bottom: 20px;
         }
         .promo-card {
             position: relative;
-            min-height: 205px;
-            padding: 29px 26px;
+            min-height: 430px;
             border-radius: 19px;
             color: #fff;
             display: flex;
@@ -473,7 +472,29 @@ try {
             transition: .25s;
             overflow: hidden;
         }
-        .promo-card::after {
+        .promo-card:hover {
+            transform: translateY(-6px);
+            box-shadow: 0 18px 35px rgba(0,0,0,.11);
+        }
+
+        .promo-grid .promo-card:only-child {
+            width: min(700px, 100%);
+            justify-self: center;
+        }
+        .promo-image {
+            display: block;
+            width: 100%;
+            height: 240px;
+            object-fit: cover;
+            background: #eef2f7;
+        }
+        .promo-body {
+            position: relative;
+            flex: 1;
+            padding: 23px 24px 21px;
+            overflow: hidden;
+        }
+        .promo-body::after {
             content: '';
             position: absolute;
             width: 135px;
@@ -482,15 +503,17 @@ try {
             right: -48px;
             bottom: -58px;
             background: rgba(255,255,255,.11);
+            pointer-events: none;
         }
-        .promo-card:hover {
-            transform: translateY(-6px);
-            box-shadow: 0 18px 35px rgba(0,0,0,.11);
+        .promo-card:not(.has-image) .promo-body {
+            min-height: 430px;
+            padding: 29px 26px;
         }
         .promo-card .tag {
             align-self: flex-start;
             position: relative;
-            z-index: 1;
+            z-index: 2;
+            display: inline-flex;
             background: rgba(255,255,255,.17);
             border: 1px solid rgba(255,255,255,.16);
             padding: 5px 10px;
@@ -499,28 +522,46 @@ try {
             text-transform: uppercase;
             letter-spacing: .7px;
             font-weight: 800;
-            margin-bottom: 17px;
+            margin-bottom: 14px;
         }
         .promo-card h3 {
             position: relative;
-            z-index: 1;
-            font-size: 25px;
+            z-index: 2;
+            font-size: 23px;
             line-height: 1.2;
-            margin-bottom: 9px;
+            margin-bottom: 8px;
             font-weight: 800;
         }
         .promo-card p {
             position: relative;
-            z-index: 1;
-            margin-top: auto;
+            z-index: 2;
+            margin: 0;
             font-size: 12px;
             line-height: 1.65;
             opacity: .92;
         }
-        .promo-card.purple { background: linear-gradient(135deg,#9b51e0,#7d31c7); }
-        .promo-card.teal { background: linear-gradient(135deg,#1bbba8,#0b8e80); }
-        .promo-card.red { background: linear-gradient(135deg,#ed6d72,#c92f3b); }
-        .promo-card.orange { background: linear-gradient(135deg,#f39b44,#d86a0a); }
+        .promo-meta {
+            position: relative;
+            z-index: 2;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 15px;
+            padding-top: 12px;
+            border-top: 1px solid rgba(255,255,255,.18);
+            color: rgba(255,255,255,.82);
+            font-size: 10px;
+            font-weight: 700;
+        }
+        .promo-meta i { color: var(--brand-yellow); }
+        .promo-card.purple .promo-body { background: linear-gradient(135deg,#9b51e0,#7d31c7); }
+        .promo-card.teal .promo-body { background: linear-gradient(135deg,#1bbba8,#0b8e80); }
+        .promo-card.red .promo-body { background: linear-gradient(135deg,#ed6d72,#c92f3b); }
+        .promo-card.orange .promo-body { background: linear-gradient(135deg,#f39b44,#d86a0a); }
+        .promo-card:not(.has-image).purple .promo-body { background: linear-gradient(135deg,#9b51e0,#7d31c7); }
+        .promo-card:not(.has-image).teal .promo-body { background: linear-gradient(135deg,#1bbba8,#0b8e80); }
+        .promo-card:not(.has-image).red .promo-body { background: linear-gradient(135deg,#ed6d72,#c92f3b); }
+        .promo-card:not(.has-image).orange .promo-body { background: linear-gradient(135deg,#f39b44,#d86a0a); }
 
         .service-grid {
             display: grid;
@@ -1251,30 +1292,59 @@ try {
                     <?php foreach ($promos_list as $promo): ?>
                         <?php
                             $theme_class = !empty($promo['theme_color'])
-                                ? htmlspecialchars($promo['theme_color'])
+                                ? htmlspecialchars($promo['theme_color'], ENT_QUOTES, 'UTF-8')
                                 : 'purple';
+
+                            $image_path = trim((string)($promo['image_url'] ?? ''));
+                            if ($image_path !== '') {
+                                $image_path = ltrim(str_replace('../', '', $image_path), '/');
+                            }
                         ?>
-                        <div class="promo-card <?php echo $theme_class; ?>">
-                            <span class="tag"><?php echo htmlspecialchars($promo['tag'] ?? 'PROMO'); ?></span>
-                            <h3><?php echo htmlspecialchars($promo['title']); ?></h3>
-                            <p><?php echo htmlspecialchars($promo['description'] ?? ''); ?></p>
-                        </div>
+                        <article class="promo-card <?php echo $theme_class; ?> <?php echo $image_path !== '' ? 'has-image' : ''; ?>">
+                            <?php if ($image_path !== ''): ?>
+                                <img
+                                    class="promo-image"
+                                    src="<?php echo htmlspecialchars($image_path, ENT_QUOTES, 'UTF-8'); ?>"
+                                    alt="<?php echo htmlspecialchars($promo['title'] ?? 'Promotion', ENT_QUOTES, 'UTF-8'); ?>"
+                                    loading="lazy"
+                                >
+                            <?php endif; ?>
+
+                            <div class="promo-body">
+                                <span class="tag"><?php echo htmlspecialchars($promo['tag'] ?? 'PROMO', ENT_QUOTES, 'UTF-8'); ?></span>
+                                <h3><?php echo htmlspecialchars($promo['title'] ?? 'Special Offer', ENT_QUOTES, 'UTF-8'); ?></h3>
+                                <p><?php echo htmlspecialchars($promo['description'] ?? '', ENT_QUOTES, 'UTF-8'); ?></p>
+
+                                <?php if (!empty($promo['expiry_date'])): ?>
+                                    <div class="promo-meta">
+                                        <i class="fa-regular fa-clock"></i>
+                                        Until <?php echo htmlspecialchars(date('M j, Y', strtotime($promo['expiry_date'])), ENT_QUOTES, 'UTF-8'); ?>
+                                    </div>
+                                <?php endif; ?>
+                            </div>
+                        </article>
                     <?php endforeach; ?>
                 <?php else: ?>
                     <div class="promo-card purple">
-                        <span class="tag">Vet Clinic Deal</span>
-                        <h3>Free Checkup</h3>
-                        <p>Get a complimentary wellness consultation when you book a complete vaccination package.</p>
+                        <div class="promo-body">
+                            <span class="tag">Vet Clinic Deal</span>
+                            <h3>Free Checkup</h3>
+                            <p>Get a complimentary wellness consultation when you book a complete vaccination package.</p>
+                        </div>
                     </div>
                     <div class="promo-card teal">
-                        <span class="tag">Boarding Perk</span>
-                        <h3>Stay 5, Get 1</h3>
-                        <p>Book 5 nights at our Pet Hotel and get the 6th night FREE, plus a complimentary exit bath!</p>
+                        <div class="promo-body">
+                            <span class="tag">Boarding Perk</span>
+                            <h3>Stay 5, Get 1</h3>
+                            <p>Book 5 nights at our Pet Hotel and get the 6th night FREE, plus a complimentary exit bath!</p>
+                        </div>
                     </div>
                     <div class="promo-card red">
-                        <span class="tag">Birthday Special</span>
-                        <h3>50% OFF</h3>
-                        <p>Is it your pet's birth month? Bring their records and get half off their next grooming session!</p>
+                        <div class="promo-body">
+                            <span class="tag">Birthday Special</span>
+                            <h3>50% OFF</h3>
+                            <p>Is it your pet's birth month? Bring their records and get half off their next grooming session!</p>
+                        </div>
                     </div>
                 <?php endif; ?>
             </div>

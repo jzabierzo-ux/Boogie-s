@@ -2,17 +2,23 @@
 session_start();
 require_once '../db_supabase.php';
 
-// --- SECURITY CHECK (FIXED PARA SA VET/STAFF) ---
+// --- SECURITY CHECK ---
+// This page is the Veterinarian's task portal.
 $current_role = isset($_SESSION['role']) ? strtolower(trim($_SESSION['role'])) : '';
-$is_admin_or_supervisor = isset($_SESSION['logged_in'])
-    && in_array($current_role, ['admin', 'supervisor', 'staff'], true);
-$is_staff = isset($_SESSION['staff_logged_in'])
-    && $_SESSION['staff_logged_in'] === true;
+$is_vet = isset($_SESSION['logged_in'])
+    && $_SESSION['logged_in'] === true
+    && $current_role === 'vet';
 
-if (!$is_admin_or_supervisor && !$is_staff) {
+if (!$is_vet) {
     header("Location: stafflogin.php");
     exit();
 }
+
+// CSRF token for state-changing actions.
+if (empty($_SESSION['tasks_csrf'])) {
+    $_SESSION['tasks_csrf'] = bin2hex(random_bytes(32));
+}
+$tasks_csrf = $_SESSION['tasks_csrf'];
 
 // SET CORRECT TIMEZONE FOR PHILIPPINES
 date_default_timezone_set('Asia/Manila');
@@ -83,14 +89,23 @@ try {
 // --- TASK LOGIC (Automated from Appointments - SINGLE VET CLINIC) ---
 
 // MARK AS COMPLETED
-if (isset($_GET['complete']) && is_numeric($_GET['complete'])) {
-    $id = (int)$_GET['complete'];
+// Use POST + CSRF and verify that the appointment is a confirmed vet service.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['complete_task'])) {
+    $id = filter_input(INPUT_POST, 'appointment_id', FILTER_VALIDATE_INT);
+    $csrf = $_POST['csrf_token'] ?? '';
+
+    if (!$id || !hash_equals($tasks_csrf, $csrf)) {
+        http_response_code(400);
+        exit('Invalid request.');
+    }
 
     try {
         $complete_stmt = $pdo->prepare("
             UPDATE appointments
             SET booking_status = 'Completed'
             WHERE id = :id
+              AND booking_status = 'Confirmed'
+              AND service LIKE 'Vet Services%'
         ");
 
         $complete_stmt->execute([
@@ -828,9 +843,13 @@ $progress = ($total_tasks > 0)
                             <div class="task-item <?php echo $is_done ? 'is-completed' : ''; ?>">
                                 <div class="task-content">
                                     <?php if (!$is_done): ?>
-                                        <a href="tasks.php?complete=<?php echo $task['id']; ?>" class="btn-toggle" title="Mark as Completed" onclick="return confirm('Are you sure you have completed this service?');">
-                                            <i class="fas fa-check" style="font-size: 16px;"></i>
-                                        </a>
+                                        <form method="POST" action="tasks.php" onsubmit="return confirm('Are you sure you have completed this service?');" style="margin:0;">
+                                            <input type="hidden" name="appointment_id" value="<?php echo (int)$task['id']; ?>">
+                                            <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($tasks_csrf, ENT_QUOTES, 'UTF-8'); ?>">
+                                            <button type="submit" name="complete_task" class="btn-toggle" title="Mark as Completed">
+                                                <i class="fas fa-check" style="font-size: 16px;"></i>
+                                            </button>
+                                        </form>
                                     <?php else: ?>
                                         <div class="btn-toggle">
                                             <i class="fas fa-check" style="font-size: 16px;"></i>
@@ -944,7 +963,7 @@ $progress = ($total_tasks > 0)
         let previousUnreadCount = <?php echo $unread_count; ?>;
         
         function fetchAdminNotifs() {
-            fetch('get_admin_notifs.php')
+            fetch('../admin/get_admin_notifs.php')
                 .then(response => response.json())
                 .then(data => {
                     const badge = document.getElementById('admin-notif-badge');

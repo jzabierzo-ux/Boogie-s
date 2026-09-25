@@ -2,14 +2,14 @@
 session_start();
 require_once '../db_supabase.php';
 
-// --- SECURITY CHECK (FIXED PARA SA VET/STAFF) ---
+// --- SECURITY CHECK: VETERINARIAN PORTAL ---
 $current_role = isset($_SESSION['role']) ? strtolower(trim($_SESSION['role'])) : '';
-$is_admin_or_supervisor = isset($_SESSION['logged_in'])
-    && in_array($current_role, ['admin', 'supervisor', 'staff'], true);
-$is_staff = isset($_SESSION['staff_logged_in'])
-    && $_SESSION['staff_logged_in'] === true;
 
-if (!$is_admin_or_supervisor && !$is_staff) {
+if (
+    !isset($_SESSION['logged_in']) ||
+    $_SESSION['logged_in'] !== true ||
+    $current_role !== 'vet'
+) {
     header("Location: stafflogin.php");
     exit();
 }
@@ -326,6 +326,9 @@ try {
         .st-pending { background: #fef3c7; color: #92400e; }
         .st-confirmed { background: #dbeafe; color: #0369a1; }
         .st-completed { background: #dcfce7; color: #15803d; }
+        .st-rescheduled { background: #ede9fe; color: #6d28d9; }
+        .st-no-show { background: #fee2e2; color: #b91c1c; }
+        .st-cancelled { background: #f1f5f9; color: #475569; }
 
         .btn-view-all { color: var(--brand-blue); text-decoration: none; font-size: 13px; font-weight: 700; background: #eff6ff; padding: 8px 16px; border-radius: 8px; transition: 0.2s;}
         .btn-view-all:hover { background: var(--brand-blue); color: white; }
@@ -834,6 +837,9 @@ try {
                             $s_class = 'st-pending';
                             if (strtolower($status) == 'confirmed') $s_class = 'st-confirmed';
                             elseif (strtolower($status) == 'completed') $s_class = 'st-completed';
+                            elseif (strtolower($status) == 'for rescheduling' || strtolower($status) == 'rescheduled') $s_class = 'st-rescheduled';
+                            elseif (strtolower($status) == 'no-show') $s_class = 'st-no-show';
+                            elseif (strtolower($status) == 'cancelled') $s_class = 'st-cancelled';
                         ?>
                             <div class="schedule-item">
                                 <div class="time-box">
@@ -926,7 +932,7 @@ try {
         let previousUnreadCount = <?php echo $unread_count; ?>;
         
         function fetchAdminNotifs() {
-            fetch('get_admin_notifs.php')
+            fetch('../admin/get_admin_notifs.php')
                 .then(response => response.json())
                 .then(data => {
                     const badge = document.getElementById('admin-notif-badge');

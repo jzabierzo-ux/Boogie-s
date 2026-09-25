@@ -228,7 +228,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $stmt_check->execute([':appointment_date' => $appointment_date]);
                     $row_check = $stmt_check->fetch();
 
-                    if ((int)($row_check['vet_count'] ?? 0) >= 24) {
+                    if ((int)($row_check['vet_count'] ?? 0) >= 6) {
                         $error_msg = "Dr. Faith Casayuran is fully booked for this date.";
                     }
                 } catch (PDOException $e) {
@@ -245,7 +245,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $stmt_groom_check->execute([':appointment_date' => $appointment_date]);
             $row_groom_check = $stmt_groom_check->fetch();
 
-            if ((int)($row_groom_check['grooming_count'] ?? 0) >= 30) {
+            if ((int)($row_groom_check['grooming_count'] ?? 0) >= 9) {
                 $error_msg = "Grooming services are fully booked for this date.";
             }
         } catch (PDOException $e) {
@@ -1816,7 +1816,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <label>
                         <input type="checkbox" name="agree_terms" id="agree_terms" required>
                         <div>
-                            I agree to the <span class="highlight">Terms & Conditions</span>. I understand that my slot will only be confirmed upon GCash payment verification, and that arriving <strong>late for 30 minutes</strong> will result in automatic cancellation and the payment will be <strong>strictly non-refundable</strong>.
+                            I agree to the <span class="highlight">Terms & Conditions</span>. I understand that my booking will only be confirmed after GCash payment verification. If I miss my appointment beyond the allowed 30-minute grace period, I may reschedule the appointment once within 3 days using the same payment for the same service. If I miss the rescheduled appointment, it will be marked as <strong>No-Show</strong> and the payment will be <strong>non-refundable</strong>.
                         </div>
                     </label>
                 </div>
@@ -1829,6 +1829,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 <div class="side-kicker">Booking guide</div>
                 <h3>Almost there.</h3>
                 <p>Complete the form, send your GCash payment, then our team will verify your appointment.</p>
+                <div class="side-note" style="margin-top: 14px;">
+                    <i class="fa-solid fa-calendar-days"></i>
+                    One reschedule is allowed within 3 days after a missed appointment. The same payment remains valid for the same service.
+                </div>
 
                 <div class="step-list">
                     <div class="step-item">

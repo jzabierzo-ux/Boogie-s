@@ -162,7 +162,7 @@ if (isset($_GET['action']) && isset($_GET['id'])) {
     $requested_status = (string)$_GET['action'];
 
     // Allow only the actions used by this page.
-    $allowed_actions = ['pay', 'verify_gcash', 'Completed', 'Confirmed', 'Cancelled', 'No-Show'];
+    $allowed_actions = ['pay', 'verify_gcash', 'Completed', 'Confirmed', 'Cancelled', 'No-Show', 'For-Rescheduling'];
 
     if ($id <= 0 || !in_array($requested_status, $allowed_actions, true)) {
         $_SESSION['alert_msg'] = "Invalid booking action.";
@@ -183,6 +183,154 @@ if (isset($_GET['action']) && isset($_GET['id'])) {
             $stmt->execute([':id' => $id]);
 
             $_SESSION['alert_msg'] = "Payment successfully marked as Paid.";
+            header("Location: managebooking.php");
+            exit();
+        }
+
+        // --- FINAL NO-SHOW ENFORCEMENT ---
+        if ($new_status === 'No-Show') {
+            $booking_check = $pdo->prepare("
+                SELECT booking_status, reschedule_count
+                FROM appointments
+                WHERE id = :id
+                LIMIT 1
+            ");
+            $booking_check->execute([':id' => $id]);
+            $booking_row = $booking_check->fetch(PDO::FETCH_ASSOC);
+
+            $status_now = strtoupper(trim((string)($booking_row['booking_status'] ?? '')));
+            $count_now = (int)($booking_row['reschedule_count'] ?? 0);
+
+            if ($status_now === 'CONFIRMED' && $count_now === 0) {
+                $_SESSION['alert_msg'] =
+                    "This is the customer's first missed appointment. " .
+                    "Move it to For Rescheduling first so the customer receives the one allowed reschedule.";
+                header("Location: managebooking.php");
+                exit();
+            }
+
+            if ($status_now !== 'RESCHEDULED' || $count_now !== 1) {
+                $_SESSION['alert_msg'] =
+                    "No-Show is only available after the customer's one-time reschedule has been used.";
+                header("Location: managebooking.php");
+                exit();
+            }
+
+            // The normal No-Show update logic below will now perform the final forfeiture.
+        }
+
+        // --- ONE-TIME RESCHEDULE ELIGIBILITY ---
+        if ($new_status === 'For-Rescheduling') {
+            $booking_check = $pdo->prepare("
+                SELECT id, booking_status, payment_status, reschedule_count
+                FROM appointments
+                WHERE id = :id
+                LIMIT 1
+            ");
+            $booking_check->execute([':id' => $id]);
+            $booking_row = $booking_check->fetch(PDO::FETCH_ASSOC);
+
+            if (!$booking_row) {
+                $_SESSION['alert_msg'] = "Booking not found.";
+                header("Location: managebooking.php");
+                exit();
+            }
+
+            $status_now = strtoupper(trim((string)($booking_row['booking_status'] ?? '')));
+            $payment_now = strtoupper(trim((string)($booking_row['payment_status'] ?? '')));
+            $count_now = (int)($booking_row['reschedule_count'] ?? 0);
+
+            if ($status_now !== 'CONFIRMED') {
+                $_SESSION['alert_msg'] = "Only Confirmed bookings can be moved to For Rescheduling.";
+                header("Location: managebooking.php");
+                exit();
+            }
+
+            if ($payment_now !== 'PAID') {
+                $_SESSION['alert_msg'] = "The booking must be paid and verified before it can be rescheduled.";
+                header("Location: managebooking.php");
+                exit();
+            }
+
+            if ($count_now >= 1) {
+                $_SESSION['alert_msg'] = "This booking has already used its one reschedule.";
+                header("Location: managebooking.php");
+                exit();
+            }
+
+            $stmt = $pdo->prepare("
+                UPDATE appointments
+                SET booking_status = 'For Rescheduling'
+                WHERE id = :id
+                  AND booking_status = 'Confirmed'
+                  AND payment_status = 'Paid'
+                  AND reschedule_count = 0
+            ");
+            $stmt->execute([':id' => $id]);
+
+            if ($stmt->rowCount() !== 1) {
+                $_SESSION['alert_msg'] = "This booking could not be moved to rescheduling.";
+                header("Location: managebooking.php");
+                exit();
+            }
+
+            $info_stmt = $pdo->prepare("
+                SELECT
+                    a.*,
+                    p.name AS pet_real_name,
+                    u.full_name AS customer_name,
+                    u.contact_number
+                FROM appointments a
+                LEFT JOIN pets p ON a.pet_id = p.id
+                LEFT JOIN users u ON a.user_id = u.id
+                WHERE a.id = :id
+                LIMIT 1
+            ");
+            $info_stmt->execute([':id' => $id]);
+            $booking_info = $info_stmt->fetch(PDO::FETCH_ASSOC);
+
+            if ($booking_info) {
+                $u_id = (int)($booking_info['user_id'] ?? 0);
+                $service = $booking_info['service'] ?? 'Service';
+                $pet = $booking_info['pet_real_name'] ?? 'your pet';
+
+                if ($u_id > 0) {
+                    $notif_stmt = $pdo->prepare("
+                        INSERT INTO notifications
+                            (user_id, title, message, type, is_read, created_at)
+                        VALUES
+                            (:user_id, :title, :message, 'booking', FALSE, NOW())
+                    ");
+
+                    $notif_stmt->execute([
+                        ':user_id' => $u_id,
+                        ':title' => 'Rescheduling Available',
+                        ':message' => "Your booking for $pet ($service) was marked for rescheduling because the scheduled visit was missed. You have one reschedule opportunity within 3 days after the original appointment. Your GCash payment remains valid for the same service and is non-refundable."
+                    ]);
+
+                    $phone_number = trim((string)($booking_info['contact_number'] ?? ''));
+
+                    if ($phone_number !== '' && strtoupper($phone_number) !== 'N/A') {
+                        $sms_msg =
+                            "Notice: Your booking for $pet ($service) is now FOR RESCHEDULING. " .
+                            "You have one reschedule opportunity within 3 days after the original appointment. Your GCash payment remains valid for the same service and is non-refundable. " .
+                            "- Boogie's Pet Care";
+
+                        $sms_result = sendIPROGSMS($phone_number, $sms_msg);
+
+                        if (empty($sms_result['success'])) {
+                            error_log(
+                                'IPROG SMS failed for rescheduling appointment #' . $id .
+                                ' | ' . ($sms_result['response'] ?? 'Unknown error')
+                            );
+                        }
+                    }
+                }
+            }
+
+            $_SESSION['alert_msg'] =
+                "Booking moved to For Rescheduling. The customer has one reschedule opportunity within 3 days.";
+
             header("Location: managebooking.php");
             exit();
         }
@@ -275,8 +423,8 @@ if (isset($_GET['action']) && isset($_GET['id'])) {
                 $sms_msg = "Hi! The $service for $pet is now COMPLETE. Thank you for choosing Boogie's Pet Care!";
             } elseif ($new_status === 'No-Show') {
                 $title = "Booking Forfeited (No-Show)";
-                $msg = "Your booking for $pet ($service) was marked as No-Show. Payments are non-refundable.";
-                $sms_msg = "Notice: Your booking for $pet ($service) was marked as NO-SHOW. Payments are non-refundable. - Boogie's Pet Care";
+                $msg = "Your booking for $pet ($service) was marked as No-Show after the allowed reschedule was missed. The GCash payment has been forfeited and is non-refundable.";
+                $sms_msg = "Notice: Your booking for $pet ($service) was marked as NO-SHOW after the allowed reschedule was missed. The payment is forfeited and non-refundable. - Boogie's Pet Care";
             }
 
             // INSERT IN-APP NOTIFICATION
@@ -363,7 +511,7 @@ try {
     $admin_notif_stmt = $pdo->prepare("
         SELECT *
         FROM admin_notifications
-        WHERE is_read = FALSE
+        WHERE is_read = 0
         ORDER BY created_at DESC
     ");
     $admin_notif_stmt->execute();
@@ -409,12 +557,27 @@ try {
            OR booking_status = 'No-Show'
     ");
     $cancelled_count = (int)$cancelled_count_stmt->fetchColumn();
+
+    $reschedule_count_stmt = $pdo->query("
+        SELECT COUNT(*)
+        FROM appointments
+        WHERE booking_status = 'For Rescheduling'
+    ");
+    $reschedule_count = (int)$reschedule_count_stmt->fetchColumn();
+
+    $rescheduled_count_stmt = $pdo->query("
+        SELECT COUNT(*)
+        FROM appointments
+        WHERE booking_status = 'Rescheduled'
+    ");
+    $rescheduled_count = (int)$rescheduled_count_stmt->fetchColumn();
 } catch (PDOException $e) {
     $total_count = 0;
     $pending_count = 0;
     $confirmed_count = 0;
     $completed_count = 0;
     $cancelled_count = 0;
+    $rescheduled_count = 0;
 }
 
 // --- DETERMINE FILTER STATUS FROM URL ---
@@ -431,7 +594,7 @@ if ($filter_status === 'Active') {
     $where_clause = "";
 } elseif ($filter_status === 'Cancelled') {
     $where_clause = "WHERE a.booking_status IN ('Cancelled', 'No-Show')";
-} elseif (in_array($filter_status, ['Confirmed', 'Completed', 'No-Show'], true)) {
+} elseif (in_array($filter_status, ['Confirmed', 'For Rescheduling', 'Rescheduled', 'Completed', 'No-Show'], true)) {
     $where_clause = "WHERE a.booking_status = :filter_status";
     $where_params[':filter_status'] = $filter_status;
 } else {
@@ -555,6 +718,7 @@ $total_rows_showing = count($bookings);
         .status-card.confirmed { border-bottom-color: #3b82f6; }
         .status-card.completed { border-bottom-color: #10b981; }
         .status-card.cancelled { border-bottom-color: #ef4444; }
+        .status-card.rescheduling { border-bottom-color: #0ea5e9; }
         .status-card h4 { font-size: 12px; color: var(--text-muted); text-transform: uppercase; margin-bottom: 10px; font-weight: 700; letter-spacing: 0.5px;}
         .status-card .count { font-size: 24px; font-weight: 800; color: var(--navy-dark); }
 
@@ -575,7 +739,8 @@ $total_rows_showing = count($bookings);
         .btn-icon-pay-process { background: #8b2cf5; } 
         .btn-icon-confirm { background: #10b981; } 
         .btn-icon-cancel { background: #ef4444; } 
-        .btn-icon-noshow { background: #f97316; } 
+        .btn-icon-noshow { background: #f97316; }
+        .btn-icon-reschedule { background: #0ea5e9; } 
         
         .btn-verify-gcash { background: #10b981; color: white; padding: 6px 12px; border-radius: 6px; text-decoration: none; font-size: 12px; font-weight: bold; display: inline-flex; align-items: center; gap: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); transition: 0.2s; }
         .btn-verify-gcash:hover { background: #059669; transform: translateY(-2px); box-shadow: 0 4px 8px rgba(0,0,0,0.15); }
@@ -663,16 +828,16 @@ $total_rows_showing = count($bookings);
                 <div class="notif-wrapper" onclick="toggleNotif(event)">
                     <i class="fa-solid fa-bell" style="font-size: 22px; color: #64748b;"></i>
                     <?php if($unread_count > 0): ?>
-                        <span class="notif-badge"><?php echo $unread_count; ?></span>
+                        <span id="admin-notif-badge" class="notif-badge"><?php echo $unread_count; ?></span>
                     <?php endif; ?>
                     <div class="notif-dropdown" id="notifBox" onclick="event.stopPropagation()">
                         <div class="notif-header">
                             Alerts
                             <?php if($unread_count > 0): ?>
-                                <a href="mark_notifications_read.php" class="mark-read-btn">Mark all read</a>
+                                <a href="mark_notifications_read.php" id="mark-read-link" class="mark-read-btn">Mark all read</a>
                             <?php endif; ?>
                         </div>
-                        <div class="notif-body">
+                        <div class="notif-body" id="admin-notif-list">
                             <?php if($unread_count > 0 && $admin_notif_query): ?>
                                 <?php foreach ($admin_notifications as $notif): ?>
                                     <div class="notif-item">
@@ -748,6 +913,12 @@ $total_rows_showing = count($bookings);
                 <div class="status-card completed" onclick="window.location.href='managebooking.php?status=Completed'">
                     <h4>Completed</h4><div class="count"><?php echo $completed_count; ?></div>
                 </div>
+                <div class="status-card rescheduling" onclick="window.location.href='managebooking.php?status=For%20Rescheduling'">
+                    <h4>For Rescheduling</h4><div class="count"><?php echo $reschedule_count; ?></div>
+                </div>
+                <div class="status-card rescheduled" onclick="window.location.href='managebooking.php?status=Rescheduled'">
+                    <h4>Rescheduled</h4><div class="count"><?php echo $rescheduled_count; ?></div>
+                </div>
                 <div class="status-card cancelled" onclick="window.location.href='managebooking.php?status=Cancelled'">
                     <h4>Cancelled</h4><div class="count"><?php echo $cancelled_count; ?></div>
                 </div>
@@ -761,6 +932,8 @@ $total_rows_showing = count($bookings);
                         <option value="all">All Statuses Here</option>
                         <option value="pending">Pending Only</option>
                         <option value="confirmed">Confirmed Only</option>
+                        <option value="for rescheduling">For Rescheduling Only</option>
+                        <option value="rescheduled">Rescheduled Only</option>
                         <option value="completed">Completed Only</option>
                         <option value="cancelled">Cancelled/No-Show</option>
                     </select>
@@ -892,9 +1065,20 @@ $total_rows_showing = count($bookings);
                                                         <a href="managebooking.php?action=Cancelled&id=<?php echo $row['id']; ?>" class="btn-icon btn-icon-cancel" title="Cancel Booking" onclick="return confirm('Are you sure you want to cancel this Confirmed booking?');">
                                                             <i class="fas fa-times"></i>
                                                         </a>
-                                                        <a href="managebooking.php?action=No-Show&id=<?php echo $row['id']; ?>" class="btn-icon btn-icon-noshow" title="Mark as No-Show" onclick="return confirm('Mark as No-Show? The payment will be forfeited.');">
+                                                        <a href="managebooking.php?action=For-Rescheduling&id=<?php echo $row['id']; ?>" class="btn-icon btn-icon-reschedule" title="Allow One-Time Reschedule" onclick="return confirm('Mark this booking as For Rescheduling? The customer gets ONE reschedule opportunity within 3 days, and the original payment remains valid for the same service.');">
+                                                            <i class="fas fa-calendar-days"></i>
+                                                        </a>
+                                                        <!-- First missed appointment uses the one-time reschedule path. -->
+
+                                                    <?php elseif($display_status == 'Rescheduled'): ?>
+                                                        <a href="managebooking.php?action=Completed&id=<?php echo $row['id']; ?>" class="btn-icon btn-icon-confirm" title="Mark as Completed" onclick="return confirm('Mark as Completed?');">
+                                                            <i class="fas fa-check-double"></i>
+                                                        </a>
+                                                        <a href="managebooking.php?action=No-Show&id=<?php echo $row['id']; ?>" class="btn-icon btn-icon-noshow" title="Final No-Show After Reschedule" onclick="return confirm('Mark as No-Show? The customer already used the one reschedule. The payment will be forfeited and non-refundable.');">
                                                             <i class="fas fa-user-slash"></i>
                                                         </a>
+                                                    <?php elseif($display_status == 'For Rescheduling'): ?>
+                                                        <span style="font-size:12px;font-weight:700;color:#0ea5e9;">Waiting for customer reschedule</span>
                                                     <?php endif; ?>
                                                 <?php endif; ?>
                                             </div>
@@ -1109,32 +1293,49 @@ $total_rows_showing = count($bookings);
             if (serviceFilter) serviceFilter.addEventListener("change", applyFilters);
         });
 
-        let previousUnreadCount = <?php echo $unread_count; ?>;
+        function renderAdminNotifications(data) {
+            const badge = document.getElementById('admin-notif-badge');
+            const notifList = document.getElementById('admin-notif-list');
+            const markReadBtn = document.getElementById('mark-read-link');
 
-        function updateNotifications() {
-            fetch('get_unread_notifs.php')
-                .then(response => response.json())
-                .then(data => {
-                    const badge = document.querySelector('.notif-badge'); 
-                    
-                    if (data.unread > previousUnreadCount) {
-                    }
-                    
-                    previousUnreadCount = data.unread;
-                    
-                    if (badge) {
-                        if (data.unread > 0) {
-                            badge.style.display = 'inline-block';
-                            badge.innerText = data.unread;
-                        } else {
-                            badge.style.display = 'none';
-                        }
-                    }
-                })
-                .catch(error => console.error('Error fetching notifications:', error));
+            if (!badge || !notifList) return;
+
+            const unread = Number(data && data.unread ? data.unread : 0);
+
+            badge.style.display = unread > 0 ? 'inline-block' : 'none';
+            badge.textContent = unread;
+
+            if (markReadBtn) {
+                markReadBtn.style.display = unread > 0 ? 'inline-block' : 'none';
+            }
+
+            notifList.innerHTML = (data && data.html)
+                ? data.html
+                : '<div class="notif-empty">No new notifications.</div>';
         }
 
-        setInterval(updateNotifications, 3000);
+        function fetchAdminNotifs() {
+            fetch('get_admin_notifs.php', {
+                method: 'GET',
+                cache: 'no-store',
+                credentials: 'same-origin'
+            })
+                .then(function(response) {
+                    if (!response.ok) {
+                        throw new Error('Notification request failed: HTTP ' + response.status);
+                    }
+                    return response.json();
+                })
+                .then(renderAdminNotifications)
+                .catch(function(error) {
+                    console.error('Error fetching admin notifications:', error);
+                });
+        }
+
+        window.fetchAdminNotifs = fetchAdminNotifs;
+
+        fetchAdminNotifs();
+        setInterval(fetchAdminNotifs, 3000);
     </script>
 </body>
 </html> 

@@ -2,6 +2,7 @@
 session_start();
 
 include 'db_supabase.php';
+require_once 'includes/iprog_sms.php';
 
 date_default_timezone_set('Asia/Manila');
 
@@ -19,6 +20,291 @@ $full_name = $_SESSION['user_name']
     ?? 'User';
 
 $user_id = (int)($_SESSION['user_id'] ?? 0);
+
+
+// ============================================================
+// ONE-TIME RESCHEDULE HANDLER
+// ============================================================
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['reschedule_booking'])) {
+    $appointment_id = (int)($_POST['appointment_id'] ?? 0);
+    $new_date = trim((string)($_POST['reschedule_date'] ?? ''));
+    $new_time = trim((string)($_POST['reschedule_time'] ?? ''));
+
+    $allowed_reschedule_times = [
+        '10:00:00', '11:00:00', '12:00:00', '13:00:00',
+        '14:00:00', '15:00:00', '16:00:00', '17:00:00'
+    ];
+
+    $setRescheduleError = static function ($message) {
+        $_SESSION['booking_reschedule_error'] = $message;
+        header("Location: bookings.php");
+        exit();
+    };
+
+    if ($appointment_id <= 0 || $new_date === '' || $new_time === '') {
+        $setRescheduleError("Please choose a valid new date and time.");
+    }
+
+    if (!in_array($new_time, $allowed_reschedule_times, true)) {
+        $setRescheduleError("Please select a valid appointment time between 10:00 AM and 5:00 PM.");
+    }
+
+    try {
+        $stmt = $pdo->prepare("
+            SELECT
+                a.*,
+                p.name AS pet_name,
+                u.full_name AS customer_name,
+                u.contact_number
+            FROM appointments a
+            LEFT JOIN pets p ON a.pet_id = p.id
+            LEFT JOIN users u ON a.user_id = u.id
+            WHERE a.id = :appointment_id
+              AND a.user_id = :user_id
+            LIMIT 1
+        ");
+        $stmt->execute([
+            ':appointment_id' => $appointment_id,
+            ':user_id' => $user_id
+        ]);
+
+        $appointment = $stmt->fetch();
+
+        if (!$appointment) {
+            $setRescheduleError("Booking not found or you do not have permission to reschedule it.");
+        }
+
+        $booking_status = strtoupper(trim((string)($appointment['booking_status'] ?? '')));
+        $reschedule_count = (int)($appointment['reschedule_count'] ?? 0);
+        $payment_status = strtoupper(trim((string)($appointment['payment_status'] ?? '')));
+
+        if ($booking_status !== 'FOR RESCHEDULING' || $reschedule_count >= 1) {
+            $setRescheduleError("This booking is no longer eligible for rescheduling. Only one reschedule is allowed.");
+        }
+
+        if ($payment_status !== 'PAID') {
+            $setRescheduleError("Only paid and verified bookings can be rescheduled.");
+        }
+
+        $today = date('Y-m-d');
+        $current_time = date('H:i:s');
+        $original_date = date('Y-m-d', strtotime((string)($appointment['appointment_date'] ?? '')));
+        $latest_reschedule_date = date('Y-m-d', strtotime($original_date . ' +3 days'));
+
+        if ($new_date < $today) {
+            $setRescheduleError("You cannot reschedule to a past date.");
+        }
+
+        if ($original_date === '' || $original_date === '1970-01-01') {
+            $setRescheduleError("The original appointment date is invalid.");
+        }
+
+        if ($new_date > $latest_reschedule_date) {
+            $setRescheduleError("Rescheduling is only allowed within 3 days after the original appointment date.");
+        }
+
+        if ($new_date === $today && $new_time <= $current_time) {
+            $setRescheduleError("Please select a future time for the new appointment.");
+        }
+
+        if ($new_date === $today && $current_time >= '18:00:00') {
+            $setRescheduleError("Same-day rescheduling is closed after 6:00 PM. Please choose another date.");
+        }
+
+        $stored_service = (string)($appointment['service'] ?? '');
+        $service_category = '';
+
+        if (stripos($stored_service, 'Grooming') === 0) {
+            $service_category = 'Grooming';
+        } elseif (stripos($stored_service, 'Vet Services') === 0) {
+            $service_category = 'Vet Services';
+        } elseif (stripos($stored_service, 'Pet Hotel') === 0) {
+            $service_category = 'Pet Hotel';
+        }
+
+        if ($service_category === '') {
+            $setRescheduleError("Unable to determine the service category for this booking.");
+        }
+
+        $slot_stmt = $pdo->prepare("
+            SELECT COUNT(*) AS slot_count
+            FROM appointments
+            WHERE appointment_date = :appointment_date
+              AND appointment_time = :appointment_time
+              AND service ILIKE :service_prefix
+              AND id <> :appointment_id
+              AND booking_status NOT IN ('Cancelled', 'No-Show', 'For Rescheduling')
+        ");
+        $slot_stmt->execute([
+            ':appointment_date' => $new_date,
+            ':appointment_time' => $new_time,
+            ':service_prefix' => $service_category . '%',
+            ':appointment_id' => $appointment_id
+        ]);
+
+        $slot_count = (int)($slot_stmt->fetch()['slot_count'] ?? 0);
+
+        if ($slot_count >= 1) {
+            $setRescheduleError(
+                "The " . date("g:i A", strtotime($new_time)) .
+                " slot is already taken for " . $service_category . ". Please choose another time."
+            );
+        }
+
+        if ($service_category === 'Vet Services') {
+            $day_of_week = (int)date('N', strtotime($new_date));
+
+            if ($day_of_week === 3 || $day_of_week === 6) {
+                $setRescheduleError("Dr. Faith Casayuran is not available on Wednesdays and Saturdays.");
+            }
+
+            $daily_stmt = $pdo->prepare("
+                SELECT COUNT(*) AS vet_count
+                FROM appointments
+                WHERE appointment_date = :appointment_date
+                  AND service ILIKE 'Vet Services%'
+                  AND id <> :appointment_id
+                  AND booking_status NOT IN ('Cancelled', 'No-Show', 'For Rescheduling')
+            ");
+            $daily_stmt->execute([
+                ':appointment_date' => $new_date,
+                ':appointment_id' => $appointment_id
+            ]);
+
+            if ((int)($daily_stmt->fetch()['vet_count'] ?? 0) >= 6) {
+                $setRescheduleError("Dr. Faith Casayuran is fully booked for this date.");
+            }
+        }
+
+        if ($service_category === 'Grooming') {
+            $daily_stmt = $pdo->prepare("
+                SELECT COUNT(*) AS grooming_count
+                FROM appointments
+                WHERE appointment_date = :appointment_date
+                  AND service ILIKE 'Grooming%'
+                  AND id <> :appointment_id
+                  AND booking_status NOT IN ('Cancelled', 'No-Show', 'For Rescheduling')
+            ");
+            $daily_stmt->execute([
+                ':appointment_date' => $new_date,
+                ':appointment_id' => $appointment_id
+            ]);
+
+            if ((int)($daily_stmt->fetch()['grooming_count'] ?? 0) >= 9) {
+                $setRescheduleError("Grooming services are fully booked for this date.");
+            }
+        }
+
+        $update_stmt = $pdo->prepare("
+            UPDATE appointments
+            SET appointment_date = :appointment_date,
+                appointment_time = :appointment_time,
+                booking_status = 'Rescheduled',
+                reschedule_count = 1
+            WHERE id = :appointment_id
+              AND user_id = :user_id
+              AND booking_status = 'For Rescheduling'
+              AND reschedule_count = 0
+        ");
+
+        $update_stmt->execute([
+            ':appointment_date' => $new_date,
+            ':appointment_time' => $new_time,
+            ':appointment_id' => $appointment_id,
+            ':user_id' => $user_id
+        ]);
+
+        if ($update_stmt->rowCount() !== 1) {
+            $setRescheduleError("This booking was already updated or is no longer available for rescheduling.");
+        }
+
+        $formatted_date = date('M d, Y', strtotime($new_date));
+        $formatted_time = date('g:i A', strtotime($new_time));
+
+        // Notify Admin about the customer's successful reschedule.
+        // Keep this separate so a notification error will not undo the booking update.
+        try {
+            $admin_notif_stmt = $pdo->prepare("
+                INSERT INTO admin_notifications (message)
+                VALUES (:message)
+            ");
+
+            $admin_notif_message =
+                ($appointment['customer_name'] ?? $full_name) .
+                " rescheduled " .
+                ($appointment['pet_name'] ?? 'a pet') .
+                " (" . $stored_service . ") to " .
+                $formatted_date . " at " . $formatted_time .
+                ". GCash payment remains valid. (Booking #" .
+                $appointment_id . ")";
+
+            $admin_notif_stmt->execute([
+                ':message' => $admin_notif_message
+            ]);
+        } catch (PDOException $e) {
+            error_log(
+                'Admin reschedule notification error for appointment #' .
+                $appointment_id . ' | ' . $e->getMessage()
+            );
+        }
+
+        $notif_stmt = $pdo->prepare("
+            INSERT INTO notifications
+                (user_id, title, message, type, is_read, created_at)
+            VALUES
+                (:user_id, :title, :message, 'booking', FALSE, NOW())
+        ");
+
+        $notif_stmt->execute([
+            ':user_id' => $user_id,
+            ':title' => 'Appointment Rescheduled',
+            ':message' => 'Your appointment for ' .
+                ($appointment['pet_name'] ?? 'your pet') .
+                ' (' . $stored_service . ') has been rescheduled to ' .
+                $formatted_date . ' at ' . $formatted_time .
+                '. This was your one allowed reschedule within 3 days. Please arrive on time.'
+        ]);
+
+        $contact_number = trim((string)($appointment['contact_number'] ?? ''));
+
+        if ($contact_number !== '' && strtoupper($contact_number) !== 'N/A') {
+            $sms_message =
+                "Hi! Your booking for " .
+                ($appointment['pet_name'] ?? 'your pet') .
+                " (" . $stored_service . ") has been RESCHEDULED to " .
+                $formatted_date . " at " . $formatted_time .
+                ". This was your one allowed reschedule within 3 days. Please arrive on time. - Boogie's Pet Care";
+
+            $sms_result = sendIPROGSMS($contact_number, $sms_message);
+
+            if (empty($sms_result['success'])) {
+                error_log(
+                    'IPROG SMS failed after reschedule for appointment #' .
+                    $appointment_id . ' | ' .
+                    ($sms_result['response'] ?? 'Unknown error')
+                );
+            }
+        }
+
+        // Clear any previous reschedule error so a stale message
+        // cannot appear after a successful reschedule.
+        unset($_SESSION['booking_reschedule_error']);
+
+        $_SESSION['booking_reschedule_success'] =
+            "Appointment successfully rescheduled to " .
+            $formatted_date . " at " . $formatted_time .
+            ". This was your one allowed reschedule within 3 days.";
+
+        header("Location: bookings.php");
+        exit();
+
+    } catch (PDOException $e) {
+        error_log('Customer reschedule error: ' . $e->getMessage());
+        $setRescheduleError("Unable to reschedule this appointment right now. Please try again.");
+    }
+}
+
 
 // ============================================================
 // FETCH PROFILE IMAGE
@@ -121,6 +407,8 @@ try {
     $allowed_statuses = [
         'Pending',
         'Confirmed',
+        'For Rescheduling',
+        'Rescheduled',
         'Completed',
         'Cancelled',
         'No-Show'
@@ -781,6 +1069,16 @@ try {
             color: #fff;
         }
 
+        .status-FOR-RESCHEDULING {
+            background: #eaf4ff;
+            color: #1769aa;
+        }
+
+        .status-RESCHEDULED {
+            background: #e7f8ef;
+            color: #1e7e49;
+        }
+
         .payment-status {
             color: #7a8998;
             font-size: 8px;
@@ -828,6 +1126,31 @@ try {
 
         .btn-review-schedule:hover {
             background: #f3bf00;
+        }
+
+        .btn-reschedule-schedule {
+            min-width: 110px;
+            border: 1px solid #7db6e8;
+            background: #edf7ff;
+            color: #1769aa;
+            border-radius: 9px;
+            padding: 8px 10px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            font-family: inherit;
+            font-size: 9px;
+            font-weight: 800;
+            cursor: pointer;
+        }
+
+        .btn-reschedule-schedule:hover {
+            background: #dceeff;
+        }
+
+        .rescheduled-note {
+            color: #1769aa;
         }
 
         .feedback-schedule {
@@ -975,7 +1298,47 @@ try {
         }
 
 
-        /* ===== CANCEL MODAL ===== */
+        /* ===== RESCHEDULE MODAL ===== */
+        .reschedule-modal-content {
+            width: 100%;
+            max-width: 500px;
+            background: #fff;
+            border-radius: 18px;
+            padding: 26px;
+            box-shadow: 0 24px 55px rgba(0,0,0,.20);
+        }
+
+        .reschedule-icon {
+            width: 42px;
+            height: 42px;
+            flex: 0 0 42px;
+            border-radius: 12px;
+            background: #eaf4ff;
+            color: #1769aa;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 17px;
+        }
+
+        .reschedule-help {
+            background: #eef7ff;
+            color: #245386;
+            border: 1px solid #cfe7fb;
+            padding: 11px 12px;
+            border-radius: 11px;
+            font-size: 9px;
+            line-height: 1.6;
+            margin-bottom: 16px;
+        }
+
+        .reschedule-form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+
+        /* ===== CANCEL MODAL ===== */ 
         .modal-overlay {
             position: fixed;
             inset: 0;
@@ -1472,7 +1835,8 @@ try {
             }
 
             .btn-cancel-schedule,
-            .btn-review-schedule {
+            .btn-review-schedule,
+            .btn-reschedule-schedule {
                 min-width: 0;
                 flex: 1 1 0;
                 min-height: 42px;
@@ -1615,7 +1979,8 @@ try {
             }
 
             .btn-cancel-schedule,
-            .btn-review-schedule {
+            .btn-review-schedule,
+            .btn-reschedule-schedule {
                 font-size: 8px;
             }
 
@@ -1763,6 +2128,23 @@ try {
             </div>
         <?php endif; ?>
 
+
+        <?php if (!empty($_SESSION['booking_reschedule_success'])): ?>
+            <div class="alert alert-success">
+                <i class="fa-solid fa-circle-check"></i>
+                <div><?php echo htmlspecialchars($_SESSION['booking_reschedule_success']); ?></div>
+            </div>
+            <?php unset($_SESSION['booking_reschedule_success']); ?>
+        <?php endif; ?>
+
+        <?php if (!empty($_SESSION['booking_reschedule_error'])): ?>
+            <div class="alert alert-error">
+                <i class="fa-solid fa-circle-exclamation"></i>
+                <div><?php echo htmlspecialchars($_SESSION['booking_reschedule_error']); ?></div>
+            </div>
+            <?php unset($_SESSION['booking_reschedule_error']); ?>
+        <?php endif; ?>
+
         <div class="filter-card">
             <form method="GET" action="">
                 <div class="filter-row">
@@ -1780,6 +2162,8 @@ try {
                         <option value="all" <?php echo ($status_filter == 'all') ? 'selected' : ''; ?>>All Status</option>
                         <option value="Pending" <?php echo ($status_filter == 'Pending') ? 'selected' : ''; ?>>Pending</option>
                         <option value="Confirmed" <?php echo ($status_filter == 'Confirmed') ? 'selected' : ''; ?>>Confirmed</option>
+                        <option value="For Rescheduling" <?php echo ($status_filter == 'For Rescheduling') ? 'selected' : ''; ?>>For Rescheduling</option>
+                        <option value="Rescheduled" <?php echo ($status_filter == 'Rescheduled') ? 'selected' : ''; ?>>Rescheduled</option>
                         <option value="Completed" <?php echo ($status_filter == 'Completed') ? 'selected' : ''; ?>>Completed</option>
                         <option value="Cancelled" <?php echo ($status_filter == 'Cancelled') ? 'selected' : ''; ?>>Cancelled</option>
                         <option value="No-Show" <?php echo ($status_filter == 'No-Show') ? 'selected' : ''; ?>>No-Show</option>
@@ -1801,7 +2185,10 @@ try {
                 $booking_date = date('Y-m-d', strtotime($booking['appointment_date']));
                 $status = strtoupper($booking['booking_status'] ?? 'PENDING');
 
-                if ($booking_date >= $today && !in_array($status, ['CANCELLED', 'COMPLETED', 'NO-SHOW'], true)) {
+                if (
+                    ($booking_date >= $today && !in_array($status, ['CANCELLED', 'COMPLETED', 'NO-SHOW'], true))
+                    || in_array($status, ['FOR RESCHEDULING', 'RESCHEDULED'], true)
+                ) {
                     $upcoming[] = $booking;
                 } else {
                     $past[] = $booking;
@@ -1916,7 +2303,26 @@ try {
                                 </span>
 
                                 <div class="schedule-action">
-                                    <?php if ($status_upper === 'PENDING' || $status_upper === 'CONFIRMED'): ?>
+                                    <?php $reschedule_count = (int)($row['reschedule_count'] ?? 0); ?>
+
+                                    <?php if ($status_upper === 'FOR RESCHEDULING' && $reschedule_count === 0): ?>
+                                        <button
+                                            type="button"
+                                            class="btn-reschedule-schedule"
+                                            onclick="openRescheduleModal(
+                                                <?php echo $apt_id; ?>,
+                                                '<?php echo addslashes(htmlspecialchars($row['service'])); ?>',
+                                                '<?php echo addslashes(htmlspecialchars($display_pet)); ?>',
+                                                '<?php echo htmlspecialchars(date('Y-m-d', strtotime($row['appointment_date']))); ?>'
+                                            )"
+                                        >
+                                            <i class="fa-solid fa-calendar-days"></i> Reschedule
+                                        </button>
+                                    <?php elseif ($status_upper === 'RESCHEDULED'): ?>
+                                        <span class="feedback-schedule rescheduled-note">
+                                            <i class="fa-solid fa-check"></i> One-time reschedule used
+                                        </span>
+                                    <?php elseif ($status_upper === 'PENDING' || $status_upper === 'CONFIRMED'): ?>
                                         <button
                                             type="button"
                                             class="btn-cancel-schedule"
@@ -2094,6 +2500,69 @@ try {
             </div>
         </section>
     </main>
+    <div id="rescheduleModal" class="modal-overlay">
+        <div class="reschedule-modal-content">
+            <div class="modal-header">
+                <div class="reschedule-icon"><i class="fa-solid fa-calendar-days"></i></div>
+                <div>
+                    <h2>Reschedule Appointment</h2>
+                    <p>You may reschedule this booking only once, within 3 days.</p>
+                </div>
+            </div>
+
+            <div class="booking-details-box">
+                <p>Booking Details:</p>
+                <h3 id="rescheduleService">Service</h3>
+                <div class="detail-row">Pet: <span id="reschedulePet" style="color: var(--text-muted);"></span></div>
+            </div>
+
+            <div class="reschedule-help">
+                <strong>Important:</strong> Your original GCash payment stays valid and non-refundable.
+                Choose an available schedule within 3 days after the original appointment. After this reschedule is used,
+                another missed appointment will be treated as a No-Show and the payment will be forfeited.
+            </div>
+
+            <form method="POST" action="">
+                <input type="hidden" name="reschedule_booking" value="1">
+                <input type="hidden" name="appointment_id" id="rescheduleAppointmentId">
+
+                <div class="reschedule-form-row">
+                    <div class="modal-form-group">
+                        <label>New Date *</label>
+                        <input
+                            type="date"
+                            name="reschedule_date"
+                            id="rescheduleDate"
+                            min="<?php echo date('Y-m-d'); ?>"
+                            max="<?php echo date('Y-m-d', strtotime('+3 days')); ?>"
+                            required
+                        >
+                    </div>
+
+                    <div class="modal-form-group">
+                        <label>New Time *</label>
+                        <select name="reschedule_time" id="rescheduleTime" required>
+                            <option value="">Choose a time</option>
+                            <option value="10:00:00">10:00 AM</option>
+                            <option value="11:00:00">11:00 AM</option>
+                            <option value="12:00:00">12:00 PM</option>
+                            <option value="13:00:00">01:00 PM</option>
+                            <option value="14:00:00">02:00 PM</option>
+                            <option value="15:00:00">03:00 PM</option>
+                            <option value="16:00:00">04:00 PM</option>
+                            <option value="17:00:00">05:00 PM</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="modal-actions">
+                    <button type="button" class="btn-keep" onclick="closeRescheduleModal()">Keep Current Status</button>
+                    <button type="submit" class="btn-reschedule-schedule">Confirm Reschedule</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <div id="cancelModal" class="modal-overlay">
         <div class="modal-content">
             <div class="modal-header">
@@ -2175,6 +2644,33 @@ try {
     </footer>
 
     <script>
+        function openRescheduleModal(id, service, pet, originalDate) {
+            document.getElementById('rescheduleAppointmentId').value = id;
+            document.getElementById('rescheduleService').innerText = service;
+            document.getElementById('reschedulePet').innerText = pet;
+            document.getElementById('rescheduleDate').value = '';
+            document.getElementById('rescheduleTime').value = '';
+
+            const dateInput = document.getElementById('rescheduleDate');
+            const now = new Date();
+            const todayStr = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+            let maxDateStr = todayStr;
+
+            if (originalDate) {
+                const base = new Date(originalDate + 'T00:00:00');
+                base.setDate(base.getDate() + 3);
+                maxDateStr = base.getFullYear() + '-' + String(base.getMonth() + 1).padStart(2, '0') + '-' + String(base.getDate()).padStart(2, '0');
+            }
+
+            dateInput.min = todayStr;
+            dateInput.max = maxDateStr;
+            document.getElementById('rescheduleModal').style.display = 'flex';
+        }
+
+        function closeRescheduleModal() {
+            document.getElementById('rescheduleModal').style.display = 'none';
+        }
+
         function openCancelModal(id, service, pet, dateStr) {
             document.getElementById('cancelAppointmentId').value = id;
             document.getElementById('modalService').innerText = service;

@@ -2,18 +2,26 @@
 session_start();
 require_once '../db_supabase.php';
 
-// --- SECURITY CHECK (FIXED PARA SA VET/STAFF) ---
-$current_role = isset($_SESSION['role']) ? strtolower(trim($_SESSION['role'])) : '';
-$is_admin_or_supervisor = isset($_SESSION['logged_in']) && in_array($current_role, ['admin', 'supervisor', 'staff'], true);
-$is_staff = isset($_SESSION['staff_logged_in']) && $_SESSION['staff_logged_in'] === true;
+// --- SECURITY CHECK ---
+$current_role = strtolower(trim($_SESSION['role'] ?? ''));
+$is_personnel_logged_in = isset($_SESSION['logged_in'])
+    && $_SESSION['logged_in'] === true;
 
-if (!$is_admin_or_supervisor && !$is_staff) {
+$is_vet_or_admin = $is_personnel_logged_in
+    && in_array($current_role, ['admin', 'vet'], true);
+
+if (!$is_vet_or_admin) {
     header("Location: stafflogin.php");
     exit();
 }
 
 // SET CORRECT TIMEZONE FOR PHILIPPINES
 date_default_timezone_set('Asia/Manila');
+
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+$csrf_token = $_SESSION['csrf_token'];
 
 $staff_name = $_SESSION['staff_name'] ?? 'Doctor';
 
@@ -124,8 +132,20 @@ $special_needs = $row['special_needs'] ?? '';
 $p_status = $row['status'] ?? 'Pending';
 
 // --- SEND NOTE TO USER LOGIC (REMOVED MEDICAL HISTORY UPDATE) ---
-if (isset($_POST['add_note']) && !empty(trim($_POST['new_note'] ?? ''))) {
-    $new_note_text = trim($_POST['new_note']);
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_note'])) {
+    $submitted_csrf = $_POST['csrf_token'] ?? '';
+
+    if (!hash_equals($_SESSION['csrf_token'] ?? '', $submitted_csrf)) {
+        http_response_code(403);
+        die('Invalid security token. Please refresh the page and try again.');
+    }
+
+    $new_note_text = trim($_POST['new_note'] ?? '');
+
+    if ($new_note_text === '') {
+        header("Location: view_records.php?id=" . $pet_id);
+        exit;
+    }
     $doctor_name = "Dr. " . str_replace('Dr. ', '', $clean_name);
 
     // --- SEND NOTIFICATION TO THE PET OWNER ONLY ---
@@ -773,6 +793,7 @@ if (isset($_POST['add_note']) && !empty(trim($_POST['new_note'] ?? ''))) {
 
                 <h3 class="section-title"><i class="fas fa-stethoscope" style="color: var(--sidebar-navy);"></i> Add Consultation Note</h3>
                 <form method="POST" action="" class="note-form">
+                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token, ENT_QUOTES, 'UTF-8'); ?>">
                     <textarea name="new_note" placeholder="Type diagnosis, prescriptions, or clinical notes here to notify the owner..." required></textarea>
                     <button type="submit" name="add_note" class="btn-submit"><i class="fas fa-paper-plane"></i> Send Note to Owner</button>
                 </form>
@@ -884,7 +905,7 @@ if (isset($_POST['add_note']) && !empty(trim($_POST['new_note'] ?? ''))) {
         let previousUnreadCount = <?php echo $unread_count; ?>;
         
         function fetchAdminNotifs() {
-            fetch('get_admin_notifs.php')
+            fetch('../admin/get_admin_notifs.php')
                 .then(response => response.json())
                 .then(data => {
                     const badge = document.getElementById('admin-notif-badge');

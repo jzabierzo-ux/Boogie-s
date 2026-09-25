@@ -2,21 +2,26 @@
 session_start();
 require_once '../db_supabase.php';
 
-// --- SECURITY CHECK (FIXED PARA SA VET/STAFF) ---
-$is_admin_or_supervisor = isset($_SESSION['logged_in']) && in_array(
-    strtolower(trim($_SESSION['role'] ?? '')),
-    ['admin', 'supervisor', 'staff'],
-    true
-);
-$is_staff = isset($_SESSION['staff_logged_in']) && $_SESSION['staff_logged_in'] === true;
+// --- SECURITY CHECK ---
+$current_role = strtolower(trim($_SESSION['role'] ?? ''));
 
-if (!$is_admin_or_supervisor && !$is_staff) {
+if (
+    !isset($_SESSION['logged_in']) ||
+    $_SESSION['logged_in'] !== true ||
+    $current_role !== 'vet'
+) {
     header("Location: stafflogin.php");
     exit();
 }
 
 // SET CORRECT TIMEZONE FOR PHILIPPINES
 date_default_timezone_set('Asia/Manila');
+
+// --- CSRF TOKEN ---
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+$csrf_token = $_SESSION['csrf_token'];
 
 $staff_name = $_SESSION['staff_name'] ?? 'Doctor';
 
@@ -61,26 +66,39 @@ if (!isset($_GET['id']) || !is_numeric($_GET['id'])) {
 $pet_id = (int) $_GET['id'];
 
 // --- UPDATE LOGIC ---
-if (isset($_POST['update_medical'])) {
-    $updated_history = $_POST['medical_history'] ?? '';
-    $updated_needs = $_POST['special_needs'] ?? '';
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_medical'])) {
+    $submitted_token = $_POST['csrf_token'] ?? '';
 
-    $update_query = "UPDATE pets
-                     SET medical_history = :medical_history,
-                         special_needs = :special_needs
-                     WHERE id = :id";
+    if (
+        empty($submitted_token) ||
+        !hash_equals($_SESSION['csrf_token'] ?? '', $submitted_token)
+    ) {
+        http_response_code(403);
+        die("Invalid security token. Please refresh the page and try again.");
+    }
 
-    $update_stmt = $pdo->prepare($update_query);
+    $updated_history = trim($_POST['medical_history'] ?? '');
+    $updated_needs = trim($_POST['special_needs'] ?? '');
 
-    if ($update_stmt->execute([
-        ':medical_history' => $updated_history,
-        ':special_needs' => $updated_needs,
-        ':id' => $pet_id
-    ])) {
+    try {
+        $update_stmt = $pdo->prepare("
+            UPDATE pets
+            SET medical_history = :medical_history,
+                special_needs = :special_needs
+            WHERE id = :id
+        ");
+
+        $update_stmt->execute([
+            ':medical_history' => $updated_history,
+            ':special_needs' => $updated_needs,
+            ':id' => $pet_id
+        ]);
+
         header("Location: view_records.php?id=" . $pet_id);
         exit;
-    } else {
-        $error_msg = "Error updating records.";
+    } catch (PDOException $e) {
+        error_log("Medical record update failed: " . $e->getMessage());
+        $error_msg = "Unable to save medical records right now. Please try again.";
     }
 }
 
@@ -477,10 +495,16 @@ $special_needs = $row['special_needs'] ?? '';
                     <div class="notif-dropdown" id="notifBox" onclick="event.stopPropagation()">
                         <div class="notif-header">Clinic Alerts</div>
                         <div class="notif-body">
-                            <?php if($unread_count > 0 && $admin_notif_query): ?>
-                                <?php while($notif = mysqli_fetch_assoc($admin_notif_query)): ?>
-                                    <div class="notif-item"><?php echo htmlspecialchars($notif['message']); ?></div>
-                                <?php endwhile; ?>
+                            <?php if($unread_count > 0 && !empty($admin_notifications)): ?>
+                                <?php foreach($admin_notifications as $notif): ?>
+                                    <div class="notif-item">
+                                        <i class="fa-solid fa-circle-exclamation" style="color:#ef4444; margin-right:5px;"></i>
+                                        <?php echo htmlspecialchars($notif['message']); ?>
+                                        <br><small style="color:#94a3b8; font-size:11px;">
+                                            <?php echo date('M d, g:i A', strtotime((string)$notif['created_at'])); ?>
+                                        </small>
+                                    </div>
+                                <?php endforeach; ?>
                             <?php else: ?>
                                 <div style="padding: 20px; text-align: center; color: var(--text-muted);">No new alerts.</div>
                             <?php endif; ?>
@@ -517,7 +541,14 @@ $special_needs = $row['special_needs'] ?? '';
                     Edit Medical Profile: <?php echo htmlspecialchars($p_name); ?>
                 </div>
 
+                <?php if (!empty($error_msg)): ?>
+                    <div style="background:#fee2e2;color:#991b1b;border:1px solid #fecaca;padding:12px 15px;border-radius:10px;margin-bottom:20px;font-size:13px;font-weight:600;">
+                        <?php echo htmlspecialchars($error_msg); ?>
+                    </div>
+                <?php endif; ?>
+
                 <form method="POST" action="">
+                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token, ENT_QUOTES, 'UTF-8'); ?>">
                     <div class="form-group">
                         <label><i class="fas fa-notes-medical" style="color: #ef4444;"></i> Full Medical History</label>
                         <textarea name="medical_history" placeholder="Enter complete medical history..."><?php echo htmlspecialchars($med_history); ?></textarea>

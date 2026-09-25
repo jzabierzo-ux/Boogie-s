@@ -2,15 +2,23 @@
 session_start();
 require_once '../db_supabase.php';
 
-// --- SECURITY CHECK (FIXED PARA SA VET/STAFF) ---
+// --- SECURITY CHECK: VETERINARIAN PORTAL ONLY ---
 $current_role = isset($_SESSION['role']) ? strtolower(trim($_SESSION['role'])) : '';
-$is_admin_or_supervisor = isset($_SESSION['logged_in']) && in_array($current_role, ['admin', 'supervisor', 'staff'], true);
-$is_staff = isset($_SESSION['staff_logged_in']) && $_SESSION['staff_logged_in'] === true;
 
-if (!$is_admin_or_supervisor && !$is_staff) {
+if (
+    !isset($_SESSION['logged_in']) ||
+    $_SESSION['logged_in'] !== true ||
+    $current_role !== 'vet'
+) {
     header("Location: stafflogin.php");
     exit();
 }
+
+// CSRF protection for appointment status actions.
+if (empty($_SESSION['staff_csrf_token'])) {
+    $_SESSION['staff_csrf_token'] = bin2hex(random_bytes(32));
+}
+$csrf_token = $_SESSION['staff_csrf_token'];
 
 // SET CORRECT TIMEZONE FOR PHILIPPINES
 date_default_timezone_set('Asia/Manila');
@@ -45,67 +53,139 @@ $first_letter = strtoupper(substr($clean_name, 0, 1));
 $display_with_title = (stripos($full_display_name, 'Dr.') === false) ? 'Dr. ' . $full_display_name : $full_display_name;
 
 // --- FETCH NOTIFICATIONS ---
-$admin_notif_stmt = $pdo->prepare("SELECT * FROM admin_notifications WHERE is_read = 0 ORDER BY created_at DESC");
-$admin_notif_stmt->execute();
-$admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
-$unread_count = count($admin_notifications);
-
-// --- ACTION LOGIC PARA SA BUTTONS (NO PAYMENTS) ---
-if (isset($_GET['action']) && isset($_GET['id'])) {
-    $action = $_GET['action'];
-    $id = (int)$_GET['id'];
-
-    // Logic for booking_status and Notification only
-    $appt_stmt = $pdo->prepare("
-        SELECT a.*, p.name AS pet_real_name
-        FROM appointments a
-        JOIN pets p ON a.pet_id = p.id
-        WHERE a.id = :id
-        LIMIT 1
+try {
+    $admin_notif_stmt = $pdo->prepare("
+        SELECT id, message, created_at
+        FROM admin_notifications
+        WHERE is_read = 0
+        ORDER BY created_at DESC
+        LIMIT 20
     ");
-    $appt_stmt->execute([':id' => $id]);
-    $appt = $appt_stmt->fetch(PDO::FETCH_ASSOC);
+    $admin_notif_stmt->execute();
+    $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
+    $unread_count = count($admin_notifications);
+} catch (PDOException $e) {
+    error_log("Staff appointment notifications query failed: " . $e->getMessage());
+    $admin_notifications = [];
+    $unread_count = 0;
+}
 
-    if ($appt) {
-        $pet_display_name = $appt['pet_real_name'] ?? 'Unknown Pet';
-        $service = $appt['service'] ?? '';
-        $user_id = isset($appt['user_id']) ? (int)$appt['user_id'] : 0;
+// --- ACTION LOGIC PARA SA APPOINTMENT STATUS ---
+$flash_message = '';
 
-        $new_status = '';
-        if ($action === 'confirm') {
-            $new_status = 'Confirmed';
-        } elseif ($action === 'complete') {
-            $new_status = 'Completed';
-        } elseif ($action === 'cancel') {
-            $new_status = 'Cancelled';
-        }
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['appointment_action'])) {
+    $action = trim($_POST['appointment_action']);
+    $id = filter_var($_POST['appointment_id'] ?? null, FILTER_VALIDATE_INT);
+    $posted_token = $_POST['csrf_token'] ?? '';
 
-        if ($new_status !== '') {
-            // MEDICAL STATUS UPDATE ONLY (Removed Payment Auto-Update)
-            $update_stmt = $pdo->prepare("UPDATE appointments SET booking_status = :status WHERE id = :id");
-            $update_stmt->execute([
-                ':status' => $new_status,
-                ':id' => $id
-            ]);
-
-            $message = "Your $service appointment for $pet_display_name has been $new_status.";
-            $notification_stmt = $pdo->prepare("
-                INSERT INTO notifications (user_id, message, is_read)
-                VALUES (:user_id, :message, 0)
+    if (!hash_equals($csrf_token, (string)$posted_token)) {
+        $flash_message = 'Security check failed. Please refresh the page and try again.';
+    } elseif (!$id || !in_array($action, ['confirm', 'complete', 'cancel'], true)) {
+        $flash_message = 'Invalid appointment action.';
+    } else {
+        try {
+            $appt_stmt = $pdo->prepare("
+                SELECT a.*, p.name AS pet_real_name
+                FROM appointments a
+                JOIN pets p ON a.pet_id = p.id
+                WHERE a.id = :id
+                LIMIT 1
             ");
-            $notification_stmt->execute([
-                ':user_id' => $user_id,
-                ':message' => $message
-            ]);
+            $appt_stmt->execute([':id' => $id]);
+            $appt = $appt_stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$appt) {
+                $flash_message = 'Appointment not found.';
+            } elseif (strpos((string)($appt['service'] ?? ''), 'Vet Services') !== 0) {
+                $flash_message = 'This appointment is not part of the veterinarian schedule.';
+            } else {
+                $current_status = trim((string)($appt['booking_status'] ?? ''));
+                if ($current_status === '') {
+                    $current_status = 'Pending';
+                }
+
+                $transition_allowed = (
+                    ($action === 'confirm' && $current_status === 'Pending') ||
+                    ($action === 'cancel' && $current_status === 'Pending') ||
+                    ($action === 'complete' && $current_status === 'Confirmed')
+                );
+
+                if (!$transition_allowed) {
+                    $flash_message = 'That appointment cannot be changed from its current status.';
+                } else {
+                    $new_status_map = [
+                        'confirm' => 'Confirmed',
+                        'complete' => 'Completed',
+                        'cancel' => 'Cancelled'
+                    ];
+                    $new_status = $new_status_map[$action];
+
+                    // Repeat the transition rule in SQL to prevent stale/race-condition updates.
+                    $update_stmt = $pdo->prepare("
+                        UPDATE appointments
+                        SET booking_status = :status
+                        WHERE id = :id
+                          AND (
+                              (:status = 'Confirmed' AND (booking_status = 'Pending' OR booking_status IS NULL OR booking_status = ''))
+                              OR (:status = 'Cancelled' AND (booking_status = 'Pending' OR booking_status IS NULL OR booking_status = ''))
+                              OR (:status = 'Completed' AND booking_status = 'Confirmed')
+                          )
+                    ");
+                    $update_stmt->execute([
+                        ':status' => $new_status,
+                        ':id' => $id
+                    ]);
+
+                    if ($update_stmt->rowCount() !== 1) {
+                        $flash_message = 'The appointment was not updated. Its status may have changed already.';
+                    } else {
+                        $user_id = (int)($appt['user_id'] ?? 0);
+                        $pet_display_name = (string)($appt['pet_real_name'] ?? 'Unknown Pet');
+                        $service = (string)($appt['service'] ?? 'Veterinary');
+                        $message = "Your {$service} appointment for {$pet_display_name} has been {$new_status}.";
+
+                        if ($user_id > 0) {
+                            $notification_stmt = $pdo->prepare("
+                                INSERT INTO notifications (user_id, message, is_read)
+                                VALUES (:user_id, :message, 0)
+                            ");
+                            $notification_stmt->execute([
+                                ':user_id' => $user_id,
+                                ':message' => $message
+                            ]);
+                        }
+
+                        $flash_message = "Appointment successfully marked as {$new_status}.";
+                    }
+                }
+            }
+        } catch (PDOException $e) {
+            error_log("Staff appointment action failed: " . $e->getMessage());
+            $flash_message = 'Unable to update the appointment right now.';
         }
     }
 
-    header("Location: appointments.php");
+    $_SESSION['staff_appointment_flash'] = $flash_message;
+    $return_status = $_POST['return_status'] ?? 'All';
+    $redirect_url = 'appointments.php';
+    if ($return_status !== 'All') {
+        $redirect_url .= '?status=' . urlencode($return_status);
+    }
+    header("Location: " . $redirect_url);
     exit;
 }
 
-// Fetch Stats using 'booking_status' (FILTERED FOR VET SERVICES ONLY)
-// Note: We keep this query global so the cards always show the grand totals regardless of the current filter.
+$flash_message = $_SESSION['staff_appointment_flash'] ?? '';
+unset($_SESSION['staff_appointment_flash']);
+
+// --- GET FILTER STATUS FROM URL ---
+$allowed_filters = ['All', 'Pending', 'Confirmed', 'For Rescheduling', 'Rescheduled', 'Completed', 'Cancelled', 'No-Show'];
+$filter_status = isset($_GET['status']) ? trim($_GET['status']) : 'All';
+if (!in_array($filter_status, $allowed_filters, true)) {
+    $filter_status = 'All';
+}
+
+// Fetch stats using booking_status, filtered for veterinarian services only.
 $stats_stmt = $pdo->prepare("
     SELECT
         COUNT(*) AS total,
@@ -122,9 +202,6 @@ $stats = $stats_stmt->fetch(PDO::FETCH_ASSOC) ?: [
     'confirmed' => 0,
     'completed' => 0
 ];
-
-// --- GET FILTER STATUS FROM URL ---
-$filter_status = isset($_GET['status']) ? $_GET['status'] : 'All';
 ?>
 
 
@@ -304,6 +381,7 @@ $filter_status = isset($_GET['status']) ? $_GET['status'] : 'All';
         .action-group { display: flex; gap: 8px; }
         .btn-icon { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; border-radius: 8px; text-decoration: none; transition: 0.2s; font-size: 14px; }
         .btn-icon:hover { transform: translateY(-2px); box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
+        .btn-icon { border: 0; padding: 0; cursor: pointer; font-family: inherit; }
         
         .btn-confirm { background: #e0f2fe; color: #0369a1; }
         .btn-confirm:hover { background: #0284c7; color: white; }
@@ -689,6 +767,13 @@ $filter_status = isset($_GET['status']) ? $_GET['status'] : 'All';
                 <h1 style="font-size: 24px; font-weight: 800; color: var(--sidebar-navy);">Consultation Schedule</h1>
                 <p style="color: var(--text-muted); font-size: 14px; font-weight: 500;">View and manage medical appointments for your clinic</p>
             </div>
+            <?php if ($flash_message !== ''): ?>
+                <div style="margin:-8px 0 22px; padding:12px 16px; border-radius:10px; background:#eff6ff; color:#1e40af; border:1px solid #bfdbfe; font-size:13px; font-weight:600;">
+                    <i class="fas fa-circle-info" style="margin-right:6px;"></i>
+                    <?php echo htmlspecialchars($flash_message, ENT_QUOTES, 'UTF-8'); ?>
+                </div>
+            <?php endif; ?>
+
 
             <div class="stats-grid">
                 <div class="stat-card c-total" onclick="window.location.href='appointments.php?status=All'">
@@ -709,8 +794,18 @@ $filter_status = isset($_GET['status']) ? $_GET['status'] : 'All';
                 <div class="table-controls">
                     <div class="search-wrapper">
                         <i class="fas fa-search"></i>
-                        <input type="text" placeholder="Search patients or date...">
+                        <input type="text" id="appointmentSearch" placeholder="Search patients, service, or date...">
                     </div>
+
+                    <select id="statusFilter"
+                            onchange="if (this.value === 'All') { window.location.href='appointments.php'; } else { window.location.href='appointments.php?status=' + encodeURIComponent(this.value); }"
+                            style="padding:10px 14px; border:1px solid var(--border); border-radius:10px; background:#fff; font-family:'Poppins',sans-serif; font-size:13px; color:var(--text-main); outline:none;">
+                        <?php foreach ($allowed_filters as $filter_option): ?>
+                            <option value="<?php echo htmlspecialchars($filter_option, ENT_QUOTES, 'UTF-8'); ?>" <?php echo $filter_status === $filter_option ? 'selected' : ''; ?>>
+                                <?php echo htmlspecialchars($filter_option); ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
                     <?php if($filter_status !== 'All'): ?>
                         <div style="font-size: 13px; font-weight: 700; color: var(--brand-blue); background: #eff6ff; padding: 8px 16px; border-radius: 8px;">
                             Showing: <?php echo htmlspecialchars($filter_status); ?>
@@ -734,13 +829,29 @@ $filter_status = isset($_GET['status']) ? $_GET['status'] : 'All';
                             <?php
                             // --- DYNAMIC FILTER LOGIC FOR THE TABLE ---
                             $status_condition = "";
-                            
-                            if ($filter_status === 'Pending') {
-                                $status_condition = " AND (a.booking_status = 'Pending' OR a.booking_status IS NULL OR a.booking_status = '')";
-                            } elseif ($filter_status === 'Confirmed') {
-                                $status_condition = " AND a.booking_status = 'Confirmed'";
-                            } elseif ($filter_status === 'Completed') {
-                                $status_condition = " AND a.booking_status = 'Completed'";
+
+                            switch ($filter_status) {
+                                case 'Pending':
+                                    $status_condition = " AND (a.booking_status = 'Pending' OR a.booking_status IS NULL OR a.booking_status = '')";
+                                    break;
+                                case 'Confirmed':
+                                    $status_condition = " AND a.booking_status = 'Confirmed'";
+                                    break;
+                                case 'For Rescheduling':
+                                    $status_condition = " AND a.booking_status = 'For Rescheduling'";
+                                    break;
+                                case 'Rescheduled':
+                                    $status_condition = " AND a.booking_status = 'Rescheduled'";
+                                    break;
+                                case 'Completed':
+                                    $status_condition = " AND a.booking_status = 'Completed'";
+                                    break;
+                                case 'Cancelled':
+                                    $status_condition = " AND a.booking_status = 'Cancelled'";
+                                    break;
+                                case 'No-Show':
+                                    $status_condition = " AND a.booking_status = 'No-Show'";
+                                    break;
                             }
 
                             // FILTERED FOR VET SERVICES ONLY + CLICKED STATUS
@@ -755,13 +866,14 @@ $filter_status = isset($_GET['status']) ? $_GET['status'] : 'All';
 
                             if (count($rows) > 0) {
                                 foreach ($rows as $row) {
-                                    $raw_status = $row['booking_status'] ?? '';
-                                    $status = (empty($raw_status)) ? 'Pending' : htmlspecialchars($raw_status);
+                                    $raw_status = trim((string)($row['booking_status'] ?? ''));
+                                    $status = ($raw_status === '') ? 'Pending' : $raw_status;
+                                    $status_display = htmlspecialchars($status, ENT_QUOTES, 'UTF-8');
                                     $status_lower = strtolower($status);
-                                    
-                                    if ($status_lower == 'confirmed') { $s_class = 'st-confirmed'; }
-                                    elseif ($status_lower == 'completed') { $s_class = 'st-completed'; }
-                                    elseif ($status_lower == 'cancelled') { $s_class = 'st-cancelled'; }
+
+                                    if ($status_lower === 'confirmed') { $s_class = 'st-confirmed'; }
+                                    elseif ($status_lower === 'completed' || $status_lower === 'rescheduled') { $s_class = 'st-completed'; }
+                                    elseif ($status_lower === 'cancelled' || $status_lower === 'no-show') { $s_class = 'st-cancelled'; }
                                     else { $s_class = 'st-pending'; }
                                     
                                     $formatted_time = !empty($row['appointment_time']) ? date('g:i A', strtotime($row['appointment_time'])) : '';
@@ -774,14 +886,33 @@ $filter_status = isset($_GET['status']) ? $_GET['status'] : 'All';
                                     
                                     echo "<td>" . htmlspecialchars($row['service']) . "</td>";
                                     echo "<td style='font-weight:700; color: var(--sidebar-navy);'>" . htmlspecialchars($row['pet_name'] ?? 'Unknown Pet') . "</td>";
-                                    echo "<td><span class='status-pill $s_class'>$status</span></td>";
+                                    echo "<td><span class='status-pill $s_class'>$status_display</span></td>";
                                     
                                     echo "<td><div class='action-group'>";
                                         if ($status === 'Pending') {
-                                            echo "<a href='appointments.php?action=confirm&id=" . $row['id'] . "' class='btn-icon btn-confirm' title='Confirm Appointment'><i class='fas fa-check'></i></a>";
-                                            echo "<a href='appointments.php?action=cancel&id=" . $row['id'] . "' class='btn-icon btn-cancel' onclick=\"return confirm('Cancel this appointment?');\" title='Cancel Appointment'><i class='fas fa-times'></i></a>";
+                                            echo "<form method='POST' action='appointments.php' style='display:inline; margin:0;' onsubmit=\"return confirm('Confirm this appointment?');\">";
+                                            echo "<input type='hidden' name='appointment_action' value='confirm'>";
+                                            echo "<input type='hidden' name='appointment_id' value='" . (int)$row['id'] . "'>";
+                                            echo "<input type='hidden' name='return_status' value='" . htmlspecialchars($filter_status, ENT_QUOTES, 'UTF-8') . "'>";
+                                            echo "<input type='hidden' name='csrf_token' value='" . htmlspecialchars($csrf_token, ENT_QUOTES, 'UTF-8') . "'>";
+                                            echo "<button type='submit' class='btn-icon btn-confirm' title='Confirm Appointment'><i class='fas fa-check'></i></button>";
+                                            echo "</form>";
+
+                                            echo "<form method='POST' action='appointments.php' style='display:inline; margin:0;' onsubmit=\"return confirm('Cancel this appointment?');\">";
+                                            echo "<input type='hidden' name='appointment_action' value='cancel'>";
+                                            echo "<input type='hidden' name='appointment_id' value='" . (int)$row['id'] . "'>";
+                                            echo "<input type='hidden' name='return_status' value='" . htmlspecialchars($filter_status, ENT_QUOTES, 'UTF-8') . "'>";
+                                            echo "<input type='hidden' name='csrf_token' value='" . htmlspecialchars($csrf_token, ENT_QUOTES, 'UTF-8') . "'>";
+                                            echo "<button type='submit' class='btn-icon btn-cancel' title='Cancel Appointment'><i class='fas fa-times'></i></button>";
+                                            echo "</form>";
                                         } elseif ($status === 'Confirmed') {
-                                            echo "<a href='appointments.php?action=complete&id=" . $row['id'] . "' class='btn-icon btn-complete' title='Mark as Completed'><i class='fas fa-check-double'></i></a>";
+                                            echo "<form method='POST' action='appointments.php' style='display:inline; margin:0;' onsubmit=\"return confirm('Mark this veterinary service as completed?');\">";
+                                            echo "<input type='hidden' name='appointment_action' value='complete'>";
+                                            echo "<input type='hidden' name='appointment_id' value='" . (int)$row['id'] . "'>";
+                                            echo "<input type='hidden' name='return_status' value='" . htmlspecialchars($filter_status, ENT_QUOTES, 'UTF-8') . "'>";
+                                            echo "<input type='hidden' name='csrf_token' value='" . htmlspecialchars($csrf_token, ENT_QUOTES, 'UTF-8') . "'>";
+                                            echo "<button type='submit' class='btn-icon btn-complete' title='Mark as Completed'><i class='fas fa-check-double'></i></button>";
+                                            echo "</form>";
                                         } else {
                                             echo "<span style='color: #cbd5e1; font-style: italic; font-size: 12px; font-weight:600;'>No Actions</span>";
                                         }
@@ -837,10 +968,9 @@ $filter_status = isset($_GET['status']) ? $_GET['status'] : 'All';
         }
 
         // --- REAL-TIME NOTIFICATION FETCHER ---
-        let previousUnreadCount = <?php echo $unread_count; ?>;
         
         function fetchAdminNotifs() {
-            fetch('get_admin_notifs.php')
+            fetch('../admin/get_admin_notifs.php')
                 .then(response => response.json())
                 .then(data => {
                     const badge = document.getElementById('admin-notif-badge');
@@ -866,6 +996,20 @@ $filter_status = isset($_GET['status']) ? $_GET['status'] : 'All';
         }
 
         setInterval(fetchAdminNotifs, 3000);
+
+        // --- CLIENT-SIDE SEARCH ---
+        document.addEventListener('DOMContentLoaded', function () {
+            const searchInput = document.getElementById('appointmentSearch');
+            if (!searchInput) return;
+
+            searchInput.addEventListener('input', function () {
+                const term = this.value.toLowerCase().trim();
+                document.querySelectorAll('table tbody tr').forEach(function (row) {
+                    const rowText = row.innerText.toLowerCase();
+                    row.style.display = (!term || rowText.includes(term)) ? '' : 'none';
+                });
+            });
+        });
     </script>
 </body>
 </html>

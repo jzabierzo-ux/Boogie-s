@@ -47,7 +47,7 @@ try {
     $stmt = $pdo->query("
         SELECT *
         FROM admin_notifications
-        WHERE is_read = FALSE
+        WHERE is_read = 0
         ORDER BY created_at DESC
     ");
     $admin_notif_query = $stmt->fetchAll(PDO::FETCH_ASSOC);

@@ -2,11 +2,14 @@
 session_start();
 require_once '../db_supabase.php'; 
 
-// --- SECURITY CHECK (FIXED PARA SA VET/STAFF) ---
-$is_admin_or_supervisor = isset($_SESSION['logged_in']) && in_array(strtolower(trim($_SESSION['role'] ?? '')), ['admin', 'supervisor', 'staff']);
-$is_staff = isset($_SESSION['staff_logged_in']) && $_SESSION['staff_logged_in'] === true;
+// --- SECURITY CHECK ---
+$current_role = strtolower(trim($_SESSION['role'] ?? ''));
 
-if (!$is_admin_or_supervisor && !$is_staff) {
+if (
+    !isset($_SESSION['logged_in']) ||
+    $_SESSION['logged_in'] !== true ||
+    !in_array($current_role, ['admin', 'manager', 'vet'], true)
+) {
     header("Location: stafflogin.php");
     exit();
 }
@@ -528,7 +531,7 @@ $others = $total_pets - ($dogs + $cats);
                 <div class="notif-wrapper" onclick="toggleNotif(event)">
                     <i class="fa-solid fa-bell" style="font-size: 20px; color: var(--text-muted);"></i>
                     
-                    <span id="admin-notif-badge" class="notif-badge" style="display: <?php echo ($unread_count > 0) ? 'inline-block' : 'none'; ?>;">
+                    <span id="staff-notif-badge" class="notif-badge" style="display: <?php echo ($unread_count > 0) ? 'inline-block' : 'none'; ?>;">
                         <?php echo $unread_count; ?>
                     </span>
                     
@@ -752,10 +755,10 @@ $others = $total_pets - ($dogs + $cats);
         let previousUnreadCount = <?php echo $unread_count; ?>;
         
         function fetchAdminNotifs() {
-            fetch('get_admin_notifs.php')
+            fetch('../admin/get_admin_notifs.php')
                 .then(response => response.json())
                 .then(data => {
-                    const badge = document.getElementById('admin-notif-badge');
+                    const badge = document.getElementById('staff-notif-badge');
                     const notifList = document.getElementById('admin-notif-list');
                     const markReadBtn = document.getElementById('mark-read-link');
                     

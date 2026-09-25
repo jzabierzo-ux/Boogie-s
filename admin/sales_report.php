@@ -117,7 +117,7 @@ try {
     $admin_notif_query = $pdo->prepare("
         SELECT *
         FROM admin_notifications
-        WHERE is_read = FALSE
+        WHERE is_read = 0
         ORDER BY created_at DESC
     ");
     $admin_notif_query->execute();
@@ -477,37 +477,51 @@ try {
             }
         }
     }
+        // REAL-TIME NOTIFICATION FETCHER
+        function renderAdminNotifications(data) {
+            const badge = document.getElementById('admin-notif-badge');
+            const notifList = document.getElementById('admin-notif-list');
+            const markReadBtn = document.getElementById('mark-read-link');
 
-    // REAL-TIME NOTIFICATION FETCHER
-    let previousUnreadCount = <?php echo $unread_count; ?>;
-    
-    function fetchAdminNotifs() {
-        fetch('get_admin_notifs.php')
-            .then(response => response.json())
-            .then(data => {
-                const badge = document.getElementById('admin-notif-badge');
-                const notifList = document.getElementById('admin-notif-list');
-                const markReadBtn = document.getElementById('mark-read-link');
-                
-                if (data.unread > 0) {
-                    badge.style.display = 'inline-block';
-                    badge.innerText = data.unread;
-                    if(markReadBtn) markReadBtn.style.display = 'inline-block';
-                } else {
-                    badge.style.display = 'none';
-                    if(markReadBtn) markReadBtn.style.display = 'none';
-                }
+            if (!badge || !notifList) return;
 
-                if (data.html !== "") {
-                    notifList.innerHTML = data.html;
-                } else {
-                    notifList.innerHTML = '<div class="notif-empty">No new notifications.</div>';
-                }
+            const unread = Number(data && data.unread ? data.unread : 0);
+
+            badge.style.display = unread > 0 ? 'inline-block' : 'none';
+            badge.textContent = unread;
+
+            if (markReadBtn) {
+                markReadBtn.style.display = unread > 0 ? 'inline-block' : 'none';
+            }
+
+            notifList.innerHTML = (data && data.html)
+                ? data.html
+                : '<div class="notif-empty">No new notifications.</div>';
+        }
+
+        function fetchAdminNotifs() {
+            fetch('get_admin_notifs.php', {
+                method: 'GET',
+                cache: 'no-store',
+                credentials: 'same-origin'
             })
-            .catch(error => console.error('Error fetching admin notifications:', error));
-    }
+            .then(function(response) {
+                if (!response.ok) {
+                    throw new Error(
+                        'Notification request failed: HTTP ' + response.status
+                    );
+                }
+                return response.json();
+            })
+            .then(renderAdminNotifications)
+            .catch(function(error) {
+                console.error('Error fetching admin notifications:', error);
+            });
+        }
 
-    setInterval(fetchAdminNotifs, 3000);
+        fetchAdminNotifs();
+        setInterval(fetchAdminNotifs, 3000);
+
     </script>
 </body>
 </html>

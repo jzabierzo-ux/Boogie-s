@@ -12,6 +12,12 @@ if (!$is_authorized) {
     exit;
 }
 
+// CSRF protection for profile changes
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+$csrf_token = $_SESSION['csrf_token'];
+
 // Safely get the user ID
 $user_id = (int)($_SESSION['user_id'] ?? $_SESSION['staff_id'] ?? $_SESSION['id'] ?? 0);
 
@@ -20,23 +26,49 @@ $error_msg = "";
 
 // 2. HANDLE PROFILE PICTURE UPLOAD
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['profile_image'])) {
-    if ($_FILES['profile_image']['error'] === 0 && $user_id > 0) {
+    $submitted_csrf = $_POST['csrf_token'] ?? '';
+
+    if (!hash_equals($csrf_token, $submitted_csrf)) {
+        $error_msg = "Invalid request. Please refresh the page and try again.";
+    } elseif ($user_id <= 0) {
+        $error_msg = "Invalid user session.";
+    } elseif ($_FILES['profile_image']['error'] !== UPLOAD_ERR_OK) {
+        $error_msg = "Failed to upload image. Please try again.";
+    } elseif ($_FILES['profile_image']['size'] > 2 * 1024 * 1024) {
+        $error_msg = "Profile picture must not exceed 2MB.";
+    } else {
         $upload_dir = '../uploads/';
 
         if (!is_dir($upload_dir)) {
             mkdir($upload_dir, 0777, true);
         }
 
-        $file_name = $_FILES['profile_image']['name'];
-        $file_ext = strtolower(pathinfo($file_name, PATHINFO_EXTENSION));
-        $allowed_exts = ['jpg', 'jpeg', 'png', 'gif'];
+        $tmp_name = $_FILES['profile_image']['tmp_name'];
+        $original_name = $_FILES['profile_image']['name'] ?? '';
+        $file_ext = strtolower(pathinfo($original_name, PATHINFO_EXTENSION));
+        $allowed_mimes = [
+            'jpg'  => 'image/jpeg',
+            'jpeg' => 'image/jpeg',
+            'png'  => 'image/png',
+            'gif'  => 'image/gif'
+        ];
 
-        if (in_array($file_ext, $allowed_exts, true)) {
-            $new_filename = 'staff_' . $user_id . '_' . time() . '.' . $file_ext;
-            $target_path = $upload_dir . $new_filename;
+        $finfo = finfo_open(FILEINFO_MIME_TYPE);
+        $mime_type = $finfo ? finfo_file($finfo, $tmp_name) : false;
+        if ($finfo) {
+            finfo_close($finfo);
+        }
 
-            if (move_uploaded_file($_FILES['profile_image']['tmp_name'], $target_path)) {
-                try {
+        if (!isset($allowed_mimes[$file_ext]) || $mime_type !== $allowed_mimes[$file_ext]) {
+            $error_msg = "Invalid image file. Only JPG, PNG, and GIF images are allowed.";
+        } else {
+            try {
+                $new_filename = 'staff_' . $user_id . '_' . bin2hex(random_bytes(8)) . '.' . $file_ext;
+                $target_path = $upload_dir . $new_filename;
+
+                if (!move_uploaded_file($tmp_name, $target_path)) {
+                    $error_msg = "Failed to upload image. Please check folder permissions.";
+                } else {
                     $update_img_stmt = $pdo->prepare("
                         UPDATE users
                         SET profile_image = :profile_image
@@ -49,26 +81,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['profile_image'])) {
                     ]);
 
                     $success_msg = "Profile picture updated successfully!";
-                } catch (PDOException $e) {
-                    error_log("Profile image update failed: " . $e->getMessage());
-                    $error_msg = "Database error. Failed to save image path.";
                 }
-            } else {
-                $error_msg = "Failed to upload image. Please check folder permissions.";
+            } catch (PDOException $e) {
+                error_log("Profile image update failed: " . $e->getMessage());
+                $error_msg = "Database error. Failed to save image path.";
+            } catch (Throwable $e) {
+                error_log("Profile image upload failed: " . $e->getMessage());
+                $error_msg = "Unable to process the profile picture.";
             }
-        } else {
-            $error_msg = "Invalid file type. Only JPG, PNG, and GIF are allowed.";
         }
     }
 }
 
 // 3. HANDLE PROFILE DETAILS UPDATE (TINANGGAL NA ANG EMAIL)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_profile'])) {
+    $submitted_csrf = $_POST['csrf_token'] ?? '';
+
+    if (!hash_equals($csrf_token, $submitted_csrf)) {
+        $error_msg = "Invalid request. Please refresh the page and try again.";
+    }
+
     $new_name = trim($_POST['full_name'] ?? '');
     $new_username = trim($_POST['username'] ?? '');
     $new_contact = trim($_POST['contact_number'] ?? '');
 
-    if ($user_id > 0) {
+    if ($submitted_csrf !== '' && hash_equals($csrf_token, $submitted_csrf) && $user_id > 0) {
         try {
             // Check muna kung may kaparehas na username ang iba
             $check_user_stmt = $pdo->prepare("
@@ -622,9 +659,7 @@ try {
             <div class="top-right-actions">
                 <div class="notif-wrapper" onclick="toggleNotif(event)">
                     <i class="fa-solid fa-bell" style="font-size: 20px; color: var(--text-muted);"></i>
-                    <?php if($unread_count > 0): ?>
-                        <span id="staff-notif-badge" class="notif-badge"><?php echo $unread_count; ?></span>
-                    <?php endif; ?>
+                    <span id="staff-notif-badge" class="notif-badge" style="display: <?php echo ($unread_count > 0) ? 'inline-block' : 'none'; ?>;"><?php echo $unread_count; ?></span>
                     
                     <div class="notif-dropdown" id="notifBox" onclick="event.stopPropagation()">
                         <div class="notif-header">
@@ -693,7 +728,8 @@ try {
                 <?php endif; ?>
 
                 <form action="" method="POST" enctype="multipart/form-data" id="imageForm" style="display:none;">
-                    <input type="file" id="imageUpload" name="profile_image" accept=".png, .jpg, .jpeg" onchange="document.getElementById('imageForm').submit()">
+                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token, ENT_QUOTES, 'UTF-8'); ?>">
+                    <input type="file" id="imageUpload" name="profile_image" accept=".png, .jpg, .jpeg, .gif" onchange="document.getElementById('imageForm').submit()">
                 </form>
 
                 <div class="avatar-upload-container">
@@ -709,6 +745,7 @@ try {
                 </div>
 
                 <form action="" method="POST">
+                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token, ENT_QUOTES, 'UTF-8'); ?>">
                     <div class="form-grid">
                         <div class="form-group full-width">
                             <label>Full Name</label>
@@ -772,7 +809,7 @@ try {
         let previousUnreadCount = <?php echo $unread_count; ?>;
         
         function fetchAdminNotifs() {
-            fetch('get_admin_notifs.php')
+            fetch('../admin/get_admin_notifs.php', { credentials: 'same-origin' })
                 .then(response => response.json())
                 .then(data => {
                     const badge = document.getElementById('staff-notif-badge');

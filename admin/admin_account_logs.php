@@ -125,6 +125,30 @@ if ($count_data) {
     $failed_logs = (int)($count_data['failed_logs'] ?? 0);
 }
 
+/*
+|--------------------------------------------------------------------------
+| ADMIN NOTIFICATIONS
+|--------------------------------------------------------------------------
+*/
+$admin_notifications = [];
+$unread_count = 0;
+
+try {
+    $admin_notif_stmt = $pdo->prepare("
+        SELECT id, message, created_at
+        FROM admin_notifications
+        WHERE is_read = 0
+        ORDER BY created_at DESC
+        LIMIT 20
+    ");
+    $admin_notif_stmt->execute();
+    $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
+    $unread_count = count($admin_notifications);
+} catch (PDOException $e) {
+    $admin_notifications = [];
+    $unread_count = 0;
+}
+
 ?>
 
 <html lang="en">
@@ -424,6 +448,122 @@ if ($count_data) {
             color: #94a3b8;
         }
 
+        /* ------------------------------------------
+           ADMIN NOTIFICATIONS
+           ------------------------------------------ */
+        .top-actions {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .notif-wrapper {
+            position: relative;
+            display: inline-flex;
+            align-items: center;
+            cursor: pointer;
+        }
+
+        .notif-bell-btn {
+            width: 42px;
+            height: 42px;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            background: white;
+            color: #475569;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+        }
+
+        .notif-bell-btn:hover {
+            background: #f8fafc;
+        }
+
+        .notif-badge {
+            position: absolute;
+            top: -5px;
+            right: -5px;
+            min-width: 18px;
+            height: 18px;
+            padding: 0 5px;
+            background: #e11d48;
+            color: white;
+            border-radius: 999px;
+            font-size: 10px;
+            font-weight: 800;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            line-height: 18px;
+        }
+
+        .notif-dropdown {
+            display: none;
+            position: absolute;
+            right: 0;
+            top: 48px;
+            width: 320px;
+            background: white;
+            border: 1px solid #e2e8f0;
+            box-shadow: 0 10px 20px rgba(15, 23, 42, 0.12);
+            border-radius: 10px;
+            z-index: 2000;
+            text-align: left;
+            overflow: hidden;
+        }
+
+        .notif-dropdown.show {
+            display: block;
+        }
+
+        .notif-header {
+            padding: 12px 15px;
+            border-bottom: 1px solid #e2e8f0;
+            font-weight: 800;
+            font-size: 14px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            color: #0f172a;
+        }
+
+        .notif-body {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .notif-item {
+            padding: 12px 15px;
+            border-bottom: 1px solid #f1f5f9;
+            font-size: 13px;
+            color: #334155;
+            line-height: 1.4;
+        }
+
+        .notif-item:last-child {
+            border-bottom: none;
+        }
+
+        .notif-empty {
+            padding: 20px;
+            text-align: center;
+            color: #94a3b8;
+            font-size: 13px;
+        }
+
+        .mark-read-btn {
+            font-size: 11px;
+            color: #3b82f6;
+            text-decoration: none;
+            font-weight: 700;
+        }
+
+        .mark-read-btn:hover {
+            text-decoration: underline;
+        }
+
         /*
         ------------------------------------------
         RESPONSIVE
@@ -466,13 +606,103 @@ if ($count_data) {
 
         </div>
 
-        <a
-            href="admindashboard.php"
-            class="back-btn"
-        >
-            <i class="fa-solid fa-arrow-left"></i>
-            Back to Dashboard
-        </a>
+        <div class="top-actions">
+
+            <div class="notif-wrapper" onclick="toggleNotif(event)">
+                <button
+                    type="button"
+                    class="notif-bell-btn"
+                    aria-label="Notifications"
+                >
+                    <i class="fa-solid fa-bell"></i>
+
+                    <span
+                        id="admin-notif-badge"
+                        class="notif-badge"
+                        style="display: <?php echo $unread_count > 0 ? 'inline-flex' : 'none'; ?>;"
+                    >
+                        <?php echo $unread_count; ?>
+                    </span>
+                </button>
+
+                <div
+                    class="notif-dropdown"
+                    id="notifBox"
+                    onclick="event.stopPropagation()"
+                >
+                    <div class="notif-header">
+                        Alerts
+
+                        <a
+                            href="mark_notifications_read.php"
+                            id="mark-read-link"
+                            class="mark-read-btn"
+                            style="display: <?php echo $unread_count > 0 ? 'inline-block' : 'none'; ?>;"
+                        >
+                            Mark all read
+                        </a>
+                    </div>
+
+                    <div
+                        class="notif-body"
+                        id="admin-notif-list"
+                    >
+                        <?php if ($unread_count > 0): ?>
+
+                            <?php foreach ($admin_notifications as $notif): ?>
+
+                                <div class="notif-item">
+                                    <i
+                                        class="fa-solid fa-circle-exclamation"
+                                        style="color: #e11d48; margin-right: 5px;"
+                                    ></i>
+
+                                    <?php
+                                    echo htmlspecialchars(
+                                        (string)($notif['message'] ?? ''),
+                                        ENT_QUOTES,
+                                        'UTF-8'
+                                    );
+                                    ?>
+
+                                    <br>
+
+                                    <small style="color:#94a3b8;font-size:11px;">
+                                        <?php
+                                        echo !empty($notif['created_at'])
+                                            ? date(
+                                                'M d, g:i A',
+                                                strtotime(
+                                                    (string)$notif['created_at']
+                                                )
+                                            )
+                                            : '';
+                                        ?>
+                                    </small>
+                                </div>
+
+                            <?php endforeach; ?>
+
+                        <?php else: ?>
+
+                            <div class="notif-empty">
+                                No new notifications.
+                            </div>
+
+                        <?php endif; ?>
+                    </div>
+                </div>
+            </div>
+
+            <a
+                href="admindashboard.php"
+                class="back-btn"
+            >
+                <i class="fa-solid fa-arrow-left"></i>
+                Back to Dashboard
+            </a>
+
+        </div>
 
     </div>
 
@@ -804,6 +1034,105 @@ if ($count_data) {
     </div>
 
 </div>
+
+
+<script>
+(function () {
+
+    function renderAdminNotifications(data) {
+        const badge = document.getElementById('admin-notif-badge');
+        const notifList = document.getElementById('admin-notif-list');
+        const markReadBtn = document.getElementById('mark-read-link');
+
+        if (!badge || !notifList) return;
+
+        const unread = Number(
+            data && data.unread ? data.unread : 0
+        );
+
+        badge.style.display = unread > 0
+            ? 'inline-flex'
+            : 'none';
+
+        badge.textContent = unread;
+
+        if (markReadBtn) {
+            markReadBtn.style.display = unread > 0
+                ? 'inline-block'
+                : 'none';
+        }
+
+        notifList.innerHTML =
+            (data && data.html)
+                ? data.html
+                : '<div class="notif-empty">No new notifications.</div>';
+    }
+
+    function fetchAdminNotifs() {
+        fetch('get_admin_notifs.php', {
+            method: 'GET',
+            cache: 'no-store',
+            credentials: 'same-origin'
+        })
+        .then(function (response) {
+            if (!response.ok) {
+                throw new Error(
+                    'Notification request failed: HTTP ' +
+                    response.status
+                );
+            }
+
+            return response.json();
+        })
+        .then(renderAdminNotifications)
+        .catch(function (error) {
+            console.error(
+                'Error fetching admin notifications:',
+                error
+            );
+        });
+    }
+
+    function toggleNotif(event) {
+        event.stopPropagation();
+
+        const notifBox =
+            document.getElementById('notifBox');
+
+        if (notifBox) {
+            notifBox.classList.toggle('show');
+        }
+    }
+
+    window.toggleNotif = toggleNotif;
+
+    document.addEventListener(
+        'click',
+        function (event) {
+            if (!event.target.closest('.notif-wrapper')) {
+                const notifBox =
+                    document.getElementById('notifBox');
+
+                if (
+                    notifBox &&
+                    notifBox.classList.contains('show')
+                ) {
+                    notifBox.classList.remove('show');
+                }
+            }
+        }
+    );
+
+    document.addEventListener(
+        'DOMContentLoaded',
+        function () {
+            fetchAdminNotifs();
+            setInterval(fetchAdminNotifs, 3000);
+        }
+    );
+
+})();
+</script>
 
 </body>
 
