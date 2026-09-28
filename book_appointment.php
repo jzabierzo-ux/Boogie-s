@@ -847,37 +847,217 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         .booking-card .gcash-section {
-            background: #eef7ff;
-            padding: 19px;
-            border-radius: 14px;
-            border: 1px dashed #6eaff0;
+            background: linear-gradient(145deg, #fffdf1 0%, #eef7ff 100%);
+            padding: 20px;
+            border-radius: 16px;
+            border: 1px solid #d7e5f2;
+            box-shadow: 0 8px 24px rgba(0,31,63,.05);
             margin-bottom: 20px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .booking-card .gcash-section::before {
+            content: "";
+            position: absolute;
+            width: 150px;
+            height: 150px;
+            top: -75px;
+            right: -55px;
+            background: rgba(255,204,0,.18);
+            border-radius: 50%;
+            pointer-events: none;
         }
 
         .booking-card .gcash-section h4 {
-            color: #1d4ed8;
+            position: relative;
+            color: var(--brand-blue);
             margin-bottom: 6px;
-            font-size: 14px;
+            font-size: 15px;
             font-weight: 800;
+        }
+
+        .booking-card .gcash-section h4 i {
+            color: #0b76ff;
+            margin-right: 4px;
         }
 
         .booking-card .gcash-section p {
+            position: relative;
             color: #245386;
             font-size: 10px;
             line-height: 1.6;
-            margin-bottom: 13px;
+            margin-bottom: 14px;
         }
 
-        .booking-card .gcash-number {
-            background: #dcecff;
-            display: inline-block;
-            padding: 8px 13px;
-            border-radius: 8px;
+        .gcash-qr-card {
+            position: relative;
+            max-width: 360px;
+            margin: 0 auto 18px;
+            padding: 10px 10px 0;
+            border-radius: 18px;
+            background: #f5c400;
+            box-shadow: 0 10px 24px rgba(0,31,63,.10);
+        }
+
+        .gcash-qr-inner {
+            background: #ffffff;
+            border-radius: 14px;
+            padding: 15px 15px 10px;
+            border: 1px solid rgba(0,31,63,.08);
+        }
+
+        .gcash-qr-title {
+            text-align: center;
+            color: var(--brand-blue);
+            font-size: 11px;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: .8px;
+            margin-bottom: 9px;
+        }
+
+        .gcash-qr-image {
+            display: block;
+            width: min(280px, 100%);
+            aspect-ratio: 1 / 1;
+            object-fit: contain;
+            margin: 0 auto;
+            padding: 6px;
+            background: #fff;
+            border-radius: 10px;
+        }
+
+        .gcash-qr-caption {
+            margin: 8px 0 0 !important;
+            text-align: center;
+            color: #5f6f80 !important;
+            font-size: 9px !important;
+            line-height: 1.45 !important;
+        }
+
+        .gcash-scan-strip {
+            margin: 10px -10px 0;
+            padding: 10px 12px;
+            border-radius: 0 0 14px 14px;
+            background: var(--brand-blue);
+            color: var(--brand-yellow);
+            text-align: center;
+            font-size: 10px;
+            font-weight: 800;
+            letter-spacing: .5px;
+            text-transform: uppercase;
+        }
+
+        .gcash-number {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 7px;
+            background: #e8f1ff;
+            border: 1px solid #cfe0f5;
+            padding: 8px 12px;
+            border-radius: 9px;
             font-weight: 800;
             color: #1e3a8a;
             margin-bottom: 14px;
-            font-size: 15px;
-            letter-spacing: .7px;
+            font-size: 12px;
+        }
+
+        .gcash-number i {
+            color: #0b76ff;
+        }
+
+        .gcash-account-card {
+            max-width: 430px;
+            margin: 2px auto 18px;
+            padding: 15px 18px;
+            border-radius: 14px;
+            background: #ffffff;
+            border: 1px solid #d6e3ef;
+            box-shadow: 0 6px 18px rgba(0,31,63,.06);
+            text-align: center;
+        }
+
+        .gcash-account-label {
+            color: #718096;
+            font-size: 9px;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 4px;
+        }
+
+        .gcash-account-name {
+            color: var(--brand-blue);
+            font-size: 16px;
+            font-weight: 800;
+            letter-spacing: .5px;
+            margin-bottom: 8px;
+        }
+
+        .gcash-account-number {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 7px;
+            color: #1e3a8a;
+            background: #e8f1ff;
+            border: 1px solid #cfe0f5;
+            padding: 8px 14px;
+            border-radius: 9px;
+            font-size: 14px;
+            font-weight: 800;
+            letter-spacing: .8px;
+        }
+
+        .gcash-account-number i {
+            color: #0b76ff;
+        }
+
+        @media (max-width: 680px) {
+            .gcash-qr-card {
+                max-width: 300px;
+                padding: 8px 8px 0;
+                border-radius: 15px;
+            }
+
+            .gcash-qr-inner {
+                padding: 12px 12px 8px;
+                border-radius: 12px;
+            }
+
+            .gcash-qr-image {
+                width: min(235px, 100%);
+                padding: 4px;
+            }
+
+            .gcash-scan-strip {
+                margin: 8px -8px 0;
+                padding: 9px 8px;
+                font-size: 8px;
+                line-height: 1.35;
+            }
+
+            .gcash-number {
+                width: 100%;
+                font-size: 10px;
+                line-height: 1.4;
+            }
+
+            .gcash-account-card {
+                padding: 12px 13px;
+            }
+
+            .gcash-account-name {
+                font-size: 14px;
+            }
+
+            .gcash-account-number {
+                width: 100%;
+                font-size: 11px;
+                line-height: 1.4;
+            }
         }
 
         .booking-card .terms-container {
@@ -1798,8 +1978,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <h4><i class="fa-solid fa-mobile-screen-button"></i> GCash Payment Detail</h4>
                     <p>To secure your appointment, please send the exact amount to our GCash account. <strong>Your time slot will not be blocked until the payment is verified.</strong></p>
                     
-                    <div style="text-align: center;">
-                        <span class="gcash-number">GCash: 0912-345-6789 (Boogie's Pet Care)</span>
+                    <div class="gcash-qr-card" aria-label="Boogie's GCash QR payment">
+                        <div class="gcash-qr-inner">
+                            <div class="gcash-qr-title">
+                                <i class="fa-solid fa-qrcode"></i>
+                                Scan to Pay via GCash
+                            </div>
+
+                            <img
+                                src="images/qr.png"
+                                alt="Boogie's Pet Care GCash QR Code"
+                                class="gcash-qr-image"
+                                loading="eager"
+                            >
+
+                            <p class="gcash-qr-caption">
+                                Open your GCash app and scan the QR code.
+                                Send the exact amount shown in your booking total.
+                            </p>
+                        </div>
+
+                        <div class="gcash-scan-strip">
+                            <i class="fa-solid fa-bolt"></i>
+                            For Fast &amp; Secure Mobile Checkout — Scan This
+                        </div>
+                    </div>
+
+                    <div class="gcash-account-card">
+                        <div class="gcash-account-label">GCash Account</div>
+                        <div class="gcash-account-name">HA***H RO*SE T.</div>
+                        <div class="gcash-account-number">
+                            <i class="fa-solid fa-mobile-screen-button"></i>
+                            09668939327
+                        </div>
                     </div>
 
                     <div class="form-group">
