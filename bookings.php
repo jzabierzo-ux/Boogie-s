@@ -2611,7 +2611,7 @@ try {
                 <p>Your trusted partner for all your pet care needs in Dasmariñas, Cavite.</p>
                 <div class="socials">
                     <a href="https://www.facebook.com/boogiespetsupplies" aria-label="Facebook"><i class="fa-brands fa-facebook-f"></i></a>
-                    <a href="mailto:boogiespetcareservices@gmail.com" aria-label="Email"><i class="fa-solid fa-envelope"></i></a>
+                    <a href="https://mail.google.com/mail/?view=cm&to=boogiespetcareservices@gmail.com" aria-label="Email" onclick="return openBoogiesGmail(event);"><i class="fa-solid fa-envelope"></i></a>
                 </div>
             </div>
 
@@ -2620,7 +2620,7 @@ try {
                 <a href="home.php">Home</a>
                 <a href="petservices.php">Services & Prices</a>
                 <a href="contactus.php">Contact & Reviews</a>
-                <a href="faqs.html">FAQs</a>
+                <a href="faqs.php">FAQs</a>
             </div>
 
             <div>

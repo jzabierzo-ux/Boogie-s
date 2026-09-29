@@ -2,6 +2,36 @@
 session_start();
 require_once 'db_supabase.php';
 
+// ============================================================
+// PHPMailer / Gmail SMTP
+// IMPORTANT:
+// Put SMTP_EMAIL and SMTP_PASS in your secure server/environment
+// configuration. Do NOT commit the real App Password to GitHub.
+// ============================================================
+use PHPMailer\PHPMailer\PHPMailer;
+use PHPMailer\PHPMailer\Exception;
+
+require_once __DIR__ . '/PHPMailer/src/Exception.php';
+require_once __DIR__ . '/PHPMailer/src/PHPMailer.php';
+require_once __DIR__ . '/PHPMailer/src/SMTP.php';
+
+$smtp_email = defined('SMTP_EMAIL')
+    ? SMTP_EMAIL
+    : (getenv('SMTP_EMAIL') ?: 'prototyp6712@gmail.com');
+
+$smtp_pass = defined('SMTP_PASS')
+    ? SMTP_PASS
+    : (getenv('SMTP_PASS') ?: 'jwkvmplgbfuxlwdr');
+
+$smtp_name = defined('SMTP_NAME')
+    ? SMTP_NAME
+    : (getenv('SMTP_NAME') ?: "Boogie's Pet Care & Services");
+
+// CSRF token for the Contact Us form.
+if (empty($_SESSION['contact_csrf'])) {
+    $_SESSION['contact_csrf'] = bin2hex(random_bytes(32));
+}
+
 // Check if user is logged in
 $is_logged_in = isset($_SESSION['logged_in']) && $_SESSION['logged_in'] === true;
 $user_name = $is_logged_in ? ($_SESSION['user_name'] ?? 'User') : "Guest";
@@ -9,6 +39,16 @@ $user_name = $is_logged_in ? ($_SESSION['user_name'] ?? 'User') : "Guest";
 if (isset($_POST['send_contact'])) {
     if (!$is_logged_in) {
         echo "<script>alert('Please login first to send a message.'); window.location='login.php';</script>";
+        exit();
+    }
+
+    // CSRF protection
+    $submitted_csrf = $_POST['contact_csrf'] ?? '';
+    if (
+        empty($_SESSION['contact_csrf']) ||
+        !hash_equals($_SESSION['contact_csrf'], $submitted_csrf)
+    ) {
+        echo "<script>alert('Invalid form session. Please refresh the page and try again.'); window.location='contactus.php';</script>";
         exit();
     }
 
@@ -39,8 +79,91 @@ if (isset($_POST['send_contact'])) {
             ':message' => $message
         ]);
 
-        echo "<script>alert('Message sent successfully and saved to database!'); window.location='contactus.php';</script>";
-        exit();
+        // ============================================================
+        // SEND THE CONTACT MESSAGE TO BOOGIE'S EMAIL
+        // The message is still saved in Supabase even if email sending
+        // fails, so the inquiry is not lost.
+        // ============================================================
+        try {
+            if ($smtp_pass === '') {
+                throw new RuntimeException('SMTP_PASS is not configured.');
+            }
+
+            $mail = new PHPMailer(true);
+
+            $mail->isSMTP();
+            $mail->Host = 'smtp.gmail.com';
+            $mail->SMTPAuth = true;
+            $mail->Username = $smtp_email;
+            $mail->Password = str_replace(' ', '', $smtp_pass);
+            $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+            $mail->Port = 587;
+            $mail->Timeout = 20;
+            $mail->CharSet = 'UTF-8';
+
+            // Website sends using the prototype/system Gmail account.
+            $mail->setFrom($smtp_email, $smtp_name);
+
+            // Contact Us messages are delivered to Boogie's official Gmail.
+            $mail->addAddress(
+                'boogiespetcareservices@gmail.com',
+                "Boogie's Pet Care & Services"
+            );
+
+            // Clicking Reply in Gmail replies to the customer.
+            $mail->addReplyTo($email, $name);
+
+            $safe_name = htmlspecialchars($name, ENT_QUOTES, 'UTF-8');
+            $safe_email = htmlspecialchars($email, ENT_QUOTES, 'UTF-8');
+            $safe_message = nl2br(
+                htmlspecialchars($message, ENT_QUOTES, 'UTF-8')
+            );
+
+            $mail->isHTML(true);
+            $mail->Subject = 'New Contact Us Message - ' . $name;
+
+            $mail->Body = "
+                <div style='font-family:Arial,sans-serif;max-width:650px;margin:auto;background:#ffffff;border:1px solid #e2e8f0;border-radius:14px;overflow:hidden;'>
+                    <div style='background:#001f3f;color:#ffffff;padding:20px 24px;border-top:4px solid #ffcc00;'>
+                        <h2 style='margin:0;color:#ffcc00;'>Boogie's Pet Care Services</h2>
+                        <p style='margin:6px 0 0;color:#dbeafe;'>New message from the Contact Us form</p>
+                    </div>
+                    <div style='padding:24px;'>
+                        <p><strong>Customer Name:</strong><br>{$safe_name}</p>
+                        <p><strong>Customer Email:</strong><br>{$safe_email}</p>
+                        <div style='margin-top:20px;padding:16px;background:#f8fafc;border-left:4px solid #ffcc00;border-radius:8px;'>
+                            <strong>Message:</strong>
+                            <div style='margin-top:8px;color:#334155;line-height:1.7;'>{$safe_message}</div>
+                        </div>
+                        <p style='margin-top:24px;font-size:12px;color:#64748b;'>This message was submitted through the Boogie's Pet Care Services website.</p>
+                    </div>
+                </div>
+            ";
+
+            $mail->AltBody =
+                "New Contact Us Message - Boogie's Pet Care Services\n\n" .
+                "Customer Name: {$name}\n" .
+                "Customer Email: {$email}\n\n" .
+                "Message:\n{$message}\n";
+
+            $mail->send();
+
+            // Rotate the one-time token after a successful submission.
+            $_SESSION['contact_csrf'] = bin2hex(random_bytes(32));
+
+            echo "<script>alert('Message sent successfully to Boogie\'s email! Your message was also saved in our system.'); window.location='contactus.php';</script>";
+            exit();
+
+        } catch (Throwable $mail_error) {
+            error_log(
+                "Contact email sending failed: " .
+                $mail_error->getMessage()
+            );
+
+            echo "<script>alert('Your message was saved successfully, but the email could not be sent right now. Please try again later.'); window.location='contactus.php';</script>";
+            exit();
+        }
+
     } catch (Throwable $e) {
         error_log("Contact message insert failed: " . $e->getMessage());
         echo "<script>alert('Error saving your message. Please try again.'); window.history.back();</script>";
@@ -1279,6 +1402,7 @@ $parent_text = ($total_reviews == 1) ? "happy fur-parent" : "happy fur-parents";
         
         <nav class="categories">
             <ul>
+                <li><a href="home.php"><i class="fa-solid fa-house"></i> HOME</a></li>
                 <li><a href="petservices.php"><i class="fa-solid fa-paw"></i> PET SERVICES</a></li>
                 <li><a href="grooming.php"><i class="fa-solid fa-scissors"></i> GROOMING</a></li>
                 <li><a href="vetclinic.php"><i class="fa-solid fa-stethoscope"></i> VET CLINIC</a></li>
@@ -1367,6 +1491,8 @@ $parent_text = ($total_reviews == 1) ? "happy fur-parent" : "happy fur-parents";
                     </div>
 
                     <form action="" method="POST">
+                        <input type="hidden" name="contact_csrf" value="<?php echo htmlspecialchars($_SESSION['contact_csrf'], ENT_QUOTES, 'UTF-8'); ?>">
+
                         <div class="form-group">
                             <label>Full Name</label>
                             <input
@@ -1505,7 +1631,11 @@ $parent_text = ($total_reviews == 1) ? "happy fur-parent" : "happy fur-parents";
                 <p>Your trusted partner for all your pet care needs in Dasmariñas, Cavite.</p>
                 <div class="socials">
                     <a href="https://www.facebook.com/boogiespetsupplies"><i class="fa-brands fa-facebook-f"></i></a>
-                    <a href="mailto:boogiespetcareservices@gmail.com"><i class="fa-solid fa-envelope"></i></a>
+                    <a href="https://mail.google.com/mail/?view=cm&to=boogiespetcareservices@gmail.com"
+                       onclick="openGmailCompose(event, this.href)"
+                       aria-label="Email Boogie's Pet Care">
+                        <i class="fa-solid fa-envelope"></i>
+                    </a>
                 </div>
             </div>
             <div>   
@@ -1513,7 +1643,7 @@ $parent_text = ($total_reviews == 1) ? "happy fur-parent" : "happy fur-parents";
                 <a href="home.php">Home</a>
                 <a href="petservices.php">Services & Prices</a>
                 <a href="contactus.php">Contact & Reviews</a>
-                <a href="faqs.html">FAQs</a>
+                <a href="faqs.php">FAQs</a>
             </div>
             <div>
                 <h4>Our Services</h4>
@@ -1535,5 +1665,28 @@ $parent_text = ($total_reviews == 1) ? "happy fur-parent" : "happy fur-parents";
             </div>
         </div>
     </footer>
+    <script>
+        // ===== GMAIL COMPOSE =====
+        function openGmailCompose(event, url) {
+            event.preventDefault();
+
+            const width = 760;
+            const height = 650;
+            const left = Math.max(0, Math.round((window.screen.width - width) / 2));
+            const top = Math.max(0, Math.round((window.screen.height - height) / 2));
+
+            const popup = window.open(
+                url,
+                'boogiesGmailCompose',
+                `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`
+            );
+
+            // Mobile browsers may block popup-style windows, so use Gmail in the same tab.
+            if (!popup) {
+                window.location.href = url;
+            }
+        }
+    </script>
+
 </body>
 </html>

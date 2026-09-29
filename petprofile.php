@@ -265,6 +265,8 @@ body{
     line-height:1.6;
     overflow-y:scroll;
     overflow-x:hidden;
+    display:flex;
+    flex-direction:column;
 }
 
 a{color:inherit}
@@ -485,6 +487,7 @@ main{
     width:min(1120px,92%);
     margin:0 auto;
     padding:42px 0 76px;
+    flex:1 0 auto;
 }
 
 .page-top{
@@ -975,94 +978,82 @@ main{
     background:var(--brand-blue-2);
 }
 
-/* ===== FOOTER ===== */
-footer{
-    width:100%;
-    background:var(--brand-blue);
-    color:#fff;
-    border-top:4px solid var(--brand-yellow);
-    padding:62px 28px 30px;
-}
+/* FOOTER */
+        footer {
+            background: var(--brand-blue);
+            padding: 62px 28px 30px;
+            color: #fff;
+            border-top: 4px solid var(--brand-yellow);
+        }
 
-.footer-main{
-    width:min(1180px,100%);
-    margin:0 auto;
-    display:grid;
-    grid-template-columns:2fr 1fr 1fr 1.5fr;
-    gap:42px;
-    padding-bottom:40px;
-    border-bottom:1px solid rgba(255,255,255,.12);
-}
+        .footer-main {
+            max-width: 1180px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 2fr 1fr 1fr 1.5fr;
+            gap: 42px;
+            padding-bottom: 40px;
+            border-bottom: 1px solid rgba(255,255,255,.12);
+        }
 
-.footer-main h4{
-    color:var(--brand-yellow);
-    margin-bottom:15px;
-    font-size:12px;
-    font-weight:800;
-    text-transform:uppercase;
-    letter-spacing:.5px;
-}
+        .footer-main h4 {
+            color: var(--brand-yellow);
+            margin-bottom: 15px;
+            text-transform: uppercase;
+            font-weight: 800;
+            font-size: 12px;
+            letter-spacing: .5px;
+        }
 
-.footer-main p,
-.footer-main a{
-    display:block;
-    color:#cbd5e1;
-    text-decoration:none;
-    font-size:12px;
-    line-height:1.7;
-    margin-bottom:8px;
-}
+        .footer-main p,
+        .footer-main a {
+            color: #cbd5e1;
+            text-decoration: none;
+            font-size: 12px;
+            line-height: 1.7;
+            display: block;
+            margin-bottom: 8px;
+        }
 
-.footer-main a:hover{
-    color:#fff;
-}
+        .footer-main a:hover { color: #fff; }
 
-.socials{
-    display:flex;
-    gap:10px;
-    margin-top:16px;
-}
+        .socials {
+            display: flex;
+            gap: 10px;
+            margin-top: 16px;
+        }
 
-.socials a{
-    width:36px;
-    height:36px;
-    margin:0;
-    border-radius:50%;
-    background:rgba(255,255,255,.09);
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    color:#fff;
-}
+        .socials a {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            background: rgba(255,255,255,.09);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #fff;
+            transition: .2s;
+        }
 
-.socials a:hover{
-    background:var(--brand-yellow);
-    color:var(--brand-blue);
-}
+        .socials a:hover {
+            background: var(--brand-yellow);
+            color: var(--brand-blue);
+        }
 
-.footer-bottom{
-    width:min(1180px,100%);
-    margin:0 auto;
-    padding-top:23px;
-    text-align:center;
-    color:#91a1b1;
-    font-size:11px;
-}
+        .footer-bottom {
+            max-width: 1180px;
+            margin: 0 auto;
+            padding-top: 23px;
+            color: #91a1b1;
+            text-align: center;
+            font-size: 11px;
+        }
 
-@media (max-width:980px){
-    .pet-grid{
-        grid-template-columns:repeat(2,minmax(0,1fr));
-    }
-
-    .profile-trigger span{
-        display:none;
-    }
-
-    .footer-main{
-        grid-template-columns:1fr 1fr;
-    }
-}
-
+        @media (max-width:980px) {
+            .footer-main {
+                grid-template-columns: 1fr 1fr;
+            }
+        }
 
 /* ===== ENHANCED MOBILE RESPONSIVE ===== */
 @media (max-width:680px){
@@ -1854,44 +1845,40 @@ footer{
     <footer>
         <div class="footer-main">
             <div>
-                <h4><i class="fa-solid fa-paw"></i> Boogie's Pet Care</h4>
+                <h4 style="display:flex; align-items:center; gap:10px;"><i class="fa-solid fa-paw"></i> Boogie's Pet Care</h4>
                 <p>Your trusted partner for all your pet care needs in Dasmariñas, Cavite.</p>
-
                 <div class="socials">
-                    <a href="https://www.facebook.com/boogiespetsupplies" aria-label="Facebook">
-                        <i class="fa-brands fa-facebook-f"></i>
-                    </a>
-                    <a href="mailto:boogiespetcareservices@gmail.com" aria-label="Email">
+                    <a href="https://www.facebook.com/boogiespetsupplies"><i class="fa-brands fa-facebook-f"></i></a>
+                    <a href="https://mail.google.com/mail/?view=cm&to=boogiespetcareservices@gmail.com"
+                       class="gmail-compose-link"
+                       aria-label="Email Boogie's Pet Care"
+                       onclick="openGmailCompose(event, this.href);">
                         <i class="fa-solid fa-envelope"></i>
                     </a>
                 </div>
             </div>
-
             <div>
                 <h4>Quick Links</h4>
                 <a href="home.php">Home</a>
                 <a href="petservices.php">Services & Prices</a>
                 <a href="contactus.php">Contact & Reviews</a>
-                <a href="faqs.html">FAQs</a>
+                <a href="faqs.php">FAQs</a>
             </div>
-
             <div>
                 <h4>Services</h4>
                 <a href="grooming.php">Grooming</a>
                 <a href="pethotel.php">Pet Hotel</a>
                 <a href="vetclinic.php">Vet Clinic</a>
             </div>
-
             <div>
                 <h4>Contact Us</h4>
                 <p><i class="fa-solid fa-phone"></i> (046) 887 4714</p>
                 <p><i class="fa-solid fa-envelope"></i> boogiespetcareservices@gmail.com</p>
-                <p><i class="fa-solid fa-location-dot"></i> 110 Don Placido Campos Ave San Agustin 3, Dasmariñas, Philippines, 4114</p>
+                <p><i class="fa-solid fa-location-dot"></i> 110 Don Placido Campos Ave San Agustin 3, Dasmariñas, Philippines</p>
             </div>
         </div>
-
         <div class="footer-bottom">
-            © 2026 Boogie's Pet Care & Services - Dasmariñas Branch. All rights reserved.
+            <p>© 2026 Boogie's Pet Care & Services - Dasmariñas Branch. All rights reserved.</p>
         </div>
     </footer>
 
@@ -1912,6 +1899,38 @@ footer{
             if (!modal) return;
             modal.classList.remove("active");
             modal.setAttribute("aria-hidden", "true");
+        }
+
+        // ===== GMAIL COMPOSE =====
+        function openGmailCompose(event, url) {
+            event.preventDefault();
+
+            // On phones, let Gmail/browser handle the normal mobile compose page.
+            if (window.innerWidth <= 680) {
+                window.location.href = url;
+                return;
+            }
+
+            const width = 760;
+            const height = 650;
+            const left = Math.max(0, Math.round((window.screen.availWidth - width) / 2));
+            const top = Math.max(0, Math.round((window.screen.availHeight - height) / 2));
+
+            // Open a blank popup first so the browser can apply the requested size,
+            // then navigate that same popup to Gmail.
+            const popup = window.open(
+                'about:blank',
+                'boogiesGmailCompose',
+                `popup=yes,width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`
+            );
+
+            if (popup) {
+                popup.location.href = url;
+                popup.focus();
+            } else {
+                // Browser blocked the popup; fall back to opening Gmail normally.
+                window.location.href = url;
+            }
         }
 
         // ===== DROPDOWN LOGIC =====

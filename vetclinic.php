@@ -1046,6 +1046,7 @@ try {
 
         <nav class="categories">
             <ul>
+                <li><a href="home.php"><i class="fa-solid fa-house"></i> HOME</a></li>
                 <li><a href="petservices.php"><i class="fa-solid fa-paw"></i> PET SERVICES</a></li>
                 <li><a href="grooming.php"><i class="fa-solid fa-scissors"></i> GROOMING</a></li>
                 <li><a href="vetclinic.php" class="active"><i class="fa-solid fa-stethoscope"></i> VET CLINIC</a></li>
@@ -1206,7 +1207,11 @@ try {
                 <p>Your trusted partner for all your pet care needs in Dasmariñas, Cavite.</p>
                 <div class="socials">
                     <a href="https://www.facebook.com/boogiespetsupplies"><i class="fa-brands fa-facebook-f"></i></a>
-                    <a href="mailto:boogiespetcareservices@gmail.com"><i class="fa-solid fa-envelope"></i></a>
+                    <a href="https://mail.google.com/mail/?view=cm&to=boogiespetcareservices@gmail.com"
+                       onclick="openGmailCompose(event, this.href)"
+                       aria-label="Email Boogie's Pet Care">
+                        <i class="fa-solid fa-envelope"></i>
+                    </a>
                 </div>
             </div>
             <div>
@@ -1214,7 +1219,7 @@ try {
                 <a href="home.php">Home</a>
                 <a href="petservices.php">Services & Prices</a>
                 <a href="contactus.php">Contact & Reviews</a>
-                <a href="faqs.html">FAQs</a>
+                <a href="faqs.php">FAQs</a>
             </div>
             <div>
                 <h4>Services</h4>
@@ -1236,6 +1241,29 @@ try {
             </div>
         </div>
     </footer>
+
+    <script>
+        // ===== GMAIL COMPOSE =====
+        function openGmailCompose(event, url) {
+            event.preventDefault();
+
+            const width = 760;
+            const height = 650;
+            const left = Math.max(0, Math.round((window.screen.width - width) / 2));
+            const top = Math.max(0, Math.round((window.screen.height - height) / 2));
+
+            const popup = window.open(
+                url,
+                'boogiesGmailCompose',
+                `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`
+            );
+
+            // Mobile browsers may block popup-style windows, so use Gmail in the same tab.
+            if (!popup) {
+                window.location.href = url;
+            }
+        }
+    </script>
 
 </body>
 </html>

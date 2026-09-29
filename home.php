@@ -477,21 +477,38 @@ try {
             box-shadow: 0 18px 35px rgba(0,0,0,.11);
         }
 
+        .promo-grid.one-promo {
+            grid-template-columns: minmax(0, 340px);
+            justify-content: center;
+        }
+
+        .promo-grid.two-promos {
+            width: min(1010px, 100%);
+            margin-left: auto;
+            margin-right: auto;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            justify-content: center;
+        }
+
         .promo-grid .promo-card:only-child {
-            width: min(700px, 100%);
+            width: 100%;
             justify-self: center;
+        }
+
+        .promo-card.has-image {
+            min-height: 0;
         }
         .promo-image {
             display: block;
             width: 100%;
-            height: 240px;
+            height: 190px;
             object-fit: cover;
             background: #eef2f7;
         }
         .promo-body {
             position: relative;
             flex: 1;
-            padding: 23px 24px 21px;
+            padding: 19px 20px 18px;
             overflow: hidden;
         }
         .promo-body::after {
@@ -1065,13 +1082,51 @@ try {
                 gap: 14px;
             }
 
+            .promo-grid.one-promo,
+            .promo-grid.two-promos {
+                width: 100%;
+                grid-template-columns: 1fr;
+                justify-content: stretch;
+                margin-left: 0;
+                margin-right: 0;
+            }
+
+            .promo-grid .promo-card:only-child {
+                width: 100%;
+                max-width: 100%;
+            }
+
+            .promo-grid.two-promos .promo-card,
+            .promo-grid.one-promo .promo-card {
+                width: 100%;
+                max-width: 100%;
+            }
+
             .promo-card {
-                min-height: 180px;
-                padding: 24px 20px;
+                min-height: 0;
+                padding: 0;
+            }
+
+            .promo-image {
+                height: 155px;
+            }
+
+            .promo-body {
+                padding: 17px 16px 16px;
             }
 
             .promo-card h3 {
-                font-size: 22px;
+                font-size: 19px;
+            }
+
+            .promo-card p {
+                font-size: 11px;
+            }
+
+            .promo-meta {
+                font-size: 9px;
+                margin-top: 12px;
+                padding-top: 10px;
             }
 
             .service-card {
@@ -1198,7 +1253,8 @@ try {
         
         <nav class="categories" id="categoryNav">
             <ul id="categoryMenu">
-                <li><a href="petservices.php" class="active"><i class="fa-solid fa-paw"></i> PET SERVICES</a></li>
+                <li><a href="home.php" class="active"><i class="fa-solid fa-house"></i> HOME</a></li>
+                <li><a href="petservices.php"><i class="fa-solid fa-paw"></i> PET SERVICES</a></li>
                 <li><a href="grooming.php"><i class="fa-solid fa-scissors"></i> GROOMING</a></li>
                 <li><a href="vetclinic.php"><i class="fa-solid fa-stethoscope"></i> VET CLINIC</a></li>
                 <li><a href="pethotel.php"><i class="fa-solid fa-hotel"></i> PET HOTEL</a></li>
@@ -1287,7 +1343,11 @@ try {
                 <p>Don't miss out on current deals for your furry friends.</p>
             </div>
 
-            <div class="promo-grid">
+            <div class="promo-grid <?php
+                echo count($promos_list) === 1
+                    ? 'one-promo'
+                    : (count($promos_list) === 2 ? 'two-promos' : '');
+            ?>">
                 <?php if (!empty($promos_list)): ?>
                     <?php foreach ($promos_list as $promo): ?>
                         <?php
@@ -1296,15 +1356,41 @@ try {
                                 : 'purple';
 
                             $image_path = trim((string)($promo['image_url'] ?? ''));
+
+                            // Promo images are uploaded to /uploads/promos/ from the project root.
+                            // Keep external URLs intact and normalize old relative paths.
                             if ($image_path !== '') {
-                                $image_path = ltrim(str_replace('../', '', $image_path), '/');
+                                $normalized_image_path = str_replace('\\', '/', $image_path);
+
+                                if (preg_match('#^(https?:)?//#i', $normalized_image_path) || str_starts_with($normalized_image_path, 'data:')) {
+                                    $image_src = $normalized_image_path;
+                                } else {
+                                    $normalized_image_path = preg_replace('#^(?:\./|/)+#', '', $normalized_image_path);
+
+                                    while (str_starts_with($normalized_image_path, '../')) {
+                                        $normalized_image_path = substr($normalized_image_path, 3);
+                                    }
+
+                                    // Older records may contain admin/uploads/... or just a file name.
+                                    if (str_starts_with($normalized_image_path, 'admin/uploads/promos/')) {
+                                        $normalized_image_path = substr($normalized_image_path, strlen('admin/'));
+                                    }
+
+                                    if (str_contains($normalized_image_path, 'uploads/promos/')) {
+                                        $image_src = ltrim($normalized_image_path, '/');
+                                    } else {
+                                        $image_src = 'uploads/promos/' . basename($normalized_image_path);
+                                    }
+                                }
+                            } else {
+                                $image_src = '';
                             }
                         ?>
-                        <article class="promo-card <?php echo $theme_class; ?> <?php echo $image_path !== '' ? 'has-image' : ''; ?>">
-                            <?php if ($image_path !== ''): ?>
+                        <article class="promo-card <?php echo $theme_class; ?> <?php echo $image_src !== '' ? 'has-image' : ''; ?>">
+                            <?php if ($image_src !== ''): ?>
                                 <img
                                     class="promo-image"
-                                    src="<?php echo htmlspecialchars($image_path, ENT_QUOTES, 'UTF-8'); ?>"
+                                    src="<?php echo htmlspecialchars($image_src, ENT_QUOTES, 'UTF-8'); ?>"
                                     alt="<?php echo htmlspecialchars($promo['title'] ?? 'Promotion', ENT_QUOTES, 'UTF-8'); ?>"
                                     loading="lazy"
                                 >
@@ -1521,7 +1607,11 @@ try {
                 <p>Your trusted partner for all your pet care needs in Dasmariñas, Cavite.</p>
                 <div class="socials">
                     <a href="https://www.facebook.com/boogiespetsupplies"><i class="fa-brands fa-facebook-f"></i></a>
-                    <a href="mailto:boogiespetcareservices@gmail.com"><i class="fa-solid fa-envelope"></i></a>
+                    <a href="https://mail.google.com/mail/?view=cm&to=boogiespetcareservices@gmail.com"
+                       onclick="openGmailCompose(event, this.href)"
+                       aria-label="Email Boogie's Pet Care">
+                        <i class="fa-solid fa-envelope"></i>
+                    </a>
                 </div>
             </div>
             <div>
@@ -1529,7 +1619,7 @@ try {
                 <a href="home.php">Home</a>
                 <a href="petservices.php">Services & Prices</a>
                 <a href="contactus.php">Contact & Reviews</a>
-                <a href="faqs.html">FAQs</a>
+                <a href="faqs.php">FAQs</a>
             </div>
             <div>
                 <h4>Services</h4>
@@ -1556,6 +1646,27 @@ try {
     </footer>
 
     <script>
+        // ===== GMAIL COMPOSE =====
+        function openGmailCompose(event, url) {
+            event.preventDefault();
+
+            const width = 760;
+            const height = 650;
+            const left = Math.max(0, Math.round((window.screen.width - width) / 2));
+            const top = Math.max(0, Math.round((window.screen.height - height) / 2));
+
+            const popup = window.open(
+                url,
+                'boogiesGmailCompose',
+                `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`
+            );
+
+            // Mobile browsers may block popup-style windows, so fall back to Gmail.
+            if (!popup) {
+                window.location.href = url;
+            }
+        }
+
         let currentSlideIndex = 0;
         const slides = document.querySelectorAll('.slide');
         const dots = document.querySelectorAll('.dot');

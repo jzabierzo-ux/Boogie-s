@@ -1298,7 +1298,7 @@ $notification_total = count($notifs_list);
                 <p>Your trusted partner for all your pet care needs in Dasmariñas, Cavite.</p>
                 <div class="socials">
                     <a href="https://www.facebook.com/boogiespetsupplies" aria-label="Facebook"><i class="fa-brands fa-facebook-f"></i></a>
-                    <a href="mailto:boogiespetcareservices@gmail.com" aria-label="Email"><i class="fa-solid fa-envelope"></i></a>
+                    <a href="https://mail.google.com/mail/?view=cm&to=boogiespetcareservices@gmail.com" aria-label="Email" onclick="return openGmailCompose(event);"><i class="fa-solid fa-envelope"></i></a>
                 </div>
             </div>
 
@@ -1307,7 +1307,7 @@ $notification_total = count($notifs_list);
                 <a href="home.php">Home</a>
                 <a href="petservices.php">Services & Prices</a>
                 <a href="contactus.php">Contact & Reviews</a>
-                <a href="faqs.html">FAQs</a>
+                <a href="faqs.php">FAQs</a>
             </div>
 
             <div>
@@ -1352,6 +1352,36 @@ $notification_total = count($notifs_list);
                 });
             }
         });
+
+        // --- GMAIL COMPOSE ---
+        function openGmailCompose(event) {
+            event.preventDefault();
+
+            const gmailUrl =
+                'https://mail.google.com/mail/?view=cm&fs=1&to=boogiespetcareservices@gmail.com';
+
+            // On mobile, let Gmail/browser handle the page normally.
+            if (window.innerWidth <= 680) {
+                window.location.href =
+                    'https://mail.google.com/mail/?view=cm&to=boogiespetcareservices@gmail.com';
+                return false;
+            }
+
+            const popup = window.open(
+                gmailUrl,
+                'boogiesGmailCompose',
+                'width=760,height=650,resizable=yes,scrollbars=yes'
+            );
+
+            if (!popup) {
+                window.location.href =
+                    'https://mail.google.com/mail/?view=cm&to=boogiespetcareservices@gmail.com';
+            } else {
+                popup.focus();
+            }
+
+            return false;
+        }
 
         // --- REAL-TIME AJAX SCRIPT WITH SOUND ---
         const notifSound = new Audio('notification.mp3'); 

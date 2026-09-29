@@ -1254,6 +1254,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             color: var(--brand-blue);
         }
 
+        .gmail-compose-link {
+            cursor: pointer;
+        }
+
+
         .footer-bottom {
             max-width: 1180px;
             margin: 0 auto;
@@ -2096,7 +2101,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 <p>Your trusted partner for all your pet care needs in Dasmariñas, Cavite.</p>
                 <div class="socials">
                     <a href="https://www.facebook.com/boogiespetsupplies" aria-label="Facebook"><i class="fa-brands fa-facebook-f"></i></a>
-                    <a href="mailto:boogiespetcareservices@gmail.com" aria-label="Email"><i class="fa-solid fa-envelope"></i></a>
+                    <a href="https://mail.google.com/mail/?view=cm&to=boogiespetcareservices@gmail.com" class="gmail-compose-link" aria-label="Email Boogie's Pet Care Services"><i class="fa-solid fa-envelope"></i></a>
                 </div>
             </div>
 
@@ -2105,7 +2110,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 <a href="home.php">Home</a>
                 <a href="petservices.php">Services & Prices</a>
                 <a href="contactus.php">Contact & Reviews</a>
-                <a href="faqs.html">FAQs</a>
+                <a href="faqs.php">FAQs</a>
             </div>
 
             <div>
@@ -2130,6 +2135,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 
     <script>
+        // --- GMAIL COMPOSE POPUP ---
+        document.addEventListener('DOMContentLoaded', function () {
+            document.querySelectorAll('.gmail-compose-link').forEach(function (link) {
+                link.addEventListener('click', function (e) {
+                    // On small screens, let Gmail open normally for better mobile behavior.
+                    if (window.innerWidth <= 680) {
+                        return;
+                    }
+
+                    e.preventDefault();
+
+                    const width = 760;
+                    const height = 650;
+                    const left = Math.max(0, Math.round((window.screen.width - width) / 2));
+                    const top = Math.max(0, Math.round((window.screen.height - height) / 2));
+
+                    const popup = window.open(
+                        this.href,
+                        'boogiesGmailCompose',
+                        'width=' + width +
+                        ',height=' + height +
+                        ',left=' + left +
+                        ',top=' + top +
+                        ',resizable=yes,scrollbars=yes'
+                    );
+
+                    if (!popup) {
+                        window.location.href = this.href;
+                    }
+                });
+            });
+        });
+
         // --- DROPDOWN LOGIC ---
         function toggleDropdown(id) {
             document.querySelectorAll('.dropdown-menu').forEach(menu => {

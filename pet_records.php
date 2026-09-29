@@ -1224,7 +1224,9 @@ footer{
                         <i class="fa-brands fa-facebook-f"></i>
                     </a>
 
-                    <a href="mailto:boogiespetcareservices@gmail.com" aria-label="Email">
+                    <a href="https://mail.google.com/mail/?view=cm&to=boogiespetcareservices@gmail.com"
+                       aria-label="Email"
+                       onclick="return openGmailCompose(event);">
                         <i class="fa-solid fa-envelope"></i>
                     </a>
                 </div>
@@ -1235,7 +1237,7 @@ footer{
                 <a href="home.php">Home</a>
                 <a href="petservices.php">Services & Prices</a>
                 <a href="contactus.php">Contact & Reviews</a>
-                <a href="faqs.html">FAQs</a>
+                <a href="faqs.php">FAQs</a>
             </div>
 
             <div>
@@ -1259,6 +1261,34 @@ footer{
     </footer>
 
     <script>
+        function openGmailCompose(event) {
+            event.preventDefault();
+
+            const desktopUrl =
+                'https://mail.google.com/mail/?view=cm&fs=1&to=boogiespetcareservices@gmail.com';
+            const mobileUrl =
+                'https://mail.google.com/mail/?view=cm&to=boogiespetcareservices@gmail.com';
+
+            if (window.innerWidth <= 680) {
+                window.location.href = mobileUrl;
+                return false;
+            }
+
+            const popup = window.open(
+                desktopUrl,
+                'boogiesGmailCompose',
+                'width=760,height=650,resizable=yes,scrollbars=yes'
+            );
+
+            if (!popup) {
+                window.location.href = mobileUrl;
+            } else {
+                popup.focus();
+            }
+
+            return false;
+        }
+
         function toggleDropdown(id) {
             document.querySelectorAll('.dropdown-menu').forEach(menu => {
                 if (menu.id !== id) {

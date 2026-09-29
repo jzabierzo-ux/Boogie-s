@@ -25,7 +25,7 @@ try {
         SELECT COUNT(*) AS unread
         FROM notifications
         WHERE user_id = :user_id
-          AND is_read = FALSE
+          AND is_read = 0
     ");
     $notif_stmt->execute([
         ':user_id' => $user_id
@@ -1337,7 +1337,9 @@ img, input, select, button{
                         <i class="fa-brands fa-facebook-f"></i>
                     </a>
 
-                    <a href="mailto:boogiespetcareservices@gmail.com" aria-label="Email">
+                    <a href="https://mail.google.com/mail/?view=cm&to=boogiespetcareservices@gmail.com"
+                       aria-label="Email"
+                       onclick="return openGmailCompose(event);">
                         <i class="fa-solid fa-envelope"></i>
                     </a>
                 </div>
@@ -1372,6 +1374,37 @@ img, input, select, button{
     </footer>
 
     <script>
+        // ===== GMAIL COMPOSE =====
+        function openGmailCompose(event) {
+            event.preventDefault();
+
+            const desktopUrl =
+                'https://mail.google.com/mail/?view=cm&fs=1&to=boogiespetcareservices@gmail.com';
+            const mobileUrl =
+                'https://mail.google.com/mail/?view=cm&to=boogiespetcareservices@gmail.com';
+
+            // Mobile: open Gmail normally so it works better on phones.
+            if (window.innerWidth <= 680) {
+                window.location.href = mobileUrl;
+                return false;
+            }
+
+            const popup = window.open(
+                desktopUrl,
+                'boogiesGmailCompose',
+                'width=760,height=650,resizable=yes,scrollbars=yes'
+            );
+
+            // If the browser blocks popups, use normal Gmail navigation.
+            if (!popup) {
+                window.location.href = mobileUrl;
+            } else {
+                popup.focus();
+            }
+
+            return false;
+        }
+
         // ===== DROPDOWN LOGIC =====
         function toggleDropdown(id) {
             document.querySelectorAll('.dropdown-menu').forEach(menu => {
