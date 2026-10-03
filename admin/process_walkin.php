@@ -1,373 +1,276 @@
 <?php
+
 session_start();
-include '../db_supabase.php';
+require_once '../db_supabase.php';
 
-// --- UNIVERSAL SECURITY CHECK ---
-$current_role = isset($_SESSION['role']) ? strtolower(trim($_SESSION['role'])) : '';
+$current_role = isset($_SESSION['role']) ? strtolower(trim((string)$_SESSION['role'])) : '';
 
-if (!isset($_SESSION['logged_in']) || !in_array($current_role, ['admin', 'supervisor', 'staff'], true)) {
-    header("Location: ../staff/stafflogin.php");
+if (!isset($_SESSION['logged_in']) || !in_array($current_role, ['admin', 'manager', 'supervisor', 'vet', 'staff'], true)) {
+    header('Location: ../staff/stafflogin.php');
     exit();
 }
 
-// 2. CHECK ID
-if (!isset($_GET['id']) || !is_numeric($_GET['id'])) {
-    die("Invalid Pet ID.");
+if ($_SERVER['REQUEST_METHOD'] !== 'POST' || !isset($_POST['add_walkin'])) {
+    header('Location: managebooking.php');
+    exit();
 }
 
-$pet_id = (int)$_GET['id'];
-$success_msg = "";
-$error_msg = "";
+$customer_name = trim((string)($_POST['customer_name'] ?? ''));
+$contact_number = trim((string)($_POST['contact_number'] ?? ''));
+$pet_name = trim((string)($_POST['pet_name'] ?? ''));
+$pet_type = trim((string)($_POST['pet_type'] ?? ''));
+$pet_gender = trim((string)($_POST['pet_gender'] ?? ''));
+$pet_weight = (float)($_POST['pet_weight'] ?? 0);
+$service_category = trim((string)($_POST['service_category'] ?? ''));
+$specific_service = trim((string)($_POST['specific_service'] ?? ''));
+$haircut_style = trim((string)($_POST['haircut_style'] ?? ''));
+$appointment_date = trim((string)($_POST['appointment_date'] ?? ''));
+$appointment_time = trim((string)($_POST['appointment_time'] ?? ''));
 
-// --- BAGO: Fetch all users for Transfer of Ownership dropdown ---
-$users_list = [];
+$pricing_data = [
+    'Dog' => [
+        'Grooming' => [
+            'Basic Pet Grooming' => [
+                'Small (1-5kg)' => 400,
+                'Medium (6-10kg)' => 500,
+                'Large (11-15kg)' => 650,
+                'Extra Large (16-20kg)' => 850,
+                'XXL Large (21-25kg)' => 1000,
+            ],
+            'Full Grooming Package' => [
+                'Small (1-5kg)' => 450,
+                'Medium (6-10kg)' => 550,
+                'Large (11-15kg)' => 700,
+                'Extra Large (16-20kg)' => 900,
+                'XXL Large (21-25kg)' => 1100,
+            ],
+            'Bath & Blow Dry' => [
+                'Small (1-5kg)' => 300,
+                'Medium (6-10kg)' => 350,
+                'Large (11-15kg)' => 550,
+                'Extra Large (16-20kg)' => 750,
+                'XXL Large (21-25kg)' => 950,
+            ],
+        ],
+        'Vet Services' => [
+            'Deworming' => [
+                'Small (1-5kg)' => 200,
+                'Medium (6-10kg)' => 250,
+                'Large (11-15kg)' => 300,
+                'Extra Large (16-20kg)' => 350,
+                'XXL Large (21-25kg)' => 450,
+            ],
+            'Vaccination - Anti Rabies' => ['default' => 300],
+            'Vaccination - 5 in 1' => ['default' => 450],
+            'Vaccination - 6 in 1' => ['default' => 600],
+            'Vaccination - 8 in 1' => ['default' => 750],
+        ],
+        'Pet Hotel' => [
+            'Pet Daycare (1st Hour - Succeeding fees apply)' => [
+                'Small (1-5kg)' => 100,
+                'Medium (6-10kg)' => 100,
+                'Large (11-15kg)' => 150,
+                'Extra Large (16-20kg)' => 150,
+                'XXL Large (21-25kg)' => 200,
+            ],
+            'Pet Boarding (Overnight)' => [
+                'Small (1-5kg)' => 500,
+                'Medium (6-10kg)' => 500,
+                'Large (11-15kg)' => 600,
+                'Extra Large (16-20kg)' => 600,
+                'XXL Large (21-25kg)' => 800,
+            ],
+        ],
+    ],
+    'Cat' => [
+        'Grooming' => [
+            'Cat Grooming (Basic)' => [
+                'Small (1-5kg)' => 550,
+                'Medium (6-10kg)' => 650,
+                'Large (11-15kg)' => 750,
+                'Extra Large (16-20kg)' => 850,
+                'XXL Large (21-25kg)' => 950,
+            ],
+            'Cat Bath & Blow Dry' => [
+                'Small (1-5kg)' => 400,
+                'Medium (6-10kg)' => 500,
+                'Large (11-15kg)' => 600,
+                'Extra Large (16-20kg)' => 700,
+                'XXL Large (21-25kg)' => 800,
+            ],
+        ],
+        'Vet Services' => [
+            'Deworming' => [
+                'Small (1-5kg)' => 200,
+                'Medium (6-10kg)' => 250,
+                'Large (11-15kg)' => 300,
+                'Extra Large (16-20kg)' => 350,
+                'XXL Large (21-25kg)' => 450,
+            ],
+            'Vaccination - Anti Rabies' => ['default' => 300],
+            'Vaccination - 4 in 1 (Cats)' => ['default' => 900],
+        ],
+        'Pet Hotel' => [
+            'Pet Daycare (1st Hour - Succeeding fees apply)' => ['default' => 150],
+            'Pet Boarding (Overnight)' => ['default' => 500],
+        ],
+    ],
+];
+
+function walkinSizeFromWeight(float $weight): string
+{
+    if ($weight > 0 && $weight <= 5) return 'Small (1-5kg)';
+    if ($weight > 5 && $weight <= 10) return 'Medium (6-10kg)';
+    if ($weight > 10 && $weight <= 15) return 'Large (11-15kg)';
+    if ($weight > 15 && $weight <= 20) return 'Extra Large (16-20kg)';
+    if ($weight > 20 && $weight <= 25) return 'XXL Large (21-25kg)';
+    return '';
+}
+
+function walkinRedirect(string $message)
+{
+    $_SESSION['alert_msg'] = $message;
+    header('Location: managebooking.php');
+    exit();
+}
+
+if ($customer_name === '' || $contact_number === '' || $pet_name === '' || $pet_type === '' || $pet_gender === '' || $pet_weight <= 0 || $service_category === '' || $specific_service === '' || $appointment_date === '' || $appointment_time === '') {
+    walkinRedirect('Please complete all walk-in booking fields.');
+}
+
+if (!in_array($pet_gender, ['Male', 'Female'], true)) {
+    walkinRedirect('Please select a valid pet gender.');
+}
+
+if (!preg_match('/^09\d{9}$/', $contact_number)) {
+    walkinRedirect('Please enter a valid Philippine contact number (09XXXXXXXXX).');
+}
+
+if (!isset($pricing_data[$pet_type][$service_category][$specific_service])) {
+    walkinRedirect('Invalid pet type or service selection.');
+}
+
+$service_prices = $pricing_data[$pet_type][$service_category][$specific_service];
+$size_key = walkinSizeFromWeight($pet_weight);
+
+if (isset($service_prices['default'])) {
+    $service_fee = (float)$service_prices['default'];
+} elseif ($size_key !== '' && isset($service_prices[$size_key])) {
+    $service_fee = (float)$service_prices[$size_key];
+} else {
+    walkinRedirect('The selected service does not have a price for this weight. Please enter a weight from 0.1 to 25 kg.');
+}
+
+if ($specific_service === 'Full Grooming Package' && $haircut_style === '') {
+    walkinRedirect('Please select a haircut style for the Full Grooming Package.');
+}
+
+$final_service_name = $service_category . ' - ' . $specific_service;
+if ($specific_service === 'Full Grooming Package' && $haircut_style !== '') {
+    $final_service_name .= ' (' . $haircut_style . ')';
+}
+
+$date_check = DateTime::createFromFormat('Y-m-d', $appointment_date);
+if (!$date_check || $date_check->format('Y-m-d') !== $appointment_date) {
+    walkinRedirect('Please enter a valid appointment date.');
+}
 
 try {
-    $users_query = $pdo->prepare("
-        SELECT id, full_name, email
-        FROM users
-        ORDER BY full_name ASC
+    $pdo->beginTransaction();
+
+    $dummy_email = 'walkin_' . time() . '_' . bin2hex(random_bytes(4)) . '@boogies.local';
+
+    $user_stmt = $pdo->prepare("
+        INSERT INTO users
+            (full_name, email, password, contact_number, role, is_verified)
+        VALUES
+            (:full_name, :email, :password, :contact_number, 'user', 1)
+        RETURNING id
     ");
-    $users_query->execute();
-    $users_list = $users_query->fetchAll(PDO::FETCH_ASSOC);
-} catch (PDOException $e) {
-    $users_list = [];
-    $error_msg = "Unable to load the customer list.";
-}
 
-// 3. HANDLE FORM SUBMISSION (UPDATE)
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $p_name = trim($_POST['name'] ?? '');
-    $p_type = trim($_POST['pet_type'] ?? '');
-    $p_breed = trim($_POST['breed'] ?? '');
-    $p_gender = trim($_POST['gender'] ?? '');
-    $p_age = trim($_POST['age'] ?? '');
-    $p_weight = trim($_POST['weight'] ?? '');
+    $user_stmt->execute([
+        ':full_name' => $customer_name . ' (Walk-in)',
+        ':email' => $dummy_email,
+        ':password' => 'walkin123',
+        ':contact_number' => $contact_number,
+    ]);
 
-    // BAGO: Kunin ang ID ng bagong owner mula sa dropdown
-    $new_owner_id = isset($_POST['owner_id']) ? (int)$_POST['owner_id'] : 0;
-    $new_owner_name = "";
+    $new_user_id = (int)$user_stmt->fetchColumn();
 
-    // Hanapin yung pangalan nung piniling owner id para i-save din sa owner_name column
-    foreach ($users_list as $u) {
-        if ((int)$u['id'] === $new_owner_id) {
-            $new_owner_name = $u['full_name'];
-            break;
-        }
+    $pet_stmt = $pdo->prepare("
+        INSERT INTO pets
+            (owner_id, name, pet_type, gender, weight, owner_name)
+        VALUES
+            (:owner_id, :name, :pet_type, :gender, :weight, :owner_name)
+        RETURNING id
+    ");
+
+    $pet_stmt->execute([
+        ':owner_id' => $new_user_id,
+        ':name' => $pet_name,
+        ':pet_type' => $pet_type,
+        ':gender' => $pet_gender,
+        ':weight' => number_format($pet_weight, 1, '.', '') . 'kg',
+        ':owner_name' => $customer_name . ' (Walk-in)',
+    ]);
+
+    $new_pet_id = (int)$pet_stmt->fetchColumn();
+
+    $appointment_stmt = $pdo->prepare("
+        INSERT INTO appointments
+            (
+                user_id,
+                pet_id,
+                service,
+                appointment_date,
+                appointment_time,
+                service_fee,
+                total_price,
+                payment_method,
+                payment_status,
+                booking_status,
+                appointment_type,
+                vet_doctor
+            )
+        VALUES
+            (
+                :user_id,
+                :pet_id,
+                :service,
+                :appointment_date,
+                :appointment_time,
+                :service_fee,
+                :total_price,
+                'Cash (Walk-in)',
+                'Paid',
+                'Completed',
+                'Walk-in',
+                :vet_doctor
+            )
+    ");
+
+    $appointment_stmt->execute([
+        ':user_id' => $new_user_id,
+        ':pet_id' => $new_pet_id,
+        ':service' => $final_service_name,
+        ':appointment_date' => $appointment_date,
+        ':appointment_time' => $appointment_time,
+        ':service_fee' => $service_fee,
+        ':total_price' => $service_fee,
+        ':vet_doctor' => $service_category === 'Vet Services' ? 'Dr. Faith Casayuran' : null,
+    ]);
+
+    $pdo->commit();
+
+    $_SESSION['alert_msg'] = 'Walk-in booking successfully added! Total: ₱' . number_format($service_fee, 2);
+} catch (Throwable $e) {
+    if ($pdo->inTransaction()) {
+        $pdo->rollBack();
     }
 
-    if ($new_owner_id <= 0 || $new_owner_name === '') {
-        $error_msg = "Please select a valid owner.";
-    } elseif ($p_name === '' || $p_type === '' || $p_gender === '') {
-        $error_msg = "Please complete the required pet fields.";
-    } else {
-        try {
-            // BAGO: Updated query para isama ang owner_id at owner_name
-            $update_query = "
-                UPDATE pets
-                SET name = :name,
-                    pet_type = :pet_type,
-                    breed = :breed,
-                    gender = :gender,
-                    age = :age,
-                    weight = :weight,
-                    owner_id = :owner_id,
-                    owner_name = :owner_name
-                WHERE id = :pet_id
-            ";
-
-            $update_stmt = $pdo->prepare($update_query);
-            $update_stmt->execute([
-                ':name' => $p_name,
-                ':pet_type' => $p_type,
-                ':breed' => $p_breed,
-                ':gender' => $p_gender,
-                ':age' => $p_age,
-                ':weight' => $p_weight,
-                ':owner_id' => $new_owner_id,
-                ':owner_name' => $new_owner_name,
-                ':pet_id' => $pet_id
-            ]);
-
-            $success_msg = "Pet record and ownership successfully updated!";
-        } catch (PDOException $e) {
-            $error_msg = "Error updating record.";
-        }
-    }
+    error_log('Walk-in booking error: ' . $e->getMessage());
+    $_SESSION['alert_msg'] = 'Unable to add the walk-in booking. Check the PHP error log for details.';
 }
 
-// 4. FETCH CURRENT DATA
-try {
-    $query = "
-        SELECT *
-        FROM pets
-        WHERE id = :pet_id
-        LIMIT 1
-    ";
-
-    $stmt = $pdo->prepare($query);
-    $stmt->execute([':pet_id' => $pet_id]);
-    $row = $stmt->fetch(PDO::FETCH_ASSOC);
-} catch (PDOException $e) {
-    die("Unable to load the pet record at this time.");
-}
-
-if (!$row) {
-    die("Pet not found in the database.");
-}
-?>
-
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Edit Pet Record | Admin</title>
-    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <style>
-        :root {
-            --brand-yellow: #ffcc00;
-            --navy-dark: #001f3f;
-            --bg-light: #f4f7f6;
-            --white: #ffffff;
-            --text-main: #2d3436;
-            --text-muted: #64748b;
-            --border: #e2e8f0;
-        }
-
-        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Poppins', sans-serif;}
-
-        body {
-            background-color: var(--bg-light);
-            color: var(--text-main);
-            padding: 40px;
-            display: flex;
-            justify-content: center;
-            align-items: flex-start;
-            min-height: 100vh;
-        }
-
-        .container { 
-            width: 100%; 
-            max-width: 800px; 
-        }
-        
-        .header { 
-            display: flex; 
-            justify-content: space-between; 
-            align-items: center; 
-            margin-bottom: 25px; 
-        }
-        
-        .btn-back { 
-            background: var(--white); 
-            color: var(--navy-dark); 
-            padding: 10px 20px; 
-            border-radius: 8px; 
-            text-decoration: none; 
-            font-weight: 700; 
-            display: inline-flex; 
-            align-items: center; 
-            gap: 8px; 
-            transition: 0.3s; 
-            box-shadow: 0 2px 4px rgba(0,0,0,0.05); 
-            font-size: 14px;
-        }
-        .btn-back:hover { 
-            background: var(--navy-dark); 
-            color: var(--brand-yellow); 
-            transform: translateY(-2px); 
-            box-shadow: 0 6px 12px rgba(0,31,63,0.15);
-        }
-
-        .card { 
-            background: var(--white); 
-            padding: 40px; 
-            border-radius: 16px; 
-            box-shadow: 0 4px 10px rgba(0,0,0,0.03); 
-            border: 1px solid var(--border); 
-            border-top: 5px solid var(--navy-dark);
-        }
-        
-        .card-title { 
-            font-size: 22px; 
-            color: var(--navy-dark); 
-            font-weight: 800; 
-            margin-bottom: 25px; 
-            display: flex; 
-            align-items: center; 
-            gap: 12px; 
-            border-bottom: 2px solid #f8fafc; 
-            padding-bottom: 15px; 
-        }
-        .card-title i { color: var(--brand-yellow); }
-
-        .form-grid { 
-            display: grid; 
-            grid-template-columns: 1fr 1fr; 
-            gap: 20px; 
-        }
-        .form-group { margin-bottom: 15px; }
-        .form-group.full-width { grid-column: span 2; }
-        
-        label { 
-            display: block; 
-            font-size: 12px; 
-            font-weight: 700; 
-            color: var(--navy-dark); 
-            margin-bottom: 8px; 
-            text-transform: uppercase; 
-            letter-spacing: 0.5px;
-        }
-        
-        input[type="text"], input[type="number"], select, textarea {
-            width: 100%; 
-            padding: 12px 15px; 
-            border: 1px solid var(--border); 
-            border-radius: 8px; 
-            font-size: 14px; 
-            color: var(--text-main); 
-            outline: none; 
-            font-family: 'Poppins', sans-serif; 
-            box-sizing: border-box;
-            background: #f8fafc;
-            transition: 0.2s;
-        }
-        
-        input:focus:not([readonly]), select:focus, textarea:focus { 
-            background: var(--white); 
-            border-color: var(--navy-dark); 
-            box-shadow: 0 0 0 3px rgba(0, 31, 63, 0.1); 
-        }
-        
-        textarea { resize: vertical; min-height: 120px; }
-        
-        /* Readonly Styling */
-        input[readonly] {
-            background-color: #f1f5f9;
-            color: #94a3b8;
-            cursor: not-allowed;
-            font-weight: 600;
-            border: 1px dashed #cbd5e1;
-        }
-
-        .btn-save { 
-            background: var(--navy-dark); 
-            color: var(--brand-yellow); 
-            padding: 14px 25px; 
-            border: none; 
-            border-radius: 8px; 
-            font-size: 15px; 
-            font-weight: 700; 
-            cursor: pointer; 
-            transition: 0.3s; 
-            width: 100%; 
-            margin-top: 20px; 
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            gap: 8px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        }
-        .btn-save:hover { 
-            transform: translateY(-2px);
-            box-shadow: 0 6px 12px rgba(0,0,0,0.15);
-            opacity: 0.95;
-        }
-
-        .alert { 
-            padding: 15px 20px; 
-            border-radius: 8px; 
-            margin-bottom: 25px; 
-            font-weight: 600; 
-            font-size: 14px; 
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        .alert-success { background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; }
-        .alert-error { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
-        
-        @media (max-width: 600px) {
-            .form-grid { grid-template-columns: 1fr; }
-            .form-group.full-width { grid-column: span 1; }
-            .container { padding: 0; }
-        }
-    </style>
-</head>
-<body>
-
-    <div class="container">
-        <div class="header">
-            <a href="managepet.php" class="btn-back"><i class="fas fa-arrow-left"></i> Back to Pets</a>
-        </div>
-
-        <?php if($success_msg): ?>
-            <div class="alert alert-success"><i class="fas fa-check-circle"></i> <?php echo $success_msg; ?></div>
-        <?php endif; ?>
-
-        <?php if($error_msg): ?>
-            <div class="alert alert-error"><i class="fas fa-exclamation-circle"></i> <?php echo $error_msg; ?></div>
-        <?php endif; ?>
-
-        <div class="card">
-            <div class="card-title">
-                <i class="fas fa-edit"></i> Edit Pet Profile
-            </div>
-
-            <form action="" method="POST">
-                <div class="form-grid">
-                    <div class="form-group">
-                        <label>Pet Name</label>
-                        <input type="text" name="name" value="<?php echo htmlspecialchars($row['name']); ?>" required>
-                    </div>
-                    <div class="form-group">
-                        <label>Pet Type</label>
-                        <input type="text" name="pet_type" value="<?php echo htmlspecialchars($row['pet_type']); ?>" placeholder="e.g. Dog, Cat" required>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label>Breed</label>
-                        <input type="text" name="breed" value="<?php echo htmlspecialchars($row['breed']); ?>">
-                    </div>
-                    <div class="form-group">
-                        <label>Gender</label>
-                        <select name="gender" required>
-                            <option value="Male" <?php if($row['gender'] == 'Male') echo 'selected'; ?>>Male</option>
-                            <option value="Female" <?php if($row['gender'] == 'Female') echo 'selected'; ?>>Female</option>
-                        </select>
-                    </div>
-
-                    <div class="form-group">
-                        <label>Age (Years)</label>
-                        <input type="text" name="age" value="<?php echo htmlspecialchars($row['age']); ?>">
-                    </div>
-                    <div class="form-group">
-                        <label>Weight</label>
-                        <input type="text" name="weight" value="<?php echo htmlspecialchars($row['weight']); ?>" placeholder="e.g. 5kg">
-                    </div>
-
-                    <div class="form-group full-width">
-                        <label>Owner Name (Transfer Ownership)</label>
-                        <select name="owner_id" required>
-                            <option value="">-- Select New Owner --</option>
-                            <?php foreach ($users_list as $user): ?>
-                                <option value="<?php echo $user['id']; ?>" <?php echo (isset($row['owner_id']) && $row['owner_id'] == $user['id']) ? 'selected' : ''; ?>>
-                                    <?php echo htmlspecialchars($user['full_name']) . ' (' . htmlspecialchars($user['email']) . ')'; ?>
-                                </option>
-                            <?php endforeach; ?>
-                        </select>
-                        <small style="color: #0369a1; font-size: 11px; margin-top: 6px; display: flex; align-items: center; gap: 5px; font-weight: 500;">
-                            <i class="fas fa-exchange-alt" style="color: #0284c7;"></i> You can reassign this pet to a different customer. Medical history transfers automatically.
-                        </small>
-                    </div>
-                </div>
-
-                <button type="submit" class="btn-save"><i class="fas fa-save"></i> Save Changes</button>
-            </form>
-        </div>
-    </div>
-
-</body>
-</html> 
+header('Location: managebooking.php');
+exit();

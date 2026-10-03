@@ -44,117 +44,7 @@ if (isset($_SESSION['user_id'])) {
     }
 }
 
-// ==========================================
-// BAGO: WALK-IN BOOKING LOGIC
-// ==========================================
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_walkin'])) {
-    $c_name = trim($_POST['customer_name'] ?? '');
-    $p_name = trim($_POST['pet_name'] ?? '');
-    $service = trim($_POST['service'] ?? '');
-    $date = trim($_POST['appointment_date'] ?? '');
-    $time = trim($_POST['appointment_time'] ?? '');
-    $amount = floatval($_POST['amount'] ?? 0);
-
-    if ($c_name !== '' && $p_name !== '' && $service !== '' && $date !== '' && $time !== '' && $amount >= 0) {
-        try {
-            $pdo->beginTransaction();
-
-            // 1. Gagawa ng mabilis na "dummy" account para sa walk-in
-            $dummy_email = 'walkin_' . time() . '_' . bin2hex(random_bytes(3)) . '@boogies.local';
-
-            $insert_user = $pdo->prepare("
-                INSERT INTO users
-                    (full_name, email, password, role, is_verified)
-                VALUES
-                    (:full_name, :email, :password, 'user', TRUE)
-                RETURNING id
-            ");
-
-            $insert_user->execute([
-                ':full_name' => $c_name . ' (Walk-in)',
-                ':email' => $dummy_email,
-                ':password' => 'walkin123'
-            ]);
-
-            $new_user_id = (int)$insert_user->fetchColumn();
-
-            // 2. I-save yung alagang hayop
-            $insert_pet = $pdo->prepare("
-                INSERT INTO pets
-                    (owner_id, name, pet_type)
-                VALUES
-                    (:owner_id, :name, 'Walk-in Pet')
-                RETURNING id
-            ");
-
-            $insert_pet->execute([
-                ':owner_id' => $new_user_id,
-                ':name' => $p_name
-            ]);
-
-            $new_pet_id = (int)$insert_pet->fetchColumn();
-
-            // 3. I-save sa appointments (Auto-Confirmed at Paid Cash)
-            $insert_appt = $pdo->prepare("
-                INSERT INTO appointments
-                    (
-                        user_id,
-                        pet_id,
-                        service,
-                        appointment_date,
-                        appointment_time,
-                        service_fee,
-                        total_price,
-                        payment_method,
-                        payment_status,
-                        booking_status
-                    )
-                VALUES
-                    (
-                        :user_id,
-                        :pet_id,
-                        :service,
-                        :appointment_date,
-                        :appointment_time,
-                        :service_fee,
-                        :total_price,
-                        'Cash (Walk-in)',
-                        'Paid',
-                        'Completed'
-                    )
-            ");
-
-            $insert_appt->execute([
-                ':user_id' => $new_user_id,
-                ':pet_id' => $new_pet_id,
-                ':service' => $service,
-                ':appointment_date' => $date,
-                ':appointment_time' => $time,
-                ':service_fee' => $amount,
-                ':total_price' => $amount
-            ]);
-
-            $pdo->commit();
-
-            $_SESSION['alert_msg'] = "Walk-in booking successfully added and marked as completed!";
-        } catch (Throwable $e) {
-            if ($pdo->inTransaction()) {
-                $pdo->rollBack();
-            }
-
-            error_log('Walk-in booking error: ' . $e->getMessage());
-            $_SESSION['alert_msg'] = "Unable to add the walk-in booking.";
-        }
-
-        header("Location: managebooking.php");
-        exit();
-    }
-
-    $_SESSION['alert_msg'] = "Please complete all walk-in booking fields.";
-    header("Location: managebooking.php");
-    exit();
-}
-// ==========================================
+// Walk-in bookings are processed by process_walkin.php.
 
 // --- LOGIC: UPDATE STATUS WITH NOTIFICATIONS, PAYMENT & SMS ---
 if (isset($_GET['action']) && isset($_GET['id'])) {
@@ -757,7 +647,7 @@ $total_rows_showing = count($bookings);
 
         /* Modal Styles */
         .modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0, 31, 63, 0.6); display: none; align-items: center; justify-content: center; z-index: 2000; padding: 20px; }
-        .modal-content { background: var(--white); width: 100%; max-width: 450px; border-radius: 16px; padding: 30px; box-shadow: 0 10px 25px rgba(0,0,0,0.2); }
+        .modal-content { background: var(--white); width: 100%; max-width: 500px; max-height: 90vh; overflow-y: auto; border-radius: 16px; padding: 30px; box-shadow: 0 10px 25px rgba(0,0,0,0.2); }
         .modal-header { display: flex; gap: 15px; align-items: flex-start; margin-bottom: 20px; }
         .warning-icon { background: #fee2e2; color: #dc2626; width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 18px; flex-shrink: 0; }
         .modal-header h2 { font-size: 18px; color: var(--navy-dark); margin-bottom: 2px; font-weight: 800;}
@@ -1152,52 +1042,106 @@ $total_rows_showing = count($bookings);
                     <p>Encode a walk-in customer into the system.</p>
                 </div>
             </div>
-            <form method="POST" action="">
+
+            <form method="POST" action="process_walkin.php" id="walkinForm">
                 <input type="hidden" name="add_walkin" value="1">
-                
+
                 <div class="modal-form-group">
                     <label>Customer Name *</label>
                     <input type="text" name="customer_name" required placeholder="e.g. Juan Dela Cruz">
                 </div>
+
+                <div class="modal-form-group">
+                    <label>Contact Number *</label>
+                    <input type="tel" name="contact_number" required maxlength="13" pattern="09[0-9]{9}" placeholder="e.g. 09171234567">
+                </div>
+
                 <div class="modal-form-group">
                     <label>Pet Name *</label>
                     <input type="text" name="pet_name" required placeholder="e.g. Bantay">
                 </div>
+
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:15px;">
+                    <div class="modal-form-group">
+                        <label>Pet Type *</label>
+                        <select name="pet_type" id="walkinPetType" required onchange="updateWalkinServices()">
+                            <option value="">Select Type...</option>
+                            <option value="Dog">Dog</option>
+                            <option value="Cat">Cat</option>
+                        </select>
+                    </div>
+                    <div class="modal-form-group">
+                        <label>Weight (kg) *</label>
+                        <input type="number" name="pet_weight" id="walkinWeight" min="0.1" max="25" step="0.1" required placeholder="e.g. 7.5" oninput="updateWalkinPrice()">
+                    </div>
+                </div>
+
                 <div class="modal-form-group">
-                    <label>Service / Category *</label>
-                    <select name="service" required>
-                        <option value="">Select Service...</option>
-                        <optgroup label="Grooming">
-                            <option value="Grooming - Basic Pet Grooming">Basic Pet Grooming</option>
-                            <option value="Grooming - Full Grooming Package">Full Grooming Package</option>
-                        </optgroup>
-                        <optgroup label="Vet Services">
-                            <option value="Vet Services - Deworming">Deworming</option>
-                            <option value="Vet Services - Vaccination">Vaccination</option>
-                        </optgroup>
-                        <optgroup label="Pet Hotel">
-                            <option value="Pet Hotel - Pet Daycare">Pet Daycare</option>
-                            <option value="Pet Hotel - Pet Boarding">Pet Boarding</option>
-                        </optgroup>
+                    <label>Pet Gender *</label>
+                    <select name="pet_gender" id="walkinPetGender" required>
+                        <option value="">Select Gender...</option>
+                        <option value="Male">Male</option>
+                        <option value="Female">Female</option>
                     </select>
                 </div>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:15px;">
+                    <div class="modal-form-group">
+                        <label>Service Category *</label>
+                        <select name="service_category" id="walkinCategory" required onchange="updateWalkinServices()">
+                            <option value="">Select Category...</option>
+                            <option value="Grooming">Grooming</option>
+                            <option value="Vet Services">Vet Services</option>
+                            <option value="Pet Hotel">Pet Hotel</option>
+                        </select>
+                    </div>
+                    <div class="modal-form-group">
+                        <label>Specific Service *</label>
+                        <select name="specific_service" id="walkinService" required onchange="handleWalkinServiceChange()">
+                            <option value="">Choose specific service</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="modal-form-group" id="walkinHaircutContainer" style="display:none;">
+                    <label>Desired Haircut Style *</label>
+                    <select name="haircut_style" id="walkinHaircutStyle">
+                        <option value="">Select Style...</option>
+                        <option value="Puppy Cut">Puppy Cut</option>
+                        <option value="Summer Cut">Summer Cut</option>
+                        <option value="Shave Down">Shave Down</option>
+                        <option value="Bear Cut">Bear Cut</option>
+                        <option value="Poodle Cut">Poodle Cut</option>
+                    </select>
+                </div>
+
+                <div id="walkinPriceBox" style="display:none;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:14px 16px;margin-bottom:15px;">
+                    <div style="font-size:12px;color:#166534;font-weight:700;text-transform:uppercase;letter-spacing:.4px;">Calculated Price</div>
+                    <div id="walkinPriceText" style="font-size:24px;color:#166534;font-weight:800;margin-top:2px;">₱0.00</div>
+                    <div id="walkinPriceNote" style="font-size:11px;color:#64748b;margin-top:4px;"></div>
+                </div>
+
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:15px;">
                     <div class="modal-form-group">
                         <label>Date *</label>
-                        <input type="date" name="appointment_date" required value="<?php echo date('Y-m-d'); ?>">
+                        <input type="date" name="appointment_date" id="walkinDate" required value="<?php echo date('Y-m-d'); ?>">
                     </div>
                     <div class="modal-form-group">
                         <label>Time *</label>
-                        <input type="time" name="appointment_time" required>
+                        <input type="time" name="appointment_time" id="walkinTime" required>
                     </div>
                 </div>
+
                 <div class="modal-form-group">
                     <label>Amount Paid (₱) - Cash *</label>
-                    <input type="number" step="0.01" name="amount" required placeholder="0.00">
+                    <input type="number" step="0.01" name="amount" id="walkinAmount" required readonly placeholder="0.00" style="font-weight:700;background:#f8fafc;">
                 </div>
-                <div class="modal-actions" style="margin-top: 20px;">
+
+                <div class="modal-actions" style="margin-top:20px;">
                     <button type="button" class="btn-keep" onclick="closeWalkinModal()">Cancel</button>
-                    <button type="submit" style="background:#10b981; color:white; border:none;" class="btn-confirm-cancel">Save Walk-in</button>
+                    <button type="submit" style="background:#10b981;color:white;border:none;" class="btn-confirm-cancel" id="walkinSaveBtn" disabled>
+                        Save Walk-in
+                    </button>
                 </div>
             </form>
         </div>
@@ -1216,7 +1160,156 @@ $total_rows_showing = count($bookings);
             document.getElementById('cancelModal').style.display = 'none';
         }
 
+        const walkinPricingData = {
+            "Dog": {
+                "Grooming": {
+                    "Basic Pet Grooming": { "Small (1-5kg)": 400, "Medium (6-10kg)": 500, "Large (11-15kg)": 650, "Extra Large (16-20kg)": 850, "XXL Large (21-25kg)": 1000 },
+                    "Full Grooming Package": { "Small (1-5kg)": 450, "Medium (6-10kg)": 550, "Large (11-15kg)": 700, "Extra Large (16-20kg)": 900, "XXL Large (21-25kg)": 1100 },
+                    "Bath & Blow Dry": { "Small (1-5kg)": 300, "Medium (6-10kg)": 350, "Large (11-15kg)": 550, "Extra Large (16-20kg)": 750, "XXL Large (21-25kg)": 950 }
+                },
+                "Vet Services": {
+                    "Deworming": { "Small (1-5kg)": 200, "Medium (6-10kg)": 250, "Large (11-15kg)": 300, "Extra Large (16-20kg)": 350, "XXL Large (21-25kg)": 450 },
+                    "Vaccination - Anti Rabies": { "default": 300 },
+                    "Vaccination - 5 in 1": { "default": 450 },
+                    "Vaccination - 6 in 1": { "default": 600 },
+                    "Vaccination - 8 in 1": { "default": 750 }
+                },
+                "Pet Hotel": {
+                    "Pet Daycare (1st Hour - Succeeding fees apply)": { "Small (1-5kg)": 100, "Medium (6-10kg)": 100, "Large (11-15kg)": 150, "Extra Large (16-20kg)": 150, "XXL Large (21-25kg)": 200 },
+                    "Pet Boarding (Overnight)": { "Small (1-5kg)": 500, "Medium (6-10kg)": 500, "Large (11-15kg)": 600, "Extra Large (16-20kg)": 600, "XXL Large (21-25kg)": 800 }
+                }
+            },
+            "Cat": {
+                "Grooming": {
+                    "Cat Grooming (Basic)": { "Small (1-5kg)": 550, "Medium (6-10kg)": 650, "Large (11-15kg)": 750, "Extra Large (16-20kg)": 850, "XXL Large (21-25kg)": 950 },
+                    "Cat Bath & Blow Dry": { "Small (1-5kg)": 400, "Medium (6-10kg)": 500, "Large (11-15kg)": 600, "Extra Large (16-20kg)": 700, "XXL Large (21-25kg)": 800 }
+                },
+                "Vet Services": {
+                    "Deworming": { "Small (1-5kg)": 200, "Medium (6-10kg)": 250, "Large (11-15kg)": 300, "Extra Large (16-20kg)": 350, "XXL Large (21-25kg)": 450 },
+                    "Vaccination - Anti Rabies": { "default": 300 },
+                    "Vaccination - 4 in 1 (Cats)": { "default": 900 }
+                },
+                "Pet Hotel": {
+                    "Pet Daycare (1st Hour - Succeeding fees apply)": { "default": 150 },
+                    "Pet Boarding (Overnight)": { "default": 500 }
+                }
+            }
+        };
+
+        function getWalkinSizeFromWeight(weight) {
+            const kg = Number(weight);
+            if (!Number.isFinite(kg) || kg <= 0) return '';
+            if (kg <= 5) return 'Small (1-5kg)';
+            if (kg <= 10) return 'Medium (6-10kg)';
+            if (kg <= 15) return 'Large (11-15kg)';
+            if (kg <= 20) return 'Extra Large (16-20kg)';
+            if (kg <= 25) return 'XXL Large (21-25kg)';
+            return '';
+        }
+
+        function updateWalkinServices() {
+            const petType = document.getElementById('walkinPetType').value;
+            const category = document.getElementById('walkinCategory').value;
+            const serviceSelect = document.getElementById('walkinService');
+            const previous = serviceSelect.value;
+
+            serviceSelect.innerHTML = '<option value="">Choose specific service</option>';
+
+            if (petType && category && walkinPricingData[petType] && walkinPricingData[petType][category]) {
+                Object.keys(walkinPricingData[petType][category]).forEach(function(service) {
+                    const option = document.createElement('option');
+                    option.value = service;
+                    option.textContent = service;
+                    serviceSelect.appendChild(option);
+                });
+                if (Object.prototype.hasOwnProperty.call(walkinPricingData[petType][category], previous)) {
+                    serviceSelect.value = previous;
+                }
+            }
+
+            handleWalkinServiceChange();
+        }
+
+        function handleWalkinServiceChange() {
+            const service = document.getElementById('walkinService').value;
+            const haircutContainer = document.getElementById('walkinHaircutContainer');
+            const haircutSelect = document.getElementById('walkinHaircutStyle');
+
+            if (service === 'Full Grooming Package') {
+                haircutContainer.style.display = 'block';
+                haircutSelect.required = true;
+            } else {
+                haircutContainer.style.display = 'none';
+                haircutSelect.required = false;
+                haircutSelect.value = '';
+            }
+
+            updateWalkinPrice();
+        }
+
+        function updateWalkinPrice() {
+            const petType = document.getElementById('walkinPetType').value;
+            const category = document.getElementById('walkinCategory').value;
+            const service = document.getElementById('walkinService').value;
+            const weight = document.getElementById('walkinWeight').value;
+            const size = getWalkinSizeFromWeight(weight);
+            const priceBox = document.getElementById('walkinPriceBox');
+            const priceText = document.getElementById('walkinPriceText');
+            const priceNote = document.getElementById('walkinPriceNote');
+            const amountInput = document.getElementById('walkinAmount');
+            const saveBtn = document.getElementById('walkinSaveBtn');
+            const serviceData = walkinPricingData[petType]?.[category]?.[service];
+
+            let price = 0;
+            priceNote.textContent = '';
+
+            if (serviceData) {
+                if (serviceData.default !== undefined) {
+                    price = Number(serviceData.default);
+                    priceNote.textContent = 'Fixed service price.';
+                } else if (size && serviceData[size] !== undefined) {
+                    price = Number(serviceData[size]);
+                    priceNote.textContent = 'Based on ' + Number(weight).toFixed(1).replace('.0','') + ' kg (' + size + ').';
+                }
+
+                if (service === 'Pet Daycare (1st Hour - Succeeding fees apply)') {
+                    priceNote.textContent = 'Price shown is for the first hour; succeeding-hour fees apply based on clinic pricing.';
+                }
+            }
+
+            const valid = price > 0 && petType && category && service && Number(weight) > 0;
+            if (valid) {
+                priceText.textContent = '₱' + price.toFixed(2);
+                priceBox.style.display = 'block';
+                amountInput.value = price.toFixed(2);
+                saveBtn.disabled = false;
+                saveBtn.style.opacity = '1';
+                saveBtn.style.cursor = 'pointer';
+            } else {
+                priceBox.style.display = 'none';
+                amountInput.value = '';
+                saveBtn.disabled = true;
+                saveBtn.style.opacity = '.55';
+                saveBtn.style.cursor = 'not-allowed';
+            }
+        }
+
+        function resetWalkinForm() {
+            const form = document.getElementById('walkinForm');
+            if (form) form.reset();
+            document.getElementById('walkinService').innerHTML = '<option value="">Choose specific service</option>';
+            document.getElementById('walkinHaircutContainer').style.display = 'none';
+            document.getElementById('walkinHaircutStyle').required = false;
+            document.getElementById('walkinPriceBox').style.display = 'none';
+            document.getElementById('walkinAmount').value = '';
+            document.getElementById('walkinSaveBtn').disabled = true;
+            document.getElementById('walkinSaveBtn').style.opacity = '.55';
+            document.getElementById('walkinSaveBtn').style.cursor = 'not-allowed';
+            document.getElementById('walkinDate').value = '<?php echo date('Y-m-d'); ?>';
+        }
+
         function openWalkinModal() {
+            resetWalkinForm();
             document.getElementById('walkinModal').style.display = 'flex';
         }
         function closeWalkinModal() {
