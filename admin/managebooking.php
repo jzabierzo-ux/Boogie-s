@@ -44,7 +44,117 @@ if (isset($_SESSION['user_id'])) {
     }
 }
 
-// Walk-in bookings are processed by process_walkin.php.
+// ==========================================
+// BAGO: WALK-IN BOOKING LOGIC
+// ==========================================
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_walkin'])) {
+    $c_name = trim($_POST['customer_name'] ?? '');
+    $p_name = trim($_POST['pet_name'] ?? '');
+    $service = trim($_POST['service'] ?? '');
+    $date = trim($_POST['appointment_date'] ?? '');
+    $time = trim($_POST['appointment_time'] ?? '');
+    $amount = floatval($_POST['amount'] ?? 0);
+
+    if ($c_name !== '' && $p_name !== '' && $service !== '' && $date !== '' && $time !== '' && $amount >= 0) {
+        try {
+            $pdo->beginTransaction();
+
+            // 1. Gagawa ng mabilis na "dummy" account para sa walk-in
+            $dummy_email = 'walkin_' . time() . '_' . bin2hex(random_bytes(3)) . '@boogies.local';
+
+            $insert_user = $pdo->prepare("
+                INSERT INTO users
+                    (full_name, email, password, role, is_verified)
+                VALUES
+                    (:full_name, :email, :password, 'user', TRUE)
+                RETURNING id
+            ");
+
+            $insert_user->execute([
+                ':full_name' => $c_name . ' (Walk-in)',
+                ':email' => $dummy_email,
+                ':password' => 'walkin123'
+            ]);
+
+            $new_user_id = (int)$insert_user->fetchColumn();
+
+            // 2. I-save yung alagang hayop
+            $insert_pet = $pdo->prepare("
+                INSERT INTO pets
+                    (owner_id, name, pet_type)
+                VALUES
+                    (:owner_id, :name, 'Walk-in Pet')
+                RETURNING id
+            ");
+
+            $insert_pet->execute([
+                ':owner_id' => $new_user_id,
+                ':name' => $p_name
+            ]);
+
+            $new_pet_id = (int)$insert_pet->fetchColumn();
+
+            // 3. I-save sa appointments (Auto-Confirmed at Paid Cash)
+            $insert_appt = $pdo->prepare("
+                INSERT INTO appointments
+                    (
+                        user_id,
+                        pet_id,
+                        service,
+                        appointment_date,
+                        appointment_time,
+                        service_fee,
+                        total_price,
+                        payment_method,
+                        payment_status,
+                        booking_status
+                    )
+                VALUES
+                    (
+                        :user_id,
+                        :pet_id,
+                        :service,
+                        :appointment_date,
+                        :appointment_time,
+                        :service_fee,
+                        :total_price,
+                        'Cash (Walk-in)',
+                        'Paid',
+                        'Completed'
+                    )
+            ");
+
+            $insert_appt->execute([
+                ':user_id' => $new_user_id,
+                ':pet_id' => $new_pet_id,
+                ':service' => $service,
+                ':appointment_date' => $date,
+                ':appointment_time' => $time,
+                ':service_fee' => $amount,
+                ':total_price' => $amount
+            ]);
+
+            $pdo->commit();
+
+            $_SESSION['alert_msg'] = "Walk-in booking successfully added and marked as completed!";
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+
+            error_log('Walk-in booking error: ' . $e->getMessage());
+            $_SESSION['alert_msg'] = "Unable to add the walk-in booking.";
+        }
+
+        header("Location: managebooking.php");
+        exit();
+    }
+
+    $_SESSION['alert_msg'] = "Please complete all walk-in booking fields.";
+    header("Location: managebooking.php");
+    exit();
+}
+// ==========================================
 
 // --- LOGIC: UPDATE STATUS WITH NOTIFICATIONS, PAYMENT & SMS ---
 if (isset($_GET['action']) && isset($_GET['id'])) {
@@ -227,28 +337,62 @@ if (isset($_GET['action']) && isset($_GET['id'])) {
 
         // --- DB UPDATE LOGIC ---
         if ($new_status === 'verify_gcash') {
+            // GCash verification applies to online GCash bookings.
+            // A walk-in does not use this action.
             $stmt = $pdo->prepare("
                 UPDATE appointments
                 SET payment_status = 'Paid',
                     booking_status = 'Confirmed'
                 WHERE id = :id
+                  AND COALESCE(appointment_type, 'Online') <> 'Walk-in'
             ");
             $stmt->execute([':id' => $id]);
+
+            if ($stmt->rowCount() !== 1) {
+                $_SESSION['alert_msg'] = "GCash verification is only available for online bookings.";
+                header("Location: managebooking.php");
+                exit();
+            }
 
             $new_status = 'Confirmed';
             $_SESSION['alert_msg'] = "GCash Payment Verified and Booking Confirmed!";
         } else {
-            if ($new_status === 'Completed' || $new_status === 'Confirmed') {
+            if ($new_status === 'Completed') {
+                // Completing a walk-in must NOT automatically mark it as paid.
+                // Payment may be collected after the service is finished.
                 $stmt = $pdo->prepare("
                     UPDATE appointments
-                    SET booking_status = :booking_status,
-                        payment_status = 'Paid'
+                    SET booking_status = 'Completed',
+                        payment_status = CASE
+                            WHEN appointment_type = 'Walk-in' THEN COALESCE(NULLIF(payment_status, ''), 'Pending')
+                            ELSE 'Paid'
+                        END
+                    WHERE id = :id
+                      AND (
+                          appointment_type = 'Walk-in'
+                          OR booking_status IN ('Confirmed', 'confirmed', 'Rescheduled', 'rescheduled')
+                      )
+                ");
+                $stmt->execute([':id' => $id]);
+
+                if ($stmt->rowCount() !== 1) {
+                    $_SESSION['alert_msg'] = "A booking must be Confirmed or Rescheduled before it can be completed.";
+                    header("Location: managebooking.php");
+                    exit();
+                }
+            } elseif ($new_status === 'Confirmed') {
+                // Online/manual confirmation keeps the existing paid behavior.
+                // Walk-ins start as Confirmed + Pending and stay Pending until payment.
+                $stmt = $pdo->prepare("
+                    UPDATE appointments
+                    SET booking_status = 'Confirmed',
+                        payment_status = CASE
+                            WHEN appointment_type = 'Walk-in' THEN COALESCE(NULLIF(payment_status, ''), 'Pending')
+                            ELSE 'Paid'
+                        END
                     WHERE id = :id
                 ");
-                $stmt->execute([
-                    ':booking_status' => $new_status,
-                    ':id' => $id
-                ]);
+                $stmt->execute([':id' => $id]);
             } else {
                 $stmt = $pdo->prepare("
                     UPDATE appointments
@@ -471,7 +615,7 @@ try {
 }
 
 // --- DETERMINE FILTER STATUS FROM URL ---
-$filter_status = isset($_GET['status']) ? $_GET['status'] : 'Active';
+$filter_status = isset($_GET['status']) ? $_GET['status'] : 'All';
 
 $where_clause = "";
 $where_params = [];
@@ -641,13 +785,50 @@ $total_rows_showing = count($bookings);
         .status-Completed { background: #dcfce7; color: #166534; }
         .status-Cancelled { background: #fee2e2; color: #991b1b; }
         .status-No-Show { background: #ffedd5; color: #ea580c; border: 1px solid #fdba74;}
+        .status-Rescheduled { background: #e0f2fe; color: #0369a1; }
 
         .empty-state { text-align: center; padding: 80px 0; color: #94a3b8; }
         .empty-state i { font-size: 50px; margin-bottom: 15px; opacity: 0.3; }
 
         /* Modal Styles */
-        .modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0, 31, 63, 0.6); display: none; align-items: center; justify-content: center; z-index: 2000; padding: 20px; }
-        .modal-content { background: var(--white); width: 100%; max-width: 500px; max-height: 90vh; overflow-y: auto; border-radius: 16px; padding: 30px; box-shadow: 0 10px 25px rgba(0,0,0,0.2); }
+        .modal-overlay {
+            position: fixed;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 31, 63, 0.6);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 2000;
+            padding: 28px;
+            overflow-y: auto;
+        }
+        .modal-content {
+            background: var(--white);
+            width: min(520px, 100%);
+            max-height: calc(100dvh - 56px);
+            overflow-y: auto;
+            border-radius: 16px;
+            padding: 26px 28px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+            margin: 0 auto;
+        }
+        .modal-content::-webkit-scrollbar { width: 7px; }
+        .modal-content::-webkit-scrollbar-track { background: #f1f5f9; border-radius: 8px; }
+        .modal-content::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 8px; }
+        .modal-content::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+        @media (max-width: 680px) {
+            .modal-overlay { padding: 14px; align-items: center; }
+            .modal-content {
+                width: 100%;
+                max-width: 500px;
+                max-height: calc(100dvh - 28px);
+                padding: 22px 18px;
+                border-radius: 14px;
+            }
+        }
         .modal-header { display: flex; gap: 15px; align-items: flex-start; margin-bottom: 20px; }
         .warning-icon { background: #fee2e2; color: #dc2626; width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 18px; flex-shrink: 0; }
         .modal-header h2 { font-size: 18px; color: var(--navy-dark); margin-bottom: 2px; font-weight: 800;}
@@ -1133,8 +1314,9 @@ $total_rows_showing = count($bookings);
                 </div>
 
                 <div class="modal-form-group">
-                    <label>Amount Paid (₱) - Cash *</label>
+                    <label>Service Amount (₱) *</label>
                     <input type="number" step="0.01" name="amount" id="walkinAmount" required readonly placeholder="0.00" style="font-weight:700;background:#f8fafc;">
+                    <small style="display:block;margin-top:6px;color:#64748b;font-size:11px;">Payment can be collected later. Saving the walk-in will keep payment status as Pending.</small>
                 </div>
 
                 <div class="modal-actions" style="margin-top:20px;">
@@ -1360,21 +1542,40 @@ $total_rows_showing = count($bookings);
             function applyFilters() {
                 const selectedStatus = statusFilter ? statusFilter.value : "all";
                 const selectedService = serviceFilter ? serviceFilter.value : "all";
-                let visibleCount = 0;
 
-                tableRows.forEach(function(row) {
-                    const rowStatus = row.getAttribute("data-status");
-                    const rowService = row.getAttribute("data-service") || "";
-
-                    const matchesStatus = (selectedStatus === "all" || rowStatus === selectedStatus);
-                    const matchesService = (selectedService === "all" || rowService.includes(selectedService));
-
-                    if (matchesStatus && matchesService) {
-                        row.style.display = ""; 
-                        visibleCount++;
-                    } else {
-                        row.style.display = "none";
+                // Status is loaded server-side because a page initially showing one status
+                // cannot client-filter rows that were never loaded into the page.
+                if (statusFilter) {
+                    const statusMap = {
+                        all: 'All',
+                        pending: 'Pending',
+                        confirmed: 'Confirmed',
+                        'for rescheduling': 'For Rescheduling',
+                        rescheduled: 'Rescheduled',
+                        completed: 'Completed',
+                        cancelled: 'Cancelled'
+                    };
+                    const targetStatus = statusMap[selectedStatus] || 'All';
+                    const currentStatus = <?php echo json_encode($filter_status); ?>;
+                    if (targetStatus !== currentStatus) {
+                        const url = new URL(window.location.href);
+                        url.searchParams.set('status', targetStatus);
+                        window.location.href = url.toString();
+                        return;
                     }
+                }
+
+                let visibleCount = 0;
+                tableRows.forEach(function(row) {
+                    const rowStatus = (row.getAttribute("data-status") || "").toLowerCase();
+                    const rowService = row.getAttribute("data-service") || "";
+                    const matchesStatus = selectedStatus === "all" ||
+                        rowStatus === selectedStatus ||
+                        (selectedStatus === "cancelled" && rowStatus === "no-show");
+                    const matchesService = selectedService === "all" || rowService.includes(selectedService);
+
+                    row.style.display = (matchesStatus && matchesService) ? "" : "none";
+                    if (matchesStatus && matchesService) visibleCount++;
                 });
 
                 if (showingCount) {
@@ -1382,8 +1583,23 @@ $total_rows_showing = count($bookings);
                 }
             }
 
-            if (statusFilter) statusFilter.addEventListener("change", applyFilters);
+            // Set the dropdown to match the server-side filter.
+            if (statusFilter) {
+                const current = <?php echo json_encode($filter_status); ?>;
+                const reverse = {
+                    All: 'all',
+                    Pending: 'pending',
+                    Confirmed: 'confirmed',
+                    'For Rescheduling': 'for rescheduling',
+                    Rescheduled: 'rescheduled',
+                    Completed: 'completed',
+                    Cancelled: 'cancelled'
+                };
+                statusFilter.value = reverse[current] || 'all';
+                statusFilter.addEventListener("change", applyFilters);
+            }
             if (serviceFilter) serviceFilter.addEventListener("change", applyFilters);
+            applyFilters();
         });
 
         function renderAdminNotifications(data) {

@@ -19,7 +19,7 @@ try {
         SELECT COUNT(*) AS unread
         FROM notifications
         WHERE user_id = :user_id
-          AND is_read = FALSE
+          AND is_read = 0
     ");
     $notif_header_stmt->execute([
         ':user_id' => $user_id
@@ -152,7 +152,7 @@ if (isset($_POST['add_pet'])) {
                 :title,
                 :message,
                 :type,
-                FALSE,
+                0,
                 CURRENT_TIMESTAMP
             )
         ");

@@ -136,7 +136,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         INSERT INTO notifications
                             (user_id, title, message, type, is_read, created_at)
                         VALUES
-                            (:user_id, :title, :message, 'booking', FALSE, NOW())
+                            (:user_id, :title, :message, 'booking', 0, NOW())
                     ");
 
                     $notif_stmt->execute([
@@ -162,7 +162,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         INSERT INTO admin_notifications
                             (message, is_read, created_at)
                         VALUES
-                            (:message, FALSE, NOW())
+                            (:message, 0, NOW())
                     ");
 
                     $notif_stmt->execute([

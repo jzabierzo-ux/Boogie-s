@@ -238,22 +238,6 @@ try {
         }
         .categories i { font-size: 14px; }
 
-        @media (max-width: 1000px) {
-            .nav-top { grid-template-columns: 1fr; gap: 12px; }
-            .nav-links { justify-content: flex-start; }
-        }
-        @media (max-width: 680px) {
-            .categories ul {
-                overflow-x: auto;
-                justify-content: flex-start;
-                padding-left: 12px;
-            }
-            .categories ul li a {
-                white-space: nowrap;
-                padding: 10px 13px;
-            }
-        }
-
 
         /* ===== HEADER SEARCH ===== */
         .search-status {
@@ -928,166 +912,209 @@ try {
 
         @media (max-width: 980px) {
             .stats-bar { grid-template-columns: 1fr 1fr; }
-            .stat-item:nth-child(2) { border-right: 0; }
-            .stat-item:nth-child(-n+2) { border-bottom: 1px solid var(--border); }
             .promo-grid { grid-template-columns: 1fr 1fr; }
             .service-grid { grid-template-columns: 1fr 1fr; }
             .testimonial-grid { grid-template-columns: 1fr 1fr; }
             .footer-main { grid-template-columns: 1fr 1fr; }
-            .hero-content h1 { font-size: 40px; }
-        }
 
-        @media (max-width: 680px) {
-            .slide { min-height: 500px; }
-            .slide-inner { padding-top: 55px; }
-            .hero-content h1 { font-size: 32px; }
-            .hero-content p { font-size: 14px; }
-            .stats-wrap { margin-top: -32px; }
-            .stats-bar { grid-template-columns: 1fr 1fr; }
-            .home-section { padding-top: 55px; }
-            .promo-grid,
-            .service-grid,
-            .testimonial-grid { grid-template-columns: 1fr; }
-            .footer-main { grid-template-columns: 1fr; }
-            .cta-box { padding: 34px 22px; }
-            .cta-box h2 { font-size: 25px; }
-            .cta-footer { gap: 10px; flex-direction: column; }
-            .search-status { top: 186px; }
-        }
-
-
-        /* ===== PUBLIC INDEX: MOBILE RESPONSIVE IMPROVEMENTS ===== */
-        .mobile-menu-btn {
-            display: none;
-            width: 44px;
-            height: 44px;
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            background: #fff;
-            color: var(--brand-blue);
-            font-size: 18px;
-            cursor: pointer;
-            align-items: center;
-            justify-content: center;
-        }
-
-        .categories {
-            transition: max-height .25s ease, opacity .25s ease;
-        }
-
-        @media (max-width: 1000px) {
             .nav-top {
-                grid-template-columns: 1fr auto;
+                grid-template-columns: minmax(0, 1fr) auto;
                 gap: 12px 14px;
                 padding: 12px 20px;
             }
 
-            .mobile-menu-btn {
-                display: inline-flex;
-                justify-self: end;
+            .nav-top .search {
+                grid-column: 1 / -1;
+                width: 100%;
             }
+
+            .nav-links {
+                grid-column: 1 / -1;
+                justify-content: center;
+            }
+
+            .categories ul {
+                max-width: 100%;
+                overflow-x: auto;
+            }
+        }
+
+        /* ===== FINAL MOBILE SEARCH VISIBILITY FIX ===== */
+        @media (max-width: 680px) {
+            /* The public index page must keep the search bar visible, exactly like home.php. */
+            header .nav-top {
+                display: grid !important;
+                grid-template-columns: minmax(0, 1fr) auto !important;
+                grid-template-rows: auto auto !important;
+                align-items: center !important;
+            }
+
+            header .nav-top > .search,
+            header #siteSearchForm {
+                display: flex !important;
+                visibility: visible !important;
+                opacity: 1 !important;
+                width: 100% !important;
+                grid-column: 1 / -1 !important;
+                grid-row: 2 !important;
+                min-height: 46px !important;
+                box-sizing: border-box !important;
+                position: relative !important;
+                z-index: 10 !important;
+            }
+
+            header .nav-links {
+                grid-column: 2 !important;
+                grid-row: 1 !important;
+                width: auto !important;
+                justify-content: flex-end !important;
+            }
+
+            header .categories {
+                margin-top: 0 !important;
+            }
+        }
+
+        @media (max-width: 680px) {
+            body {
+                overflow-x: hidden;
+                padding-bottom: 66px;
+            }
+
+            .promo-bar {
+                min-height: 30px;
+                padding: 6px 10px;
+                font-size: 9.5px;
+                line-height: 1.3;
+                white-space: nowrap;
+            }
+
+            .nav-top {
+                grid-template-columns: minmax(0, 1fr) auto;
+                grid-template-rows: auto auto;
+                gap: 8px;
+                padding: 10px 14px 12px;
+            }
+
+            .nav-logo-img {
+                width: 42px;
+                height: 42px;
+                flex: 0 0 42px;
+            }
+
+            .logo { gap: 8px; min-width: 0; }
+            .logo-text { min-width: 0; }
+            .logo-text b { font-size: 16px; white-space: nowrap; }
+            .logo-text span { font-size: 6.5px; letter-spacing: .8px; white-space: nowrap; }
 
             .nav-top .search {
                 grid-column: 1 / -1;
                 grid-row: 2;
                 width: 100%;
-                margin: 0;
-            }
-
-            .nav-links {
-                grid-column: 1 / -1;
-                grid-row: 3;
-                justify-content: center;
-            }
-
-            .categories ul {
-                max-width: none;
-            }
-        }
-
-        @media (max-width: 680px) {
-            .promo-bar {
-                padding: 7px 10px;
-                font-size: 10px;
-            }
-
-            .nav-top {
-                padding: 10px 14px 12px;
-            }
-
-            .nav-logo-img {
-                width: 43px;
-                height: 43px;
-            }
-
-            .logo-text b {
-                font-size: 17px;
-            }
-
-            .logo-text span {
-                font-size: 8px;
-                letter-spacing: .9px;
-            }
-
-            .search {
+                min-height: 46px;
+                padding: 4px 6px 4px 11px;
                 border-radius: 12px;
             }
 
             .search input {
-                font-size: 12px;
+                min-width: 0;
+                font-size: 11.5px;
                 padding: 8px 4px;
             }
 
             .search button {
                 width: 36px;
                 height: 36px;
+                flex: 0 0 36px;
             }
 
             .nav-links {
-                gap: 8px;
+                grid-column: 2;
+                grid-row: 1;
+                width: auto;
+                display: flex !important;
+                justify-content: flex-end;
+                align-items: center;
+                gap: 0;
             }
 
-            .cart-btn {
-                width: 100%;
-                text-align: center;
+            .nav-links .cart-btn {
+                display: inline-flex !important;
+                width: auto;
+                min-height: 40px;
+                align-items: center;
+                justify-content: center;
                 padding: 10px 14px;
+                font-size: 11px;
+                border-radius: 10px;
             }
 
-            .categories {
-                display: none;
-                max-height: 0;
-                overflow: hidden;
-                opacity: 0;
+            .nav-links .cart-btn {
+                width: 100%;
+                min-height: 45px;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                padding: 10px 14px;
+                font-size: 11px;
             }
 
+            /* Always-visible bottom navigation — no hamburger required. */
+            .categories,
             .categories.mobile-open {
                 display: block;
-                max-height: 420px;
+                position: fixed;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                width: 100%;
+                max-height: none;
+                overflow: hidden;
                 opacity: 1;
+                z-index: 1150;
+                background: var(--brand-yellow);
+                border-top: 1px solid rgba(0,0,0,.12);
+                box-shadow: 0 -8px 24px rgba(0,31,63,.12);
             }
 
             .categories ul {
+                width: 100%;
+                max-width: none;
+                margin: 0;
+                padding: 4px 4px 5px;
                 display: grid;
-                grid-template-columns: 1fr 1fr;
-                gap: 6px;
-                padding: 10px 12px 12px;
+                grid-template-columns: repeat(6, 1fr);
+                gap: 2px;
+                overflow: hidden;
+            }
+
+            .categories ul li,
+            .categories ul li:last-child {
+                min-width: 0;
+                grid-column: auto;
             }
 
             .categories ul li a {
+                width: 100%;
+                min-height: 56px;
+                padding: 7px 2px 6px;
+                border-radius: 10px;
+                flex-direction: column;
                 justify-content: center;
+                align-items: center;
+                gap: 4px;
                 text-align: center;
-                padding: 10px 8px;
-                min-height: 42px;
-                font-size: 10px;
-                gap: 5px;
+                white-space: nowrap;
+                font-size: 7.4px;
+                line-height: 1.1;
             }
 
-            .categories ul li:last-child {
-                grid-column: 1 / -1;
-            }
+            .categories ul li a i { font-size: 14px; }
+            .categories ul li a.active { background: rgba(0,31,63,.12); }
 
+            /* Home hero */
             .slide {
-                min-height: 500px;
+                min-height: 510px;
             }
 
             .slide-1,
@@ -1097,230 +1124,689 @@ try {
 
             .slide-inner {
                 width: 100%;
-                padding: 68px 20px 78px;
+                min-height: 510px;
+                padding: 66px 18px 86px;
             }
 
-            .hero-content {
-                max-width: 100%;
-            }
-
+            .hero-content { width: 100%; max-width: 100%; }
             .hero-content h1 {
-                font-size: clamp(30px, 9vw, 38px);
-                letter-spacing: -.7px;
+                font-size: clamp(29px, 8.7vw, 36px);
+                line-height: 1.1;
             }
 
             .hero-content p {
-                font-size: 13px;
+                font-size: 12px;
                 line-height: 1.65;
-                max-width: 100%;
             }
 
             .btn-join {
                 width: 100%;
-                justify-content: center;
                 min-height: 46px;
+                justify-content: center;
             }
 
-            .slider-dots {
-                bottom: 20px;
-            }
-
+            /* Stats */
             .stats-wrap {
-                width: calc(100% - 24px);
-                margin-top: -30px;
+                width: calc(100% - 20px);
+                margin-top: -24px;
             }
 
-            .stats-bar {
-                grid-template-columns: 1fr 1fr;
-                border-radius: 16px;
-            }
-
-            .stat-item {
-                padding: 18px 10px;
-            }
-
-            .stat-item:nth-child(2) {
-                border-right: 0;
-            }
-
-            .stat-item:nth-child(-n+2) {
-                border-bottom: 1px solid var(--border);
-            }
-
+            .stats-bar { grid-template-columns: 1fr 1fr; border-radius: 17px; }
+            .stat-item { padding: 17px 7px; }
+            .stat-item:nth-child(2),
+            .stat-item:nth-child(4) { border-right: 0; }
+            .stat-item:nth-child(3),
+            .stat-item:nth-child(4) { border-bottom: 0; }
             .stat-item i {
                 width: 36px;
                 height: 36px;
-                border-radius: 10px;
-                margin-bottom: 8px;
+                font-size: 13px;
+                margin-bottom: 7px;
             }
+            .stat-item strong { font-size: 17px; line-height: 1.2; }
+            .stat-item span { font-size: 8.5px; line-height: 1.35; }
 
-            .stat-item strong {
-                font-size: 18px;
-            }
-
-            .stat-item span {
-                font-size: 10px;
-            }
-
+            /* Sections */
             .home-section {
-                padding: 48px 14px 0;
+                width: 100%;
+                padding: 46px 14px 0;
             }
 
-            .section-heading {
-                margin-bottom: 24px;
-            }
+            .section-heading { margin-bottom: 21px; }
+            .section-heading h2 { font-size: 23px; line-height: 1.23; }
+            .section-heading p { font-size: 10.5px; line-height: 1.55; }
 
-            .section-heading h2 {
-                font-size: 25px;
-                line-height: 1.2;
-            }
-
-            .section-heading p {
-                font-size: 12px;
-            }
-
+            /* Promo cards: image touches the card edges. */
             .promo-grid,
-            .service-grid,
-            .testimonial-grid {
-                grid-template-columns: 1fr;
-            }
-
-            .promo-grid {
-                gap: 14px;
-            }
-
             .promo-grid.one-promo,
             .promo-grid.two-promos {
                 width: 100%;
                 grid-template-columns: 1fr;
-                justify-content: stretch;
-                margin-left: 0;
-                margin-right: 0;
+                gap: 14px;
+                margin: 0;
+                padding-bottom: 4px;
             }
 
-            .promo-card {
-                padding: 0;
-                min-height: 0;
-            }
-
-            .promo-grid.one-promo .promo-card,
-            .promo-grid.two-promos .promo-card {
+            .promo-card,
+            .promo-grid .promo-card,
+            .promo-grid .promo-card:only-child {
                 width: 100%;
-                max-width: 100%;
+                max-width: none;
+                min-height: 0;
+                margin: 0;
+                padding: 0;
+                border-radius: 17px;
+                overflow: hidden;
             }
 
             .promo-image {
-                height: 155px;
+                display: block;
+                width: 100%;
+                height: 225px;
+                margin: 0;
+                padding: 0;
+                border: 0;
+                object-fit: cover;
+                object-position: center;
+                background: #eef2f7;
             }
 
-            .promo-body {
+            .promo-body,
+            .promo-card:not(.has-image) .promo-body {
+                min-height: 0;
                 padding: 17px 16px 16px;
             }
 
-            .promo-card h3 {
-                font-size: 19px;
+            .promo-card h3 { font-size: 19px; }
+            .promo-card p { font-size: 10.5px; line-height: 1.6; }
+            .promo-meta { font-size: 8.5px; margin-top: 11px; padding-top: 9px; }
+
+            .service-grid,
+            .testimonial-grid {
+                grid-template-columns: 1fr;
+                gap: 13px;
             }
 
-            .promo-card p {
-                font-size: 11px;
-            }
-
-            .promo-meta {
-                font-size: 9px;
-                margin-top: 12px;
-                padding-top: 10px;
-            }
-
-            .service-grid {
-                gap: 12px;
-            }
-
-            .service-card {
-                min-height: 150px;
-                padding: 30px 20px;
-            }
+            .service-card { min-height: 150px; padding: 27px 18px; }
 
             .testimonials {
-                padding: 58px 14px;
+                margin-top: 49px;
+                padding: 49px 14px 62px;
             }
 
-            .testimonial-inner {
-                width: 100%;
-            }
+            .t-card { padding: 19px; }
+            .t-text { font-size: 11.5px; line-height: 1.7; }
 
-            .t-card {
-                padding: 26px 22px;
-            }
-
-            .t-text {
-                font-size: 13px;
-            }
-
-            .cta-area {
-                padding: 28px 14px 36px;
-            }
-
-            .cta-box {
-                padding: 30px 20px;
-                border-radius: 18px;
-            }
-
-            .cta-box h2 {
-                font-size: 24px;
-                line-height: 1.25;
-            }
+            .cta-area { padding: 27px 14px 35px; }
+            .cta-box { padding: 29px 17px; border-radius: 17px; }
+            .cta-box h2 { font-size: 23px; line-height: 1.22; }
 
             .cta-buttons {
                 flex-direction: column;
+                gap: 8px;
             }
 
             .btn-blue-solid,
             .btn-blue-outline {
                 width: 100%;
-                text-align: center;
                 min-height: 44px;
                 display: inline-flex;
                 align-items: center;
                 justify-content: center;
             }
 
-            .cta-footer {
-                gap: 8px;
-                flex-direction: column;
-            }
-
-            footer {
-                padding: 24px 16px 28px;
-            }
-
-            .footer-main {
-                grid-template-columns: 1fr;
-                gap: 26px;
-                padding-bottom: 28px;
-            }
-
-            .footer-bottom {
-                padding-top: 18px;
-                line-height: 1.6;
-            }
+            footer { padding: 23px 14px 90px; }
+            .footer-main { grid-template-columns: 1fr; gap: 22px; }
+            .footer-main h4 { font-size: 10.5px; }
+            .footer-main p,
+            .footer-main a { font-size: 10.5px; line-height: 1.65; }
+            .footer-bottom { font-size: 8.5px; line-height: 1.5; }
 
             .search-status {
                 top: 150px;
-                max-width: calc(100vw - 28px);
+                left: 14px;
+                right: 14px;
+                width: auto;
                 min-width: 0;
-                width: calc(100vw - 28px);
+                max-width: none;
+                transform: translateY(-8px);
             }
+
+            .search-status.show { transform: translateY(0); }
         }
 
         @media (max-width: 380px) {
-            .logo-text b { font-size: 16px; }
-            .logo-text span { font-size: 7px; }
-            .hero-content h1 { font-size: 29px; }
-            .stats-wrap { width: calc(100% - 18px); }
+            .logo-text b { font-size: 15px; }
+            .logo-text span { font-size: 6px; }
+            .categories ul li a { font-size: 7px; min-height: 54px; }
+            .categories ul li a i { font-size: 13px; }
+            .hero-content h1 { font-size: 28px; }
+            .promo-image { height: 215px; }
             .stat-item strong { font-size: 16px; }
         }
 
-    </style>
+        /* ===== FINAL PETSERVICES CATEGORY NAV MATCH ===== */
+        @media (max-width: 680px) {
+            body {
+                padding-bottom: 0 !important;
+            }
+
+            .categories {
+                display: block !important;
+                position: static !important;
+                left: auto !important;
+                right: auto !important;
+                bottom: auto !important;
+                width: 100% !important;
+                max-height: none !important;
+                overflow: hidden !important;
+                opacity: 1 !important;
+                z-index: 1000 !important;
+                background: var(--brand-yellow) !important;
+                border-top: 1px solid rgba(0,0,0,.08) !important;
+                border-bottom: 1px solid rgba(0,0,0,.08) !important;
+                box-shadow: none !important;
+            }
+
+            .categories ul {
+                width: 100% !important;
+                max-width: none !important;
+                margin: 0 !important;
+                display: flex !important;
+                justify-content: flex-start !important;
+                align-items: center !important;
+                gap: 4px !important;
+                padding: 6px 10px !important;
+                list-style: none !important;
+                overflow-x: auto !important;
+                overflow-y: hidden !important;
+                -webkit-overflow-scrolling: touch !important;
+                scrollbar-width: none !important;
+            }
+
+            .categories ul::-webkit-scrollbar {
+                display: none !important;
+            }
+
+            .categories ul li {
+                flex: 0 0 auto !important;
+                min-width: auto !important;
+                grid-column: auto !important;
+            }
+
+            .categories ul li a {
+                width: auto !important;
+                min-height: 0 !important;
+                padding: 9px 11px !important;
+                border-radius: 9px !important;
+                display: flex !important;
+                flex-direction: row !important;
+                align-items: center !important;
+                justify-content: center !important;
+                gap: 6px !important;
+                white-space: nowrap !important;
+                text-align: center !important;
+                font-size: 9px !important;
+                line-height: 1.2 !important;
+            }
+
+            .categories ul li a.active {
+                background: rgba(0,31,63,.12) !important;
+            }
+
+            .categories ul li a i,
+            .categories i {
+                font-size: 11px !important;
+                flex: 0 0 auto;
+            }
+        }
+
+        @media (max-width: 420px) {
+            .categories ul {
+                padding-left: 10px !important;
+                padding-right: 10px !important;
+            }
+
+            .categories ul li a {
+                padding: 8px 10px !important;
+                font-size: 8px !important;
+                gap: 6px !important;
+            }
+        }
+
+    
+
+/* ============================================================
+   BOOGIE'S HEADER — EXACT PETSERVICES MOBILE STANDARD
+   Applied last so older responsive rules cannot conflict.
+   ============================================================ */
+
+.promo-bar {
+    background: var(--brand-blue) !important;
+    color: #fff !important;
+    text-align: center !important;
+    padding: 7px 16px !important;
+    font-size: 12px !important;
+    font-weight: 600 !important;
+    letter-spacing: .2px !important;
+}
+.promo-bar i {
+    color: var(--brand-yellow) !important;
+    margin-right: 7px !important;
+}
+
+header {
+    position: sticky !important;
+    top: 0 !important;
+    background: rgba(255,255,255,.97) !important;
+    backdrop-filter: blur(12px) !important;
+    z-index: 1000 !important;
+    border-bottom: 1px solid var(--border) !important;
+    box-shadow: 0 4px 18px rgba(0,0,0,.04) !important;
+}
+
+.nav-top {
+    max-width: 1320px !important;
+    margin: 0 auto !important;
+    display: grid !important;
+    grid-template-columns: auto minmax(250px, 460px) auto !important;
+    align-items: center !important;
+    gap: 28px !important;
+    padding: 14px 28px !important;
+}
+
+.logo {
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 11px !important;
+    text-decoration: none !important;
+    min-width: 0 !important;
+}
+.nav-logo-img {
+    width: 50px !important;
+    height: 50px !important;
+    object-fit: contain !important;
+    display: block !important;
+    border-radius: 10px !important;
+}
+.logo-text {
+    display: flex !important;
+    flex-direction: column !important;
+    line-height: 1.05 !important;
+}
+.logo-text b {
+    font-size: 20px !important;
+    color: var(--brand-blue) !important;
+}
+.logo-text span {
+    font-size: 9px !important;
+    color: #8c9aae !important;
+    text-transform: uppercase !important;
+    letter-spacing: 1.2px !important;
+    font-weight: 700 !important;
+    margin-top: 3px !important;
+}
+
+.nav-top > .search {
+    display: flex !important;
+    align-items: center !important;
+    width: auto !important;
+    background: #f5f8fb !important;
+    border: 1px solid #e0e7ef !important;
+    border-radius: 13px !important;
+    padding: 5px 8px 5px 15px !important;
+}
+.nav-top > .search input {
+    border: none !important;
+    background: transparent !important;
+    width: 100% !important;
+    padding: 9px 6px !important;
+    outline: none !important;
+    font-size: 13px !important;
+    color: var(--text) !important;
+}
+.nav-top > .search button {
+    width: 38px !important;
+    height: 38px !important;
+    border: none !important;
+    border-radius: 10px !important;
+    background: var(--brand-blue) !important;
+    color: #fff !important;
+    cursor: pointer !important;
+}
+
+.nav-links {
+    display: flex !important;
+    justify-content: flex-end !important;
+    align-items: center !important;
+    gap: 12px !important;
+    flex-wrap: wrap !important;
+}
+.nav-links .cart-btn,
+.nav-links .login-btn {
+    background: var(--brand-blue) !important;
+    color: var(--brand-yellow) !important;
+    padding: 10px 18px !important;
+    border-radius: 10px !important;
+    text-decoration: none !important;
+    font-weight: 700 !important;
+    font-size: 13px !important;
+    transition: .25s !important;
+}
+.nav-links .logout-link {
+    color: #dc3b45 !important;
+    text-decoration: none !important;
+    font-weight: 600 !important;
+    font-size: 13px !important;
+    padding: 9px 4px !important;
+    margin-left: 0 !important;
+}
+
+.categories {
+    background: var(--brand-yellow) !important;
+    border-bottom: 1px solid rgba(0,0,0,.08) !important;
+    border-top: 0 !important;
+}
+.categories ul {
+    max-width: 980px !important;
+    margin: 0 auto !important;
+    display: flex !important;
+    justify-content: center !important;
+    align-items: center !important;
+    gap: 8px !important;
+    list-style: none !important;
+    padding: 7px 18px !important;
+}
+.categories ul li {
+    flex: 0 0 auto !important;
+}
+.categories ul li a {
+    text-decoration: none !important;
+    color: var(--brand-blue) !important;
+    font-size: 12px !important;
+    font-weight: 800 !important;
+    padding: 10px 18px !important;
+    border-radius: 10px !important;
+    transition: .25s !important;
+    display: flex !important;
+    align-items: center !important;
+    gap: 8px !important;
+    white-space: nowrap !important;
+}
+.categories ul li a.active,
+.categories ul li a:hover {
+    background: rgba(0,31,63,.12) !important;
+}
+.categories i {
+    font-size: 14px !important;
+}
+
+/* Mobile: logo + account controls, then ONE search bar, then yellow nav */
+@media (max-width: 680px) {
+    body {
+        overflow-x: hidden !important;
+        padding-bottom: 0 !important;
+    }
+
+    .promo-bar {
+        min-height: 30px !important;
+        padding: 6px 10px !important;
+        font-size: 10px !important;
+        line-height: 1.35 !important;
+        white-space: nowrap !important;
+    }
+
+    header {
+        width: 100% !important;
+    }
+
+    .nav-top {
+        width: 100% !important;
+        display: grid !important;
+        grid-template-columns: minmax(0, 1fr) auto !important;
+        grid-template-rows: auto auto !important;
+        gap: 7px !important;
+        padding: 8px 12px !important;
+        align-items: center !important;
+    }
+
+    .nav-top > .logo {
+        grid-column: 1 !important;
+        grid-row: 1 !important;
+        width: auto !important;
+        max-width: 100% !important;
+        min-width: 0 !important;
+        overflow: hidden !important;
+        gap: 8px !important;
+    }
+
+    .nav-top > .logo .logo-text {
+        min-width: 0 !important;
+        overflow: hidden !important;
+    }
+    .nav-top > .logo .logo-text b,
+    .nav-top > .logo .logo-text span {
+        white-space: nowrap !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+    }
+
+    .nav-logo-img {
+        width: 42px !important;
+        height: 42px !important;
+        flex: 0 0 42px !important;
+    }
+    .logo-text b {
+        font-size: 17px !important;
+    }
+    .logo-text span {
+        font-size: 7px !important;
+        letter-spacing: .9px !important;
+    }
+
+    .nav-links {
+        grid-column: 2 !important;
+        grid-row: 1 !important;
+        width: auto !important;
+        min-width: 0 !important;
+        justify-content: flex-end !important;
+        align-items: center !important;
+        flex-wrap: nowrap !important;
+        gap: 6px !important;
+        overflow: visible !important;
+    }
+
+    .nav-links .cart-btn,
+    .nav-links .login-btn {
+        min-height: 43px !important;
+        height: 43px !important;
+        padding: 9px 12px !important;
+        font-size: 10px !important;
+        border-radius: 10px !important;
+        white-space: nowrap !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        width: auto !important;
+    }
+
+    /* index.php is logged-out by design, but this keeps the shared header safe. */
+    .nav-links > span,
+    .nav-links .hello-user {
+        display: none !important;
+    }
+
+    .nav-links .logout-link {
+        font-size: 11px !important;
+        line-height: 1 !important;
+        margin-left: 0 !important;
+        padding: 8px 4px !important;
+        white-space: nowrap !important;
+        color: #dc3b45 !important;
+    }
+
+    /* Exactly one search: the form inside .nav-top */
+    .nav-top > .search,
+    .nav-top > #siteSearchForm {
+        display: flex !important;
+        grid-column: 1 / -1 !important;
+        grid-row: 2 !important;
+        width: 100% !important;
+        min-width: 0 !important;
+        min-height: 44px !important;
+        height: 44px !important;
+        margin: 0 !important;
+        padding: 4px 6px 4px 11px !important;
+        border-radius: 11px !important;
+        box-sizing: border-box !important;
+    }
+
+    .nav-top > .search input {
+        display: block !important;
+        min-width: 0 !important;
+        width: 100% !important;
+        padding: 8px 5px !important;
+        font-size: 11px !important;
+        line-height: 1.2 !important;
+    }
+
+    .nav-top > .search button {
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        width: 34px !important;
+        height: 34px !important;
+        min-width: 34px !important;
+        flex: 0 0 34px !important;
+        border-radius: 9px !important;
+    }
+
+    /* Keep the complete yellow navigation directly below the search. */
+    .categories,
+    .categories.mobile-open {
+        display: block !important;
+        position: static !important;
+        left: auto !important;
+        right: auto !important;
+        bottom: auto !important;
+        width: 100% !important;
+        max-height: none !important;
+        height: auto !important;
+        overflow: hidden !important;
+        opacity: 1 !important;
+        visibility: visible !important;
+        z-index: 1000 !important;
+        background: var(--brand-yellow) !important;
+        border-top: 1px solid rgba(0,0,0,.08) !important;
+        border-bottom: 1px solid rgba(0,0,0,.08) !important;
+        box-shadow: none !important;
+    }
+
+    .categories ul {
+        width: 100% !important;
+        max-width: none !important;
+        margin: 0 !important;
+        display: flex !important;
+        flex-wrap: nowrap !important;
+        justify-content: flex-start !important;
+        align-items: center !important;
+        gap: 4px !important;
+        padding: 6px 10px !important;
+        list-style: none !important;
+        overflow-x: auto !important;
+        overflow-y: hidden !important;
+        -webkit-overflow-scrolling: touch !important;
+        scrollbar-width: none !important;
+    }
+
+    .categories ul::-webkit-scrollbar {
+        display: none !important;
+    }
+
+    .categories ul li,
+    .categories ul li:last-child {
+        flex: 0 0 auto !important;
+        min-width: auto !important;
+        grid-column: auto !important;
+    }
+
+    .categories ul li a {
+        width: auto !important;
+        min-height: 0 !important;
+        padding: 9px 11px !important;
+        border-radius: 9px !important;
+        display: flex !important;
+        flex-direction: row !important;
+        align-items: center !important;
+        justify-content: center !important;
+        gap: 6px !important;
+        white-space: nowrap !important;
+        text-align: center !important;
+        font-size: 9px !important;
+        line-height: 1.2 !important;
+    }
+
+    .categories ul li a.active {
+        background: rgba(0,31,63,.12) !important;
+    }
+
+    .categories ul li a i,
+    .categories i {
+        font-size: 11px !important;
+        flex: 0 0 auto !important;
+    }
+
+    /* Disable any old mobile-specific duplicate search/menu containers. */
+    .mobile-search-wrap,
+    #mobileSiteSearchForm,
+    .mobile-menu-btn,
+    #mobileMenuBtn,
+    .menu-toggle,
+    #menuToggle {
+        display: none !important;
+    }
+}
+
+@media (max-width: 420px) {
+    .nav-top {
+        padding-left: 9px !important;
+        padding-right: 9px !important;
+    }
+    .nav-logo-img {
+        width: 38px !important;
+        height: 38px !important;
+        flex-basis: 38px !important;
+    }
+    .logo-text b {
+        font-size: 15px !important;
+    }
+    .logo-text span {
+        font-size: 6px !important;
+        letter-spacing: .7px !important;
+    }
+    .nav-links .cart-btn,
+    .nav-links .login-btn {
+        min-height: 42px !important;
+        height: 42px !important;
+        padding: 9px 10px !important;
+        font-size: 9px !important;
+    }
+    .nav-links .logout-link {
+        font-size: 10px !important;
+        padding: 8px 3px !important;
+    }
+    .nav-top > .search {
+        min-height: 43px !important;
+        height: 43px !important;
+    }
+    .nav-top > .search button {
+        width: 34px !important;
+        height: 34px !important;
+        flex-basis: 34px !important;
+    }
+}
+
+</style>
 </head>
 <body>
 
@@ -1335,11 +1821,6 @@ try {
                     <span>PET CARE SERVICES</span>
                 </div>
             </a>
-
-            <button type="button" class="mobile-menu-btn" id="mobileMenuBtn"
-                    aria-label="Open navigation menu" aria-expanded="false" aria-controls="publicCategories">
-                <i class="fa-solid fa-bars"></i>
-            </button>
 
             <form class="search" id="siteSearchForm" autocomplete="off">
                 <input
@@ -1721,56 +2202,154 @@ try {
             }, 6000);
         }
 
-        /* ===== MOBILE MENU ===== */
-        const mobileMenuBtn = document.getElementById('mobileMenuBtn');
-        const publicCategories = document.getElementById('publicCategories');
-
-        if (mobileMenuBtn && publicCategories) {
-            mobileMenuBtn.addEventListener('click', function () {
-                const isOpen = publicCategories.classList.toggle('mobile-open');
-                mobileMenuBtn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
-                mobileMenuBtn.setAttribute(
-                    'aria-label',
-                    isOpen ? 'Close navigation menu' : 'Open navigation menu'
-                );
-                mobileMenuBtn.innerHTML = isOpen
-                    ? '<i class="fa-solid fa-xmark"></i>'
-                    : '<i class="fa-solid fa-bars"></i>';
-            });
-        }
-
-        /* ===== WORKING SITE SEARCH ===== */
+        /* ===== SMART / RELATED SITE SEARCH ===== */
         const searchForm = document.getElementById('siteSearchForm');
         const searchInput = document.getElementById('siteSearchInput');
         const searchStatus = document.getElementById('searchStatus');
 
+        // Related terms are mapped to the page that best matches the user's intent.
+        // The search is intentionally broader than exact page/category names.
         const searchRoutes = [
             {
-                keywords: ['grooming', 'groom', 'bath', 'haircut', 'hair cut'],
+                keywords: [
+                    'groom', 'grooming', 'groomed', 'bath', 'bathing', 'wash', 'shampoo',
+                    'haircut', 'hair cut', 'cut', 'trim', 'trimming', 'nail', 'nails',
+                    'nail trim', 'fur', 'fur care', 'coat', 'brush', 'brushing', 'styling',
+                    'style', 'puppy cut', 'summer cut', 'shave', 'shave down', 'bear cut',
+                    'poodle cut', 'blow dry', 'bath blow dry', 'clean', 'cleaning',
+                    'alaga sa balahibo', 'ligo', 'paligo', 'paliguan', 'gupit', 'kuko', 'balbas'
+                ],
                 label: 'Grooming Services',
                 url: 'grooming.php'
             },
             {
-                keywords: ['vet', 'veterinary', 'clinic', 'checkup', 'check-up', 'vaccination', 'vaccine', 'deworming'],
+                keywords: [
+                    'vet', 'vets', 'veterinary', 'veterinarian', 'doctor', 'dr', 'clinic',
+                    'checkup', 'check-up', 'check up', 'consultation', 'consult', 'health',
+                    'wellness', 'medical', 'medicine', 'medication', 'treatment', 'diagnostic',
+                    'diagnostics', 'vaccination', 'vaccination shot', 'vaccine', 'vaccines',
+                    'rabies', 'anti rabies', 'deworming', 'deworm', 'worm', 'worms', 'shot',
+                    'shots', 'injection', 'sick', 'ill', 'illness', 'sakit', 'kalusugan',
+                    'bakuna', 'gamot', 'doktor', 'check'
+                ],
                 label: 'Vet Clinic',
                 url: 'vetclinic.php'
             },
             {
-                keywords: ['hotel', 'boarding', 'daycare', 'day care', 'stay', 'pet hotel'],
+                keywords: [
+                    'hotel', 'pet hotel', 'boarding', 'board', 'daycare', 'day care', 'day-care',
+                    'overnight', 'overnight stay', 'stay', 'sleep', 'lodge', 'lodging',
+                    'accommodation', 'room', 'pet stay', 'temporary care', 'leave my pet',
+                    'watch my pet', 'tulog', 'matulog', 'pahinga', 'tirahan', 'pag stay'
+                ],
                 label: 'Pet Hotel',
                 url: 'pethotel.php'
             },
             {
-                keywords: ['service', 'services', 'price', 'prices', 'pet care', 'pet service'],
+                keywords: [
+                    'service', 'services', 'pet service', 'pet services', 'price', 'prices',
+                    'pricing', 'cost', 'costs', 'rate', 'rates', 'fee', 'fees', 'package',
+                    'packages', 'menu', 'list', 'pricelist', 'price list', 'pet care',
+                    'care', 'option', 'options', 'available', 'how much', 'presyo', 'magkano',
+                    'alaga', 'alagaan'
+                ],
                 label: 'Pet Services',
                 url: 'petservices.php'
             },
             {
-                keywords: ['contact', 'phone', 'email', 'address', 'support'],
+                keywords: [
+                    'contact', 'contacts', 'phone', 'telephone', 'mobile', 'cell', 'email',
+                    'gmail', 'address', 'location', 'where', 'directions', 'support', 'help',
+                    'message', 'reach', 'call', 'tawag', 'lokasyon', 'saan', 'contact us'
+                ],
                 label: 'Contact Us',
                 url: 'contactus.php'
             }
         ];
+
+        function normalizeSearchText(value) {
+            return String(value || '')
+                .toLowerCase()
+                .replace(/[^a-z0-9+\s-]/g, ' ')
+                .replace(/\s+/g, ' ')
+                .trim();
+        }
+
+        // Allows small spelling mistakes such as "groming" or "vaccinaton".
+        function levenshteinDistance(a, b) {
+            a = String(a);
+            b = String(b);
+
+            if (a === b) return 0;
+            if (!a.length) return b.length;
+            if (!b.length) return a.length;
+
+            const previous = Array.from({ length: b.length + 1 }, (_, i) => i);
+
+            for (let i = 1; i <= a.length; i++) {
+                const current = [i];
+
+                for (let j = 1; j <= b.length; j++) {
+                    const insertCost = current[j - 1] + 1;
+                    const deleteCost = previous[j] + 1;
+                    const replaceCost = previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1);
+
+                    current[j] = Math.min(insertCost, deleteCost, replaceCost);
+                }
+
+                for (let j = 0; j < current.length; j++) {
+                    previous[j] = current[j];
+                }
+            }
+
+            return previous[b.length];
+        }
+
+        function searchKeywordMatches(query, keyword) {
+            if (!query || !keyword) return false;
+
+            if (query.includes(keyword) || keyword.includes(query)) {
+                return true;
+            }
+
+            // Compare individual words so a longer phrase can still match a related term.
+            const queryWords = query.split(' ').filter(Boolean);
+            const keywordWords = keyword.split(' ').filter(Boolean);
+
+            for (const qWord of queryWords) {
+                for (const kWord of keywordWords) {
+                    if (qWord.length >= 4 && kWord.length >= 4) {
+                        const maxDistance = Math.min(2, Math.floor(Math.max(qWord.length, kWord.length) / 4));
+                        if (levenshteinDistance(qWord, kWord) <= maxDistance) {
+                            return true;
+                        }
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        function findSearchRoute(query) {
+            const normalized = normalizeSearchText(query);
+            if (!normalized) return null;
+
+            // Strong direct match first.
+            for (const route of searchRoutes) {
+                if (route.keywords.some(keyword => normalized.includes(normalizeSearchText(keyword)))) {
+                    return route;
+                }
+            }
+
+            // Related/typo-tolerant match next.
+            for (const route of searchRoutes) {
+                if (route.keywords.some(keyword => searchKeywordMatches(normalized, normalizeSearchText(keyword)))) {
+                    return route;
+                }
+            }
+
+            return null;
+        }
 
         function showSearchStatus(message) {
             if (!searchStatus) return;
@@ -1784,19 +2363,6 @@ try {
             }, 2600);
         }
 
-        function findSearchRoute(query) {
-            const normalized = query.toLowerCase().trim();
-
-            // Exact/partial keyword match first.
-            for (const route of searchRoutes) {
-                if (route.keywords.some(keyword => normalized.includes(keyword))) {
-                    return route;
-                }
-            }
-
-            return null;
-        }
-
         if (searchForm && searchInput) {
             searchForm.addEventListener('submit', function (event) {
                 event.preventDefault();
@@ -1805,7 +2371,9 @@ try {
 
                 if (!query) {
                     searchInput.focus();
-                    showSearchStatus('Type a service to search, like <strong>grooming</strong>, <strong>vet</strong>, or <strong>hotel</strong>.');
+                    showSearchStatus(
+                        'Type something to search, like <strong>bath</strong>, <strong>vaccine</strong>, <strong>boarding</strong>, or <strong>price</strong>.'
+                    );
                     return;
                 }
 
@@ -1817,10 +2385,13 @@ try {
                         window.location.href = route.url;
                     }, 180);
                 } else {
-                    showSearchStatus('No matching service found. Try <strong>grooming</strong>, <strong>vet</strong>, <strong>hotel</strong>, or <strong>services</strong>.');
+                    showSearchStatus(
+                        'No related service found. Try a service, treatment, grooming term, boarding term, price, or contact detail.'
+                    );
                 }
             });
         }
+    
     </script>
 
     <script>

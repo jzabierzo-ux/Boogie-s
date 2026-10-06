@@ -57,7 +57,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $notif_message = "A new pet profile for '{$p_name}' has been successfully registered to your account.";
             $notif_type = "system";
 
-            $notif_stmt = $pdo->prepare("\n                INSERT INTO notifications\n                    (user_id, title, message, type, is_read, created_at)\n                VALUES\n                    (:user_id, :title, :message, :type, FALSE, CURRENT_TIMESTAMP)\n            ");
+            $notif_stmt = $pdo->prepare("\n                INSERT INTO notifications\n                    (user_id, title, message, type, is_read, created_at)\n                VALUES\n                    (:user_id, :title, :message, :type, 0, CURRENT_TIMESTAMP)\n            ");
 
             $notif_stmt->execute([
                 ':user_id' => $owner_id,

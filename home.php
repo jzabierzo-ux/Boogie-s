@@ -1,124 +1,54 @@
 <?php
-
 session_start();
 
-$is_logged_in = isset($_SESSION['logged_in'])
-    && $_SESSION['logged_in'] === true;
+$is_logged_in = isset($_SESSION['logged_in']) && $_SESSION['logged_in'] === true;
+$user_name = $is_logged_in ? ($_SESSION['user_name'] ?? 'Guest') : 'Guest';
 
-$user_name = $is_logged_in
-    ? ($_SESSION['user_name'] ?? 'Guest')
-    : 'Guest';
+require_once 'db_supabase.php';
 
-include 'db_supabase.php';
-
-// Security: Redirect to login if not logged in
-if (!$is_logged_in) {
-    header("Location: login.php");
-    exit();
-}
-
-
-// ============================================================
-// FETCH REVIEWS
-// ============================================================
-
+// --- FETCH REAL REVIEWS ---
 $reviews_list = [];
 
 try {
-
-    $review_stmt = $pdo->prepare("
-        SELECT
-            r.*,
-            u.full_name,
-            a.service
-        FROM reviews r
-        JOIN users u
-            ON r.user_id = u.id
-        JOIN appointments a
-            ON r.appointment_id = a.id
-        WHERE r.rating >= 4
-        ORDER BY r.review_date DESC
-        LIMIT 3
-    ");
-
+    $review_stmt = $pdo->prepare("\n        SELECT\n            r.*,\n            u.full_name,\n            a.service\n        FROM reviews r\n        JOIN users u ON r.user_id = u.id\n        JOIN appointments a ON r.appointment_id = a.id\n        WHERE r.rating >= 4\n        ORDER BY r.review_date DESC\n        LIMIT 3\n    ");
     $review_stmt->execute();
-
-    $reviews_list = $review_stmt->fetchAll();
-
+    $reviews_list = $review_stmt->fetchAll(PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
-
+    error_log('Reviews query failed: ' . $e->getMessage());
     $reviews_list = [];
 }
 
-
-// ============================================================
-// FETCH AGGREGATE REVIEW STATS
-// ============================================================
-
+// --- FETCH AGGREGATE STATS ---
 $total_reviews = 0;
-$avg_rating = "0.0";
+$avg_rating = '0.0';
 
 try {
-
-    $stats_stmt = $pdo->query("
-        SELECT
-            COUNT(*) AS total_reviews,
-            AVG(rating) AS avg_rating
-        FROM reviews
-    ");
-
-    $stats_row = $stats_stmt->fetch();
+    $stats_stmt = $pdo->query("\n        SELECT\n            COUNT(*) AS total_reviews,\n            AVG(rating) AS avg_rating\n        FROM reviews\n    ");
+    $stats_row = $stats_stmt->fetch(PDO::FETCH_ASSOC) ?: [];
 
     $total_reviews = (int)($stats_row['total_reviews'] ?? 0);
-
     $avg_rating = ($total_reviews > 0)
-        ? number_format((float)$stats_row['avg_rating'], 1)
-        : "0.0";
-
+        ? number_format((float)($stats_row['avg_rating'] ?? 0), 1)
+        : '0.0';
 } catch (PDOException $e) {
-
-    $total_reviews = 0;
-    $avg_rating = "0.0";
+    error_log('Review stats query failed: ' . $e->getMessage());
 }
 
-$parent_text = ($total_reviews == 1)
-    ? "happy fur-parent"
-    : "happy fur-parents";
+$parent_text = ($total_reviews === 1)
+    ? 'happy fur-parent'
+    : 'happy fur-parents';
 
-
-// ============================================================
-// FETCH DYNAMIC PROMOTIONS
-// ============================================================
-
+// --- FETCH DYNAMIC PROMOTIONS ---
 $promos_list = [];
 
 try {
-
-    $current_date = date('Y-m-d');
-
-    $promo_stmt = $pdo->prepare("
-        SELECT *
-        FROM promos
-        WHERE status = 'active'
-          AND (
-                expiry_date >= :current_date
-                OR expiry_date IS NULL
-              )
-        ORDER BY id DESC
-        LIMIT 3
-    ");
-
-    $promo_stmt->execute([
-        ':current_date' => $current_date
-    ]);
-
-    $promos_list = $promo_stmt->fetchAll();
-
+    $promo_stmt = $pdo->prepare("\n        SELECT *\n        FROM promos\n        WHERE status = 'active'\n          AND (expiry_date >= CURRENT_DATE OR expiry_date IS NULL)\n        ORDER BY id DESC\n        LIMIT 3\n    ");
+    $promo_stmt->execute();
+    $promos_list = $promo_stmt->fetchAll(PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
-
+    error_log('Promotions query failed: ' . $e->getMessage());
     $promos_list = [];
 }
-
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -152,7 +82,7 @@ try {
             min-height: 100vh;
         }
 
-        /* TOP BAR */
+        /* ===== SHARED PETSERVICES HEADER ===== */
         .promo-bar {
             background: var(--brand-blue);
             color: #fff;
@@ -164,7 +94,6 @@ try {
         }
         .promo-bar i { color: var(--brand-yellow); margin-right: 7px; }
 
-        /* HEADER */
         header {
             position: sticky;
             top: 0;
@@ -174,6 +103,7 @@ try {
             border-bottom: 1px solid var(--border);
             box-shadow: 0 4px 18px rgba(0,0,0,.04);
         }
+
         .nav-top {
             max-width: 1320px;
             margin: 0 auto;
@@ -183,29 +113,173 @@ try {
             gap: 28px;
             padding: 14px 28px;
         }
-        .logo { display: inline-flex; align-items: center; gap: 11px; text-decoration: none; min-width: 0; }
-        .nav-logo-img { height: 50px; width: 50px; object-fit: contain; display: block; border-radius: 10px; }
+
+        .logo {
+            display: inline-flex;
+            align-items: center;
+            gap: 11px;
+            text-decoration: none;
+            min-width: 0;
+        }
+        .nav-logo-img {
+            height: 50px;
+            width: 50px;
+            object-fit: contain;
+            display: block;
+            border-radius: 10px;
+        }
         .logo-text { display: flex; flex-direction: column; line-height: 1.05; }
         .logo-text b { font-size: 20px; color: var(--brand-blue); }
-        .logo-text span { font-size: 9px; color: #8c9aae; text-transform: uppercase; letter-spacing: 1.2px; font-weight: 700; margin-top: 3px; }
-        .search { display:flex; align-items:center; background:#f5f8fb; border:1px solid #e0e7ef; border-radius: 13px; padding: 5px 8px 5px 15px; }
-        .search input { border:none; background:transparent; width:100%; padding:9px 6px; outline:none; font-size:13px; color:var(--text); }
-        .search input::placeholder { color:#97a4b4; }
-        .search button { width:38px; height:38px; border:none; border-radius:10px; background:var(--brand-blue); color:#fff; cursor:pointer; transition:.25s; }
-        .search button:hover { background:var(--brand-blue-2); transform:translateY(-1px); }
-        .nav-links { display:flex; justify-content:flex-end; align-items:center; gap:12px; flex-wrap:wrap; }
-        .hello-user { color:var(--brand-blue); font-weight:600; font-size:13px; white-space:nowrap; }
-        .cart-btn { background:var(--brand-blue); color:var(--brand-yellow); padding:10px 18px; border-radius:10px; text-decoration:none; font-weight:700; font-size:13px; transition:.25s; }
-        .cart-btn:hover { transform:translateY(-2px); box-shadow:0 8px 20px rgba(0,31,63,.16); }
-        .logout-link { color:#dc3b45; text-decoration:none; font-weight:600; font-size:13px; padding:9px 4px; }
-        .login-btn { background:var(--brand-blue); color:#fff; border-radius:10px; padding:10px 18px; text-decoration:none; font-weight:700; font-size:13px; }
+        .logo-text span {
+            font-size: 9px;
+            color: #8c9aae;
+            text-transform: uppercase;
+            letter-spacing: 1.2px;
+            font-weight: 700;
+            margin-top: 3px;
+        }
 
-        /* CATEGORY NAV */
-        .categories { background: var(--brand-yellow); border-bottom:1px solid rgba(0,0,0,.08); }
-        .categories ul { max-width: 980px; margin:0 auto; display:flex; justify-content:center; align-items:center; gap:8px; list-style:none; padding:7px 18px; }
-        .categories ul li a { text-decoration:none; color:var(--brand-blue); font-size:12px; font-weight:800; padding:10px 18px; border-radius:10px; transition:.25s; display:flex; align-items:center; gap:8px; }
-        .categories ul li a:hover, .categories ul li a.active { background:rgba(0,31,63,.12); transform:translateY(-1px); }
-        .categories i { font-size:14px; }
+        .search {
+            display: flex;
+            align-items: center;
+            background: #f5f8fb;
+            border: 1px solid #e0e7ef;
+            border-radius: 13px;
+            padding: 5px 8px 5px 15px;
+        }
+        .search input {
+            border: none;
+            background: transparent;
+            width: 100%;
+            padding: 9px 6px;
+            outline: none;
+            font-size: 13px;
+            color: var(--text);
+        }
+        .search input::placeholder { color: #97a4b4; }
+        .search button {
+            width: 38px;
+            height: 38px;
+            border: none;
+            border-radius: 10px;
+            background: var(--brand-blue);
+            color: #fff;
+            cursor: pointer;
+            transition: .25s;
+        }
+        .search button:hover { background: var(--brand-blue-2); }
+
+        .nav-links {
+            display: flex;
+            justify-content: flex-end;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+        .nav-links > span {
+            color: var(--brand-blue);
+            font-weight: 600;
+            font-size: 13px;
+            white-space: nowrap;
+        }
+        .cart-btn {
+            background: var(--brand-blue);
+            color: var(--brand-yellow);
+            padding: 10px 18px;
+            border-radius: 10px;
+            text-decoration: none;
+            font-weight: 700;
+            font-size: 13px;
+            transition: .25s;
+        }
+        .cart-btn:hover {
+            box-shadow: 0 8px 20px rgba(0,31,63,.16);
+        }
+        .nav-links a[style*="ef4444"] {
+            color: #dc3b45 !important;
+            text-decoration: none !important;
+            font-weight: 600 !important;
+            font-size: 13px !important;
+            margin-left: 0 !important;
+        }
+
+        .categories {
+            background: var(--brand-yellow);
+            border-bottom: 1px solid rgba(0,0,0,.08);
+        }
+        .categories ul {
+            max-width: 980px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 8px;
+            list-style: none;
+            padding: 7px 18px;
+        }
+        .categories ul li a {
+            text-decoration: none;
+            color: var(--brand-blue);
+            font-size: 12px;
+            font-weight: 800;
+            padding: 10px 18px;
+            border-radius: 10px;
+            transition: .25s;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .categories ul li a:hover,
+        .categories ul li a.active {
+            background: rgba(0,31,63,.12);
+        }
+        .categories i { font-size: 14px; }
+
+        @media (max-width: 1000px) {
+            .nav-top { grid-template-columns: 1fr; gap: 12px; }
+            .nav-links { justify-content: flex-start; }
+        }
+        @media (max-width: 680px) {
+            .categories ul {
+                overflow-x: auto;
+                justify-content: flex-start;
+                padding-left: 12px;
+            }
+            .categories ul li a {
+                white-space: nowrap;
+                padding: 10px 13px;
+            }
+        }
+
+
+        /* ===== HEADER SEARCH ===== */
+        .search-status {
+            position: fixed;
+            top: 148px;
+            left: 50%;
+            transform: translateX(-50%) translateY(-8px);
+            z-index: 1200;
+            min-width: 280px;
+            max-width: min(560px, 90vw);
+            padding: 10px 14px;
+            border-radius: 11px;
+            background: var(--brand-blue);
+            color: #fff;
+            font-size: 12px;
+            font-weight: 600;
+            text-align: center;
+            box-shadow: 0 10px 25px rgba(0,31,63,.16);
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity .2s ease, transform .2s ease;
+        }
+
+        .search-status.show {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0);
+        }
+
+        .search-status strong { color: var(--brand-yellow); }
 
         /* ===== HOME PAGE ===== */
         main { min-height: 70vh; }
@@ -477,38 +551,21 @@ try {
             box-shadow: 0 18px 35px rgba(0,0,0,.11);
         }
 
-        .promo-grid.one-promo {
-            grid-template-columns: minmax(0, 340px);
-            justify-content: center;
-        }
-
-        .promo-grid.two-promos {
-            width: min(1010px, 100%);
-            margin-left: auto;
-            margin-right: auto;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            justify-content: center;
-        }
-
         .promo-grid .promo-card:only-child {
-            width: 100%;
+            width: min(700px, 100%);
             justify-self: center;
-        }
-
-        .promo-card.has-image {
-            min-height: 0;
         }
         .promo-image {
             display: block;
             width: 100%;
-            height: 190px;
+            height: 240px;
             object-fit: cover;
             background: #eef2f7;
         }
         .promo-body {
             position: relative;
             flex: 1;
-            padding: 19px 20px 18px;
+            padding: 23px 24px 21px;
             overflow: hidden;
         }
         .promo-body::after {
@@ -862,89 +919,105 @@ try {
             .hero-content h1 { font-size: 40px; }
         }
 
-        /* MOBILE NAVIGATION */
-        .menu-toggle {
+        @media (max-width: 680px) {
+            .slide { min-height: 500px; }
+            .slide-inner { padding-top: 55px; }
+            .hero-content h1 { font-size: 32px; }
+            .hero-content p { font-size: 14px; }
+            .stats-wrap { margin-top: -32px; }
+            .stats-bar { grid-template-columns: 1fr 1fr; }
+            .home-section { padding-top: 55px; }
+            .promo-grid,
+            .service-grid,
+            .testimonial-grid { grid-template-columns: 1fr; }
+            .footer-main { grid-template-columns: 1fr; }
+            .cta-box { padding: 34px 22px; }
+            .cta-box h2 { font-size: 25px; }
+            .cta-footer { gap: 10px; flex-direction: column; }
+            .search-status { top: 186px; }
+        }
+
+
+        /* ===== PUBLIC INDEX: MOBILE RESPONSIVE IMPROVEMENTS ===== */
+        .mobile-menu-btn {
             display: none;
-            width: 42px;
-            height: 42px;
+            width: 44px;
+            height: 44px;
             border: 1px solid var(--border);
-            border-radius: 10px;
+            border-radius: 12px;
             background: #fff;
             color: var(--brand-blue);
-            cursor: pointer;
             font-size: 18px;
+            cursor: pointer;
             align-items: center;
             justify-content: center;
         }
 
-        .menu-toggle:focus-visible {
-            outline: 3px solid rgba(255, 204, 0, .45);
-            outline-offset: 2px;
+        .categories {
+            transition: max-height .25s ease, opacity .25s ease;
+        }
+
+        @media (max-width: 1000px) {
+            .nav-top {
+                grid-template-columns: 1fr auto;
+                gap: 12px 14px;
+                padding: 12px 20px;
+            }
+
+            .mobile-menu-btn {
+                display: inline-flex;
+                justify-self: end;
+            }
+
+            .nav-top .search {
+                grid-column: 1 / -1;
+                grid-row: 2;
+                width: 100%;
+                margin: 0;
+            }
+
+            .nav-links {
+                grid-column: 1 / -1;
+                grid-row: 3;
+                justify-content: center;
+            }
+
+            .categories ul {
+                max-width: none;
+            }
         }
 
         @media (max-width: 680px) {
-            body { overflow-x: hidden; }
-
             .promo-bar {
                 padding: 7px 10px;
                 font-size: 10px;
             }
 
             .nav-top {
-                grid-template-columns: 1fr auto;
-                gap: 10px;
-                padding: 10px 14px;
-            }
-
-            .logo {
-                gap: 8px;
+                padding: 10px 14px 12px;
             }
 
             .nav-logo-img {
-                width: 42px;
-                height: 42px;
+                width: 43px;
+                height: 43px;
             }
 
             .logo-text b {
-                font-size: 16px;
+                font-size: 17px;
             }
 
             .logo-text span {
-                font-size: 7px;
+                font-size: 8px;
                 letter-spacing: .9px;
             }
 
-            .nav-links {
-                gap: 7px;
-                flex-wrap: nowrap;
-            }
-
-            .hello-user {
-                display: none;
-            }
-
-            .nav-links .cart-btn {
-                padding: 9px 11px;
-                font-size: 11px;
-            }
-
-            .logout-link {
-                font-size: 11px;
-                padding: 8px 2px;
-            }
-
-            .menu-toggle {
-                display: inline-flex;
-            }
-
             .search {
-                grid-column: 1 / -1;
-                width: 100%;
+                border-radius: 12px;
             }
 
             .search input {
                 font-size: 12px;
-                padding: 8px 5px;
+                padding: 8px 4px;
             }
 
             .search button {
@@ -952,51 +1025,70 @@ try {
                 height: 36px;
             }
 
+            .nav-links {
+                gap: 8px;
+            }
+
+            .cart-btn {
+                width: 100%;
+                text-align: center;
+                padding: 10px 14px;
+            }
+
             .categories {
-                position: relative;
+                display: none;
+                max-height: 0;
+                overflow: hidden;
+                opacity: 0;
+            }
+
+            .categories.mobile-open {
+                display: block;
+                max-height: 420px;
+                opacity: 1;
             }
 
             .categories ul {
-                display: none;
-                flex-direction: column;
-                align-items: stretch;
-                gap: 2px;
-                padding: 8px 12px 10px;
-                max-width: none;
-            }
-
-            .categories.open ul {
-                display: flex;
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 6px;
+                padding: 10px 12px 12px;
             }
 
             .categories ul li a {
-                justify-content: flex-start;
-                padding: 10px 12px;
-                font-size: 12px;
+                justify-content: center;
+                text-align: center;
+                padding: 10px 8px;
+                min-height: 42px;
+                font-size: 10px;
+                gap: 5px;
+            }
+
+            .categories ul li:last-child {
+                grid-column: 1 / -1;
             }
 
             .slide {
-                min-height: 470px;
+                min-height: 500px;
+            }
+
+            .slide-1,
+            .slide-2 {
+                background-position: 64% center;
             }
 
             .slide-inner {
                 width: 100%;
-                padding: 54px 18px 82px;
+                padding: 68px 20px 78px;
             }
 
             .hero-content {
                 max-width: 100%;
             }
 
-            .hero-badge {
-                font-size: 9px;
-                padding: 7px 10px;
-            }
-
             .hero-content h1 {
-                font-size: 31px;
-                letter-spacing: -.6px;
-                margin-top: 14px;
+                font-size: clamp(30px, 9vw, 38px);
+                letter-spacing: -.7px;
             }
 
             .hero-content p {
@@ -1008,8 +1100,7 @@ try {
             .btn-join {
                 width: 100%;
                 justify-content: center;
-                padding: 13px 16px;
-                font-size: 12px;
+                min-height: 46px;
             }
 
             .slider-dots {
@@ -1018,7 +1109,7 @@ try {
 
             .stats-wrap {
                 width: calc(100% - 24px);
-                margin-top: -28px;
+                margin-top: -30px;
             }
 
             .stats-bar {
@@ -1027,27 +1118,22 @@ try {
             }
 
             .stat-item {
-                padding: 17px 8px;
-                border-right: 1px solid var(--border);
-                border-bottom: 1px solid var(--border);
+                padding: 18px 10px;
             }
 
-            .stat-item:nth-child(2),
-            .stat-item:nth-child(4) {
+            .stat-item:nth-child(2) {
                 border-right: 0;
             }
 
-            .stat-item:nth-child(3),
-            .stat-item:nth-child(4) {
-                border-bottom: 0;
+            .stat-item:nth-child(-n+2) {
+                border-bottom: 1px solid var(--border);
             }
 
             .stat-item i {
                 width: 36px;
                 height: 36px;
                 border-radius: 10px;
-                margin-bottom: 7px;
-                font-size: 13px;
+                margin-bottom: 8px;
             }
 
             .stat-item strong {
@@ -1055,112 +1141,90 @@ try {
             }
 
             .stat-item span {
-                font-size: 9px;
+                font-size: 10px;
             }
 
             .home-section {
-                width: 100%;
-                padding: 50px 14px 0;
+                padding: 48px 14px 0;
             }
 
             .section-heading {
-                margin-bottom: 22px;
+                margin-bottom: 24px;
             }
 
             .section-heading h2 {
-                font-size: 24px;
+                font-size: 25px;
+                line-height: 1.2;
             }
 
             .section-heading p {
-                font-size: 11px;
+                font-size: 12px;
             }
 
             .promo-grid,
             .service-grid,
             .testimonial-grid {
                 grid-template-columns: 1fr;
+            }
+
+            .promo-grid {
                 gap: 14px;
             }
 
-            .promo-grid.one-promo,
-            .promo-grid.two-promos {
-                width: 100%;
-                grid-template-columns: 1fr;
-                justify-content: stretch;
-                margin-left: 0;
-                margin-right: 0;
-            }
-
-            .promo-grid .promo-card:only-child {
-                width: 100%;
-                max-width: 100%;
-            }
-
-            .promo-grid.two-promos .promo-card,
-            .promo-grid.one-promo .promo-card {
-                width: 100%;
-                max-width: 100%;
-            }
-
             .promo-card {
-                min-height: 0;
                 padding: 0;
+                min-height: 0;
             }
 
             .promo-image {
-                height: 155px;
+                height: 190px;
             }
 
             .promo-body {
-                padding: 17px 16px 16px;
+                padding: 22px 20px 20px;
             }
 
             .promo-card h3 {
-                font-size: 19px;
+                font-size: 24px;
             }
 
-            .promo-card p {
-                font-size: 11px;
-            }
-
-            .promo-meta {
-                font-size: 9px;
-                margin-top: 12px;
-                padding-top: 10px;
+            .service-grid {
+                gap: 12px;
             }
 
             .service-card {
-                padding: 24px 18px;
+                min-height: 150px;
+                padding: 30px 20px;
             }
 
             .testimonials {
-                margin-top: 52px;
-                padding: 52px 14px 62px;
+                padding: 58px 14px;
+            }
+
+            .testimonial-inner {
+                width: 100%;
             }
 
             .t-card {
-                padding: 19px;
+                padding: 26px 22px;
             }
 
             .t-text {
-                font-size: 12px;
+                font-size: 13px;
             }
 
             .cta-area {
-                padding: 28px 14px 34px;
+                padding: 28px 14px 36px;
             }
 
             .cta-box {
-                padding: 30px 18px;
-                border-radius: 16px;
+                padding: 30px 20px;
+                border-radius: 18px;
             }
 
             .cta-box h2 {
-                font-size: 23px;
-            }
-
-            .cta-box p {
-                font-size: 11px;
+                font-size: 24px;
+                line-height: 1.25;
             }
 
             .cta-buttons {
@@ -1171,43 +1235,330 @@ try {
             .btn-blue-outline {
                 width: 100%;
                 text-align: center;
-                padding: 12px 16px;
+                min-height: 44px;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
             }
 
             .cta-footer {
-                gap: 9px;
+                gap: 8px;
                 flex-direction: column;
-                font-size: 9px;
             }
 
             footer {
-                padding: 20px 14px 26px;
+                padding: 24px 16px 28px;
             }
 
             .footer-main {
                 grid-template-columns: 1fr;
-                gap: 25px;
+                gap: 26px;
+                padding-bottom: 28px;
             }
 
-            .footer-main h4 {
-                font-size: 11px;
-            }
-
-            .footer-main p,
-            .footer-main a {
-                font-size: 11px;
+            .footer-bottom {
+                padding-top: 18px;
+                line-height: 1.6;
             }
 
             .search-status {
-                top: auto;
-                bottom: 16px;
-                left: 12px;
-                right: 12px;
-                width: auto;
+                top: 150px;
+                max-width: calc(100vw - 28px);
+                min-width: 0;
+                width: calc(100vw - 28px);
             }
         }
 
-    </style>
+        @media (max-width: 380px) {
+            .logo-text b { font-size: 16px; }
+            .logo-text span { font-size: 7px; }
+            .hero-content h1 { font-size: 29px; }
+            .stats-wrap { width: calc(100% - 18px); }
+            .stat-item strong { font-size: 16px; }
+        }
+
+    
+
+/* ============================================================
+   BOOGIE'S SHARED HEADER — FINAL MOBILE STANDARD
+   Same header sizes/spacing/colours across Home -> Contact.
+   ============================================================ */
+.logout-link,
+.nav-links a[href="logout.php"],
+.nav-links a[style*="ef4444"] {
+    color: #dc3b45 !important;
+    text-decoration: none !important;
+}
+.logout-link { color:#dc3b45; text-decoration:none; font-weight:600; font-size:13px; padding:9px 4px; }
+.logout-link {
+
+                font-size: 11px !important;
+
+                margin-left: 0 !important;
+
+                padding: 9px 4px !important;
+
+            }
+
+@media (max-width: 680px) {
+    /* One consistent mobile header: logo + account controls, then ONE search bar. */
+    header {
+        width: 100% !important;
+    }
+
+    .promo-bar {
+        min-height: 30px !important;
+        padding: 6px 10px !important;
+        font-size: 10px !important;
+        line-height: 1.35 !important;
+        white-space: nowrap;
+    }
+
+    .nav-top {
+        width: 100% !important;
+        display: grid !important;
+        grid-template-columns: minmax(0, 1fr) auto !important;
+        grid-template-rows: auto auto !important;
+        gap: 7px !important;
+        padding: 8px 12px !important;
+        align-items: center !important;
+    }
+
+    .nav-top > .logo {
+        grid-column: 1 !important;
+        grid-row: 1 !important;
+        width: auto !important;
+        min-width: 0 !important;
+        max-width: 100% !important;
+        overflow: hidden !important;
+        gap: 8px !important;
+    }
+
+    .nav-top > .logo .logo-text {
+        min-width: 0 !important;
+        overflow: hidden !important;
+    }
+
+    .nav-top > .logo .logo-text b,
+    .nav-top > .logo .logo-text span {
+        white-space: nowrap !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+    }
+
+    .nav-logo-img {
+        width: 42px !important;
+        height: 42px !important;
+        flex: 0 0 42px !important;
+    }
+
+    .logo-text b {
+        font-size: 17px !important;
+    }
+
+    .logo-text span {
+        font-size: 7px !important;
+        letter-spacing: .9px !important;
+    }
+
+    /* No hamburger/dropdown replacing the actual yellow services bar. */
+    .mobile-menu-btn,
+    #mobileMenuBtn,
+    .menu-toggle,
+    #menuToggle {
+        display: none !important;
+    }
+
+    .nav-links {
+        grid-column: 2 !important;
+        grid-row: 1 !important;
+        width: auto !important;
+        min-width: 0 !important;
+        justify-content: flex-end !important;
+        align-items: center !important;
+        flex-wrap: nowrap !important;
+        gap: 6px !important;
+        overflow: visible !important;
+    }
+
+    /* Hide the long greeting on phones so it can never overlap the logo. */
+    .nav-links > span,
+    .nav-links .hello-user {
+        display: none !important;
+    }
+
+    .nav-links .cart-btn,
+    .nav-links .login-btn {
+        min-height: 43px !important;
+        height: 43px !important;
+        padding: 9px 12px !important;
+        font-size: 10px !important;
+        border-radius: 10px !important;
+        white-space: nowrap !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        width: auto !important;
+    }
+
+     .nav-links .logout-link,
+    .nav-links a[href="logout.php"],
+    .nav-links a[style*="ef4444"] {
+        font-size: 11px !important;
+        line-height: 1 !important;
+        margin-left: 0 !important;
+        padding: 8px 4px !important;
+        white-space: nowrap !important;
+        color: #dc3b45 !important;
+    }
+
+    /* Keep exactly ONE visible search form: the search inside .nav-top. */
+    .nav-top > .search {
+        display: flex !important;
+        grid-column: 1 / -1 !important;
+        grid-row: 2 !important;
+        width: 100% !important;
+        min-width: 0 !important;
+        min-height: 44px !important;
+        height: 44px !important;
+        margin: 0 !important;
+        padding: 4px 6px 4px 11px !important;
+        border-radius: 11px !important;
+        box-sizing: border-box !important;
+    }
+
+    .nav-top > .search input {
+        display: block !important;
+        min-width: 0 !important;
+        width: 100% !important;
+        padding: 8px 5px !important;
+        font-size: 11px !important;
+        line-height: 1.2 !important;
+    }
+
+    .nav-top > .search button {
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        width: 34px !important;
+        height: 34px !important;
+        min-width: 34px !important;
+        flex: 0 0 34px !important;
+        border-radius: 9px !important;
+    }
+
+    /* Older Pet Services version has an extra mobile search wrapper — hide it. */
+    .mobile-search-wrap,
+    #mobileSiteSearchForm,
+    #mobileSiteSearchInput {
+        display: none !important;
+    }
+
+    /* Always show the complete yellow service navigation. */
+    .categories,
+    .categories.mobile-open {
+        display: block !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+        max-height: none !important;
+        height: auto !important;
+        overflow: hidden !important;
+    }
+
+    .categories ul {
+        width: 100% !important;
+        max-width: none !important;
+        display: flex !important;
+        flex-wrap: nowrap !important;
+        justify-content: flex-start !important;
+        align-items: center !important;
+        gap: 4px !important;
+        list-style: none !important;
+        padding: 6px 10px !important;
+        margin: 0 !important;
+        overflow-x: auto !important;
+        overflow-y: hidden !important;
+        -webkit-overflow-scrolling: touch !important;
+        scrollbar-width: none !important;
+    }
+
+    .categories ul::-webkit-scrollbar {
+        display: none !important;
+    }
+
+    .categories ul li,
+    .categories ul li:last-child {
+        flex: 0 0 auto !important;
+        grid-column: auto !important;
+    }
+
+    .categories ul li a {
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        white-space: nowrap !important;
+        padding: 9px 11px !important;
+        min-height: 36px !important;
+        font-size: 9px !important;
+        gap: 6px !important;
+        border-radius: 9px !important;
+    }
+
+    .categories i {
+        font-size: 11px !important;
+    }
+}
+
+@media (max-width: 420px) {
+    .nav-top {
+        padding-left: 9px !important;
+        padding-right: 9px !important;
+    }
+
+    .nav-logo-img {
+        width: 38px !important;
+        height: 38px !important;
+        flex-basis: 38px !important;
+    }
+
+    .logo-text b {
+        font-size: 15px !important;
+    }
+
+    .logo-text span {
+        font-size: 6px !important;
+        letter-spacing: .7px !important;
+    }
+
+    .nav-links .cart-btn,
+    .nav-links .login-btn {
+        min-height: 42px !important;
+        height: 42px !important;
+        padding: 9px 10px !important;
+        font-size: 9px !important;
+    }
+
+    .nav-links .logout-link,
+    .nav-links a[href="logout.php"],
+    .nav-links a[style*="ef4444"] {
+        font-size: 11px !important;
+        padding: 8px 4px !important;
+        
+    }
+
+    .nav-top > .search {
+        min-height: 43px !important;
+        height: 43px !important;
+    }
+
+    .nav-top > .search button {
+        width: 34px !important;
+        height: 34px !important;
+        flex-basis: 34px !important;
+    }
+}
+
+</style>
 </head>
 <body>
 
@@ -1215,14 +1566,19 @@ try {
 
     <header>
         <div class="nav-top">
-            <a href="home.php" class="logo">
-                <img src="bg.png" alt="Logo" class="nav-logo-img">
+            <a href="index.php" class="logo">
+                <img src="bg.png" alt="Boogie's Pet Care logo" class="nav-logo-img">
                 <div class="logo-text">
                     <b>Boogie's</b>
                     <span>PET CARE SERVICES</span>
                 </div>
             </a>
-            
+
+            <button type="button" class="mobile-menu-btn" id="mobileMenuBtn"
+                    aria-label="Open navigation menu" aria-expanded="false" aria-controls="publicCategories">
+                <i class="fa-solid fa-bars"></i>
+            </button>
+
             <form class="search" id="siteSearchForm" autocomplete="off">
                 <input
                     type="search"
@@ -1234,25 +1590,20 @@ try {
                     <i class="fa-solid fa-magnifying-glass"></i>
                 </button>
             </form>
-            
+
             <div class="nav-links">
-                <?php if($is_logged_in): ?>
+                <?php if ($is_logged_in): ?>
                     <span class="hello-user"><i class="fa-regular fa-user"></i> Hi, <?php echo htmlspecialchars($user_name); ?></span>
                     <a href="dashboard.php" class="cart-btn">Dashboard</a>
-                    <a href="logout.php" class="logout-link">Logout</a>
+                    <a href="logout.php" style="color: #ef4444; text-decoration:none; font-weight: 600; font-size: 14px; margin-left:10px;">Logout</a>
                 <?php else: ?>
                     <a href="login.php" class="cart-btn">Login / Register</a>
                 <?php endif; ?>
-
-                <button type="button" class="menu-toggle" id="menuToggle"
-                        aria-label="Open navigation menu" aria-expanded="false" aria-controls="categoryMenu">
-                    <i class="fa-solid fa-bars"></i>
-                </button>
             </div>
         </div>
-        
-        <nav class="categories" id="categoryNav">
-            <ul id="categoryMenu">
+
+        <nav class="categories" id="publicCategories">
+            <ul>
                 <li><a href="home.php" class="active"><i class="fa-solid fa-house"></i> HOME</a></li>
                 <li><a href="petservices.php"><i class="fa-solid fa-paw"></i> PET SERVICES</a></li>
                 <li><a href="grooming.php"><i class="fa-solid fa-scissors"></i> GROOMING</a></li>
@@ -1262,6 +1613,8 @@ try {
             </ul>
         </nav>
     </header>
+
+    <div id="searchStatus" class="search-status" role="status" aria-live="polite"></div>
 
     <main>
         <section class="hero-slider">
@@ -1343,11 +1696,7 @@ try {
                 <p>Don't miss out on current deals for your furry friends.</p>
             </div>
 
-            <div class="promo-grid <?php
-                echo count($promos_list) === 1
-                    ? 'one-promo'
-                    : (count($promos_list) === 2 ? 'two-promos' : '');
-            ?>">
+            <div class="promo-grid">
                 <?php if (!empty($promos_list)): ?>
                     <?php foreach ($promos_list as $promo): ?>
                         <?php
@@ -1356,41 +1705,15 @@ try {
                                 : 'purple';
 
                             $image_path = trim((string)($promo['image_url'] ?? ''));
-
-                            // Promo images are uploaded to /uploads/promos/ from the project root.
-                            // Keep external URLs intact and normalize old relative paths.
                             if ($image_path !== '') {
-                                $normalized_image_path = str_replace('\\', '/', $image_path);
-
-                                if (preg_match('#^(https?:)?//#i', $normalized_image_path) || str_starts_with($normalized_image_path, 'data:')) {
-                                    $image_src = $normalized_image_path;
-                                } else {
-                                    $normalized_image_path = preg_replace('#^(?:\./|/)+#', '', $normalized_image_path);
-
-                                    while (str_starts_with($normalized_image_path, '../')) {
-                                        $normalized_image_path = substr($normalized_image_path, 3);
-                                    }
-
-                                    // Older records may contain admin/uploads/... or just a file name.
-                                    if (str_starts_with($normalized_image_path, 'admin/uploads/promos/')) {
-                                        $normalized_image_path = substr($normalized_image_path, strlen('admin/'));
-                                    }
-
-                                    if (str_contains($normalized_image_path, 'uploads/promos/')) {
-                                        $image_src = ltrim($normalized_image_path, '/');
-                                    } else {
-                                        $image_src = 'uploads/promos/' . basename($normalized_image_path);
-                                    }
-                                }
-                            } else {
-                                $image_src = '';
+                                $image_path = ltrim(str_replace('../', '', $image_path), '/');
                             }
                         ?>
-                        <article class="promo-card <?php echo $theme_class; ?> <?php echo $image_src !== '' ? 'has-image' : ''; ?>">
-                            <?php if ($image_src !== ''): ?>
+                        <article class="promo-card <?php echo $theme_class; ?> <?php echo $image_path !== '' ? 'has-image' : ''; ?>">
+                            <?php if ($image_path !== ''): ?>
                                 <img
                                     class="promo-image"
-                                    src="<?php echo htmlspecialchars($image_src, ENT_QUOTES, 'UTF-8'); ?>"
+                                    src="<?php echo htmlspecialchars($image_path, ENT_QUOTES, 'UTF-8'); ?>"
                                     alt="<?php echo htmlspecialchars($promo['title'] ?? 'Promotion', ENT_QUOTES, 'UTF-8'); ?>"
                                     loading="lazy"
                                 >
@@ -1507,72 +1830,41 @@ try {
 
                 <div class="testimonial-grid">
                     <?php if (!empty($reviews_list)): ?>
-
-    <?php foreach ($reviews_list as $row): ?>
-
-        <?php
-            $review_name = $row['full_name'] ?? 'Valued Client';
-            $initial = strtoupper(substr($review_name, 0, 1));
-
-            if (!preg_match('/^[A-Z0-9]$/', $initial)) {
-                $initial = 'P';
-            }
-        ?>
-
-        <article class="t-card">
-
-            <div class="stars">
-                <?php
-                    for ($i = 1; $i <= 5; $i++) {
-                        echo $i <= (int)$row['rating']
-                            ? '<i class="fa-solid fa-star"></i>'
-                            : '<i class="fa-regular fa-star"></i>';
-                    }
-                ?>
-            </div>
-
-            <p class="t-text">
-                "<?php echo htmlspecialchars($row['comment'] ?? ''); ?>"
-            </p>
-
-            <div class="t-user">
-
-                <div class="t-avatar">
-                    <?php echo htmlspecialchars($initial); ?>
-                </div>
-
-                <div>
-                    <strong>
-                        <?php echo htmlspecialchars($review_name); ?>
-                    </strong>
-
-                    <small>
-                        <?php echo htmlspecialchars($row['service'] ?? ''); ?>
-                        Client
-                    </small>
-                </div>
-
-            </div>
-
-        </article>
-
-    <?php endforeach; ?>
-
-<?php else: ?>
-
-    <div class="empty-reviews">
-
-        <i class="fa-regular fa-comment-dots"></i>
-
-        <h3>No reviews yet</h3>
-
-        <p>
-            Customer reviews will appear here automatically once submitted.
-        </p>
-
-    </div>
-
-<?php endif; ?>
+                        <?php foreach($reviews_list as $row): ?>
+                            <?php
+                                $review_name = $row['full_name'] ?? 'Valued Client';
+                                $initial = strtoupper(substr($review_name, 0, 1));
+                                if (!preg_match('/^[A-Z0-9]$/', $initial)) {
+                                    $initial = 'P';
+                                }
+                            ?>
+                            <article class="t-card">
+                                <div class="stars">
+                                    <?php
+                                        for($i = 1; $i <= 5; $i++) {
+                                            echo $i <= $row['rating']
+                                                ? '<i class="fa-solid fa-star"></i>'
+                                                : '<i class="fa-regular fa-star"></i>';
+                                        }
+                                    ?>
+                                </div>
+                                <p class="t-text">"<?php echo htmlspecialchars($row['comment']); ?>"</p>
+                                <div class="t-user">
+                                    <div class="t-avatar"><?php echo htmlspecialchars($initial); ?></div>
+                                    <div>
+                                        <strong><?php echo htmlspecialchars($review_name); ?></strong>
+                                        <small><?php echo htmlspecialchars($row['service']); ?> Client</small>
+                                    </div>
+                                </div>
+                            </article>
+                        <?php endforeach; ?>
+                    <?php else: ?>
+                        <div class="empty-reviews">
+                            <i class="fa-regular fa-comment-dots"></i>
+                            <h3>No reviews yet</h3>
+                            <p>Customer reviews will appear here automatically once submitted.</p>
+                        </div>
+                    <?php endif; ?>
                 </div>
 
                 <a href="contactus.php" class="reviews-link">
@@ -1588,7 +1880,7 @@ try {
             <p>Choose a service and book your pet's next visit with Boogie's.</p>
 
             <div class="cta-buttons">
-                <a href="dashboard.php" class="btn-blue-solid">Go to Dashboard</a>
+                <a href="register.php" class="btn-blue-solid">Create Free Account</a>
                 <a href="petservices.php" class="btn-blue-outline">Browse Services</a>
             </div>
 
@@ -1607,19 +1899,15 @@ try {
                 <p>Your trusted partner for all your pet care needs in Dasmariñas, Cavite.</p>
                 <div class="socials">
                     <a href="https://www.facebook.com/boogiespetsupplies"><i class="fa-brands fa-facebook-f"></i></a>
-                    <a href="https://mail.google.com/mail/?view=cm&to=boogiespetcareservices@gmail.com"
-                       onclick="openGmailCompose(event, this.href)"
-                       aria-label="Email Boogie's Pet Care">
-                        <i class="fa-solid fa-envelope"></i>
-                    </a>
+                    <a href="mailto:boogiespetcareservices@gmail.com"><i class="fa-solid fa-envelope"></i></a>
                 </div>
             </div>
             <div>
                 <h4>Quick Links</h4>
-                <a href="home.php">Home</a>
+                <a href="index.php">Home</a>
                 <a href="petservices.php">Services & Prices</a>
                 <a href="contactus.php">Contact & Reviews</a>
-                <a href="faqs.php">FAQs</a>
+                <a href="faqs.html">FAQs</a>
             </div>
             <div>
                 <h4>Services</h4>
@@ -1646,27 +1934,6 @@ try {
     </footer>
 
     <script>
-        // ===== GMAIL COMPOSE =====
-        function openGmailCompose(event, url) {
-            event.preventDefault();
-
-            const width = 760;
-            const height = 650;
-            const left = Math.max(0, Math.round((window.screen.width - width) / 2));
-            const top = Math.max(0, Math.round((window.screen.height - height) / 2));
-
-            const popup = window.open(
-                url,
-                'boogiesGmailCompose',
-                `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`
-            );
-
-            // Mobile browsers may block popup-style windows, so fall back to Gmail.
-            if (!popup) {
-                window.location.href = url;
-            }
-        }
-
         let currentSlideIndex = 0;
         const slides = document.querySelectorAll('.slide');
         const dots = document.querySelectorAll('.dot');
@@ -1690,70 +1957,161 @@ try {
             }, 6000);
         }
 
-        /* ===== RESPONSIVE MOBILE MENU ===== */
-        const menuToggle = document.getElementById('menuToggle');
-        const categoryNav = document.getElementById('categoryNav');
+        /* ===== MOBILE MENU ===== */
+        const mobileMenuBtn = document.getElementById('mobileMenuBtn');
+        const publicCategories = document.getElementById('publicCategories');
 
-        if (menuToggle && categoryNav) {
-            menuToggle.addEventListener('click', function () {
-                const isOpen = categoryNav.classList.toggle('open');
-                menuToggle.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
-                menuToggle.setAttribute('aria-label', isOpen ? 'Close navigation menu' : 'Open navigation menu');
-
-                const icon = menuToggle.querySelector('i');
-                if (icon) {
-                    icon.classList.toggle('fa-bars', !isOpen);
-                    icon.classList.toggle('fa-xmark', isOpen);
-                }
-            });
-
-            categoryNav.querySelectorAll('a').forEach(function (link) {
-                link.addEventListener('click', function () {
-                    categoryNav.classList.remove('open');
-                    menuToggle.setAttribute('aria-expanded', 'false');
-                    menuToggle.setAttribute('aria-label', 'Open navigation menu');
-
-                    const icon = menuToggle.querySelector('i');
-                    if (icon) {
-                        icon.classList.remove('fa-xmark');
-                        icon.classList.add('fa-bars');
-                    }
-                });
+        if (mobileMenuBtn && publicCategories) {
+            mobileMenuBtn.addEventListener('click', function () {
+                const isOpen = publicCategories.classList.toggle('mobile-open');
+                mobileMenuBtn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+                mobileMenuBtn.setAttribute(
+                    'aria-label',
+                    isOpen ? 'Close navigation menu' : 'Open navigation menu'
+                );
+                mobileMenuBtn.innerHTML = isOpen
+                    ? '<i class="fa-solid fa-xmark"></i>'
+                    : '<i class="fa-solid fa-bars"></i>';
             });
         }
 
-        /* ===== WORKING SITE SEARCH ===== */
+        /* ===== SMART / RELATED SITE SEARCH ===== */
         const searchForm = document.getElementById('siteSearchForm');
         const searchInput = document.getElementById('siteSearchInput');
         const searchStatus = document.getElementById('searchStatus');
 
+        // Related words are mapped to the page/category where the user should be sent.
+        // This is intentionally broader than exact category names.
         const searchRoutes = [
             {
-                keywords: ['grooming', 'groom', 'bath', 'haircut', 'hair cut'],
+                keywords: [
+                    'grooming', 'groom', 'groomed', 'bath', 'bathing', 'shower',
+                    'haircut', 'hair cut', 'trim', 'trimming', 'nail', 'nails',
+                    'nail trim', 'shampoo', 'fur', 'fur care', 'coat', 'brush',
+                    'brushing', 'styling', 'style', 'puppy cut', 'summer cut',
+                    'shave', 'shave down', 'bear cut', 'poodle cut', 'bath blow dry',
+                    'ligo', 'gupit', 'paligo', 'paliguan', 'kuko', 'balbas'
+                ],
                 label: 'Grooming Services',
                 url: 'grooming.php'
             },
             {
-                keywords: ['vet', 'veterinary', 'clinic', 'checkup', 'check-up', 'vaccination', 'vaccine', 'deworming'],
+                keywords: [
+                    'vet', 'veterinary', 'veterinarian', 'doctor', 'clinic', 'checkup',
+                    'check-up', 'check up', 'consultation', 'consult', 'health',
+                    'wellness', 'medical', 'medicine', 'treatment', 'vaccination',
+                    'vaccine', 'vaccines', 'rabies', 'anti rabies', 'deworming',
+                    'deworm', 'worm', 'worms', 'shot', 'shots', 'injection',
+                    'bakuna', 'gamot', 'doktor', 'sakit', 'kalusugan', 'check'
+                ],
                 label: 'Vet Clinic',
                 url: 'vetclinic.php'
             },
             {
-                keywords: ['hotel', 'boarding', 'daycare', 'day care', 'stay', 'pet hotel'],
+                keywords: [
+                    'hotel', 'pet hotel', 'boarding', 'board', 'daycare', 'day care',
+                    'day-care', 'overnight', 'overnight stay', 'stay', 'sleep',
+                    'lodge', 'lodging', 'accommodation', 'room', 'pet stay',
+                    'temporary care', 'tulog', 'matulog', 'pahinga', 'tirahan'
+                ],
                 label: 'Pet Hotel',
                 url: 'pethotel.php'
             },
             {
-                keywords: ['service', 'services', 'price', 'prices', 'pet care', 'pet service'],
+                keywords: [
+                    'service', 'services', 'pet service', 'pet services', 'price',
+                    'prices', 'pricing', 'cost', 'costs', 'rate', 'rates', 'fee',
+                    'fees', 'package', 'packages', 'menu', 'list', 'pricelist',
+                    'price list', 'pet care', 'care', 'alaga', 'alagaan', 'presyo'
+                ],
                 label: 'Pet Services',
                 url: 'petservices.php'
             },
             {
-                keywords: ['contact', 'phone', 'email', 'address', 'support'],
+                keywords: [
+                    'contact', 'contacts', 'phone', 'telephone', 'mobile', 'email',
+                    'gmail', 'address', 'location', 'where', 'directions', 'support',
+                    'help', 'message', 'reach', 'call', 'tawag', 'lokasyon', 'address'
+                ],
                 label: 'Contact Us',
                 url: 'contactus.php'
             }
         ];
+
+        function normalizeSearchText(value) {
+            return String(value || '')
+                .toLowerCase()
+                .replace(/[^a-z0-9+\s-]/g, ' ')
+                .replace(/\s+/g, ' ')
+                .trim();
+        }
+
+        // Small typo tolerance so searches like "groming" can still work.
+        function levenshteinDistance(a, b) {
+            a = String(a);
+            b = String(b);
+            const prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+
+            for (let i = 1; i <= a.length; i++) {
+                const current = [i];
+                for (let j = 1; j <= b.length; j++) {
+                    const insertCost = current[j - 1] + 1;
+                    const deleteCost = prev[j] + 1;
+                    const replaceCost = prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1);
+                    current[j] = Math.min(insertCost, deleteCost, replaceCost);
+                }
+                for (let j = 0; j < current.length; j++) prev[j] = current[j];
+            }
+
+            return prev[b.length];
+        }
+
+        function findSearchRoute(query) {
+            const normalized = normalizeSearchText(query);
+            const queryWords = normalized.split(' ').filter(Boolean);
+            let bestRoute = null;
+            let bestScore = 0;
+
+            for (const route of searchRoutes) {
+                let score = 0;
+
+                for (const keyword of route.keywords) {
+                    const normalizedKeyword = normalizeSearchText(keyword);
+                    if (!normalizedKeyword) continue;
+
+                    // Strong match for a full phrase anywhere in the query.
+                    if (normalized.includes(normalizedKeyword)) {
+                        score += normalizedKeyword.includes(' ') ? 6 : 4;
+                        continue;
+                    }
+
+                    // Word-level partial/fuzzy matching.
+                    const keywordWords = normalizedKeyword.split(' ');
+                    for (const qWord of queryWords) {
+                        for (const kWord of keywordWords) {
+                            if (qWord.length >= 3 && kWord.startsWith(qWord)) {
+                                score += 2;
+                            } else if (kWord.length >= 3 && qWord.startsWith(kWord)) {
+                                score += 2;
+                            } else if (
+                                qWord.length >= 5 &&
+                                kWord.length >= 5 &&
+                                levenshteinDistance(qWord, kWord) <= 2
+                            ) {
+                                score += 2;
+                            }
+                        }
+                    }
+                }
+
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestRoute = route;
+                }
+            }
+
+            return bestScore > 0 ? bestRoute : null;
+        }
 
         function showSearchStatus(message) {
             if (!searchStatus) return;
@@ -1767,19 +2125,6 @@ try {
             }, 2600);
         }
 
-        function findSearchRoute(query) {
-            const normalized = query.toLowerCase().trim();
-
-            // Exact/partial keyword match first.
-            for (const route of searchRoutes) {
-                if (route.keywords.some(keyword => normalized.includes(keyword))) {
-                    return route;
-                }
-            }
-
-            return null;
-        }
-
         if (searchForm && searchInput) {
             searchForm.addEventListener('submit', function (event) {
                 event.preventDefault();
@@ -1788,7 +2133,7 @@ try {
 
                 if (!query) {
                     searchInput.focus();
-                    showSearchStatus('Type a service to search, like <strong>grooming</strong>, <strong>vet</strong>, or <strong>hotel</strong>.');
+                    showSearchStatus('Type something to search, like <strong>bath</strong>, <strong>vaccine</strong>, <strong>boarding</strong>, or <strong>prices</strong>.');
                     return;
                 }
 
@@ -1800,7 +2145,7 @@ try {
                         window.location.href = route.url;
                     }, 180);
                 } else {
-                    showSearchStatus('No matching service found. Try <strong>grooming</strong>, <strong>vet</strong>, <strong>hotel</strong>, or <strong>services</strong>.');
+                    showSearchStatus('No related service found. Try searching a service, treatment, price, grooming need, stay, or contact detail.');
                 }
             });
         }

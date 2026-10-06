@@ -2,7 +2,7 @@
 session_start();
 
 // Use the new PostgreSQL/Supabase connection.
-include 'db_supabase.php';
+require_once __DIR__ . '/db_supabase.php';
 
 // ============================================================
 // PHPMailer
@@ -11,9 +11,9 @@ include 'db_supabase.php';
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
 
-require 'PHPMailer/src/Exception.php';
-require 'PHPMailer/src/PHPMailer.php';
-require 'PHPMailer/src/SMTP.php';
+require_once __DIR__ . '/PHPMailer/src/Exception.php';
+require_once __DIR__ . '/PHPMailer/src/PHPMailer.php';
+require_once __DIR__ . '/PHPMailer/src/SMTP.php';
 
 // ============================================================
 // EMAIL SETTINGS
@@ -159,9 +159,9 @@ if (isset($_POST['register_btn'])) {
         // ====================================================
 
         $check_stmt = $pdo->prepare("
-            SELECT id
+            SELECT id, is_verified
             FROM users
-            WHERE email = :email
+            WHERE LOWER(email) = LOWER(:email)
             LIMIT 1
         ");
 
@@ -171,55 +171,77 @@ if (isset($_POST['register_btn'])) {
 
         $existing_user = $check_stmt->fetch();
 
-        if ($existing_user) {
+        // A verified account cannot be registered again.
+        if ($existing_user && (int)$existing_user['is_verified'] === 1) {
 
             echo "<script>
                     alert('Email is already registered.');
+                    window.location='register.php';
                   </script>";
+            exit();
+        }
 
-        } else {
+        $hashed_password = password_hash($password, PASSWORD_DEFAULT);
+        $role = 'customer';
+        $position = 'Customer';
+        $otp = random_int(100000, 999999);
 
+        try {
             // =================================================
-            // CREATE ACCOUNT
+            // CREATE OR REFRESH AN UNVERIFIED ACCOUNT
             // =================================================
+            if ($existing_user) {
+                $account_stmt = $pdo->prepare("
+                    UPDATE users
+                    SET full_name = :full_name,
+                        contact_number = :contact,
+                        password = :password,
+                        role = :role,
+                        position = :position,
+                        user_category = :user_category,
+                        otp_code = :otp,
+                        is_verified = 0,
+                        email_verified = 0
+                    WHERE id = :id
+                ");
 
-            $hashed_password = password_hash(
-                $password,
-                PASSWORD_DEFAULT
-            );
+                $account_stmt->execute([
+                    ':full_name' => $full_name,
+                    ':contact' => $contact,
+                    ':password' => $hashed_password,
+                    ':role' => $role,
+                    ':position' => $position,
+                    ':user_category' => $user_category,
+                    ':otp' => $otp,
+                    ':id' => $existing_user['id']
+                ]);
+            } else {
+                $account_stmt = $pdo->prepare("
+                    INSERT INTO users (
+                        full_name,
+                        contact_number,
+                        email,
+                        password,
+                        role,
+                        position,
+                        user_category,
+                        otp_code,
+                        is_verified
+                    )
+                    VALUES (
+                        :full_name,
+                        :contact,
+                        :email,
+                        :password,
+                        :role,
+                        :position,
+                        :user_category,
+                        :otp,
+                        0
+                    )
+                ");
 
-            $role = 'customer';
-            $position = 'Customer';
-            $otp = random_int(100000, 999999);
-
-            $insert_stmt = $pdo->prepare("
-                INSERT INTO users (
-                    full_name,
-                    contact_number,
-                    email,
-                    password,
-                    role,
-                    position,
-                    user_category,
-                    otp_code,
-                    is_verified
-                )
-                VALUES (
-                    :full_name,
-                    :contact,
-                    :email,
-                    :password,
-                    :role,
-                    :position,
-                    :user_category,
-                    :otp,
-                    0
-                )
-            ");
-
-            try {
-
-                $insert_stmt->execute([
+                $account_stmt->execute([
                     ':full_name' => $full_name,
                     ':contact' => $contact,
                     ':email' => $email,
@@ -229,97 +251,107 @@ if (isset($_POST['register_btn'])) {
                     ':user_category' => $user_category,
                     ':otp' => $otp
                 ]);
+            }
 
-                // =================================================
-                // SEND OTP VIA PHPMailer
-                // =================================================
+            // =================================================
+            // SEND OTP VIA GMAIL / PHPMailer
+            // =================================================
+            $mail = new PHPMailer(true);
+            $mail->isSMTP();
+            $mail->Host = 'smtp.gmail.com';
+            $mail->SMTPAuth = true;
+            $mail->Username = SMTP_EMAIL;
+            // Allows an App Password copied with spaces: xxxx xxxx xxxx xxxx
+            $mail->Password = preg_replace('/\s+/', '', SMTP_PASS);
+            $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+            $mail->Port = 587;
+            $mail->Timeout = 20;
+            $mail->CharSet = 'UTF-8';
 
-                $mail = new PHPMailer(true);
+            $mail->setFrom(
+                SMTP_EMAIL,
+                "Boogie's Pet Care & Services"
+            );
 
-                try {
+            $mail->addAddress(
+                $email,
+                $full_name
+            );
 
-                    $mail->isSMTP();
-                    $mail->Host = 'smtp.gmail.com';
-                    $mail->SMTPAuth = true;
-                    $mail->Username = SMTP_EMAIL;
-                    $mail->Password = SMTP_PASS;
-                    $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
-                    $mail->Port = 587;
+            $mail->isHTML(true);
+            $mail->Subject = "Verify Your Account - Boogie's Pet Care";
 
-                    $mail->SMTPOptions = [
-                        'ssl' => [
-                            'verify_peer' => false,
-                            'verify_peer_name' => false,
-                            'allow_self_signed' => true
-                        ]
-                    ];
+            $safe_name = htmlspecialchars(
+                $full_name,
+                ENT_QUOTES,
+                'UTF-8'
+            );
 
-                    $mail->setFrom(
-                        SMTP_EMAIL,
-                        "Boogie's Pet Care"
-                    );
+            $mail->Body = "
+                <div style='font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 10px;'>
+                    <h2 style='color: #001f3f; text-align: center;'>Welcome to Boogie's Pet Care!</h2>
+                    <p>Hi {$safe_name},</p>
+                    <p>Thank you for registering. To activate your account, please enter the OTP code below:</p>
+                    <h1 style='background: #f4f7fe; padding: 15px; text-align: center; color: #1d63ff; letter-spacing: 5px; border-radius: 8px;'>{$otp}</h1>
+                    <p>This code is for your Boogie's Pet Care account verification.</p>
+                    <p>If you did not request this, please ignore this email.</p>
+                    <p style='font-size: 12px; color: #64748b; text-align: center; margin-top: 30px;'>© Boogie's Pet Care & Services</p>
+                </div>
+            ";
 
-                    $mail->addAddress(
-                        $email,
-                        $full_name
-                    );
+            $mail->AltBody =
+                "Welcome to Boogie's Pet Care!\n\n" .
+                "Your verification code is: {$otp}\n\n" .
+                "Enter this 6-digit code on the registration page.";
 
-                    $mail->isHTML(true);
-                    $mail->Subject = "Verify Your Account - Boogie's Pet Care";
+            $mail->send();
 
-                    $safe_name = htmlspecialchars(
-                        $full_name,
-                        ENT_QUOTES,
-                        'UTF-8'
-                    );
+            // Only create the OTP session after a successful email send.
+            $_SESSION['temp_email'] = $email;
 
-                    $mail->Body = "
-                        <div style='font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 10px;'>
-                            <h2 style='color: #001f3f; text-align: center;'>Welcome to Boogie's Pet Care!</h2>
-                            <p>Hi {$safe_name},</p>
-                            <p>Thank you for registering. To activate your account, please enter the OTP code below:</p>
-                            <h1 style='background: #f4f7fe; padding: 15px; text-align: center; color: #1d63ff; letter-spacing: 5px; border-radius: 8px;'>{$otp}</h1>
-                            <p>If you did not request this, please ignore this email.</p>
-                            <p style='font-size: 12px; color: #64748b; text-align: center; margin-top: 30px;'>© Boogie's Pet Care & Services</p>
-                        </div>
-                    ";
+            echo "<script>
+                    alert('Account created! We have sent a verification code to your email.');
+                    window.location='register.php';
+                  </script>";
+            exit();
 
-                    $mail->send();
+        } catch (Throwable $e) {
 
-                    $_SESSION['temp_email'] = $email;
+            // Keep the real error in the server log instead of exposing SMTP details publicly.
+            error_log('Registration OTP error: ' . $e->getMessage());
 
-                    echo "<script>
-                            alert('Account created! We have sent a verification code to your email.');
-                            window.location='register.php';
-                          </script>";
-                    exit();
-
-                } catch (Exception $e) {
-
-                    // Registration succeeded, but the email did not send.
-                    // Clear the OTP so the account cannot be verified with an
-                    // unsent code.
+            // A failed send should not leave a blocked/unusable account.
+            try {
+                if ($existing_user) {
                     $clear_otp = $pdo->prepare("
                         UPDATE users
                         SET otp_code = NULL
-                        WHERE email = :email
+                        WHERE id = :id
                     ");
-
                     $clear_otp->execute([
+                        ':id' => $existing_user['id']
+                    ]);
+                } else {
+                    $delete_user = $pdo->prepare("
+                        DELETE FROM users
+                        WHERE email = :email
+                          AND is_verified = 0
+                    ");
+                    $delete_user->execute([
                         ':email' => $email
                     ]);
-
-                    echo "<script>
-                            alert('Account was created, but the verification email could not be sent. Please try again later.');
-                          </script>";
                 }
-
-            } catch (PDOException $e) {
-
-                echo "<script>
-                        alert('Registration failed. Please try again.');
-                      </script>";
+            } catch (Throwable $cleanup_error) {
+                error_log('Registration cleanup error: ' . $cleanup_error->getMessage());
             }
+
+            unset($_SESSION['temp_email']);
+
+            echo "<script>
+                    alert('We could not send the verification code. Please check the Gmail App Password/SMTP settings and try again.');
+                    window.location='register.php';
+                  </script>";
+            exit();
         }
     }
 }

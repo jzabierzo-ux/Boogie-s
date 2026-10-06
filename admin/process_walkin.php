@@ -242,8 +242,8 @@ try {
                 :service_fee,
                 :total_price,
                 'Cash (Walk-in)',
-                'Paid',
-                'Completed',
+                'Pending',
+                'Confirmed',
                 'Walk-in',
                 :vet_doctor
             )
@@ -262,7 +262,7 @@ try {
 
     $pdo->commit();
 
-    $_SESSION['alert_msg'] = 'Walk-in booking successfully added! Total: ₱' . number_format($service_fee, 2);
+    $_SESSION['alert_msg'] = 'Walk-in booking successfully added as Confirmed! Total: ₱' . number_format($service_fee, 2);
 } catch (Throwable $e) {
     if ($pdo->inTransaction()) {
         $pdo->rollBack();

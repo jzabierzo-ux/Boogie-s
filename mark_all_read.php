@@ -19,9 +19,9 @@ try {
     // Mark all unread notifications belonging to this user as read
     $stmt = $pdo->prepare("
         UPDATE notifications
-        SET is_read = TRUE
+        SET is_read = 1
         WHERE user_id = :user_id
-          AND is_read = FALSE
+          AND is_read = 0
     ");
 
     $stmt->execute([

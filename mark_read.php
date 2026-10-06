@@ -10,7 +10,7 @@ if (isset($_GET['id']) && isset($_SESSION['user_id'])) {
         // Mark only this user's notification as read
         $stmt = $pdo->prepare("
             UPDATE notifications
-            SET is_read = TRUE
+            SET is_read = 1
             WHERE id = :notif_id
               AND user_id = :user_id
         ");
