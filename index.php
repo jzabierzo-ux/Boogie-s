@@ -942,7 +942,7 @@ try {
         @media (max-width: 680px) {
             body {
                 overflow-x: hidden;
-                padding-bottom: 66px;
+                padding-bottom: 0;
             }
 
             .promo-bar {
@@ -1266,6 +1266,290 @@ try {
                 min-height:0;
             }
         }
+
+        /* ============================================================
+           MOBILE SIZE MATCH — SAME STANDARD AS PET SERVICES
+           Keeps the Home page content intact while matching the
+           Pet Services mobile header, navigation and footer sizing.
+           ============================================================ */
+
+        @media (max-width: 680px) {
+            body {
+                overflow-x: hidden;
+                padding-bottom: 0 !important;
+            }
+
+            .promo-bar {
+                min-height: 30px !important;
+                padding: 6px 10px !important;
+                font-size: 10px !important;
+                line-height: 1.35 !important;
+                white-space: nowrap;
+            }
+
+            .nav-top {
+                width: 100% !important;
+                display: grid !important;
+                grid-template-columns: minmax(0, 1fr) auto !important;
+                grid-template-rows: auto auto !important;
+                gap: 7px !important;
+                padding: 8px 12px !important;
+                align-items: center !important;
+            }
+
+            .nav-top > .logo {
+                grid-column: 1 !important;
+                grid-row: 1 !important;
+                width: auto !important;
+                min-width: 0 !important;
+                max-width: 100% !important;
+                overflow: hidden !important;
+                gap: 8px !important;
+            }
+
+            .nav-top > .logo .logo-text {
+                min-width: 0 !important;
+                overflow: hidden !important;
+            }
+
+            .nav-top > .logo .logo-text b,
+            .nav-top > .logo .logo-text span {
+                white-space: nowrap !important;
+                overflow: hidden !important;
+                text-overflow: ellipsis !important;
+            }
+
+            .nav-logo-img {
+                width: 42px !important;
+                height: 42px !important;
+                flex: 0 0 42px !important;
+            }
+
+            .logo-text b {
+                font-size: 17px !important;
+            }
+
+            .logo-text span {
+                font-size: 7px !important;
+                letter-spacing: .9px !important;
+            }
+
+            .nav-links {
+                grid-column: 2 !important;
+                grid-row: 1 !important;
+                width: auto !important;
+                min-width: 0 !important;
+                justify-content: flex-end !important;
+                align-items: center !important;
+                flex-wrap: nowrap !important;
+                gap: 6px !important;
+                overflow: visible !important;
+            }
+
+            .nav-links > span {
+                display: none !important;
+            }
+
+            .nav-links .cart-btn {
+                min-height: 43px !important;
+                height: 43px !important;
+                padding: 9px 12px !important;
+                font-size: 10px !important;
+                border-radius: 10px !important;
+                white-space: nowrap !important;
+                display: inline-flex !important;
+                align-items: center !important;
+                justify-content: center !important;
+                width: auto !important;
+            }
+
+            .nav-links a[style*="ef4444"] {
+                font-size: 11px !important;
+                line-height: 1 !important;
+                margin-left: 0 !important;
+                padding: 8px 4px !important;
+                white-space: nowrap !important;
+            }
+
+            /* Keep exactly one visible mobile search, matching Pet Services. */
+            .nav-top > .search {
+                display: flex !important;
+                grid-column: 1 / -1 !important;
+                grid-row: 2 !important;
+                width: 100% !important;
+                min-width: 0 !important;
+                min-height: 44px !important;
+                height: 44px !important;
+                margin: 0 !important;
+                padding: 4px 6px 4px 11px !important;
+                border-radius: 11px !important;
+                box-sizing: border-box !important;
+            }
+
+            .nav-top > .search input {
+                display: block !important;
+                min-width: 0 !important;
+                width: 100% !important;
+                padding: 8px 5px !important;
+                font-size: 11px !important;
+                line-height: 1.2 !important;
+            }
+
+            .nav-top > .search button {
+                display: flex !important;
+                align-items: center !important;
+                justify-content: center !important;
+                width: 34px !important;
+                height: 34px !important;
+                min-width: 34px !important;
+                flex: 0 0 34px !important;
+                border-radius: 9px !important;
+            }
+
+            .mobile-search-wrap,
+            #mobileSiteSearchForm,
+            #mobileSiteSearchInput {
+                display: none !important;
+            }
+
+            /* Match Pet Services: normal yellow category bar, not fixed bottom nav. */
+            .categories,
+            .categories.mobile-open {
+                position: static !important;
+                display: block !important;
+                visibility: visible !important;
+                opacity: 1 !important;
+                width: 100% !important;
+                max-height: none !important;
+                height: auto !important;
+                overflow: hidden !important;
+                background: var(--brand-yellow) !important;
+                border-top: 0 !important;
+                border-bottom: 1px solid rgba(0,0,0,.08) !important;
+                box-shadow: none !important;
+                z-index: 1000 !important;
+            }
+
+            .categories ul {
+                width: 100% !important;
+                max-width: none !important;
+                display: flex !important;
+                flex-wrap: nowrap !important;
+                justify-content: flex-start !important;
+                align-items: center !important;
+                gap: 4px !important;
+                list-style: none !important;
+                padding: 6px 10px !important;
+                margin: 0 !important;
+                overflow-x: auto !important;
+                overflow-y: hidden !important;
+                -webkit-overflow-scrolling: touch !important;
+                scrollbar-width: none !important;
+            }
+
+            .categories ul::-webkit-scrollbar {
+                display: none !important;
+            }
+
+            .categories ul li,
+            .categories ul li:last-child {
+                flex: 0 0 auto !important;
+                min-width: 0 !important;
+            }
+
+            .categories ul li a {
+                width: auto !important;
+                min-height: 36px !important;
+                padding: 9px 11px !important;
+                border-radius: 9px !important;
+                flex-direction: row !important;
+                justify-content: center !important;
+                align-items: center !important;
+                gap: 6px !important;
+                text-align: left !important;
+                white-space: nowrap !important;
+                font-size: 9px !important;
+                line-height: 1.1 !important;
+            }
+
+            .categories ul li a i {
+                font-size: 11px !important;
+            }
+
+            /* Match Pet Services mobile footer spacing and size. */
+            footer {
+                padding: 43px 15px 24px !important;
+            }
+
+            .footer-main {
+                grid-template-columns: 1fr !important;
+                gap: 22px !important;
+                padding-bottom: 28px !important;
+            }
+
+            .footer-main h4 {
+                font-size: 10px !important;
+                margin-bottom: 11px !important;
+            }
+
+            .footer-main p,
+            .footer-main a {
+                font-size: 10px !important;
+                line-height: 1.65 !important;
+            }
+
+            .footer-bottom {
+                font-size: 8.5px !important;
+                line-height: 1.5 !important;
+                padding-top: 18px !important;
+            }
+        }
+
+        @media (max-width: 420px) {
+            .nav-top {
+                padding-left: 9px !important;
+                padding-right: 9px !important;
+            }
+
+            .nav-logo-img {
+                width: 38px !important;
+                height: 38px !important;
+                flex-basis: 38px !important;
+            }
+
+            .logo-text b {
+                font-size: 15px !important;
+            }
+
+            .logo-text span {
+                font-size: 6px !important;
+                letter-spacing: .7px !important;
+            }
+
+            .nav-links .cart-btn {
+                min-height: 42px !important;
+                height: 42px !important;
+                padding: 9px 10px !important;
+                font-size: 9px !important;
+            }
+
+            .nav-top > .search {
+                min-height: 43px !important;
+                height: 43px !important;
+            }
+
+            .nav-top > .search button {
+                width: 34px !important;
+                height: 34px !important;
+                flex-basis: 34px !important;
+            }
+
+            .categories ul li a {
+                font-size: 8px !important;
+                padding: 8px 10px !important;
+            }
+        }
+
 </style>
 </head>
 <body>
