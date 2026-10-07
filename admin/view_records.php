@@ -1,160 +1,296 @@
 <?php
+
 session_start();
+
 include '../db_supabase.php';
 
+
+
 // --- 1. SECURITY CHECK: ALLOW ADMIN, MANAGER, VET, AND STAFF ---
+
 $current_role = isset($_SESSION['role']) ? strtolower(trim($_SESSION['role'])) : '';
 
+
+
 $is_admin_or_staff = isset($_SESSION['logged_in']) &&
+
     $_SESSION['logged_in'] === true &&
+
     in_array($current_role, ['admin', 'manager', 'vet', 'supervisor', 'staff'], true);
 
+
+
 $is_staff_logged_in = isset($_SESSION['staff_logged_in']) &&
+
     $_SESSION['staff_logged_in'] === true;
 
+
+
 if (!$is_admin_or_staff && !$is_staff_logged_in) {
+
     header("Location: ../staff/stafflogin.php");
+
     exit();
+
 }
+
+
 
 // --- 2. DYNAMIC BACK BUTTON ---
+
 $back_link = $is_admin_or_staff ? "managepet.php" : "pets.php";
 
+
+
 if (!isset($_GET['id']) || !is_numeric($_GET['id'])) {
+
     die("Invalid Pet ID.");
+
 }
+
+
 
 $pet_id = (int)$_GET['id'];
 
+
+
 // --- 3. FETCH PET DATA ---
+
 try {
+
     $query = "
+
         SELECT *
+
         FROM pets
+
         WHERE id = :pet_id
+
         LIMIT 1
+
     ";
+
+
 
     $stmt = $pdo->prepare($query);
+
     $stmt->execute([':pet_id' => $pet_id]);
 
+
+
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
 } catch (PDOException $e) {
+
     die("Unable to load the pet record at this time.");
+
 }
+
+
 
 if (!$row) {
+
     die("Pet not found in the database.");
+
 }
+
+
 
 // Map the data
+
 $p_name = $row['name'] ?? 'Unknown';
+
 $p_type = $row['pet_type'] ?? 'Unknown';
+
 $p_breed = $row['breed'] ?? 'Unknown';
+
 $p_gender = $row['gender'] ?? 'Unknown';
+
 $p_age = $row['age'] ?? 'Unknown';
+
 $p_weight = $row['weight'] ?? 'Unknown';
+
 $o_name = $row['owner_name'] ?? 'Unknown';
+
 $med_history = $row['medical_history'] ?? 'No medical history recorded.';
+
 $special_needs = $row['special_needs'] ?? 'No special care instructions provided.';
+
 $p_status = $row['status'] ?? 'Pending';
 
+
+
 // --- 4. FETCH APPOINTMENT & TRANSACTION HISTORY ---
+
 try {
+
     $appt_query = "
+
         SELECT *
+
         FROM appointments
+
         WHERE pet_id = :pet_id
+
         ORDER BY appointment_date DESC, appointment_time DESC
+
     ";
 
+
+
     $stmt_appt = $pdo->prepare($appt_query);
+
     $stmt_appt->execute([':pet_id' => $pet_id]);
 
+
+
     $appointments = $stmt_appt->fetchAll(PDO::FETCH_ASSOC);
+
 } catch (PDOException $e) {
+
     $appointments = [];
+
 }
+
 ?>
 
 
+
+
+
 <!DOCTYPE html>
+
 <html lang="en">
+
 <head>
+
     <meta charset="UTF-8">
+
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
     <title>View Pet Record | Boogie's Pet Care</title>
-    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght\@300;400;500;600;700;800&display=swap" rel="stylesheet">
+
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
     <style>
+
         :root {
+
             --navy-dark: #001f3f; 
+
             --brand-yellow: #ffcc00; 
+
             --bg-light: #f4f7f6; 
+
             --white: #ffffff; 
+
             --text-main: #2d3436;
+
             --text-muted: #64748b; 
+
             --border: #e2e8f0;
+
         }
+
+
 
         * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Poppins', sans-serif;}
+
         body { background: var(--bg-light); color: var(--text-main); padding: 40px; }
 
+
+
         .container { max-width: 1000px; margin: 0 auto; }
-        
+
+
+
         .header-actions { display: flex; justify-content: space-between; align-items: center; margin-bottom: 25px; }
-        
+
+
+
         .btn-back { background: var(--white); color: var(--navy-dark); padding: 10px 20px; border-radius: 8px; text-decoration: none; font-weight: 700; display: inline-flex; align-items: center; gap: 8px; transition: 0.3s; box-shadow: 0 2px 4px rgba(0,0,0,0.05); font-size: 14px;}
+
         .btn-back:hover { background: var(--navy-dark); color: var(--brand-yellow); transform: translateY(-2px); box-shadow: 0 6px 12px rgba(0,31,63,0.15);}
 
+
+
         .card { background: var(--white); border-radius: 16px; border: none; padding: 35px; box-shadow: 0 4px 10px rgba(0,0,0,0.03); margin-bottom: 25px; border-top: 5px solid var(--navy-dark);}
-        
+
+
+
         .pet-header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #f8fafc; padding-bottom: 20px; margin-bottom: 25px; }
+
         .pet-title h1 { font-size: 28px; font-weight: 800; display: flex; align-items: center; gap: 15px; margin-bottom: 5px; color: var(--navy-dark);}
+
         .pet-title p { color: var(--text-muted); font-size: 15px; font-weight: 500;}
-        
+
+
+
         .status-badge { background: #f1f5f9; color: var(--navy-dark); padding: 8px 16px; border-radius: 8px; font-weight: 700; font-size: 13px; border: 1px solid var(--border); display: flex; align-items: center; gap: 8px;}
+
         .status-badge i { color: var(--brand-yellow); font-size: 16px;}
 
+
+
         .info-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-bottom: 35px; }
+
         .info-item { background: #f8fafc; padding: 20px; border-radius: 12px; border: 1px solid var(--border); border-left: 4px solid var(--brand-yellow); transition: 0.2s; }
+
         .info-item:hover { transform: translateY(-3px); box-shadow: 0 6px 12px rgba(0,0,0,0.05); }
+
         .info-item span { display: block; font-size: 11px; text-transform: uppercase; font-weight: 800; color: var(--text-muted); margin-bottom: 5px; letter-spacing: 0.5px;}
+
         .info-item strong { font-size: 18px; color: var(--navy-dark); font-weight: 700;}
 
+
+
         .section-title { font-size: 18px; font-weight: 800; margin-bottom: 15px; display: flex; align-items: center; gap: 10px; color: var(--navy-dark);}
-        
+
+
+
         .text-box { background: #f8fafc; border: 1px solid var(--border); border-radius: 12px; padding: 25px; color: var(--text-main); font-size: 14px; line-height: 1.6; min-height: 100px; margin-bottom: 35px; font-weight: 500; border-left: 4px solid var(--navy-dark);}
 
+
+
         /* --- TRANSACTION HISTORY TABLE STYLES --- */
+
         .table-responsive { overflow-x: auto; background: var(--white); border: 1px solid var(--border); border-radius: 12px; }
+
         .history-table { width: 100%; border-collapse: collapse; text-align: left; }
+
         .history-table th { background: #f8fafc; padding: 15px; font-size: 12px; text-transform: uppercase; color: var(--text-muted); border-bottom: 2px solid var(--border); font-weight: 700; letter-spacing: 0.5px;}
+
         .history-table td { padding: 15px; border-bottom: 1px solid var(--border); font-size: 14px; vertical-align: middle; font-weight: 500;}
+
         .history-table tr:hover td { background-color: #f8fafc; }
+
         .history-table tr:last-child td { border-bottom: none; }
-        
+
+
+
         .trn-id { font-family: monospace; font-weight: 800; color: #0284c7; background: #e0f2fe; padding: 4px 8px; border-radius: 6px; font-size: 12px; letter-spacing: 0.5px;}
-        
+
+
+
         .status-pill { padding: 6px 14px; border-radius: 6px; font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px; box-shadow: inset 0 0 0 1px rgba(0,0,0,0.05);}
+
         .status-completed { background: #dcfce7; color: #166534; }
+
         .status-pending { background: #fef3c7; color: #92400e; }
+
         .status-cancelled { background: #fee2e2; color: #991b1b; }
+
         .status-confirmed { background: #dbeafe; color: #1e40af; }
+
         .status-no-show { background: #ffedd5; color: #ea580c; border: 1px solid #fdba74;}
 
-        @media (max-width: 900px) {
-            .info-grid { grid-template-columns: repeat(2, 1fr); }
-            .pet-header { flex-direction: column; gap: 15px; }
-        }
-        @media (max-width: 600px) {
-            .info-grid { grid-template-columns: 1fr; }
-        }
 
-        /* ===== EXTRA MOBILE RESPONSIVENESS ===== */
-        @media (max-width: 700px) {
+
+        @media (max-width: 900px) {
             body {
-                padding: 18px 12px;
+                padding: 20px 14px;
                 overflow-x: hidden;
             }
 
@@ -163,104 +299,116 @@ try {
             }
 
             .header-actions {
-                margin-bottom: 16px;
+                margin-bottom: 14px;
             }
 
             .btn-back {
                 width: 100%;
                 justify-content: center;
-                padding: 12px 14px;
-                font-size: 13px;
+                padding: 10px 12px;
+                font-size: 12px;
             }
 
             .card {
-                padding: 22px 15px;
-                border-radius: 14px;
-                margin-bottom: 16px;
+                padding: 18px 14px;
+                border-radius: 13px;
+                margin-bottom: 14px;
+                border-top-width: 4px;
             }
 
             .pet-header {
-                gap: 14px;
-                margin-bottom: 20px;
-                padding-bottom: 16px;
+                flex-direction: column;
+                gap: 10px;
+                padding-bottom: 13px;
+                margin-bottom: 16px;
             }
 
             .pet-title h1 {
-                font-size: 23px;
-                line-height: 1.3;
-                gap: 10px;
-                flex-wrap: wrap;
+                font-size: 20px;
+                line-height: 1.25;
+                gap: 8px;
             }
 
             .pet-title h1 > div {
-                width: 40px !important;
-                height: 40px !important;
-                flex: 0 0 40px;
+                width: 36px !important;
+                height: 36px !important;
+                flex: 0 0 36px;
             }
 
             .pet-title h1 > div i {
-                font-size: 20px !important;
+                font-size: 19px !important;
             }
 
             .pet-title p {
-                margin-left: 50px !important;
-                font-size: 12px;
-                line-height: 1.5;
+                margin-left: 44px !important;
+                margin-top: 2px;
+                font-size: 11px;
+                line-height: 1.45;
             }
 
             .status-badge {
                 width: 100%;
                 justify-content: center;
+                padding: 8px 10px;
+                font-size: 11px;
+                line-height: 1.3;
                 text-align: center;
-                padding: 10px 12px;
-                font-size: 12px;
-                line-height: 1.4;
                 white-space: normal;
             }
 
             .info-grid {
-                grid-template-columns: 1fr;
-                gap: 10px;
-                margin-bottom: 25px;
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 8px;
+                margin-bottom: 20px;
             }
 
             .info-item {
-                padding: 15px;
+                padding: 12px 11px;
+                border-radius: 10px;
+                border-left-width: 3px;
+            }
+
+            .info-item span {
+                font-size: 9px;
+                margin-bottom: 3px;
             }
 
             .info-item strong {
-                font-size: 16px;
+                font-size: 14px;
+                overflow-wrap: anywhere;
             }
 
             .section-title {
-                font-size: 16px;
-                line-height: 1.4;
-                align-items: flex-start;
+                font-size: 14px;
+                line-height: 1.3;
+                gap: 7px;
+                margin-bottom: 9px;
             }
 
             .text-box {
-                padding: 18px 15px;
-                min-height: 80px;
-                font-size: 13px;
-                line-height: 1.7;
+                padding: 13px 12px;
+                min-height: 60px;
+                margin-bottom: 20px;
+                font-size: 11px;
+                line-height: 1.55;
+                border-left-width: 3px;
                 overflow-wrap: anywhere;
-                margin-bottom: 25px;
             }
 
             .table-responsive {
                 overflow-x: auto;
                 -webkit-overflow-scrolling: touch;
+                border-radius: 9px;
             }
 
             .history-table {
-                min-width: 680px;
+                min-width: 620px;
             }
 
             .history-table th,
             .history-table td {
-                white-space: nowrap;
-                padding: 12px;
-                font-size: 12px;
+                padding: 9px 10px;
+                font-size: 10px;
             }
 
             .history-table td strong,
@@ -269,147 +417,277 @@ try {
             }
 
             .trn-id {
-                font-size: 11px;
+                font-size: 9px;
+                padding: 3px 6px;
             }
 
             .status-pill {
+                padding: 4px 8px;
+                font-size: 8px;
                 white-space: nowrap;
             }
         }
 
-        @media (max-width: 400px) {
+        @media (max-width: 420px) {
             body {
-                padding: 12px 9px;
+                padding: 14px 10px 20px;
             }
 
             .card {
-                padding: 18px 12px;
+                padding: 16px 11px;
+                border-radius: 12px;
             }
 
             .pet-title h1 {
-                font-size: 20px;
+                font-size: 18px;
             }
 
             .pet-title p {
                 margin-left: 0 !important;
+                font-size: 10px;
+            }
+
+            .info-grid {
+                gap: 7px;
             }
 
             .info-item {
-                padding: 13px;
+                padding: 11px 9px;
+            }
+
+            .info-item strong {
+                font-size: 13px;
+            }
+
+            .section-title {
+                font-size: 13px;
             }
 
             .text-box {
-                padding: 15px 13px;
-                font-size: 12px;
+                padding: 12px 10px;
+                font-size: 10px;
+                margin-bottom: 17px;
+            }
+
+            .history-table {
+                min-width: 590px;
             }
         }
 
-    </style>
+        </style>
+
 </head>
+
 <body>
 
+
+
     <div class="container">
+
         <div class="header-actions">
+
             <a href="<?php echo $back_link; ?>" class="btn-back"><i class="fas fa-arrow-left"></i> Back to Directory</a>
+
         </div>
+
+
 
         <div class="card">
+
             <div class="pet-header">
+
                 <div class="pet-title">
+
                     <h1>
+
                         <div style="background: #f1f5f9; width: 45px; height: 45px; border-radius: 10px; display: flex; align-items: center; justify-content: center;">
+
                             <i class="fas fa-paw" style="color: var(--navy-dark); font-size: 24px;"></i>
+
                         </div>
+
                         <?php echo htmlspecialchars($p_name); ?>
+
                     </h1>
+
                     <p style="margin-left: 60px;"><?php echo htmlspecialchars($p_breed); ?> &bull; <?php echo htmlspecialchars($p_type); ?></p>
+
                 </div>
+
                 <div class="status-badge"><i class="fas fa-user-check"></i> Owner: <?php echo htmlspecialchars($o_name); ?></div>
+
             </div>
+
+
 
             <div class="info-grid">
+
                 <div class="info-item">
+
                     <span>Gender</span>
+
                     <strong><?php echo htmlspecialchars($p_gender); ?></strong>
+
                 </div>
+
                 <div class="info-item">
+
                     <span>Age</span>
+
                     <strong><?php echo htmlspecialchars($p_age); ?> yrs</strong>
+
                 </div>
+
                 <div class="info-item">
+
                     <span>Weight</span>
+
                     <strong><?php echo htmlspecialchars($p_weight); ?></strong>
+
                 </div>
-                
+
+
+
             </div>
+
+
 
             <h3 class="section-title"><i class="fas fa-notes-medical" style="color: #ef4444;"></i> Medical History / Alerts</h3>
+
             <div class="text-box">
+
                 <?php echo nl2br(htmlspecialchars($med_history)); ?>
+
             </div>
+
+
 
             <h3 class="section-title"><i class="fas fa-clipboard-list" style="color: var(--navy-dark);"></i> Special Needs / Care Instructions</h3>
+
             <div class="text-box" style="border-left-color: var(--brand-yellow);">
+
                 <?php echo nl2br(htmlspecialchars($special_needs)); ?>
+
             </div>
+
+
 
             <h3 class="section-title"><i class="fas fa-history" style="color: var(--navy-dark);"></i> Transaction & Schedule History</h3>
+
             <div class="table-responsive">
+
                 <table class="history-table">
+
                     <thead>
+
                         <tr>
+
                             <th>Transaction ID</th>
+
                             <th>Schedule (Date & Time)</th>
+
                             <th>Service Type</th>
+
                             <th>Service Fee</th>
+
                             <th>Status</th>
+
                         </tr>
+
                     </thead>
+
                     <tbody>
+
                         <?php if (count($appointments) > 0): ?>
+
                             <?php foreach ($appointments as $appt): 
+
                                 // Gagawa tayo ng Unique Transaction ID gamit ang Year-Month at ID ng booking
+
                                 $date_part = date('Ym', strtotime($appt['appointment_date']));
+
                                 $trn_id = "TRN-" . $date_part . "-" . str_pad($appt['id'], 4, '0', STR_PAD_LEFT);
-                                
+
+
+
                                 // Format Date and Time
+
                                 $sched_date = date('M d, Y', strtotime($appt['appointment_date']));
+
                                 $sched_time = isset($appt['appointment_time']) && !empty($appt['appointment_time']) ? date('g:i A', strtotime($appt['appointment_time'])) : '';
-                                
+
+
+
                                 // Presyo (Ginamit ang in-update nating service_fee column)
+
                                 $fee = isset($appt['service_fee']) && $appt['service_fee'] > 0 ? "₱" . number_format($appt['service_fee'], 2) : "TBD";
-                                
+
+
+
                                 // Status
+
                                 $status = $appt['booking_status'] ?? 'Pending';
+
                                 $status_class = str_replace(' ', '-', strtolower($status));
+
                             ?>
+
                                 <tr>
+
                                     <td><span class="trn-id"><?php echo $trn_id; ?></span></td>
+
                                     <td>
+
                                         <strong style="color: var(--navy-dark);"><?php echo $sched_date; ?></strong><br>
+
                                         <?php if($sched_time): ?>
+
                                             <small style="color: var(--text-muted); font-weight: 600;"><i class="far fa-clock"></i> <?php echo $sched_time; ?></small>
+
                                         <?php endif; ?>
+
                                     </td>
+
                                     <td><?php echo htmlspecialchars($appt['service']); ?></td>
+
                                     <td style="font-weight: 800; color: #10b981; font-size: 15px;"><?php echo $fee; ?></td>
+
                                     <td><span class="status-pill status-<?php echo $status_class; ?>"><?php echo htmlspecialchars($status); ?></span></td>
+
                                 </tr>
+
                             <?php endforeach; ?>
+
                         <?php else: ?>
+
                             <tr>
+
                                 <td colspan="5" style="text-align: center; color: #94a3b8; padding: 60px 30px;">
+
                                     <i class="fas fa-calendar-times" style="font-size: 40px; margin-bottom: 15px; opacity: 0.3;"></i><br>
+
                                     <span style="font-weight: 500;">No appointment or transaction history found for this pet.</span>
+
                                 </td>
+
                             </tr>
+
                         <?php endif; ?>
+
                     </tbody>
+
                 </table>
+
             </div>
 
+
+
         </div>
+
     </div>
 
+
+
 </body>
+
 </html>

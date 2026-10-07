@@ -7,7 +7,7 @@ $current_role = isset($_SESSION['role']) ? strtolower(trim($_SESSION['role'])) :
 
 // Allow logged-in Admins, Managers, and Vets.
 // NOTE: Because this file is inside /admin, the staff login path is ../staff/stafflogin.php.
-if (!isset($_SESSION['logged_in']) || !in_array($current_role, ['admin', 'manager', 'vet'], true)) {
+if (!isset($_SESSION['logged_in']) || !in_array($current_role, ['admin', 'manager', 'vet', 'supervisor', 'staff'], true)) {
     header("Location: ../staff/stafflogin.php");
     exit();
 }
@@ -24,8 +24,18 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
         exit();
     }
 
-    if (!in_array($role, ['manager', 'vet'], true)) {
+    if (!in_array($role, ['admin', 'manager', 'vet', 'supervisor', 'staff'], true)) {
         echo "<script>alert('Invalid personnel role selected.'); window.history.back();</script>";
+        exit();
+    }
+
+    if ($role === 'admin' && $current_role !== 'admin') {
+        echo "<script>alert('Only an Admin can create another Admin account.'); window.history.back();</script>";
+        exit();
+    }
+
+    if (mb_strlen($position) > 100) {
+        echo "<script>alert('Position is too long. Please keep it within 100 characters.'); window.history.back();</script>";
         exit();
     }
 

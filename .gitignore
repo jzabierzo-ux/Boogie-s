@@ -1,0 +1,24 @@
+# Environment / Secrets
+.env
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+vendor/
+
+# Logs
+*.log
+firebase-debug.log
+
+# User uploads / private files
+uploads/
+admin/uploads/
+
+# Local / IDE files
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local secrets
+includes/secrets.php

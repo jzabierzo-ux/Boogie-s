@@ -2,7 +2,7 @@
 
 function normalizeIPROGPhoneNumber($phone)
 {
-    $phone = preg_replace('/\D+/', '', (string)$phone);
+    $phone = preg_replace('/\D+/', '', (string) $phone);
 
     // 09XXXXXXXXX -> 639XXXXXXXXX
     if (preg_match('/^09\d{9}$/', $phone)) {
@@ -24,21 +24,22 @@ function normalizeIPROGPhoneNumber($phone)
 
 function sendIPROGSMS($phoneNumber, $message)
 {
-    // ILAGAY DITO ANG ACTUAL IPROG MAIN API TOKEN MO
-    $apiToken = '413335a1a3b049589c4c3252079a772282bfb35f';
+    // IPROG API token is stored in an environment variable.
+    $apiToken = getenv('IPROG_API_TOKEN') ?: '';
 
     $phoneNumber = normalizeIPROGPhoneNumber($phoneNumber);
 
-    // Check only for the placeholder, NOT the real token.
+    // API token must be configured.
     if (trim($apiToken) === '') {
-    return [
-        'success' => false,
-        'http_code' => 0,
-        'response' => 'IPROG API token has not been configured.',
-        'phone_number' => $phoneNumber
-    ];
-}
+        return [
+            'success' => false,
+            'http_code' => 0,
+            'response' => 'IPROG API token has not been configured.',
+            'phone_number' => $phoneNumber
+        ];
+    }
 
+    // Validate Philippine mobile number.
     if (!preg_match('/^639\d{9}$/', $phoneNumber)) {
         return [
             'success' => false,
@@ -72,7 +73,7 @@ function sendIPROGSMS($phoneNumber, $message)
     ]);
 
     $response = curl_exec($ch);
-    $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $httpCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
     $curlError = curl_error($ch);
 
     curl_close($ch);
@@ -91,7 +92,7 @@ function sendIPROGSMS($phoneNumber, $message)
     $isSuccess = ($httpCode >= 200 && $httpCode < 300);
 
     if (is_array($decoded) && isset($decoded['status'])) {
-        $isSuccess = $isSuccess && ((int)$decoded['status'] === 200);
+        $isSuccess = $isSuccess && ((int) $decoded['status'] === 200);
     }
 
     return [

@@ -66,6 +66,11 @@ $display_with_title = (stripos($full_display_name, 'Dr.') === false)
     ? 'Dr. ' . $full_display_name
     : $full_display_name;
 
+// Mobile top bar: show first name only to prevent crowding.
+$mobile_name_source = trim(preg_replace('/^\s*(?:Dr\.?|Dra\.?|Doc\.?)\s+/i', '', (string)$display_with_title));
+$first_name_only = trim((string)(preg_split('/\s+/', $mobile_name_source)[0] ?? ''));
+
+
 // --- FETCH NOTIFICATIONS ---
 $admin_notifications = [];
 $unread_count = 0;
@@ -664,7 +669,1311 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_note'])) {
             }
         }
 
-    </style>
+
+        /* ===== Mobile-flexible layout additions ===== */
+        html { width: 100%; overflow-x: hidden; }
+        body { width: 100%; max-width: 100%; }
+        img { max-width: 100%; }
+        input, select, textarea, button { max-width: 100%; }
+
+
+        /* ===== Final mobile containment ===== */
+        @media (max-width: 900px) {
+            html, body { width:100%; max-width:100%; overflow-x:hidden; }
+            .main-content { width:100% !important; min-width:0; }
+            header { width:100%; max-width:100%; }
+            .container, .card, .schedule-card, .profile-card { max-width:100%; }
+            img { max-width:100%; height:auto; }
+            input, select, textarea, button { max-width:100%; }
+        }
+
+    
+
+/* ================================================================
+   FINAL MOBILE-FLEXIBLE STAFF LAYOUT
+   Keeps desktop layout intact. Mobile only.
+   ================================================================ */
+html, body {
+    max-width: 100%;
+    width: 100%;
+    overflow-x: hidden;
+}
+
+*, *::before, *::after {
+    box-sizing: border-box;
+}
+
+img, svg, video, canvas {
+    max-width: 100%;
+}
+
+button, input, select, textarea {
+    font: inherit;
+}
+
+@media (max-width: 900px) {
+    body {
+        min-width: 0 !important;
+        overflow-x: hidden !important;
+    }
+
+    /* Sidebar is an overlay on phones; it never pushes the page horizontally. */
+    .sidebar {
+        position: fixed !important;
+        top: 64px !important;
+        left: 0 !important;
+        bottom: 0 !important;
+        width: min(280px, 82vw) !important;
+        height: auto !important;
+        margin: 0 !important;
+        transform: translateX(-105%) !important;
+        transition: transform .24s ease !important;
+        z-index: 2000 !important;
+        overflow-y: auto !important;
+        overflow-x: hidden !important;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .sidebar.mobile-open {
+        transform: translateX(0) !important;
+    }
+
+    .sidebar-overlay {
+        position: fixed !important;
+        top: 64px !important;
+        left: 0 !important;
+        right: 0 !important;
+        bottom: 0 !important;
+        background: rgba(0, 31, 63, .48) !important;
+        z-index: 1900 !important;
+        display: none !important;
+    }
+
+    .sidebar-overlay.show {
+        display: block !important;
+    }
+
+    .sidebar-header {
+        padding: 24px 18px 18px !important;
+        flex: 0 0 auto !important;
+    }
+
+    .sidebar-logo-img {
+        width: 68px !important;
+        height: auto !important;
+        margin-bottom: 8px !important;
+    }
+
+    .sidebar-header h2 {
+        font-size: 14px !important;
+        line-height: 1.2 !important;
+        white-space: nowrap;
+    }
+
+    .nav-links {
+        display: flex !important;
+        flex-direction: column !important;
+        gap: 5px !important;
+        padding: 16px 14px 24px !important;
+    }
+
+    .nav-item,
+    .nav-item:hover {
+        display: flex !important;
+        flex-direction: row !important;
+        align-items: center !important;
+        justify-content: flex-start !important;
+        gap: 0 !important;
+        width: 100% !important;
+        min-height: 50px !important;
+        padding: 12px 16px !important;
+        margin: 0 !important;
+        transform: none !important;
+        font-size: 14px !important;
+        line-height: 1.2 !important;
+        text-align: left !important;
+        white-space: nowrap;
+    }
+
+    .nav-item i {
+        width: 32px !important;
+        min-width: 32px !important;
+        margin-right: 4px !important;
+        font-size: 18px !important;
+        text-align: center !important;
+    }
+
+    .nav-item.active::before {
+        left: -14px !important;
+        right: auto !important;
+        top: 15% !important;
+        bottom: auto !important;
+        width: 5px !important;
+        height: 70% !important;
+        border-radius: 0 5px 5px 0 !important;
+    }
+
+    .main-content {
+        width: 100% !important;
+        max-width: 100% !important;
+        min-width: 0 !important;
+        margin-left: 0 !important;
+    }
+
+    .main-content > header,
+    header {
+        position: sticky !important;
+        top: 0 !important;
+        z-index: 2100 !important;
+        width: 100% !important;
+        max-width: 100% !important;
+        min-width: 0 !important;
+        min-height: 64px !important;
+        height: 64px !important;
+        padding: 0 12px !important;
+        display: flex !important;
+        align-items: center !important;
+        gap: 10px !important;
+        flex-wrap: nowrap !important;
+        overflow: visible !important;
+    }
+
+    /* Pages where the menu button is outside the header (dashboard/tasks/etc.). */
+    .mobile-header-no-button {
+        padding-left: 62px !important;
+    }
+
+    .mobile-menu-btn {
+        display: inline-flex !important;
+        flex: 0 0 40px !important;
+        width: 40px !important;
+        height: 40px !important;
+        min-width: 40px !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        border: 0 !important;
+        border-radius: 10px !important;
+        background: var(--sidebar-navy, #001f3f) !important;
+        color: var(--brand-yellow, #ffcc00) !important;
+        align-items: center !important;
+        justify-content: center !important;
+        cursor: pointer !important;
+        z-index: 2200 !important;
+    }
+
+    .mobile-menu-btn i {
+        color: var(--brand-yellow, #ffcc00) !important;
+        font-size: 17px !important;
+    }
+
+    .breadcrumb {
+        flex: 1 1 auto !important;
+        min-width: 0 !important;
+        max-width: 100% !important;
+        display: flex !important;
+        align-items: center !important;
+        gap: 7px !important;
+        overflow: hidden !important;
+        white-space: nowrap !important;
+        text-overflow: ellipsis !important;
+        font-size: 12px !important;
+        line-height: 1.2 !important;
+    }
+
+    .breadcrumb-text {
+        min-width: 0 !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+        white-space: nowrap !important;
+    }
+
+    .top-right-actions {
+        display: flex !important;
+        align-items: center !important;
+        justify-content: flex-end !important;
+        gap: 9px !important;
+        margin-left: auto !important;
+        flex: 0 0 auto !important;
+        min-width: max-content !important;
+    }
+
+    .notif-wrapper,
+    .profile-wrapper {
+        flex: 0 0 auto !important;
+        min-width: 0 !important;
+    }
+
+    .notif-wrapper > i {
+        font-size: 19px !important;
+    }
+
+    .role-label {
+        flex: 0 0 auto !important;
+        white-space: nowrap !important;
+        padding: 4px 8px !important;
+        font-size: 9px !important;
+    }
+
+    .profile-wrapper {
+        display: flex !important;
+        align-items: center !important;
+        gap: 7px !important;
+        padding-left: 9px !important;
+        border-left: 1px solid var(--border, #e2e8f0) !important;
+        overflow: visible !important;
+    }
+
+    .top-avatar,
+    .top-avatar-fallback {
+        width: 32px !important;
+        height: 32px !important;
+        min-width: 32px !important;
+        flex: 0 0 32px !important;
+    }
+
+    .profile-wrapper > span {
+        min-width: 0 !important;
+        max-width: 105px !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+        white-space: nowrap !important;
+        font-size: 12px !important;
+        line-height: 1.2 !important;
+    }
+
+    .profile-dropdown {
+        position: fixed !important;
+        top: 70px !important;
+        right: 12px !important;
+        width: min(220px, calc(100vw - 24px)) !important;
+        max-width: calc(100vw - 24px) !important;
+        z-index: 3000 !important;
+    }
+
+    .notif-dropdown {
+        position: fixed !important;
+        top: 70px !important;
+        left: 12px !important;
+        right: 12px !important;
+        width: auto !important;
+        max-width: none !important;
+        z-index: 3000 !important;
+    }
+
+    .container {
+        width: 100% !important;
+        max-width: 100% !important;
+        min-width: 0 !important;
+    }
+
+    .card,
+    .profile-card,
+    .schedule-card,
+    .form-card,
+    .container > * {
+        max-width: 100% !important;
+        min-width: 0 !important;
+    }
+
+    input, select, textarea, button {
+        max-width: 100%;
+    }
+
+    /* Prevent long names/services from forcing horizontal overflow. */
+    h1, h2, h3, h4, p, span, td, th, label, a, strong {
+        overflow-wrap: anywhere;
+    }
+}
+
+@media (max-width: 560px) {
+    .main-content > header,
+    header {
+        min-height: 60px !important;
+        height: 60px !important;
+        padding: 0 10px !important;
+        gap: 7px !important;
+    }
+
+    .mobile-header-no-button {
+        padding-left: 58px !important;
+    }
+
+    .mobile-menu-btn {
+        flex-basis: 36px !important;
+        width: 36px !important;
+        height: 36px !important;
+        min-width: 36px !important;
+        border-radius: 9px !important;
+    }
+
+    .breadcrumb {
+        font-size: 11px !important;
+        gap: 6px !important;
+    }
+
+    .top-right-actions {
+        gap: 6px !important;
+    }
+
+    .role-label {
+        padding: 4px 7px !important;
+        font-size: 8px !important;
+    }
+
+    .profile-wrapper {
+        gap: 6px !important;
+        padding-left: 7px !important;
+    }
+
+    .profile-wrapper > span {
+        max-width: 76px !important;
+        font-size: 11px !important;
+    }
+
+    .top-avatar,
+    .top-avatar-fallback {
+        width: 30px !important;
+        height: 30px !important;
+        min-width: 30px !important;
+        flex-basis: 30px !important;
+    }
+
+    .role-label i {
+        margin-right: 3px !important;
+    }
+
+    .container {
+        padding-left: 12px !important;
+        padding-right: 12px !important;
+    }
+}
+
+@media (max-width: 400px) {
+    .role-label {
+        display: none !important;
+    }
+
+    .profile-wrapper > span {
+        max-width: 72px !important;
+    }
+}
+
+@media (max-width: 680px) {
+    .task-item {
+        width: 100% !important;
+        max-width: 100% !important;
+        min-width: 0 !important;
+        flex-wrap: wrap !important;
+        gap: 12px !important;
+        padding: 15px 14px !important;
+    }
+
+    .task-item > div,
+    .task-item > section {
+        min-width: 0 !important;
+        max-width: 100% !important;
+    }
+
+    .form-grid,
+    .grid-2,
+    .row,
+    .info-grid,
+    .stats-grid,
+    .stats-grid-3 {
+        width: 100% !important;
+        max-width: 100% !important;
+        min-width: 0 !important;
+    }
+
+    .form-group,
+    .card,
+    .profile-card,
+    .form-card {
+        min-width: 0 !important;
+    }
+
+    textarea,
+    input,
+    select {
+        min-width: 0 !important;
+    }
+
+    .header-actions,
+    .action-row,
+    .button-row {
+        flex-wrap: wrap !important;
+    }
+
+    .header-actions > *,
+    .action-row > *,
+    .button-row > * {
+        max-width: 100% !important;
+    }
+}
+
+
+/* =========================================================
+   BOOGIE'S STAFF SHELL — MATCH ADMIN DESKTOP/MOBILE BEHAVIOR
+   Final responsive override. Does not change PHP/database logic.
+   ========================================================= */
+html, body { width:100%; max-width:100%; overflow-x:hidden; }
+
+/* Desktop shell - same proportions as admin side */
+.sidebar {
+    width:260px !important;
+    background:#001f3f !important;
+    color:#fff !important;
+    position:fixed !important;
+    top:0 !important;
+    left:0 !important;
+    bottom:0 !important;
+    height:100vh !important;
+    z-index:1000 !important;
+    display:flex !important;
+    flex-direction:column !important;
+    overflow-y:auto !important;
+    box-shadow:none !important;
+}
+.sidebar-header {
+    padding:30px 20px !important;
+    text-align:center !important;
+    border-bottom:1px solid rgba(255,255,255,.05) !important;
+    display:block !important;
+}
+.sidebar-logo-img {
+    width:80px !important;
+    height:auto !important;
+    object-fit:contain !important;
+    margin:0 auto 10px !important;
+    display:block !important;
+}
+.sidebar-header h2 {
+    margin:0 !important;
+    color:#ffcc00 !important;
+    font-size:16px !important;
+    text-transform:uppercase !important;
+    letter-spacing:1px !important;
+    font-weight:800 !important;
+}
+.nav-links {
+    flex-grow:1 !important;
+    padding:20px 15px !important;
+    display:flex !important;
+    flex-direction:column !important;
+    gap:5px !important;
+}
+.nav-item {
+    display:flex !important;
+    align-items:center !important;
+    padding:14px 20px !important;
+    margin:0 !important;
+    gap:0 !important;
+    color:#94a3b8 !important;
+    text-decoration:none !important;
+    font-size:14px !important;
+    font-weight:500 !important;
+    border-radius:10px !important;
+    position:relative !important;
+    transform:none;
+}
+.nav-item i {
+    width:32px !important;
+    min-width:32px !important;
+    font-size:18px !important;
+    text-align:left !important;
+}
+.nav-item:hover {
+    color:#fff !important;
+    background:rgba(255,255,255,.05) !important;
+    transform:translateX(4px) !important;
+}
+.nav-item.active {
+    color:#ffcc00 !important;
+    background:rgba(255,204,0,.08) !important;
+    font-weight:700 !important;
+}
+.nav-item.active::before {
+    content:'' !important;
+    position:absolute !important;
+    left:-15px !important;
+    top:15% !important;
+    width:5px !important;
+    height:70% !important;
+    background:#ffcc00 !important;
+    border-radius:0 5px 5px 0 !important;
+    box-shadow:2px 0 8px rgba(255,204,0,.5) !important;
+}
+
+.main-content {
+    margin-left:260px !important;
+    width:calc(100% - 260px) !important;
+    min-height:100vh !important;
+    display:flex !important;
+    flex-direction:column !important;
+}
+.main-content > header,
+.main-content > header:first-child {
+    width:100% !important;
+    min-height:70px !important;
+    height:70px !important;
+    padding:0 40px !important;
+    background:#fff !important;
+    display:flex !important;
+    align-items:center !important;
+    justify-content:space-between !important;
+    gap:16px !important;
+    border-bottom:1px solid var(--border,#e2e8f0) !important;
+    position:sticky !important;
+    top:0 !important;
+    z-index:1200 !important;
+    box-shadow:0 1px 10px rgba(0,0,0,.04) !important;
+}
+.topbar-left {
+    display:flex !important;
+    align-items:center !important;
+    gap:12px !important;
+    min-width:0 !important;
+    flex:0 1 auto !important;
+}
+.breadcrumb {
+    min-width:0 !important;
+    display:flex !important;
+    align-items:center !important;
+    gap:8px !important;
+    color:#001f3f !important;
+    font-size:14px !important;
+    font-weight:700 !important;
+    white-space:nowrap !important;
+    overflow:hidden !important;
+    text-overflow:ellipsis !important;
+}
+.breadcrumb-text {
+    min-width:0 !important;
+    overflow:hidden !important;
+    text-overflow:ellipsis !important;
+    white-space:nowrap !important;
+}
+.top-right-actions {
+    margin-left:auto !important;
+    display:flex !important;
+    align-items:center !important;
+    justify-content:flex-end !important;
+    gap:16px !important;
+    flex:0 0 auto !important;
+    min-width:max-content !important;
+}
+.notif-wrapper,
+.profile-wrapper {
+    position:relative !important;
+    flex:0 0 auto !important;
+    min-width:0 !important;
+}
+.profile-wrapper {
+    display:flex !important;
+    align-items:center !important;
+    gap:12px !important;
+    border-left:1px solid #e2e8f0 !important;
+    padding-left:18px !important;
+    cursor:pointer !important;
+    user-select:none !important;
+}
+.role-label {
+    display:inline-flex !important;
+    align-items:center !important;
+    justify-content:center !important;
+    gap:5px !important;
+    min-height:24px !important;
+    padding:5px 11px !important;
+    border-radius:999px !important;
+    background:#001f3f !important;
+    color:#ffcc00 !important;
+    border:1px solid #ffcc00 !important;
+    font-size:9px !important;
+    font-weight:900 !important;
+    letter-spacing:1px !important;
+    text-transform:uppercase !important;
+    white-space:nowrap !important;
+    flex:0 0 auto !important;
+}
+.role-label i { font-size:9px !important; }
+.top-avatar,
+.top-avatar-fallback {
+    width:35px !important;
+    height:35px !important;
+    min-width:35px !important;
+    flex:0 0 35px !important;
+    border-radius:50% !important;
+    object-fit:cover !important;
+}
+.top-avatar-fallback {
+    display:flex !important;
+    align-items:center !important;
+    justify-content:center !important;
+    background:#001f3f !important;
+    color:#ffcc00 !important;
+    font-size:14px !important;
+    font-weight:800 !important;
+    border:2px solid #ffcc00 !important;
+}
+.profile-wrapper > span:not(.name-label),
+.profile-name-text,
+.profile-wrapper .profile-name-text {
+    min-width:0 !important;
+    max-width:220px !important;
+    display:flex !important;
+    align-items:center !important;
+    gap:6px !important;
+    color:#001f3f !important;
+    font-size:14px !important;
+    font-weight:700 !important;
+    white-space:nowrap !important;
+    overflow:hidden !important;
+    text-overflow:ellipsis !important;
+}
+.notif-wrapper > i { color:#64748b !important; font-size:20px !important; }
+.mobile-menu-btn {
+    display:none !important;
+    flex:0 0 auto !important;
+    width:40px !important;
+    height:40px !important;
+    border:0 !important;
+    border-radius:10px !important;
+    background:#001f3f !important;
+    color:#ffcc00 !important;
+    align-items:center !important;
+    justify-content:center !important;
+    cursor:pointer !important;
+    z-index:2200 !important;
+}
+.mobile-menu-btn i { color:#ffcc00 !important; font-size:17px !important; }
+.sidebar-overlay {
+    display:none !important;
+    position:fixed !important;
+    inset:0 !important;
+    background:rgba(0,31,63,.48) !important;
+    z-index:1900 !important;
+}
+.sidebar-overlay.show { display:block !important; }
+.notif-dropdown,
+.profile-dropdown {
+    z-index:3000 !important;
+}
+
+@media (max-width:1200px) and (min-width:901px) {
+    .main-content { width:calc(100% - 260px) !important; }
+    .main-content > header { padding:0 28px !important; }
+    .top-right-actions { gap:14px !important; }
+    .profile-wrapper { gap:9px !important; padding-left:14px !important; }
+    .profile-name-text,
+    .profile-wrapper > span:not(.name-label) { max-width:150px !important; }
+}
+
+@media (max-width:900px) {
+    body { overflow-x:hidden !important; }
+    .sidebar {
+        left:0 !important;
+        top:0 !important;
+        width:260px !important;
+        height:100vh !important;
+        transform:translateX(-100%) !important;
+        transition:transform .25s ease !important;
+        z-index:2000 !important;
+        box-shadow:12px 0 30px rgba(0,0,0,.18) !important;
+    }
+    .sidebar.mobile-open { transform:translateX(0) !important; }
+    .main-content {
+        margin-left:0 !important;
+        width:100% !important;
+        min-width:0 !important;
+    }
+    .main-content > header,
+    .main-content > header:first-child {
+        min-height:64px !important;
+        height:64px !important;
+        padding:0 14px !important;
+        gap:10px !important;
+        position:sticky !important;
+        top:0 !important;
+        z-index:1800 !important;
+    }
+    .mobile-menu-btn { display:inline-flex !important; }
+    .topbar-left { flex:1 1 auto !important; min-width:0 !important; }
+    .breadcrumb { font-size:13px !important; gap:6px !important; max-width:100% !important; }
+    .top-right-actions { gap:10px !important; }
+    .role-label { padding:5px 9px !important; font-size:8px !important; }
+    .profile-wrapper { gap:8px !important; padding-left:10px !important; }
+    .top-avatar,
+    .top-avatar-fallback { width:32px !important; height:32px !important; min-width:32px !important; flex-basis:32px !important; }
+    .profile-name-text,
+    .profile-wrapper > span:not(.name-label) { max-width:120px !important; font-size:12px !important; }
+    .notif-dropdown { position:fixed !important; top:72px !important; left:12px !important; right:12px !important; width:auto !important; max-width:none !important; }
+    .profile-dropdown { position:fixed !important; top:72px !important; right:12px !important; width:min(220px,calc(100vw - 24px)) !important; }
+    .sidebar-header { padding:30px 20px !important; }
+    .sidebar-logo-img { width:80px !important; }
+    .nav-links { padding:20px 15px !important; gap:5px !important; }
+    .nav-item { padding:14px 20px !important; font-size:14px !important; }
+}
+
+@media (max-width:560px) {
+    .main-content > header,
+    .main-content > header:first-child {
+        min-height:60px !important;
+        height:60px !important;
+        padding:0 10px !important;
+        gap:7px !important;
+    }
+    .mobile-menu-btn { width:36px !important; height:36px !important; min-width:36px !important; border-radius:9px !important; }
+    .breadcrumb { font-size:11px !important; }
+    .top-right-actions { gap:6px !important; }
+    .role-label { padding:4px 7px !important; font-size:8px !important; }
+    .profile-wrapper { gap:6px !important; padding-left:7px !important; }
+    .profile-name-text,
+    .profile-wrapper > span:not(.name-label) { max-width:76px !important; font-size:11px !important; }
+    .top-avatar,
+    .top-avatar-fallback { width:30px !important; height:30px !important; min-width:30px !important; flex-basis:30px !important; }
+    .notif-wrapper > i { font-size:18px !important; }
+    .container { padding-left:12px !important; padding-right:12px !important; }
+}
+
+@media (max-width:400px) {
+    .role-label { display:none !important; }
+    .profile-name-text,
+    .profile-wrapper > span:not(.name-label) { max-width:70px !important; }
+}
+
+/* Prevent content-level overflow on small screens. */
+.container,
+.form-card,
+.card,
+.schedule-card,
+.table-wrap,
+.table-container,
+.content-card,
+.profile-card {
+    max-width:100% !important;
+    min-width:0 !important;
+}
+input, select, textarea, button, img { max-width:100%; }
+
+
+/* ================================================================
+   FINAL STAFF TOP BAR FIX — MATCH ADMIN MOBILE BEHAVIOR
+   Keep the staff name visible on phones while preventing overflow.
+   ================================================================ */
+.profile-name-text {
+    white-space: nowrap !important;
+    min-width: 0 !important;
+}
+
+@media (max-width: 640px) {
+    .main-content > header,
+    .main-content > header:first-child {
+        width: 100% !important;
+        min-width: 0 !important;
+        height: 60px !important;
+        min-height: 60px !important;
+        padding: 0 10px !important;
+        display: flex !important;
+        flex-wrap: nowrap !important;
+        align-items: center !important;
+        gap: 7px !important;
+        overflow: visible !important;
+    }
+
+    .mobile-menu-btn {
+        display: inline-flex !important;
+        width: 36px !important;
+        min-width: 36px !important;
+        height: 36px !important;
+        flex: 0 0 36px !important;
+        align-items: center !important;
+        justify-content: center !important;
+    }
+
+    .topbar-left {
+        flex: 0 0 auto !important;
+        min-width: 0 !important;
+    }
+
+    /* On mobile the breadcrumb is unnecessary beside the menu button. */
+    .breadcrumb {
+        display: none !important;
+    }
+
+    .top-right-actions {
+        display: flex !important;
+        align-items: center !important;
+        justify-content: flex-end !important;
+        gap: 7px !important;
+        flex: 1 1 auto !important;
+        min-width: 0 !important;
+        margin-left: auto !important;
+    }
+
+    .notif-wrapper {
+        flex: 0 0 auto !important;
+    }
+
+    .notif-wrapper > i {
+        font-size: 19px !important;
+    }
+
+    .role-label {
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        flex: 0 0 auto !important;
+        white-space: nowrap !important;
+        padding: 4px 7px !important;
+        font-size: 8px !important;
+    }
+
+    .profile-wrapper {
+        display: flex !important;
+        align-items: center !important;
+        flex: 0 1 auto !important;
+        min-width: 0 !important;
+        max-width: 150px !important;
+        gap: 6px !important;
+        padding-left: 7px !important;
+        border-left: 1px solid var(--border) !important;
+        overflow: visible !important;
+    }
+
+    .top-avatar,
+    .top-avatar-fallback {
+        width: 30px !important;
+        height: 30px !important;
+        min-width: 30px !important;
+        flex: 0 0 30px !important;
+    }
+
+    /* Keep the staff name visible like the admin top bar. */
+    .profile-name-text {
+        display: block !important;
+        flex: 0 1 105px !important;
+        width: 105px !important;
+        min-width: 0 !important;
+        max-width: 105px !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+        white-space: nowrap !important;
+        line-height: 1.2 !important;
+        font-size: 12px !important;
+        font-weight: 700 !important;
+        padding-right: 13px !important;
+        position: relative !important;
+    }
+
+    .profile-name-text i {
+        display: none !important;
+    }
+
+    .profile-name-text::after {
+        content: '\\f078';
+        font-family: 'Font Awesome 6 Free';
+        font-weight: 900;
+        position: absolute;
+        right: 0;
+        top: 50%;
+        transform: translateY(-50%);
+        font-size: 9px;
+        color: var(--text-muted, #64748b);
+        opacity: .7;
+    }
+}
+
+@media (max-width: 480px) {
+    .main-content > header,
+    .main-content > header:first-child {
+        padding: 0 9px !important;
+        gap: 6px !important;
+    }
+
+    .top-right-actions {
+        gap: 6px !important;
+    }
+
+    .role-label {
+        padding: 4px 7px !important;
+        font-size: 8px !important;
+    }
+
+    .profile-wrapper {
+        gap: 5px !important;
+        max-width: 138px !important;
+        padding-left: 6px !important;
+    }
+
+    .profile-name-text {
+        flex-basis: 92px !important;
+        width: 92px !important;
+        max-width: 92px !important;
+        font-size: 11px !important;
+    }
+}
+
+@media (max-width: 400px) {
+    .role-label {
+        display: none !important;
+    }
+
+    .profile-wrapper {
+        max-width: 135px !important;
+        padding-left: 5px !important;
+    }
+
+    .profile-name-text {
+        flex-basis: 100px !important;
+        width: 100px !important;
+        max-width: 100px !important;
+    }
+}
+
+
+
+/* ================================================================
+   FINAL TOP BAR — MATCH ADMIN SIDE / MOBILE-SAFE
+   Keep staff name visible on phones without clipping the right edge.
+   ================================================================ */
+.main-content > header {
+    width: 100% !important;
+    min-width: 0 !important;
+}
+
+.main-content > header .topbar-left {
+    display: flex !important;
+    align-items: center !important;
+    min-width: 0 !important;
+}
+
+.main-content > header .top-right-actions {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: flex-end !important;
+    margin-left: auto !important;
+    flex: 0 0 auto !important;
+    min-width: 0 !important;
+    gap: 14px !important;
+}
+
+.main-content > header .profile-wrapper {
+    display: flex !important;
+    align-items: center !important;
+    gap: 9px !important;
+    flex: 0 0 auto !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    white-space: nowrap !important;
+}
+
+.main-content > header .role-label,
+.main-content > header .top-avatar,
+.main-content > header .top-avatar-fallback,
+.main-content > header .profile-name-text {
+    flex-shrink: 0;
+}
+
+.main-content > header .profile-name-text {
+    min-width: 0 !important;
+    max-width: 180px !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+}
+
+@media (max-width: 900px) {
+    .main-content > header {
+        height: 64px !important;
+        min-height: 64px !important;
+        padding: 0 12px !important;
+        gap: 8px !important;
+        flex-wrap: nowrap !important;
+    }
+
+    .main-content > header .mobile-menu-btn {
+        display: inline-flex !important;
+        width: 40px !important;
+        min-width: 40px !important;
+        height: 40px !important;
+        flex: 0 0 40px !important;
+        align-items: center !important;
+        justify-content: center !important;
+    }
+
+    .main-content > header .breadcrumb {
+        display: none !important;
+    }
+
+    .main-content > header .top-right-actions {
+        gap: 8px !important;
+        margin-left: auto !important;
+        flex: 0 0 auto !important;
+        max-width: calc(100% - 48px) !important;
+    }
+
+    .main-content > header .notif-wrapper {
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        flex: 0 0 auto !important;
+    }
+
+    .main-content > header .notif-wrapper > i {
+        font-size: 19px !important;
+    }
+
+    .main-content > header .role-label {
+        min-width: 43px !important;
+        height: 26px !important;
+        padding: 4px 8px !important;
+        gap: 4px !important;
+        font-size: 8px !important;
+        line-height: 1 !important;
+        justify-content: center !important;
+        white-space: nowrap !important;
+    }
+
+    .main-content > header .role-label i {
+        font-size: 8px !important;
+    }
+
+    .main-content > header .profile-wrapper {
+        gap: 6px !important;
+        padding-left: 8px !important;
+        max-width: none !important;
+        min-width: 0 !important;
+        border-left: 1px solid var(--border) !important;
+    }
+
+    .main-content > header .top-avatar,
+    .main-content > header .top-avatar-fallback {
+        width: 32px !important;
+        height: 32px !important;
+        min-width: 32px !important;
+        flex: 0 0 32px !important;
+        font-size: 12px !important;
+    }
+
+    /* Keep the staff name visible, but compact enough for a phone. */
+    .main-content > header .profile-name-text {
+        display: block !important;
+        width: clamp(64px, 18vw, 88px) !important;
+        min-width: clamp(64px, 18vw, 88px) !important;
+        max-width: clamp(64px, 18vw, 88px) !important;
+        flex: 0 1 clamp(64px, 18vw, 88px) !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+        white-space: nowrap !important;
+        font-size: 11px !important;
+        line-height: 1.2 !important;
+        padding-right: 11px !important;
+        position: relative !important;
+    }
+
+    .main-content > header .profile-name-text i {
+        display: none !important;
+    }
+
+    .main-content > header .profile-name-text::after {
+        content: '\\f078';
+        font-family: 'Font Awesome 6 Free';
+        font-weight: 900;
+        position: absolute;
+        right: 0;
+        top: 50%;
+        transform: translateY(-50%);
+        font-size: 8px;
+        color: var(--text-muted, #64748b);
+        opacity: .75;
+    }
+}
+
+@media (max-width: 480px) {
+    .main-content > header {
+        padding: 0 10px !important;
+        gap: 6px !important;
+    }
+
+    .main-content > header .mobile-menu-btn {
+        width: 36px !important;
+        min-width: 36px !important;
+        height: 36px !important;
+        flex-basis: 36px !important;
+        border-radius: 9px !important;
+        font-size: 16px !important;
+    }
+
+    .main-content > header .top-right-actions {
+        gap: 6px !important;
+    }
+
+    .main-content > header .role-label {
+        min-width: 41px !important;
+        height: 25px !important;
+        padding: 4px 7px !important;
+        font-size: 8px !important;
+    }
+
+    .main-content > header .profile-wrapper {
+        gap: 5px !important;
+        padding-left: 6px !important;
+    }
+
+    .main-content > header .top-avatar,
+    .main-content > header .top-avatar-fallback {
+        width: 30px !important;
+        height: 30px !important;
+        min-width: 30px !important;
+        flex-basis: 30px !important;
+    }
+
+    .main-content > header .profile-name-text {
+        width: clamp(62px, 18vw, 84px) !important;
+        min-width: clamp(62px, 18vw, 84px) !important;
+        max-width: clamp(62px, 18vw, 84px) !important;
+        flex-basis: clamp(62px, 18vw, 84px) !important;
+        font-size: 10.5px !important;
+    }
+}
+
+@media (max-width: 360px) {
+    .main-content > header .top-right-actions {
+        gap: 5px !important;
+    }
+
+    .main-content > header .role-label {
+        min-width: 39px !important;
+        padding-left: 6px !important;
+        padding-right: 6px !important;
+        font-size: 7.5px !important;
+    }
+
+    .main-content > header .profile-name-text {
+        width: 64px !important;
+        min-width: 64px !important;
+        max-width: 64px !important;
+        flex-basis: 64px !important;
+        font-size: 10px !important;
+    }
+}
+
+
+
+/* ===== MOBILE STAFF NAME: FIRST NAME ONLY ===== */
+.mobile-profile-first-name { display:none; }
+@media (max-width:560px) {
+    .main-content > header .desktop-profile-name { display:none !important; }
+    .main-content > header .mobile-profile-first-name {
+        display:block !important;
+        flex:0 1 auto !important;
+        min-width:0 !important;
+        max-width:74px !important;
+        overflow:hidden !important;
+        text-overflow:ellipsis !important;
+        white-space:nowrap !important;
+        color:var(--sidebar-navy,#001f3f) !important;
+        font-size:11px !important;
+        font-weight:700 !important;
+        line-height:1.2 !important;
+    }
+    .main-content > header .top-right-actions {
+        gap:7px !important;
+        min-width:0 !important;
+        flex:0 1 auto !important;
+    }
+    .main-content > header .profile-wrapper {
+        gap:6px !important;
+        padding-left:7px !important;
+        min-width:0 !important;
+        max-width:150px !important;
+        flex:0 1 auto !important;
+    }
+}
+@media (max-width:400px) {
+    .main-content > header .mobile-profile-first-name { max-width:62px !important; font-size:10px !important; }
+}
+</style>
+<style>
+
+/* FINAL PROFILE NAME VISIBILITY FIX
+   Desktop: show full name only.
+   Mobile: show first name only.
+*/
+.mobile-profile-first-name {
+    display: none !important;
+}
+
+@media (min-width: 561px) {
+    .desktop-profile-name {
+        display: flex !important;
+    }
+    .mobile-profile-first-name {
+        display: none !important;
+    }
+}
+
+@media (max-width: 560px) {
+    .desktop-profile-name {
+        display: none !important;
+    }
+    .mobile-profile-first-name {
+        display: inline-flex !important;
+        align-items: center !important;
+        flex: 0 1 auto !important;
+        width: auto !important;
+        min-width: 0 !important;
+        max-width: 82px !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+        white-space: nowrap !important;
+        color: #001f3f !important;
+        font-size: 11px !important;
+        font-weight: 700 !important;
+        line-height: 1.2 !important;
+    }
+}
+
+@media (max-width: 400px) {
+    .mobile-profile-first-name {
+        max-width: 68px !important;
+        font-size: 10px !important;
+    }
+}
+
+/* ===== FINAL PROFILE NAME FIX v11 ===== */
+@media (min-width: 561px) {
+    .main-content > header .profile-wrapper > .desktop-profile-name {
+        display: inline-flex !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+    }
+    .main-content > header .profile-wrapper > .mobile-profile-first-name {
+        display: none !important;
+        visibility: hidden !important;
+    }
+}
+
+@media (max-width: 560px) {
+    .main-content > header .profile-wrapper > .desktop-profile-name {
+        display: none !important;
+        visibility: hidden !important;
+    }
+    .main-content > header .profile-wrapper > .mobile-profile-first-name {
+        display: inline-flex !important;
+        align-items: center !important;
+        flex: 0 1 auto !important;
+        width: auto !important;
+        min-width: 0 !important;
+        max-width: 70px !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+        white-space: nowrap !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+    }
+}
+</style>
 </head>
 <body>
 
@@ -692,8 +2001,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_note'])) {
         <header>
             <div class="breadcrumb">
                 <i class="fas fa-paw" style="color: var(--brand-blue);"></i> 
-                Veterinarian Portal / Patient Record
-            </div>
+                <span class="breadcrumb-text">Veterinarian Portal / Patient Record</span></div>
             
             <div class="top-right-actions">
                 <div class="notif-wrapper" onclick="toggleNotif(event)">
@@ -738,9 +2046,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_note'])) {
                         <div class="top-avatar-fallback"><?php echo $first_letter; ?></div>
                     <?php endif; ?>
                     
-                    <span class="profile-name-text" style="font-size: 14px; font-weight: 700; color: var(--sidebar-navy); display: flex; align-items: center; gap: 6px;">
+                    <span class="profile-name-text desktop-profile-name" style="font-size: 14px; font-weight: 700; color: var(--sidebar-navy); display: flex; align-items: center; gap: 6px;">
                         <?php echo htmlspecialchars($display_with_title); ?>
                         <i class="fas fa-chevron-down" style="font-size: 10px; color: var(--text-muted); opacity: 0.5;"></i>
+                    </span>
+                    <span class="mobile-profile-first-name">
+                        <?php echo htmlspecialchars($first_name_only); ?>
                     </span>
 
                     <div class="profile-dropdown" id="profileBox" onclick="event.stopPropagation()">
@@ -830,6 +2141,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_note'])) {
     <script>
 
         // --- Mobile Sidebar Logic ---
+        document.querySelectorAll('.main-content > header, header').forEach(function (header) { if (!header.querySelector('.mobile-menu-btn')) header.classList.add('mobile-header-no-button'); });
         const mobileMenuBtn = document.getElementById('mobileMenuBtn');
         const sidebar = document.querySelector('.sidebar');
         const sidebarOverlay = document.getElementById('sidebarOverlay');

@@ -852,6 +852,266 @@ $total_rows_showing = count($bookings);
         .btn-confirm-cancel:hover { background: #dc2626; }
 
         footer { text-align: center; padding: 40px; color: var(--text-muted); font-size: 12px; background: transparent; }
+
+        /* ===== RESPONSIVE ADMIN LAYOUT ===== */
+        .topbar-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            min-width: 0;
+        }
+
+        .mobile-menu-toggle {
+            display: none;
+            border: 0;
+            background: var(--navy-dark);
+            color: var(--brand-yellow);
+            width: 40px;
+            height: 40px;
+            border-radius: 10px;
+            cursor: pointer;
+            font-size: 18px;
+            align-items: center;
+            justify-content: center;
+            flex: 0 0 auto;
+        }
+
+        .sidebar-backdrop { display: none; }
+
+        @media (max-width: 1200px) {
+            .status-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+            .page-header { align-items: flex-start; }
+        }
+
+        @media (max-width: 900px) {
+            body { overflow-x: hidden; }
+
+            aside {
+                transform: translateX(-100%);
+                transition: transform 0.25s ease;
+                box-shadow: 12px 0 30px rgba(0,0,0,0.18);
+                z-index: 2000;
+            }
+
+            aside.mobile-open { transform: translateX(0); }
+
+            .sidebar-backdrop {
+                position: fixed;
+                inset: 0;
+                background: rgba(0, 31, 63, 0.48);
+                z-index: 1900;
+            }
+
+            .sidebar-backdrop.show { display: block; }
+
+            main {
+                margin-left: 0;
+                width: 100%;
+                min-width: 0;
+            }
+
+            .top-bar {
+                height: 64px;
+                padding: 0 14px;
+                gap: 10px;
+            }
+
+            .topbar-left {
+                gap: 8px;
+                min-width: 0;
+                flex: 1 1 auto;
+            }
+
+            .mobile-menu-toggle { display: inline-flex; }
+
+            .breadcrumb {
+                min-width: 0;
+                max-width: 100%;
+                font-size: 13px;
+                gap: 6px;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+
+            .breadcrumb i {
+                font-size: 13px !important;
+                flex: 0 0 auto;
+            }
+
+            .top-right-actions {
+                gap: 10px;
+                flex: 0 0 auto;
+            }
+
+            .notif-wrapper > i { font-size: 20px !important; }
+
+            .profile-wrapper {
+                gap: 8px;
+                padding-left: 10px;
+                min-width: 0;
+            }
+
+            .profile-wrapper > span:last-of-type {
+                max-width: 110px;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+                font-size: 12px !important;
+            }
+
+            .admin-tag { padding: 5px 10px; font-size: 9px; }
+
+            .top-avatar,
+            .top-avatar-fallback {
+                width: 32px;
+                height: 32px;
+            }
+
+            .notif-dropdown {
+                width: min(320px, calc(100vw - 28px));
+                right: -6px;
+            }
+
+            .profile-dropdown {
+                width: min(200px, calc(100vw - 28px));
+            }
+
+            .container { padding: 24px 16px; }
+
+            .page-header {
+                flex-direction: column;
+                gap: 16px;
+                align-items: stretch;
+            }
+
+            .page-header h1 { font-size: 23px; }
+            .page-header p { font-size: 13px; line-height: 1.5; }
+
+            .btn-add-walkin {
+                width: 100%;
+                justify-content: center;
+                min-height: 44px;
+            }
+
+            .status-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 12px;
+            }
+
+            .status-card { padding: 16px; }
+            .status-card h4 { font-size: 10px; }
+            .status-card .count { font-size: 22px; }
+
+            .table-container { border-radius: 10px; }
+
+            .table-controls {
+                padding: 14px;
+                display: grid;
+                grid-template-columns: auto 1fr;
+                gap: 10px;
+            }
+
+            .table-controls .filter-select {
+                width: 100%;
+                min-width: 0;
+                margin-left: 0 !important;
+            }
+
+            #showingCount {
+                grid-column: 1 / -1;
+                margin-left: 0 !important;
+                font-size: 11px !important;
+            }
+
+            .table-wrapper {
+                overflow-x: auto;
+                -webkit-overflow-scrolling: touch;
+            }
+
+            .booking-table { min-width: 900px; }
+
+            footer {
+                padding: 28px 16px;
+                font-size: 10px;
+            }
+        }
+
+        @media (max-width: 560px) {
+            .top-bar {
+                height: 60px;
+                padding: 0 10px;
+            }
+
+            .mobile-menu-toggle {
+                width: 36px;
+                height: 36px;
+                border-radius: 9px;
+                font-size: 16px;
+            }
+
+            .breadcrumb { font-size: 11px; }
+
+            .top-right-actions { gap: 6px; }
+
+            .profile-wrapper {
+                padding-left: 7px;
+                gap: 6px;
+            }
+
+            .profile-wrapper > span:last-of-type { display: none !important; }
+
+            .top-avatar,
+            .top-avatar-fallback {
+                width: 30px;
+                height: 30px;
+            }
+
+            .admin-tag {
+                padding: 4px 8px;
+                font-size: 8px;
+                letter-spacing: .7px;
+            }
+
+            .container { padding: 18px 12px; }
+
+            .page-header { gap: 14px; margin-bottom: 18px; }
+            .page-header h1 { font-size: 21px; }
+            .page-header p { font-size: 12px; }
+
+            .status-grid {
+                grid-template-columns: 1fr 1fr;
+                gap: 10px;
+            }
+
+            .status-card {
+                padding: 14px;
+                border-radius: 10px;
+            }
+
+            .status-card h4 {
+                font-size: 9px;
+                line-height: 1.35;
+            }
+
+            .status-card .count { font-size: 20px; }
+
+            .table-controls { grid-template-columns: 1fr; }
+            .table-controls > .fa-filter { display: none; }
+            #showingCount { text-align: left; }
+
+            .modal-overlay { padding: 10px; }
+
+            .modal-content {
+                padding: 18px 14px;
+                max-height: calc(100dvh - 20px);
+            }
+
+            .modal-actions { gap: 10px; }
+
+            .modal-actions button { min-height: 44px; }
+        }
+
     </style>
 </head>
 <body>
@@ -888,13 +1148,24 @@ $total_rows_showing = count($bookings);
         </nav>
     </aside>
 
+    <div class="sidebar-backdrop" id="sidebarBackdrop" onclick="closeMobileSidebar()"></div>
+
     <main>
         <header class="top-bar">
-            <div class="breadcrumb">
-                <i class="fas fa-calendar-alt" style="opacity: 0.5; font-size: 14px;"></i> 
-                Management / Bookings
+            <div class="topbar-left">
+                <button class="mobile-menu-toggle" type="button"
+                        aria-label="Open admin menu"
+                        aria-expanded="false"
+                        onclick="toggleMobileSidebar(event)">
+                    <i class="fas fa-bars"></i>
+                </button>
+
+                <div class="breadcrumb">
+                    <i class="fas fa-calendar-alt" style="opacity: 0.5; font-size: 14px;"></i>
+                    Management / Bookings
+                </div>
             </div>
-            
+
             <div class="top-right-actions">
                 <div class="notif-wrapper" onclick="toggleNotif(event)">
                     <i class="fa-solid fa-bell" style="font-size: 22px; color: #64748b;"></i>
@@ -1240,6 +1511,11 @@ $total_rows_showing = count($bookings);
                 <div class="modal-form-group">
                     <label>Pet Name *</label>
                     <input type="text" name="pet_name" required placeholder="e.g. Bantay">
+                </div>
+
+                <div class="modal-form-group">
+                    <label>Pet Breed</label>
+                    <input type="text" name="pet_breed" maxlength="100" placeholder="e.g. Shih Tzu">
                 </div>
 
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:15px;">
@@ -1640,6 +1916,43 @@ $total_rows_showing = count($bookings);
                     console.error('Error fetching admin notifications:', error);
                 });
         }
+
+
+        // ===== MOBILE SIDEBAR =====
+        function toggleMobileSidebar(event) {
+            if (event) event.stopPropagation();
+
+            const sidebar = document.querySelector('aside');
+            const backdrop = document.getElementById('sidebarBackdrop');
+            const button = document.querySelector('.mobile-menu-toggle');
+
+            if (!sidebar) return;
+
+            const open = sidebar.classList.toggle('mobile-open');
+
+            if (backdrop) backdrop.classList.toggle('show', open);
+            if (button) button.setAttribute('aria-expanded', open ? 'true' : 'false');
+        }
+
+        function closeMobileSidebar() {
+            const sidebar = document.querySelector('aside');
+            const backdrop = document.getElementById('sidebarBackdrop');
+            const button = document.querySelector('.mobile-menu-toggle');
+
+            if (sidebar) sidebar.classList.remove('mobile-open');
+            if (backdrop) backdrop.classList.remove('show');
+            if (button) button.setAttribute('aria-expanded', 'false');
+        }
+
+        document.addEventListener('keydown', function(event) {
+            if (event.key === 'Escape') closeMobileSidebar();
+        });
+
+        document.querySelectorAll('.nav-item').forEach(function(link) {
+            link.addEventListener('click', function() {
+                if (window.innerWidth <= 900) closeMobileSidebar();
+            });
+        });
 
         window.fetchAdminNotifs = fetchAdminNotifs;
 

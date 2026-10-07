@@ -1,23 +1,110 @@
 <?php
+
 session_start();
 require_once 'db_supabase.php';
 
-// Get appointment and user IDs from POST
-$appointment_id = $_POST['appointment_id'] ?? null;
-$user_id = $_POST['user_id'] ?? null;
+/*
+|--------------------------------------------------------------------------
+| AUTHENTICATION / AUTHORIZATION
+|--------------------------------------------------------------------------
+| Only authorized staff can mark an appointment as No-Show.
+*/
+$current_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
 
-if (empty($appointment_id) || empty($user_id)) {
+$allowed_roles = ['admin', 'manager', 'vet'];
+
+if (
+    !isset($_SESSION['logged_in']) ||
+    $_SESSION['logged_in'] !== true ||
+    !in_array($current_role, $allowed_roles, true)
+) {
+    http_response_code(403);
+    echo "Unauthorized access.";
+    exit();
+}
+
+/*
+|--------------------------------------------------------------------------
+| POST ONLY
+|--------------------------------------------------------------------------
+*/
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    http_response_code(405);
+    header('Allow: POST');
+    echo "Method not allowed.";
+    exit();
+}
+
+/*
+|--------------------------------------------------------------------------
+| GET INPUT
+|--------------------------------------------------------------------------
+*/
+$appointment_id = filter_input(INPUT_POST, 'appointment_id', FILTER_VALIDATE_INT);
+$user_id = filter_input(INPUT_POST, 'user_id', FILTER_VALIDATE_INT);
+
+if (!$appointment_id || !$user_id) {
     http_response_code(400);
-    echo "Missing appointment_id or user_id.";
+    echo "Invalid appointment_id or user_id.";
     exit();
 }
 
 try {
-    // Start transaction so the appointment/user updates stay consistent
+
+    /*
+    |--------------------------------------------------------------------------
+    | START TRANSACTION
+    |--------------------------------------------------------------------------
+    */
     $pdo->beginTransaction();
 
-    // 1. Update appointment status to 'No-Show'
-    // Uses the appointment primary key column: id
+    /*
+    |--------------------------------------------------------------------------
+    | 1. VERIFY APPOINTMENT
+    |--------------------------------------------------------------------------
+    | Make sure the appointment exists and belongs to the given user.
+    */
+    $check_appointment = $pdo->prepare("
+        SELECT id, user_id, booking_status
+        FROM appointments
+        WHERE id = :appointment_id
+        LIMIT 1
+        FOR UPDATE
+    ");
+
+    $check_appointment->execute([
+        ':appointment_id' => $appointment_id
+    ]);
+
+    $appointment = $check_appointment->fetch(PDO::FETCH_ASSOC);
+
+    if (!$appointment) {
+        throw new RuntimeException("Appointment not found.");
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | 2. VERIFY APPOINTMENT OWNER
+    |--------------------------------------------------------------------------
+    */
+    if ((int)$appointment['user_id'] !== $user_id) {
+        throw new RuntimeException("Appointment does not belong to this user.");
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | 3. PREVENT DUPLICATE NO-SHOW
+    |--------------------------------------------------------------------------
+    */
+    if (strtolower((string)$appointment['booking_status']) === 'no-show') {
+        throw new RuntimeException("This appointment is already marked as No-Show.");
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | 4. UPDATE APPOINTMENT STATUS
+    |--------------------------------------------------------------------------
+    */
     $update_appt = $pdo->prepare("
         UPDATE appointments
         SET booking_status = :status
@@ -29,61 +116,96 @@ try {
         ':appointment_id' => $appointment_id
     ]);
 
-    // 2. Add 1 strike to the user's account
-    // COALESCE prevents NULL + 1 from staying NULL
+    if ($update_appt->rowCount() === 0) {
+        throw new RuntimeException("Appointment status was not updated.");
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | 5. LOCK AND GET CURRENT USER STRIKE COUNT
+    |--------------------------------------------------------------------------
+    */
+    $check_user = $pdo->prepare("
+        SELECT id, no_show_count, is_restricted
+        FROM users
+        WHERE id = :user_id
+        LIMIT 1
+        FOR UPDATE
+    ");
+
+    $check_user->execute([
+        ':user_id' => $user_id
+    ]);
+
+    $user = $check_user->fetch(PDO::FETCH_ASSOC);
+
+    if (!$user) {
+        throw new RuntimeException("User account not found.");
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | 6. ADD ONE STRIKE
+    |--------------------------------------------------------------------------
+    */
+    $new_strike_count = (int)($user['no_show_count'] ?? 0) + 1;
+
+    /*
+    |--------------------------------------------------------------------------
+    | 7. RESTRICT AT 3 STRIKES
+    |--------------------------------------------------------------------------
+    */
+    $is_restricted = $new_strike_count >= 3;
+
     $update_user = $pdo->prepare("
         UPDATE users
-        SET no_show_count = COALESCE(no_show_count, 0) + 1
+        SET
+            no_show_count = :no_show_count,
+            is_restricted = :is_restricted
         WHERE id = :user_id
     ");
 
     $update_user->execute([
+        ':no_show_count' => $new_strike_count,
+        ':is_restricted' => $is_restricted,
         ':user_id' => $user_id
     ]);
 
-    // 3. Check the user's current strike count
-    $check_strikes = $pdo->prepare("
-        SELECT no_show_count
-        FROM users
-        WHERE id = :user_id
-        LIMIT 1
-    ");
-
-    $check_strikes->execute([
-        ':user_id' => $user_id
-    ]);
-
-    $row = $check_strikes->fetch(PDO::FETCH_ASSOC);
-
-    if (!$row) {
-        throw new RuntimeException("User account not found.");
-    }
-
-    // 4. Restrict booking when strikes reach 3
-    if ((int)$row['no_show_count'] >= 3) {
-        $restrict_user = $pdo->prepare("
-            UPDATE users
-            SET is_restricted = TRUE
-            WHERE id = :user_id
-        ");
-
-        $restrict_user->execute([
-            ':user_id' => $user_id
-        ]);
-    }
-
+    /*
+    |--------------------------------------------------------------------------
+    | 8. COMMIT
+    |--------------------------------------------------------------------------
+    */
     $pdo->commit();
 
-    echo "Marked as No-Show successfully.";
+    /*
+    |--------------------------------------------------------------------------
+    | RESPONSE
+    |--------------------------------------------------------------------------
+    */
+    if ($is_restricted) {
+        echo "Marked as No-Show successfully. User has reached 3 strikes and is now restricted.";
+    } else {
+        echo "Marked as No-Show successfully. Strike count: {$new_strike_count}.";
+    }
 
 } catch (Throwable $e) {
+
+    /*
+    |--------------------------------------------------------------------------
+    | ROLLBACK
+    |--------------------------------------------------------------------------
+    */
     if ($pdo->inTransaction()) {
         $pdo->rollBack();
     }
 
-    error_log("Mark No-Show failed: " . $e->getMessage());
+    error_log(
+        "Mark No-Show failed: " . $e->getMessage()
+    );
 
     http_response_code(500);
     echo "Failed to mark appointment as No-Show.";
 }
+
 ?>

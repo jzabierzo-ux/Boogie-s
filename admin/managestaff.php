@@ -6,7 +6,7 @@ include '../db_supabase.php';
 $current_role = isset($_SESSION['role']) ? strtolower(trim($_SESSION['role'])) : '';
 
 // 1. SECURITY: Allow Admin, Manager, and Vet only
-if (!isset($_SESSION['logged_in']) || !in_array($current_role, ['admin', 'manager', 'vet'], true)) {
+if (!isset($_SESSION['logged_in']) || !in_array($current_role, ['admin', 'manager', 'vet', 'supervisor', 'staff'], true)) {
     header("Location: stafflogin.php");
     exit();
 }
@@ -21,7 +21,7 @@ if (isset($_GET['delete_id'])) {
         $delete_stmt = $pdo->prepare("
             DELETE FROM users
             WHERE id = :delete_id
-              AND role IN ('manager', 'vet')
+              AND role IN ('manager', 'vet', 'supervisor', 'staff')
         ");
 
         $delete_stmt->execute([':delete_id' => $delete_id]);
@@ -74,7 +74,7 @@ try {
     $total_staff_stmt = $pdo->query("
         SELECT COUNT(*) AS count
         FROM users
-        WHERE role IN ('manager', 'vet')
+        WHERE role IN ('manager', 'vet', 'supervisor', 'staff')
     ");
     $total_staff = (int)($total_staff_stmt->fetch(PDO::FETCH_ASSOC)['count'] ?? 0);
 } catch (PDOException $e) {
@@ -104,7 +104,7 @@ try {
     $query = "
         SELECT *
         FROM users
-        WHERE role IN ('manager', 'vet')
+        WHERE role IN ('admin', 'manager', 'vet', 'supervisor', 'staff')
     ";
 
     $params = [];
@@ -256,6 +256,92 @@ try {
         .btn-save:hover { opacity: 0.9; transform: translateY(-2px); box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
 
         footer { text-align: center; padding: 40px; color: var(--text-muted); font-size: 12px; margin-top: auto; border-top: 1px solid rgba(0,0,0,0.05);}
+
+
+        /* ===== FLEXIBLE PERSONNEL + MOBILE RESPONSIVENESS ===== */
+        .topbar-left { display:flex; align-items:center; gap:12px; min-width:0; }
+        .mobile-menu-toggle {
+            display:none; border:0; background:var(--navy-dark); color:var(--brand-yellow);
+            width:40px; height:40px; border-radius:10px; cursor:pointer; font-size:18px;
+            align-items:center; justify-content:center; flex:0 0 auto;
+        }
+        .sidebar-backdrop { display:none; }
+        .staff-info { min-width:0; flex:1; }
+        .staff-info h3, .staff-info .info-item span, .staff-info .position { overflow-wrap:anywhere; }
+
+        @media (max-width: 1200px) {
+            .container { padding:30px; }
+            .staff-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        }
+
+        @media (max-width: 900px) {
+            html, body { width:100%; min-width:100%; overflow-x:hidden; }
+            body { display:block; }
+            aside {
+                transform:translateX(-100%); transition:transform .25s ease;
+                box-shadow:12px 0 30px rgba(0,0,0,.18); z-index:2000;
+            }
+            aside.mobile-open { transform:translateX(0); }
+            .sidebar-backdrop { position:fixed; inset:0; background:rgba(0,31,63,.48); z-index:1900; }
+            .sidebar-backdrop.show { display:block; }
+            main { margin-left:0; width:100%; max-width:100%; min-width:0; }
+            .top-bar { width:100%; height:64px; padding:0 14px; gap:10px; }
+            .topbar-left { flex:1 1 auto; min-width:0; }
+            .mobile-menu-toggle { display:inline-flex; }
+            .breadcrumb { min-width:0; font-size:13px; gap:6px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+            .top-right-actions { gap:10px; min-width:0; margin-left:auto; flex:0 0 auto; }
+            .notif-wrapper > i { font-size:20px !important; }
+            .profile-wrapper { gap:8px; padding-left:10px; flex:0 0 auto; }
+            .profile-wrapper > span:last-of-type { max-width:110px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px !important; }
+            .admin-tag { padding:5px 10px; font-size:9px; }
+            .top-avatar, .top-avatar-fallback { width:32px; height:32px; }
+            .notif-dropdown { width:min(320px,calc(100vw - 28px)); right:-6px; }
+            .container { padding:22px 16px; }
+            .page-header { align-items:flex-start; gap:16px; flex-direction:column; margin-bottom:22px; }
+            .page-header h1 { font-size:22px; }
+            .page-header p { font-size:12px; line-height:1.5; }
+            .btn-add-staff { width:100%; justify-content:center; min-height:44px; }
+            .status-grid { grid-template-columns:1fr; gap:12px; margin-bottom:18px; }
+            .status-card { padding:18px; border-radius:14px; }
+            .status-card .count { font-size:26px; }
+            .filter-container { padding:11px 13px; margin-bottom:18px; }
+            .search-input { font-size:13px; min-width:0; }
+            .staff-grid { grid-template-columns:1fr; gap:12px; }
+            .staff-card { padding:16px 14px; border-radius:13px; gap:12px; align-items:flex-start; }
+            .staff-avatar { width:42px; height:42px; min-width:42px; border-radius:10px; font-size:17px; }
+            .staff-info .position { font-size:9px; margin-bottom:5px; max-width:100%; }
+            .staff-info h3 { font-size:14px; line-height:1.3; margin-bottom:5px; padding-right:30px; }
+            .staff-info .info-item { font-size:11px; gap:6px; margin-bottom:2px; }
+            .btn-delete-staff { top:10px; right:10px; width:28px; height:28px; font-size:13px; }
+            footer { padding:24px 12px; font-size:10px; }
+            .modal-overlay { padding:12px; align-items:center; overflow-y:auto; }
+            .modal-box { width:100%; max-width:520px; max-height:calc(100dvh - 24px); overflow-y:auto; padding:20px 16px; border-radius:16px; }
+            .modal-header { margin-bottom:16px; }
+            .modal-header h2 { font-size:18px; }
+            .form-row { grid-template-columns:1fr; gap:0; }
+            .form-group { margin-bottom:12px; }
+            .form-group label { font-size:12px; }
+            .form-group input, .form-group select { min-height:44px; padding:10px 11px; font-size:13px; }
+            .btn-save { min-height:45px; margin-top:5px; }
+        }
+
+        @media (max-width: 560px) {
+            .top-bar { height:58px; padding:0 8px; }
+            .topbar-left { gap:7px; }
+            .mobile-menu-toggle { width:36px; height:36px; border-radius:9px; font-size:16px; }
+            .breadcrumb { font-size:11px; }
+            .top-right-actions { gap:5px; }
+            .profile-wrapper { gap:5px; padding-left:6px; }
+            .profile-wrapper > span:last-of-type { display:none !important; }
+            .admin-tag { padding:4px 7px; font-size:7px; }
+            .top-avatar, .top-avatar-fallback { width:29px; height:29px; }
+            .container { padding:16px 12px 22px; }
+            .page-header h1 { font-size:20px; }
+            .status-card { padding:16px; }
+            .staff-card { padding:14px 12px; }
+            .modal-box { padding:18px 13px; }
+        }
+
     </style>
 </head>
 <body>
@@ -282,12 +368,16 @@ try {
             <?php endif; ?>
         </nav>
     </aside>
+    <div class="sidebar-backdrop" id="sidebarBackdrop" onclick="closeMobileSidebar()"></div>
 
     <main>
         <header class="top-bar">
+            <div class="topbar-left">
+                <button class="mobile-menu-toggle" type="button" aria-label="Open admin menu" aria-expanded="false" onclick="toggleMobileSidebar(event)">☰</button>
             <div class="breadcrumb">
                 <i class="fas fa-id-badge" style="opacity: 0.5; font-size: 14px;"></i> 
                 Management / Personnel
+            </div>
             </div>
             <div class="top-right-actions">
                 <div class="notif-wrapper" onclick="toggleNotif(event)">
@@ -351,7 +441,7 @@ try {
             <div class="page-header">
                 <div>
                     <h1>Personnel Management</h1>
-                    <p>Manage Shop Manager and Resident Veterinarian accounts.</p>
+                    <p>Manage personnel accounts, system access, and assigned positions.</p>
                 </div>
                 <button class="btn-add-staff" onclick="openStaffModal()">
                     <i class="fas fa-plus"></i> Add Personnel
@@ -382,16 +472,28 @@ try {
                     <?php foreach ($vet_list as $staff): ?>
                         <div class="staff-card">
                             
-                            <a href="managestaff.php?delete_id=<?php echo $staff['id']; ?>" class="btn-delete-staff" title="Delete Account" onclick="return confirm('Are you sure you want to delete <?php echo htmlspecialchars(addslashes($staff['full_name'])); ?>? This cannot be undone.');">
-                                <i class="fas fa-trash"></i>
-                            </a>
+                            <?php if (strtolower((string)($staff['role'] ?? '')) !== 'admin'): ?>
+                                <a href="managestaff.php?delete_id=<?php echo $staff['id']; ?>" class="btn-delete-staff" title="Delete Account" onclick="return confirm('Are you sure you want to delete <?php echo htmlspecialchars(addslashes($staff['full_name'])); ?>? This cannot be undone.');">
+                                    <i class="fas fa-trash"></i>
+                                </a>
+                            <?php endif; ?>
 
                             <div class="staff-avatar">
-                                <i class="<?php echo ($staff['role'] == 'vet') ? 'fas fa-user-md' : 'fas fa-user-tie'; ?>"></i>
+                                <i class="<?php
+                                    $role_icon = match (strtolower((string)($staff['role'] ?? ''))) {
+                                        'vet' => 'fas fa-user-md',
+                                        'staff' => 'fas fa-user',
+                                        'supervisor' => 'fas fa-user-shield',
+                                        'admin' => 'fas fa-user-gear',
+                                        default => 'fas fa-user-tie'
+                                    };
+                                    echo $role_icon;
+                                ?>"></i>
                             </div>
                             <div class="staff-info">
                                 <span class="position"><?php echo htmlspecialchars($staff['position'] ?? 'Personnel'); ?></span>
                                 <h3><?php echo htmlspecialchars($staff['full_name']); ?></h3>
+                                <div class="info-item"><i class="fas fa-shield-halved"></i><span>Access: <?php echo htmlspecialchars(strtoupper($staff['role'] ?? 'STAFF')); ?></span></div>
                                 <div class="info-item">
                                     <i class="fas fa-user-tag"></i>
                                     <span><?php echo htmlspecialchars($staff['username'] ?? 'No Username'); ?></span>
@@ -443,18 +545,30 @@ try {
                     <div class="form-group">
                         <label>System Role / Access</label>
                         <select name="role" required>
-                            <option value="manager" selected>Shop Manager</option>
-                            <option value="vet">Resident Veterinarian</option>
+                            <option value="staff" selected>Staff</option>
+                            <option value="admin">Admin</option>
+                            <option value="manager">Manager</option>
+                            <option value="supervisor">Supervisor</option>
+                            <option value="vet">Veterinarian</option>
                         </select>
                     </div>
                     <div class="form-group">
-                        <label>Display Position</label>
-                        <select name="position" required>
-                            <option value="Shop Manager" selected>Shop Manager</option>
-                            <option value="Resident Veterinarian">Resident Veterinarian</option>
-                        </select>
+                        <label>Position / Assignment</label>
+                        <input type="text" name="position" list="personnelPositions" required placeholder="e.g. Vet Nurse">
+                        <datalist id="personnelPositions">
+                            <option value="Administrator">
+                            <option value="Shop Manager">
+                            <option value="Supervisor">
+                            <option value="Front Desk / Receptionist">
+                            <option value="Veterinarian">
+                            <option value="Vet Assistant">
+                            <option value="Vet Nurse">
+                            <option value="Groomer">
+                            <option value="Pet Hotel Staff / Attendant">
+                        </datalist>
                     </div>
                 </div>
+                <div style="font-size:11px; color:#64748b; margin-top:-4px; margin-bottom:8px; line-height:1.5;">System access controls what the account can open. Position describes the person's actual job and can be customized.</div>
                 
                 <button type="submit" class="btn-save">Create Account</button>
             </form>
@@ -539,6 +653,37 @@ try {
 
         fetchAdminNotifs();
         setInterval(fetchAdminNotifs, 3000);
+
+        function toggleMobileSidebar(event) {
+            if (event) event.stopPropagation();
+            const sidebar = document.querySelector('aside');
+            const backdrop = document.getElementById('sidebarBackdrop');
+            const button = document.querySelector('.mobile-menu-toggle');
+            if (!sidebar) return;
+            const open = sidebar.classList.toggle('mobile-open');
+            if (backdrop) backdrop.classList.toggle('show', open);
+            if (button) button.setAttribute('aria-expanded', open ? 'true' : 'false');
+        }
+
+        function closeMobileSidebar() {
+            const sidebar = document.querySelector('aside');
+            const backdrop = document.getElementById('sidebarBackdrop');
+            const button = document.querySelector('.mobile-menu-toggle');
+            if (sidebar) sidebar.classList.remove('mobile-open');
+            if (backdrop) backdrop.classList.remove('show');
+            if (button) button.setAttribute('aria-expanded', 'false');
+        }
+
+        document.addEventListener('keydown', function(event) {
+            if (event.key === 'Escape') closeMobileSidebar();
+        });
+
+        document.querySelectorAll('.nav-item').forEach(function(link) {
+            link.addEventListener('click', function() {
+                if (window.innerWidth <= 900) closeMobileSidebar();
+            });
+        });
+
     </script>
 </body>
 </html>

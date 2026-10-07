@@ -45,7 +45,7 @@ $parent_text = ($total_reviews === 1)
 $promos_list = [];
 
 try {
-    $promo_stmt = $pdo->prepare("\n        SELECT *\n        FROM promos\n        WHERE status = 'active'\n          AND (expiry_date >= CURRENT_DATE OR expiry_date IS NULL)\n        ORDER BY id DESC\n        LIMIT 3\n    ");
+    $promo_stmt = $pdo->prepare("\n        SELECT *\n        FROM promos\n        WHERE status = 'active'\n          AND (expiry_date >= ((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Manila')::date) OR expiry_date IS NULL)\n        ORDER BY id DESC\n        LIMIT 3\n    ");
     $promo_stmt->execute();
     $promos_list = $promo_stmt->fetchAll(PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
@@ -559,8 +559,8 @@ try {
         .promo-image {
             display: block;
             width: 100%;
-            height: 190px;
-            object-fit: cover;
+            height:auto;
+            object-fit:contain;
             background: #eef2f7;
         }
 
@@ -939,42 +939,6 @@ try {
             }
         }
 
-        /* ===== FINAL MOBILE SEARCH VISIBILITY FIX ===== */
-        @media (max-width: 680px) {
-            /* The public index page must keep the search bar visible, exactly like home.php. */
-            header .nav-top {
-                display: grid !important;
-                grid-template-columns: minmax(0, 1fr) auto !important;
-                grid-template-rows: auto auto !important;
-                align-items: center !important;
-            }
-
-            header .nav-top > .search,
-            header #siteSearchForm {
-                display: flex !important;
-                visibility: visible !important;
-                opacity: 1 !important;
-                width: 100% !important;
-                grid-column: 1 / -1 !important;
-                grid-row: 2 !important;
-                min-height: 46px !important;
-                box-sizing: border-box !important;
-                position: relative !important;
-                z-index: 10 !important;
-            }
-
-            header .nav-links {
-                grid-column: 2 !important;
-                grid-row: 1 !important;
-                width: auto !important;
-                justify-content: flex-end !important;
-            }
-
-            header .categories {
-                margin-top: 0 !important;
-            }
-        }
-
         @media (max-width: 680px) {
             body {
                 overflow-x: hidden;
@@ -1285,527 +1249,23 @@ try {
             .stat-item strong { font-size: 16px; }
         }
 
-        /* ===== FINAL PETSERVICES CATEGORY NAV MATCH ===== */
-        @media (max-width: 680px) {
-            body {
-                padding-bottom: 0 !important;
-            }
-
-            .categories {
-                display: block !important;
-                position: static !important;
-                left: auto !important;
-                right: auto !important;
-                bottom: auto !important;
-                width: 100% !important;
-                max-height: none !important;
-                overflow: hidden !important;
-                opacity: 1 !important;
-                z-index: 1000 !important;
-                background: var(--brand-yellow) !important;
-                border-top: 1px solid rgba(0,0,0,.08) !important;
-                border-bottom: 1px solid rgba(0,0,0,.08) !important;
-                box-shadow: none !important;
-            }
-
-            .categories ul {
-                width: 100% !important;
-                max-width: none !important;
-                margin: 0 !important;
-                display: flex !important;
-                justify-content: flex-start !important;
-                align-items: center !important;
-                gap: 4px !important;
-                padding: 6px 10px !important;
-                list-style: none !important;
-                overflow-x: auto !important;
-                overflow-y: hidden !important;
-                -webkit-overflow-scrolling: touch !important;
-                scrollbar-width: none !important;
-            }
-
-            .categories ul::-webkit-scrollbar {
-                display: none !important;
-            }
-
-            .categories ul li {
-                flex: 0 0 auto !important;
-                min-width: auto !important;
-                grid-column: auto !important;
-            }
-
-            .categories ul li a {
-                width: auto !important;
-                min-height: 0 !important;
-                padding: 9px 11px !important;
-                border-radius: 9px !important;
-                display: flex !important;
-                flex-direction: row !important;
-                align-items: center !important;
-                justify-content: center !important;
-                gap: 6px !important;
-                white-space: nowrap !important;
-                text-align: center !important;
-                font-size: 9px !important;
-                line-height: 1.2 !important;
-            }
-
-            .categories ul li a.active {
-                background: rgba(0,31,63,.12) !important;
-            }
-
-            .categories ul li a i,
-            .categories i {
-                font-size: 11px !important;
-                flex: 0 0 auto;
-            }
-        }
-
-        @media (max-width: 420px) {
-            .categories ul {
-                padding-left: 10px !important;
-                padding-right: 10px !important;
-            }
-
-            .categories ul li a {
-                padding: 8px 10px !important;
-                font-size: 8px !important;
-                gap: 6px !important;
-            }
-        }
-
     
-
-/* ============================================================
-   BOOGIE'S HEADER — EXACT PETSERVICES MOBILE STANDARD
-   Applied last so older responsive rules cannot conflict.
-   ============================================================ */
-
-.promo-bar {
-    background: var(--brand-blue) !important;
-    color: #fff !important;
-    text-align: center !important;
-    padding: 7px 16px !important;
-    font-size: 12px !important;
-    font-weight: 600 !important;
-    letter-spacing: .2px !important;
-}
-.promo-bar i {
-    color: var(--brand-yellow) !important;
-    margin-right: 7px !important;
-}
-
-header {
-    position: sticky !important;
-    top: 0 !important;
-    background: rgba(255,255,255,.97) !important;
-    backdrop-filter: blur(12px) !important;
-    z-index: 1000 !important;
-    border-bottom: 1px solid var(--border) !important;
-    box-shadow: 0 4px 18px rgba(0,0,0,.04) !important;
-}
-
-.nav-top {
-    max-width: 1320px !important;
-    margin: 0 auto !important;
-    display: grid !important;
-    grid-template-columns: auto minmax(250px, 460px) auto !important;
-    align-items: center !important;
-    gap: 28px !important;
-    padding: 14px 28px !important;
-}
-
-.logo {
-    display: inline-flex !important;
-    align-items: center !important;
-    gap: 11px !important;
-    text-decoration: none !important;
-    min-width: 0 !important;
-}
-.nav-logo-img {
-    width: 50px !important;
-    height: 50px !important;
-    object-fit: contain !important;
-    display: block !important;
-    border-radius: 10px !important;
-}
-.logo-text {
-    display: flex !important;
-    flex-direction: column !important;
-    line-height: 1.05 !important;
-}
-.logo-text b {
-    font-size: 20px !important;
-    color: var(--brand-blue) !important;
-}
-.logo-text span {
-    font-size: 9px !important;
-    color: #8c9aae !important;
-    text-transform: uppercase !important;
-    letter-spacing: 1.2px !important;
-    font-weight: 700 !important;
-    margin-top: 3px !important;
-}
-
-.nav-top > .search {
-    display: flex !important;
-    align-items: center !important;
-    width: auto !important;
-    background: #f5f8fb !important;
-    border: 1px solid #e0e7ef !important;
-    border-radius: 13px !important;
-    padding: 5px 8px 5px 15px !important;
-}
-.nav-top > .search input {
-    border: none !important;
-    background: transparent !important;
-    width: 100% !important;
-    padding: 9px 6px !important;
-    outline: none !important;
-    font-size: 13px !important;
-    color: var(--text) !important;
-}
-.nav-top > .search button {
-    width: 38px !important;
-    height: 38px !important;
-    border: none !important;
-    border-radius: 10px !important;
-    background: var(--brand-blue) !important;
-    color: #fff !important;
-    cursor: pointer !important;
-}
-
-.nav-links {
-    display: flex !important;
-    justify-content: flex-end !important;
-    align-items: center !important;
-    gap: 12px !important;
-    flex-wrap: wrap !important;
-}
-.nav-links .cart-btn,
-.nav-links .login-btn {
-    background: var(--brand-blue) !important;
-    color: var(--brand-yellow) !important;
-    padding: 10px 18px !important;
-    border-radius: 10px !important;
-    text-decoration: none !important;
-    font-weight: 700 !important;
-    font-size: 13px !important;
-    transition: .25s !important;
-}
-.nav-links .logout-link {
-    color: #dc3b45 !important;
-    text-decoration: none !important;
-    font-weight: 600 !important;
-    font-size: 13px !important;
-    padding: 9px 4px !important;
-    margin-left: 0 !important;
-}
-
-.categories {
-    background: var(--brand-yellow) !important;
-    border-bottom: 1px solid rgba(0,0,0,.08) !important;
-    border-top: 0 !important;
-}
-.categories ul {
-    max-width: 980px !important;
-    margin: 0 auto !important;
-    display: flex !important;
-    justify-content: center !important;
-    align-items: center !important;
-    gap: 8px !important;
-    list-style: none !important;
-    padding: 7px 18px !important;
-}
-.categories ul li {
-    flex: 0 0 auto !important;
-}
-.categories ul li a {
-    text-decoration: none !important;
-    color: var(--brand-blue) !important;
-    font-size: 12px !important;
-    font-weight: 800 !important;
-    padding: 10px 18px !important;
-    border-radius: 10px !important;
-    transition: .25s !important;
-    display: flex !important;
-    align-items: center !important;
-    gap: 8px !important;
-    white-space: nowrap !important;
-}
-.categories ul li a.active,
-.categories ul li a:hover {
-    background: rgba(0,31,63,.12) !important;
-}
-.categories i {
-    font-size: 14px !important;
-}
-
-/* Mobile: logo + account controls, then ONE search bar, then yellow nav */
-@media (max-width: 680px) {
-    body {
-        overflow-x: hidden !important;
-        padding-bottom: 0 !important;
-    }
-
-    .promo-bar {
-        min-height: 30px !important;
-        padding: 6px 10px !important;
-        font-size: 10px !important;
-        line-height: 1.35 !important;
-        white-space: nowrap !important;
-    }
-
-    header {
-        width: 100% !important;
-    }
-
-    .nav-top {
-        width: 100% !important;
-        display: grid !important;
-        grid-template-columns: minmax(0, 1fr) auto !important;
-        grid-template-rows: auto auto !important;
-        gap: 7px !important;
-        padding: 8px 12px !important;
-        align-items: center !important;
-    }
-
-    .nav-top > .logo {
-        grid-column: 1 !important;
-        grid-row: 1 !important;
-        width: auto !important;
-        max-width: 100% !important;
-        min-width: 0 !important;
-        overflow: hidden !important;
-        gap: 8px !important;
-    }
-
-    .nav-top > .logo .logo-text {
-        min-width: 0 !important;
-        overflow: hidden !important;
-    }
-    .nav-top > .logo .logo-text b,
-    .nav-top > .logo .logo-text span {
-        white-space: nowrap !important;
-        overflow: hidden !important;
-        text-overflow: ellipsis !important;
-    }
-
-    .nav-logo-img {
-        width: 42px !important;
-        height: 42px !important;
-        flex: 0 0 42px !important;
-    }
-    .logo-text b {
-        font-size: 17px !important;
-    }
-    .logo-text span {
-        font-size: 7px !important;
-        letter-spacing: .9px !important;
-    }
-
-    .nav-links {
-        grid-column: 2 !important;
-        grid-row: 1 !important;
-        width: auto !important;
-        min-width: 0 !important;
-        justify-content: flex-end !important;
-        align-items: center !important;
-        flex-wrap: nowrap !important;
-        gap: 6px !important;
-        overflow: visible !important;
-    }
-
-    .nav-links .cart-btn,
-    .nav-links .login-btn {
-        min-height: 43px !important;
-        height: 43px !important;
-        padding: 9px 12px !important;
-        font-size: 10px !important;
-        border-radius: 10px !important;
-        white-space: nowrap !important;
-        display: inline-flex !important;
-        align-items: center !important;
-        justify-content: center !important;
-        width: auto !important;
-    }
-
-    /* index.php is logged-out by design, but this keeps the shared header safe. */
-    .nav-links > span,
-    .nav-links .hello-user {
-        display: none !important;
-    }
-
-    .nav-links .logout-link {
-        font-size: 11px !important;
-        line-height: 1 !important;
-        margin-left: 0 !important;
-        padding: 8px 4px !important;
-        white-space: nowrap !important;
-        color: #dc3b45 !important;
-    }
-
-    /* Exactly one search: the form inside .nav-top */
-    .nav-top > .search,
-    .nav-top > #siteSearchForm {
-        display: flex !important;
-        grid-column: 1 / -1 !important;
-        grid-row: 2 !important;
-        width: 100% !important;
-        min-width: 0 !important;
-        min-height: 44px !important;
-        height: 44px !important;
-        margin: 0 !important;
-        padding: 4px 6px 4px 11px !important;
-        border-radius: 11px !important;
-        box-sizing: border-box !important;
-    }
-
-    .nav-top > .search input {
-        display: block !important;
-        min-width: 0 !important;
-        width: 100% !important;
-        padding: 8px 5px !important;
-        font-size: 11px !important;
-        line-height: 1.2 !important;
-    }
-
-    .nav-top > .search button {
-        display: flex !important;
-        align-items: center !important;
-        justify-content: center !important;
-        width: 34px !important;
-        height: 34px !important;
-        min-width: 34px !important;
-        flex: 0 0 34px !important;
-        border-radius: 9px !important;
-    }
-
-    /* Keep the complete yellow navigation directly below the search. */
-    .categories,
-    .categories.mobile-open {
-        display: block !important;
-        position: static !important;
-        left: auto !important;
-        right: auto !important;
-        bottom: auto !important;
-        width: 100% !important;
-        max-height: none !important;
-        height: auto !important;
-        overflow: hidden !important;
-        opacity: 1 !important;
-        visibility: visible !important;
-        z-index: 1000 !important;
-        background: var(--brand-yellow) !important;
-        border-top: 1px solid rgba(0,0,0,.08) !important;
-        border-bottom: 1px solid rgba(0,0,0,.08) !important;
-        box-shadow: none !important;
-    }
-
-    .categories ul {
-        width: 100% !important;
-        max-width: none !important;
-        margin: 0 !important;
-        display: flex !important;
-        flex-wrap: nowrap !important;
-        justify-content: flex-start !important;
-        align-items: center !important;
-        gap: 4px !important;
-        padding: 6px 10px !important;
-        list-style: none !important;
-        overflow-x: auto !important;
-        overflow-y: hidden !important;
-        -webkit-overflow-scrolling: touch !important;
-        scrollbar-width: none !important;
-    }
-
-    .categories ul::-webkit-scrollbar {
-        display: none !important;
-    }
-
-    .categories ul li,
-    .categories ul li:last-child {
-        flex: 0 0 auto !important;
-        min-width: auto !important;
-        grid-column: auto !important;
-    }
-
-    .categories ul li a {
-        width: auto !important;
-        min-height: 0 !important;
-        padding: 9px 11px !important;
-        border-radius: 9px !important;
-        display: flex !important;
-        flex-direction: row !important;
-        align-items: center !important;
-        justify-content: center !important;
-        gap: 6px !important;
-        white-space: nowrap !important;
-        text-align: center !important;
-        font-size: 9px !important;
-        line-height: 1.2 !important;
-    }
-
-    .categories ul li a.active {
-        background: rgba(0,31,63,.12) !important;
-    }
-
-    .categories ul li a i,
-    .categories i {
-        font-size: 11px !important;
-        flex: 0 0 auto !important;
-    }
-
-    /* Disable any old mobile-specific duplicate search/menu containers. */
-    .mobile-search-wrap,
-    #mobileSiteSearchForm,
-    .mobile-menu-btn,
-    #mobileMenuBtn,
-    .menu-toggle,
-    #menuToggle {
-        display: none !important;
-    }
-}
-
-@media (max-width: 420px) {
-    .nav-top {
-        padding-left: 9px !important;
-        padding-right: 9px !important;
-    }
-    .nav-logo-img {
-        width: 38px !important;
-        height: 38px !important;
-        flex-basis: 38px !important;
-    }
-    .logo-text b {
-        font-size: 15px !important;
-    }
-    .logo-text span {
-        font-size: 6px !important;
-        letter-spacing: .7px !important;
-    }
-    .nav-links .cart-btn,
-    .nav-links .login-btn {
-        min-height: 42px !important;
-        height: 42px !important;
-        padding: 9px 10px !important;
-        font-size: 9px !important;
-    }
-    .nav-links .logout-link {
-        font-size: 10px !important;
-        padding: 8px 3px !important;
-    }
-    .nav-top > .search {
-        min-height: 43px !important;
-        height: 43px !important;
-    }
-    .nav-top > .search button {
-        width: 34px !important;
-        height: 34px !important;
-        flex-basis: 34px !important;
-    }
-}
-
+        /* ===== PROMO POSTER / ANY-ASPECT-RATIO DISPLAY ===== */
+        .promo-image{
+            width:100%;
+            height:auto !important;
+            object-fit:contain !important;
+            display:block;
+        }
+        @media (max-width:680px){
+            .promo-grid{
+                grid-template-columns:1fr !important;
+            }
+            .promo-card{
+                width:100% !important;
+                min-height:0;
+            }
+        }
 </style>
 </head>
 <body>
@@ -1926,7 +1386,8 @@ header {
             </div>
         </section>
 
-        <section class="home-section">
+        <?php if (!empty($promos_list)): ?>
+<section class="home-section">
             <div class="section-heading">
                 <span class="badge"><i class="fa-solid fa-tag"></i> Limited-time offers</span>
                 <h2>Special Promotions This Month</h2>
@@ -1974,33 +1435,12 @@ header {
                             </div>
                         </article>
                     <?php endforeach; ?>
-                <?php else: ?>
-                    <div class="promo-card purple">
-                        <div class="promo-body">
-                            <span class="tag">Vet Clinic Deal</span>
-                            <h3>Free Checkup</h3>
-                            <p>Get a complimentary wellness consultation when you book a complete vaccination package.</p>
-                        </div>
-                    </div>
-                    <div class="promo-card teal">
-                        <div class="promo-body">
-                            <span class="tag">Boarding Perk</span>
-                            <h3>Stay 5, Get 1</h3>
-                            <p>Book 5 nights at our Pet Hotel and get the 6th night FREE, plus a complimentary exit bath!</p>
-                        </div>
-                    </div>
-                    <div class="promo-card red">
-                        <div class="promo-body">
-                            <span class="tag">Birthday Special</span>
-                            <h3>50% OFF</h3>
-                            <p>Is it your pet's birth month? Bring their records and get half off their next grooming session!</p>
-                        </div>
-                    </div>
                 <?php endif; ?>
             </div>
         </section>
+<?php endif; ?>
 
-        <section class="home-section">
+<section class="home-section">
             <div class="section-heading">
                 <div class="section-kicker">Everything in one place</div>
                 <h2>Our Premium Services</h2>
@@ -2203,9 +1643,13 @@ header {
         }
 
         /* ===== SMART / RELATED SITE SEARCH ===== */
-        const searchForm = document.getElementById('siteSearchForm');
-        const searchInput = document.getElementById('siteSearchInput');
         const searchStatus = document.getElementById('searchStatus');
+        const searchForms = [
+            {
+                form: document.getElementById('siteSearchForm'),
+                input: document.getElementById('siteSearchInput')
+            },
+        ].filter(item => item.form && item.input);
 
         // Related terms are mapped to the page that best matches the user's intent.
         // The search is intentionally broader than exact page/category names.
@@ -2363,14 +1807,14 @@ header {
             }, 2600);
         }
 
-        if (searchForm && searchInput) {
-            searchForm.addEventListener('submit', function (event) {
+        searchForms.forEach(({ form, input }) => {
+            form.addEventListener('submit', function (event) {
                 event.preventDefault();
 
-                const query = searchInput.value.trim();
+                const query = input.value.trim();
 
                 if (!query) {
-                    searchInput.focus();
+                    input.focus();
                     showSearchStatus(
                         'Type something to search, like <strong>bath</strong>, <strong>vaccine</strong>, <strong>boarding</strong>, or <strong>price</strong>.'
                     );
@@ -2390,7 +1834,7 @@ header {
                     );
                 }
             });
-        }
+        });
     
     </script>
 

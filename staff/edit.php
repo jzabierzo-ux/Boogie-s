@@ -293,7 +293,231 @@ try {
             }
         }
 
-    </style>
+
+        /* ===== Mobile-flexible layout additions ===== */
+        html { width: 100%; overflow-x: hidden; }
+        body { width: 100%; max-width: 100%; }
+        img { max-width: 100%; }
+        input, select, textarea, button { max-width: 100%; }
+
+
+        /* ===== Final small-screen containment ===== */
+        @media (max-width: 600px) {
+            html, body { width:100%; max-width:100%; overflow-x:hidden; }
+            .container, .login-card { width:100%; max-width:100%; }
+            input, select, textarea, button { width:100%; max-width:100%; }
+            img { max-width:100%; height:auto; }
+        }
+
+    
+/* ================================================================
+   FINAL STAFF TOP BAR FIX — MATCH ADMIN MOBILE BEHAVIOR
+   Keep the staff name visible on phones while preventing overflow.
+   ================================================================ */
+.profile-name-text {
+    white-space: nowrap !important;
+    min-width: 0 !important;
+}
+
+@media (max-width: 640px) {
+    .main-content > header,
+    .main-content > header:first-child {
+        width: 100% !important;
+        min-width: 0 !important;
+        height: 60px !important;
+        min-height: 60px !important;
+        padding: 0 10px !important;
+        display: flex !important;
+        flex-wrap: nowrap !important;
+        align-items: center !important;
+        gap: 7px !important;
+        overflow: visible !important;
+    }
+
+    .mobile-menu-btn {
+        display: inline-flex !important;
+        width: 36px !important;
+        min-width: 36px !important;
+        height: 36px !important;
+        flex: 0 0 36px !important;
+        align-items: center !important;
+        justify-content: center !important;
+    }
+
+    .topbar-left {
+        flex: 0 0 auto !important;
+        min-width: 0 !important;
+    }
+
+    /* On mobile the breadcrumb is unnecessary beside the menu button. */
+    .breadcrumb {
+        display: none !important;
+    }
+
+    .top-right-actions {
+        display: flex !important;
+        align-items: center !important;
+        justify-content: flex-end !important;
+        gap: 7px !important;
+        flex: 1 1 auto !important;
+        min-width: 0 !important;
+        margin-left: auto !important;
+    }
+
+    .notif-wrapper {
+        flex: 0 0 auto !important;
+    }
+
+    .notif-wrapper > i {
+        font-size: 19px !important;
+    }
+
+    .role-label {
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        flex: 0 0 auto !important;
+        white-space: nowrap !important;
+        padding: 4px 7px !important;
+        font-size: 8px !important;
+    }
+
+    .profile-wrapper {
+        display: flex !important;
+        align-items: center !important;
+        flex: 0 1 auto !important;
+        min-width: 0 !important;
+        max-width: 150px !important;
+        gap: 6px !important;
+        padding-left: 7px !important;
+        border-left: 1px solid var(--border) !important;
+        overflow: visible !important;
+    }
+
+    .top-avatar,
+    .top-avatar-fallback {
+        width: 30px !important;
+        height: 30px !important;
+        min-width: 30px !important;
+        flex: 0 0 30px !important;
+    }
+
+    /* Keep the staff name visible like the admin top bar. */
+    .profile-name-text {
+        display: block !important;
+        flex: 0 1 105px !important;
+        width: 105px !important;
+        min-width: 0 !important;
+        max-width: 105px !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+        white-space: nowrap !important;
+        line-height: 1.2 !important;
+        font-size: 12px !important;
+        font-weight: 700 !important;
+        padding-right: 13px !important;
+        position: relative !important;
+    }
+
+    .profile-name-text i {
+        display: none !important;
+    }
+
+    .profile-name-text::after {
+        content: '\\f078';
+        font-family: 'Font Awesome 6 Free';
+        font-weight: 900;
+        position: absolute;
+        right: 0;
+        top: 50%;
+        transform: translateY(-50%);
+        font-size: 9px;
+        color: var(--text-muted, #64748b);
+        opacity: .7;
+    }
+}
+
+@media (max-width: 480px) {
+    .main-content > header,
+    .main-content > header:first-child {
+        padding: 0 9px !important;
+        gap: 6px !important;
+    }
+
+    .top-right-actions {
+        gap: 6px !important;
+    }
+
+    .role-label {
+        padding: 4px 7px !important;
+        font-size: 8px !important;
+    }
+
+    .profile-wrapper {
+        gap: 5px !important;
+        max-width: 138px !important;
+        padding-left: 6px !important;
+    }
+
+    .profile-name-text {
+        flex-basis: 92px !important;
+        width: 92px !important;
+        max-width: 92px !important;
+        font-size: 11px !important;
+    }
+}
+
+@media (max-width: 400px) {
+    .role-label {
+        display: none !important;
+    }
+
+    .profile-wrapper {
+        max-width: 135px !important;
+        padding-left: 5px !important;
+    }
+
+    .profile-name-text {
+        flex-basis: 100px !important;
+        width: 100px !important;
+        max-width: 100px !important;
+    }
+}
+
+
+/* ===== FINAL PROFILE NAME FIX v11 ===== */
+@media (min-width: 561px) {
+    .main-content > header .profile-wrapper > .desktop-profile-name {
+        display: inline-flex !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+    }
+    .main-content > header .profile-wrapper > .mobile-profile-first-name {
+        display: none !important;
+        visibility: hidden !important;
+    }
+}
+
+@media (max-width: 560px) {
+    .main-content > header .profile-wrapper > .desktop-profile-name {
+        display: none !important;
+        visibility: hidden !important;
+    }
+    .main-content > header .profile-wrapper > .mobile-profile-first-name {
+        display: inline-flex !important;
+        align-items: center !important;
+        flex: 0 1 auto !important;
+        width: auto !important;
+        min-width: 0 !important;
+        max-width: 70px !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+        white-space: nowrap !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+    }
+}
+</style>
 </head>
 <body>
 

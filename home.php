@@ -42,7 +42,7 @@ $parent_text = ($total_reviews === 1)
 $promos_list = [];
 
 try {
-    $promo_stmt = $pdo->prepare("\n        SELECT *\n        FROM promos\n        WHERE status = 'active'\n          AND (expiry_date >= CURRENT_DATE OR expiry_date IS NULL)\n        ORDER BY id DESC\n        LIMIT 3\n    ");
+    $promo_stmt = $pdo->prepare("\n        SELECT *\n        FROM promos\n        WHERE status = 'active'\n          AND (expiry_date >= ((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Manila')::date) OR expiry_date IS NULL)\n        ORDER BY id DESC\n        LIMIT 3\n    ");
     $promo_stmt->execute();
     $promos_list = $promo_stmt->fetchAll(PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
@@ -250,7 +250,6 @@ try {
                 padding: 10px 13px;
             }
         }
-
 
         /* ===== HEADER SEARCH ===== */
         .search-status {
@@ -558,8 +557,8 @@ try {
         .promo-image {
             display: block;
             width: 100%;
-            height: 240px;
-            object-fit: cover;
+            height:auto;
+            object-fit:contain;
             background: #eef2f7;
         }
         .promo-body {
@@ -937,7 +936,6 @@ try {
             .search-status { top: 186px; }
         }
 
-
         /* ===== PUBLIC INDEX: MOBILE RESPONSIVE IMPROVEMENTS ===== */
         .mobile-menu-btn {
             display: none;
@@ -1279,49 +1277,28 @@ try {
 
     
 
-/* ============================================================
-   BOOGIE'S SHARED HEADER — FINAL MOBILE STANDARD
-   Same header sizes/spacing/colours across Home -> Contact.
-   ============================================================ */
-.logout-link,
-.nav-links a[href="logout.php"],
-.nav-links a[style*="ef4444"] {
-    color: #dc3b45 !important;
-    text-decoration: none !important;
-}
-.logout-link { color:#dc3b45; text-decoration:none; font-weight:600; font-size:13px; padding:9px 4px; }
-.logout-link {
-
-                font-size: 11px !important;
-
-                margin-left: 0 !important;
-
-                padding: 9px 4px !important;
-
-            }
-
+/* ===== BOOGIE'S SHARED MOBILE HEADER - FINAL ===== */
 @media (max-width: 680px) {
-    /* One consistent mobile header: logo + account controls, then ONE search bar. */
     header {
-        width: 100% !important;
+        width: 100%;
     }
 
     .promo-bar {
         min-height: 30px !important;
         padding: 6px 10px !important;
-        font-size: 10px !important;
-        line-height: 1.35 !important;
-        white-space: nowrap;
+        font-size: 9.5px !important;
+        line-height: 1.3 !important;
+        white-space: nowrap !important;
     }
 
     .nav-top {
-        width: 100% !important;
         display: grid !important;
         grid-template-columns: minmax(0, 1fr) auto !important;
         grid-template-rows: auto auto !important;
-        gap: 7px !important;
-        padding: 8px 12px !important;
         align-items: center !important;
+        gap: 7px !important;
+        width: 100% !important;
+        padding: 8px 12px 9px !important;
     }
 
     .nav-top > .logo {
@@ -1341,6 +1318,7 @@ try {
 
     .nav-top > .logo .logo-text b,
     .nav-top > .logo .logo-text span {
+        display: block !important;
         white-space: nowrap !important;
         overflow: hidden !important;
         text-overflow: ellipsis !important;
@@ -1361,14 +1339,6 @@ try {
         letter-spacing: .9px !important;
     }
 
-    /* No hamburger/dropdown replacing the actual yellow services bar. */
-    .mobile-menu-btn,
-    #mobileMenuBtn,
-    .menu-toggle,
-    #menuToggle {
-        display: none !important;
-    }
-
     .nav-links {
         grid-column: 2 !important;
         grid-row: 1 !important;
@@ -1381,7 +1351,6 @@ try {
         overflow: visible !important;
     }
 
-    /* Hide the long greeting on phones so it can never overlap the logo. */
     .nav-links > span,
     .nav-links .hello-user {
         display: none !important;
@@ -1390,29 +1359,25 @@ try {
     .nav-links .cart-btn,
     .nav-links .login-btn {
         min-height: 43px !important;
-        height: 43px !important;
         padding: 9px 12px !important;
         font-size: 10px !important;
+        line-height: 1.1 !important;
         border-radius: 10px !important;
         white-space: nowrap !important;
         display: inline-flex !important;
         align-items: center !important;
         justify-content: center !important;
-        width: auto !important;
     }
 
-     .nav-links .logout-link,
-    .nav-links a[href="logout.php"],
-    .nav-links a[style*="ef4444"] {
-        font-size: 11px !important;
-        line-height: 1 !important;
+    .nav-links a[style*="ef4444"],
+    .nav-links .logout-link {
+        font-size: 10.5px !important;
         margin-left: 0 !important;
-        padding: 8px 4px !important;
+        padding: 8px 3px !important;
+        line-height: 1.1 !important;
         white-space: nowrap !important;
-        color: #dc3b45 !important;
     }
 
-    /* Keep exactly ONE visible search form: the search inside .nav-top. */
     .nav-top > .search {
         display: flex !important;
         grid-column: 1 / -1 !important;
@@ -1420,7 +1385,6 @@ try {
         width: 100% !important;
         min-width: 0 !important;
         min-height: 44px !important;
-        height: 44px !important;
         margin: 0 !important;
         padding: 4px 6px 4px 11px !important;
         border-radius: 11px !important;
@@ -1429,39 +1393,33 @@ try {
 
     .nav-top > .search input {
         display: block !important;
-        min-width: 0 !important;
         width: 100% !important;
+        min-width: 0 !important;
         padding: 8px 5px !important;
         font-size: 11px !important;
-        line-height: 1.2 !important;
     }
 
     .nav-top > .search button {
+        width: 36px !important;
+        height: 36px !important;
+        flex: 0 0 36px !important;
+        border-radius: 9px !important;
         display: flex !important;
         align-items: center !important;
         justify-content: center !important;
-        width: 34px !important;
-        height: 34px !important;
-        min-width: 34px !important;
-        flex: 0 0 34px !important;
-        border-radius: 9px !important;
     }
 
-    /* Older Pet Services version has an extra mobile search wrapper — hide it. */
+    /* Remove any legacy duplicate mobile search wrapper. */
     .mobile-search-wrap,
     #mobileSiteSearchForm,
-    #mobileSiteSearchInput {
+    .mobileSiteSearchForm,
+    .mobile-menu-btn,
+    #mobileMenuBtn {
         display: none !important;
     }
 
-    /* Always show the complete yellow service navigation. */
-    .categories,
-    .categories.mobile-open {
-        display: block !important;
-        visibility: visible !important;
-        opacity: 1 !important;
-        max-height: none !important;
-        height: auto !important;
+    .categories {
+        width: 100% !important;
         overflow: hidden !important;
     }
 
@@ -1469,13 +1427,10 @@ try {
         width: 100% !important;
         max-width: none !important;
         display: flex !important;
-        flex-wrap: nowrap !important;
         justify-content: flex-start !important;
         align-items: center !important;
         gap: 4px !important;
-        list-style: none !important;
         padding: 6px 10px !important;
-        margin: 0 !important;
         overflow-x: auto !important;
         overflow-y: hidden !important;
         -webkit-overflow-scrolling: touch !important;
@@ -1486,26 +1441,29 @@ try {
         display: none !important;
     }
 
-    .categories ul li,
-    .categories ul li:last-child {
+    .categories ul li {
         flex: 0 0 auto !important;
-        grid-column: auto !important;
     }
 
     .categories ul li a {
-        display: flex !important;
-        align-items: center !important;
-        justify-content: center !important;
-        white-space: nowrap !important;
         padding: 9px 11px !important;
-        min-height: 36px !important;
         font-size: 9px !important;
         gap: 6px !important;
+        white-space: nowrap !important;
         border-radius: 9px !important;
     }
 
     .categories i {
         font-size: 11px !important;
+    }
+
+    .search-status {
+        top: 150px !important;
+        left: 12px !important;
+        right: 12px !important;
+        width: auto !important;
+        min-width: 0 !important;
+        max-width: none !important;
     }
 }
 
@@ -1513,6 +1471,7 @@ try {
     .nav-top {
         padding-left: 9px !important;
         padding-right: 9px !important;
+        gap: 6px !important;
     }
 
     .nav-logo-img {
@@ -1530,25 +1489,25 @@ try {
         letter-spacing: .7px !important;
     }
 
+    .nav-links {
+        gap: 5px !important;
+    }
+
     .nav-links .cart-btn,
     .nav-links .login-btn {
-        min-height: 42px !important;
-        height: 42px !important;
-        padding: 9px 10px !important;
+        min-height: 41px !important;
+        padding: 8px 10px !important;
         font-size: 9px !important;
     }
 
-    .nav-links .logout-link,
-    .nav-links a[href="logout.php"],
-    .nav-links a[style*="ef4444"] {
-        font-size: 11px !important;
-        padding: 8px 4px !important;
-        
+    .nav-links a[style*="ef4444"],
+    .nav-links .logout-link {
+        font-size: 9.5px !important;
+        padding: 8px 2px !important;
     }
 
     .nav-top > .search {
-        min-height: 43px !important;
-        height: 43px !important;
+        min-height: 42px !important;
     }
 
     .nav-top > .search button {
@@ -1556,7 +1515,578 @@ try {
         height: 34px !important;
         flex-basis: 34px !important;
     }
+
+    .nav-top > .search input {
+        font-size: 10.5px !important;
+    }
+
+    .categories ul li a {
+        padding: 8px 10px !important;
+        font-size: 8px !important;
+    }
 }
+
+
+        /* ===== PROMO POSTER / ANY-ASPECT-RATIO DISPLAY ===== */
+        .promo-image{
+            width:100%;
+            height:auto !important;
+            object-fit:contain !important;
+            display:block;
+        }
+        @media (max-width:680px){
+            .promo-grid{
+                grid-template-columns:1fr !important;
+            }
+            .promo-card{
+                width:100% !important;
+                min-height:0;
+            }
+        }
+
+
+        /* ============================================================
+           BOOGIE'S SHARED HEADER — MATCH PET SERVICES
+           Same desktop/mobile topbar, search row, and category bar.
+           ============================================================ */
+
+        .promo-bar {
+            background: var(--brand-blue) !important;
+            color: #fff !important;
+            text-align: center !important;
+            padding: 7px 16px !important;
+            font-size: 12px !important;
+            font-weight: 600 !important;
+            letter-spacing: .2px !important;
+        }
+
+        .promo-bar i {
+            color: var(--brand-yellow) !important;
+            margin-right: 7px !important;
+        }
+
+        header {
+            position: sticky !important;
+            top: 0 !important;
+            background: rgba(255,255,255,.97) !important;
+            backdrop-filter: blur(12px) !important;
+            z-index: 1000 !important;
+            border-bottom: 1px solid var(--border) !important;
+            box-shadow: 0 4px 18px rgba(0,0,0,.04) !important;
+        }
+
+        .nav-top {
+            max-width: 1320px !important;
+            margin: 0 auto !important;
+            display: grid !important;
+            grid-template-columns: auto minmax(250px, 460px) auto !important;
+            align-items: center !important;
+            gap: 28px !important;
+            padding: 14px 28px !important;
+        }
+
+        .logo {
+            display: inline-flex !important;
+            align-items: center !important;
+            gap: 11px !important;
+            text-decoration: none !important;
+            min-width: 0 !important;
+        }
+
+        .nav-logo-img {
+            height: 50px !important;
+            width: 50px !important;
+            object-fit: contain !important;
+            display: block !important;
+            border-radius: 10px !important;
+        }
+
+        .logo-text {
+            display: flex !important;
+            flex-direction: column !important;
+            line-height: 1.05 !important;
+        }
+
+        .logo-text b {
+            font-size: 20px !important;
+            color: var(--brand-blue) !important;
+        }
+
+        .logo-text span {
+            font-size: 9px !important;
+            color: #8c9aae !important;
+            text-transform: uppercase !important;
+            letter-spacing: 1.2px !important;
+            font-weight: 700 !important;
+            margin-top: 3px !important;
+        }
+
+        .search {
+            display: flex !important;
+            align-items: center !important;
+            background: #f5f8fb !important;
+            border: 1px solid #e0e7ef !important;
+            border-radius: 13px !important;
+            padding: 5px 8px 5px 15px !important;
+        }
+
+        .search input {
+            border: none !important;
+            background: transparent !important;
+            width: 100% !important;
+            padding: 9px 6px !important;
+            outline: none !important;
+            font-size: 13px !important;
+            color: var(--text) !important;
+        }
+
+        .search input::placeholder { color: #97a4b4 !important; }
+
+        .search button {
+            width: 38px !important;
+            height: 38px !important;
+            border: none !important;
+            border-radius: 10px !important;
+            background: var(--brand-blue) !important;
+            color: #fff !important;
+            cursor: pointer !important;
+            transition: .25s !important;
+        }
+
+        .search button:hover {
+            background: var(--brand-blue-2) !important;
+            transform: translateY(-1px) !important;
+        }
+
+        .nav-links {
+            display: flex !important;
+            justify-content: flex-end !important;
+            align-items: center !important;
+            gap: 12px !important;
+            flex-wrap: wrap !important;
+        }
+
+        .hello-user {
+            color: var(--brand-blue) !important;
+            font-weight: 600 !important;
+            font-size: 13px !important;
+            white-space: nowrap !important;
+        }
+
+        .cart-btn {
+            background: var(--brand-blue) !important;
+            color: var(--brand-yellow) !important;
+            padding: 10px 18px !important;
+            border-radius: 10px !important;
+            text-decoration: none !important;
+            font-weight: 700 !important;
+            font-size: 13px !important;
+            transition: .25s !important;
+        }
+
+        .cart-btn:hover {
+            transform: translateY(-2px) !important;
+            box-shadow: 0 8px 20px rgba(0,31,63,.16) !important;
+        }
+
+        .logout-link,
+        .nav-links a[href="logout.php"],
+        .nav-links a[style*="ef4444"] {
+            color: #dc3b45 !important;
+            text-decoration: none !important;
+            font-weight: 600 !important;
+            font-size: 13px !important;
+            margin-left: 0 !important;
+            padding: 9px 4px !important;
+        }
+
+        .categories {
+            display: block !important;
+            background: var(--brand-yellow) !important;
+            border-bottom: 1px solid rgba(0,0,0,.08) !important;
+        }
+
+        .categories ul {
+            max-width: 980px !important;
+            margin: 0 auto !important;
+            display: flex !important;
+            justify-content: center !important;
+            align-items: center !important;
+            gap: 8px !important;
+            list-style: none !important;
+            padding: 7px 18px !important;
+        }
+
+        .categories ul li { flex: 0 0 auto; }
+
+        .categories ul li a {
+            text-decoration: none !important;
+            color: var(--brand-blue) !important;
+            font-size: 12px !important;
+            font-weight: 800 !important;
+            padding: 10px 18px !important;
+            border-radius: 10px !important;
+            transition: .25s !important;
+            display: flex !important;
+            align-items: center !important;
+            gap: 8px !important;
+        }
+
+        .categories ul li a:hover,
+        .categories ul li a.active {
+            background: rgba(0,31,63,.12) !important;
+            transform: translateY(-1px) !important;
+        }
+
+        .categories i { font-size: 14px !important; }
+
+        .mobile-search-wrap { display: none !important; }
+
+        .search-status {
+            position: fixed !important;
+            top: 148px !important;
+            left: 50% !important;
+            transform: translateX(-50%) translateY(-8px) !important;
+            z-index: 1200 !important;
+            min-width: 280px !important;
+            max-width: min(560px, 90vw) !important;
+            padding: 10px 14px !important;
+            border-radius: 11px !important;
+            background: var(--brand-blue) !important;
+            color: #fff !important;
+            font-size: 12px !important;
+            font-weight: 600 !important;
+            text-align: center !important;
+            box-shadow: 0 10px 25px rgba(0,31,63,.16) !important;
+            opacity: 0 !important;
+            pointer-events: none !important;
+            transition: opacity .2s ease, transform .2s ease !important;
+        }
+
+        .search-status.show {
+            opacity: 1 !important;
+            transform: translateX(-50%) translateY(0) !important;
+        }
+
+        .search-status strong { color: var(--brand-yellow) !important; }
+
+        /* Promo sizing copied from the responsive layout used on index.php. */
+        .promo-grid {
+            display: grid !important;
+            grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)) !important;
+            gap: 24px !important;
+            padding-bottom: 20px !important;
+        }
+
+        .promo-grid.one-promo {
+            grid-template-columns: minmax(0, 340px) !important;
+            justify-content: center !important;
+        }
+
+        .promo-grid.two-promos {
+            width: min(1010px, 100%) !important;
+            margin-left: auto !important;
+            margin-right: auto !important;
+            grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+            justify-content: center !important;
+        }
+
+        .promo-grid .promo-card:only-child {
+            width: 100% !important;
+            justify-self: center !important;
+        }
+
+        .promo-card {
+            min-height: 430px;
+        }
+
+        .promo-image {
+            display: block !important;
+            width: 100% !important;
+            height: auto !important;
+            object-fit: contain !important;
+            background: #eef2f7 !important;
+        }
+
+        .promo-card.has-image .promo-body {
+            min-height: 0 !important;
+        }
+
+        .promo-card:not(.has-image) .promo-body {
+            min-height: 430px;
+        }
+
+        @media (max-width: 980px) {
+            .nav-top {
+                grid-template-columns: 1fr !important;
+                gap: 12px !important;
+            }
+
+            .nav-links {
+                justify-content: flex-start !important;
+            }
+        }
+
+        @media (max-width: 680px) {
+            .promo-bar {
+                min-height: 30px !important;
+                padding: 6px 10px !important;
+                font-size: 10px !important;
+                line-height: 1.35 !important;
+                white-space: nowrap !important;
+            }
+
+            .nav-top {
+                width: 100% !important;
+                display: grid !important;
+                grid-template-columns: minmax(0, 1fr) auto !important;
+                grid-template-rows: auto auto !important;
+                gap: 7px !important;
+                padding: 8px 12px !important;
+                align-items: center !important;
+            }
+
+            .nav-top > .logo {
+                grid-column: 1 !important;
+                grid-row: 1 !important;
+                width: auto !important;
+                min-width: 0 !important;
+                max-width: 100% !important;
+                overflow: hidden !important;
+                gap: 8px !important;
+            }
+
+            .nav-top > .logo .logo-text {
+                min-width: 0 !important;
+                overflow: hidden !important;
+            }
+
+            .nav-top > .logo .logo-text b,
+            .nav-top > .logo .logo-text span {
+                white-space: nowrap !important;
+                overflow: hidden !important;
+                text-overflow: ellipsis !important;
+            }
+
+            .nav-logo-img {
+                width: 42px !important;
+                height: 42px !important;
+                flex: 0 0 42px !important;
+            }
+
+            .logo-text b { font-size: 17px !important; }
+            .logo-text span {
+                font-size: 7px !important;
+                letter-spacing: .9px !important;
+            }
+
+            .nav-links {
+                grid-column: 2 !important;
+                grid-row: 1 !important;
+                width: auto !important;
+                min-width: 0 !important;
+                justify-content: flex-end !important;
+                align-items: center !important;
+                flex-wrap: nowrap !important;
+                gap: 6px !important;
+                overflow: visible !important;
+            }
+
+            .nav-links > span,
+            .nav-links .hello-user {
+                display: none !important;
+            }
+
+            .nav-links .cart-btn {
+                min-height: 43px !important;
+                height: 43px !important;
+                padding: 9px 12px !important;
+                font-size: 10px !important;
+                border-radius: 10px !important;
+                white-space: nowrap !important;
+                display: inline-flex !important;
+                align-items: center !important;
+                justify-content: center !important;
+                width: auto !important;
+            }
+
+            .nav-links .logout-link,
+            .nav-links a[href="logout.php"],
+            .nav-links a[style*="ef4444"] {
+                font-size: 11px !important;
+                line-height: 1 !important;
+                margin-left: 0 !important;
+                padding: 8px 4px !important;
+                white-space: nowrap !important;
+                color: #dc3b45 !important;
+            }
+
+            .nav-top > .search {
+                display: flex !important;
+                grid-column: 1 / -1 !important;
+                grid-row: 2 !important;
+                width: 100% !important;
+                min-width: 0 !important;
+                min-height: 44px !important;
+                height: 44px !important;
+                margin: 0 !important;
+                padding: 4px 6px 4px 11px !important;
+                border-radius: 11px !important;
+                box-sizing: border-box !important;
+            }
+
+            .nav-top > .search input {
+                display: block !important;
+                min-width: 0 !important;
+                width: 100% !important;
+                padding: 8px 5px !important;
+                font-size: 11px !important;
+                line-height: 1.2 !important;
+            }
+
+            .nav-top > .search button {
+                display: flex !important;
+                align-items: center !important;
+                justify-content: center !important;
+                width: 34px !important;
+                height: 34px !important;
+                min-width: 34px !important;
+                flex: 0 0 34px !important;
+                border-radius: 9px !important;
+            }
+
+            .mobile-search-wrap,
+            #mobileSiteSearchForm,
+            #mobileSiteSearchInput,
+            .mobile-menu-btn,
+            #mobileMenuBtn,
+            .menu-toggle,
+            #menuToggle {
+                display: none !important;
+            }
+
+            .categories,
+            .categories.mobile-open {
+                display: block !important;
+                visibility: visible !important;
+                opacity: 1 !important;
+                max-height: none !important;
+                height: auto !important;
+                overflow: hidden !important;
+            }
+
+            .categories ul {
+                width: 100% !important;
+                max-width: none !important;
+                display: flex !important;
+                flex-wrap: nowrap !important;
+                justify-content: flex-start !important;
+                align-items: center !important;
+                gap: 4px !important;
+                list-style: none !important;
+                padding: 6px 10px !important;
+                margin: 0 !important;
+                overflow-x: auto !important;
+                overflow-y: hidden !important;
+                -webkit-overflow-scrolling: touch !important;
+                scrollbar-width: none !important;
+            }
+
+            .categories ul::-webkit-scrollbar { display: none !important; }
+
+            .categories ul li {
+                flex: 0 0 auto !important;
+                grid-column: auto !important;
+            }
+
+            .categories ul li a {
+                display: flex !important;
+                align-items: center !important;
+                justify-content: center !important;
+                white-space: nowrap !important;
+                padding: 9px 11px !important;
+                min-height: 36px !important;
+                font-size: 9px !important;
+                gap: 6px !important;
+                border-radius: 9px !important;
+            }
+
+            .categories i { font-size: 11px !important; }
+
+            .search-status {
+                top: 145px !important;
+                left: 12px !important;
+                right: 12px !important;
+                width: auto !important;
+                min-width: 0 !important;
+                max-width: none !important;
+                transform: translateY(-8px) !important;
+            }
+
+            .search-status.show {
+                transform: translateY(0) !important;
+            }
+
+            .promo-grid {
+                grid-template-columns: 1fr !important;
+                gap: 16px !important;
+            }
+
+            .promo-grid.one-promo,
+            .promo-grid.two-promos {
+                width: 100% !important;
+                grid-template-columns: 1fr !important;
+            }
+
+            .promo-card {
+                width: 100% !important;
+                min-height: 0 !important;
+            }
+        }
+
+        @media (max-width: 420px) {
+            .nav-top {
+                padding-left: 9px !important;
+                padding-right: 9px !important;
+            }
+
+            .nav-logo-img {
+                width: 38px !important;
+                height: 38px !important;
+                flex-basis: 38px !important;
+            }
+
+            .logo-text b { font-size: 15px !important; }
+            .logo-text span {
+                font-size: 6px !important;
+                letter-spacing: .7px !important;
+            }
+
+            .nav-links .cart-btn {
+                min-height: 42px !important;
+                height: 42px !important;
+                padding: 9px 10px !important;
+                font-size: 9px !important;
+            }
+
+            .nav-links .logout-link,
+            .nav-links a[href="logout.php"],
+            .nav-links a[style*="ef4444"] {
+                font-size: 10px !important;
+                padding: 8px 3px !important;
+            }
+
+            .nav-top > .search {
+                min-height: 43px !important;
+                height: 43px !important;
+            }
+
+            .nav-top > .search button {
+                width: 34px !important;
+                height: 34px !important;
+                flex-basis: 34px !important;
+            }
+        }
 
 </style>
 </head>
@@ -1574,11 +2104,6 @@ try {
                 </div>
             </a>
 
-            <button type="button" class="mobile-menu-btn" id="mobileMenuBtn"
-                    aria-label="Open navigation menu" aria-expanded="false" aria-controls="publicCategories">
-                <i class="fa-solid fa-bars"></i>
-            </button>
-
             <form class="search" id="siteSearchForm" autocomplete="off">
                 <input
                     type="search"
@@ -1592,19 +2117,34 @@ try {
             </form>
 
             <div class="nav-links">
-                <?php if ($is_logged_in): ?>
+                <?php if($is_logged_in): ?>
                     <span class="hello-user"><i class="fa-regular fa-user"></i> Hi, <?php echo htmlspecialchars($user_name); ?></span>
                     <a href="dashboard.php" class="cart-btn">Dashboard</a>
-                    <a href="logout.php" style="color: #ef4444; text-decoration:none; font-weight: 600; font-size: 14px; margin-left:10px;">Logout</a>
+                    <a href="logout.php" class="logout-link">Logout</a>
                 <?php else: ?>
                     <a href="login.php" class="cart-btn">Login / Register</a>
                 <?php endif; ?>
             </div>
         </div>
 
+        <!-- Kept for compatibility with the shared Pet Services header. -->
+        <div class="mobile-search-wrap" aria-label="Mobile site search">
+            <form class="search" id="mobileSiteSearchForm" autocomplete="off">
+                <input
+                    type="search"
+                    id="mobileSiteSearchInput"
+                    placeholder="Search for grooming, hotel, or vet services..."
+                    aria-label="Search services"
+                >
+                <button type="submit" aria-label="Search">
+                    <i class="fa-solid fa-magnifying-glass"></i>
+                </button>
+            </form>
+        </div>
+
         <nav class="categories" id="publicCategories">
             <ul>
-                <li><a href="home.php" class="active"><i class="fa-solid fa-house"></i> HOME</a></li>
+                <li><a href="index.php" class="active"><i class="fa-solid fa-house"></i> HOME</a></li>
                 <li><a href="petservices.php"><i class="fa-solid fa-paw"></i> PET SERVICES</a></li>
                 <li><a href="grooming.php"><i class="fa-solid fa-scissors"></i> GROOMING</a></li>
                 <li><a href="vetclinic.php"><i class="fa-solid fa-stethoscope"></i> VET CLINIC</a></li>
@@ -1689,14 +2229,19 @@ try {
             </div>
         </section>
 
-        <section class="home-section">
+        <?php if (!empty($promos_list)): ?>
+<section class="home-section">
             <div class="section-heading">
                 <span class="badge"><i class="fa-solid fa-tag"></i> Limited-time offers</span>
                 <h2>Special Promotions This Month</h2>
                 <p>Don't miss out on current deals for your furry friends.</p>
             </div>
 
-            <div class="promo-grid">
+            <div class="promo-grid <?php
+                echo count($promos_list) === 1
+                    ? 'one-promo'
+                    : (count($promos_list) === 2 ? 'two-promos' : '');
+            ?>">
                 <?php if (!empty($promos_list)): ?>
                     <?php foreach ($promos_list as $promo): ?>
                         <?php
@@ -1733,33 +2278,12 @@ try {
                             </div>
                         </article>
                     <?php endforeach; ?>
-                <?php else: ?>
-                    <div class="promo-card purple">
-                        <div class="promo-body">
-                            <span class="tag">Vet Clinic Deal</span>
-                            <h3>Free Checkup</h3>
-                            <p>Get a complimentary wellness consultation when you book a complete vaccination package.</p>
-                        </div>
-                    </div>
-                    <div class="promo-card teal">
-                        <div class="promo-body">
-                            <span class="tag">Boarding Perk</span>
-                            <h3>Stay 5, Get 1</h3>
-                            <p>Book 5 nights at our Pet Hotel and get the 6th night FREE, plus a complimentary exit bath!</p>
-                        </div>
-                    </div>
-                    <div class="promo-card red">
-                        <div class="promo-body">
-                            <span class="tag">Birthday Special</span>
-                            <h3>50% OFF</h3>
-                            <p>Is it your pet's birth month? Bring their records and get half off their next grooming session!</p>
-                        </div>
-                    </div>
                 <?php endif; ?>
             </div>
         </section>
+<?php endif; ?>
 
-        <section class="home-section">
+<section class="home-section">
             <div class="section-heading">
                 <div class="section-kicker">Everything in one place</div>
                 <h2>Our Premium Services</h2>
@@ -1957,28 +2481,18 @@ try {
             }, 6000);
         }
 
-        /* ===== MOBILE MENU ===== */
-        const mobileMenuBtn = document.getElementById('mobileMenuBtn');
-        const publicCategories = document.getElementById('publicCategories');
-
-        if (mobileMenuBtn && publicCategories) {
-            mobileMenuBtn.addEventListener('click', function () {
-                const isOpen = publicCategories.classList.toggle('mobile-open');
-                mobileMenuBtn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
-                mobileMenuBtn.setAttribute(
-                    'aria-label',
-                    isOpen ? 'Close navigation menu' : 'Open navigation menu'
-                );
-                mobileMenuBtn.innerHTML = isOpen
-                    ? '<i class="fa-solid fa-xmark"></i>'
-                    : '<i class="fa-solid fa-bars"></i>';
-            });
-        }
-
         /* ===== SMART / RELATED SITE SEARCH ===== */
-        const searchForm = document.getElementById('siteSearchForm');
-        const searchInput = document.getElementById('siteSearchInput');
         const searchStatus = document.getElementById('searchStatus');
+        const searchForms = [
+            {
+                form: document.getElementById('siteSearchForm'),
+                input: document.getElementById('siteSearchInput')
+            },
+            {
+                form: document.getElementById('mobileSiteSearchForm'),
+                input: document.getElementById('mobileSiteSearchInput')
+            }
+        ].filter(item => item.form && item.input);
 
         // Related words are mapped to the page/category where the user should be sent.
         // This is intentionally broader than exact category names.
@@ -2125,14 +2639,14 @@ try {
             }, 2600);
         }
 
-        if (searchForm && searchInput) {
-            searchForm.addEventListener('submit', function (event) {
+        searchForms.forEach(({ form, input }) => {
+            form.addEventListener('submit', function (event) {
                 event.preventDefault();
 
-                const query = searchInput.value.trim();
+                const query = input.value.trim();
 
                 if (!query) {
-                    searchInput.focus();
+                    input.focus();
                     showSearchStatus('Type something to search, like <strong>bath</strong>, <strong>vaccine</strong>, <strong>boarding</strong>, or <strong>prices</strong>.');
                     return;
                 }
@@ -2148,7 +2662,7 @@ try {
                     showSearchStatus('No related service found. Try searching a service, treatment, price, grooming need, stay, or contact detail.');
                 }
             });
-        }
+        });
     </script>
 
 </body>

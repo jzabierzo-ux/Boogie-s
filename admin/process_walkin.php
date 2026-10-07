@@ -18,6 +18,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST' || !isset($_POST['add_walkin'])) {
 $customer_name = trim((string)($_POST['customer_name'] ?? ''));
 $contact_number = trim((string)($_POST['contact_number'] ?? ''));
 $pet_name = trim((string)($_POST['pet_name'] ?? ''));
+$pet_breed = trim((string)($_POST['pet_breed'] ?? ''));
 $pet_type = trim((string)($_POST['pet_type'] ?? ''));
 $pet_gender = trim((string)($_POST['pet_gender'] ?? ''));
 $pet_weight = (float)($_POST['pet_weight'] ?? 0);
@@ -199,9 +200,9 @@ try {
 
     $pet_stmt = $pdo->prepare("
         INSERT INTO pets
-            (owner_id, name, pet_type, gender, weight, owner_name)
+            (owner_id, name, pet_type, breed, gender, weight, owner_name)
         VALUES
-            (:owner_id, :name, :pet_type, :gender, :weight, :owner_name)
+            (:owner_id, :name, :pet_type, NULLIF(:breed, ''), :gender, :weight, :owner_name)
         RETURNING id
     ");
 
@@ -209,6 +210,7 @@ try {
         ':owner_id' => $new_user_id,
         ':name' => $pet_name,
         ':pet_type' => $pet_type,
+        ':breed' => $pet_breed,
         ':gender' => $pet_gender,
         ':weight' => number_format($pet_weight, 1, '.', '') . 'kg',
         ':owner_name' => $customer_name . ' (Walk-in)',
@@ -242,8 +244,8 @@ try {
                 :service_fee,
                 :total_price,
                 'Cash (Walk-in)',
-                'Pending',
-                'Confirmed',
+                'Paid',
+                'Completed',
                 'Walk-in',
                 :vet_doctor
             )
@@ -262,7 +264,7 @@ try {
 
     $pdo->commit();
 
-    $_SESSION['alert_msg'] = 'Walk-in booking successfully added as Confirmed! Total: ₱' . number_format($service_fee, 2);
+    $_SESSION['alert_msg'] = 'Walk-in booking successfully added! Total: ₱' . number_format($service_fee, 2);
 } catch (Throwable $e) {
     if ($pdo->inTransaction()) {
         $pdo->rollBack();
