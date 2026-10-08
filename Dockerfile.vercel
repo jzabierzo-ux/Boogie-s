@@ -1,0 +1,16 @@
+﻿FROM dunglas/frankenphp:latest-php8.2-bookworm
+
+WORKDIR /app
+
+RUN install-php-extensions pdo_pgsql
+
+RUN cp $PHP_INI_DIR/php.ini-production $PHP_INI_DIR/php.ini
+
+COPY . /app/public
+
+ENV SERVER_NAME=:80
+ENV SERVER_ROOT=/app/public
+
+ENTRYPOINT ["/usr/local/bin/frankenphp"]
+
+CMD ["run", "--config", "/etc/caddy/Caddyfile"]

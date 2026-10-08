@@ -65,12 +65,12 @@ if (isset($_POST['verify_login_btn'])) {
 
             unset($_SESSION['login_temp_email']);
 
-            if ($_SESSION['role'] === 'admin') {
-                header('Location: admindashboard.php');
-            } else {
-                header('Location: index.php');
-            }
-            exit;
+           if ($_SESSION['role'] === 'admin') {
+    header("Location: admindashboard.php");
+} else {
+    header("Location: home.php");
+}
+exit();
         }
 
         echo "<script>alert('Invalid Verification Code.');</script>";
