@@ -18,8 +18,8 @@ try {
     }
 
     if (!defined('SMTP_PASS')) {
-        define('SMTP_PASS', getenv('SMTP_PASS') ?: 'nhyqifuhodmmviid');
-    }
+    define('SMTP_PASS', getenv('SMTP_PASS') ?: '');
+}
 
     if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
         echo json_encode([

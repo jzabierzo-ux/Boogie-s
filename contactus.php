@@ -44,7 +44,7 @@ $smtp_pass = defined('SMTP_PASS')
 
     ? SMTP_PASS
 
-    : (getenv('SMTP_PASS') ?: 'jwkvmplgbfuxlwdr');
+    : (getenv('SMTP_PASS') ?: '');
 
 
 

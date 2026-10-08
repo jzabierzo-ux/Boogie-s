@@ -26,7 +26,7 @@ if (!defined('SMTP_EMAIL')) {
 }
 
 if (!defined('SMTP_PASS')) {
-    define('SMTP_PASS', 'jwkvmplgbfuxlwdr');
+    define('SMTP_PASS', getenv('SMTP_PASS') ?: '');
 }
 
 // ============================================================

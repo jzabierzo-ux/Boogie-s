@@ -192,7 +192,7 @@ try {
     $user_stmt->execute([
         ':full_name' => $customer_name . ' (Walk-in)',
         ':email' => $dummy_email,
-        ':password' => 'walkin123',
+       ':password' => password_hash(bin2hex(random_bytes(16)), PASSWORD_DEFAULT),
         ':contact_number' => $contact_number,
     ]);
 

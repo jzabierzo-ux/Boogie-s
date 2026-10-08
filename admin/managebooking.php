@@ -73,7 +73,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_walkin'])) {
             $insert_user->execute([
                 ':full_name' => $c_name . ' (Walk-in)',
                 ':email' => $dummy_email,
-                ':password' => 'walkin123'
+                ':password' => password_hash(bin2hex(random_bytes(16)), PASSWORD_DEFAULT)
             ]);
 
             $new_user_id = (int)$insert_user->fetchColumn();
