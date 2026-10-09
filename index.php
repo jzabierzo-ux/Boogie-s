@@ -1,5 +1,5 @@
 <?php
-session_start();
+require_once __DIR__ . '/shared_session_bootstrap.php';
 
 // Kung naka-login na sila, i-redirect sa home.php para sa personalized view
 if (isset($_SESSION['logged_in']) && $_SESSION['logged_in'] === true) {

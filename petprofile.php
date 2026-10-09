@@ -2,7 +2,7 @@
 
 
 
-session_start();
+require_once __DIR__ . '/shared_session_bootstrap.php';
 
 
 

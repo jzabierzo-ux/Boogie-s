@@ -1,5 +1,5 @@
 <?php
-session_start();
+require_once __DIR__ . '/../shared_session_bootstrap.php';
 
 // Admin-only access. Keep Admin authentication separate from Staff login.
 $current_role = strtolower(trim((string)($_SESSION['role'] ?? '')));

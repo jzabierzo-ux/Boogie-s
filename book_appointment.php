@@ -1,5 +1,5 @@
 <?php
-session_start();
+require_once __DIR__ . '/shared_session_bootstrap.php';
 include 'db_supabase.php';
 
 // Set timezone to Philippines

@@ -1,5 +1,5 @@
 <?php
-session_start();
+require_once __DIR__ . '/shared_session_bootstrap.php';
 // Check if user is logged in
 $is_logged_in = isset($_SESSION['logged_in']) && $_SESSION['logged_in'] === true && strtolower(trim((string)($_SESSION['role'] ?? ''))) === 'customer';
 $user_name = $is_logged_in ? (string)($_SESSION['user_name'] ?? 'Customer') : 'Guest';

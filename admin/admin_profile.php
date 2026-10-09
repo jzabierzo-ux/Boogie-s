@@ -1,5 +1,5 @@
 <?php
-session_start();
+require_once __DIR__ . '/../shared_session_bootstrap.php';
 require_once __DIR__ . '/../db_supabase.php';
 
 // This page is part of the Admin portal. Keep Admin and Staff login separate.

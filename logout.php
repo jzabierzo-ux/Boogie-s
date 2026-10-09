@@ -1,7 +1,7 @@
 <?php
 // Log out the current user even if the database or audit logging is unavailable.
 if (session_status() !== PHP_SESSION_ACTIVE) {
-    session_start();
+    require_once __DIR__ . '/shared_session_bootstrap.php';
 }
 
 // Preserve only the values needed for routing and the admin audit log.

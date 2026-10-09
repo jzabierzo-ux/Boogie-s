@@ -1,5 +1,5 @@
 <?php
-session_start();
+require_once __DIR__ . '/../shared_session_bootstrap.php';
 require_once '../db_supabase.php';
 
 // --- SECURITY CHECK: VETERINARIAN PORTAL ONLY ---

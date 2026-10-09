@@ -1,5 +1,5 @@
 <?php
-session_start();
+require_once __DIR__ . '/shared_session_bootstrap.php';
 
 header('Content-Type: application/json; charset=UTF-8');
 header('Cache-Control: no-store, private, max-age=0, must-revalidate');

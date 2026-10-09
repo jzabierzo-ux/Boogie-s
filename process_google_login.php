@@ -1,5 +1,5 @@
 <?php
-session_start();
+require_once __DIR__ . '/shared_session_bootstrap.php';
 
 header('Content-Type: application/json; charset=UTF-8');
 
@@ -27,7 +27,7 @@ function jsonResponse(bool $success, string $message, ?string $redirect = null, 
 }
 
 try {
-    require __DIR__ . '/db_supabase.php';
+    require_once __DIR__ . '/db_supabase.php';
 
     if (!defined('SMTP_EMAIL')) {
         define('SMTP_EMAIL', getenv('SMTP_EMAIL') ?: 'prototyp6712@gmail.com');
@@ -40,8 +40,14 @@ try {
         jsonResponse(false, 'Invalid request method.', null, 405);
     }
 
-    // Replace any stale in-progress login challenge before starting a new one.
-    unset($_SESSION['login_temp_email']);
+    // Reset stale challenge state before starting a new Google login attempt.
+    unset(
+        $_SESSION['login_temp_email'],
+        $_SESSION['login_temp_expires'],
+        $_SESSION['login_otp_attempts'],
+        $_SESSION['login_otp_resends'],
+        $_SESSION['login_otp_last_sent']
+    );
 
     $full_name = trim((string)($_POST['full_name'] ?? ''));
     $email = strtolower(trim((string)($_POST['email'] ?? '')));
@@ -136,8 +142,13 @@ try {
     $mail->AltBody = "Hi {$mail_name}, your Boogie's Pet Care verification code is {$otp}.";
     $mail->send();
 
-    // This key must match the verification handler used by login.php.
+    // Keep the Google OTP challenge state consistent with login.php's
+    // regular email/password OTP verification flow (15-minute validity).
     $_SESSION['login_temp_email'] = $email;
+    $_SESSION['login_temp_expires'] = time() + 900;
+    $_SESSION['login_otp_attempts'] = 0;
+    $_SESSION['login_otp_resends'] = 0;
+    $_SESSION['login_otp_last_sent'] = time();
 
     jsonResponse(true, 'Verification code sent to your email.', 'login.php');
 } catch (Throwable $e) {

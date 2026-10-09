@@ -1,5 +1,5 @@
 <?php
-session_start();
+require_once __DIR__ . '/../shared_session_bootstrap.php';
 
 // Always query fresh audit records; this page may remain open while login happens in another tab.
 header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');

@@ -1,5 +1,5 @@
 <?php
-session_start();
+require_once __DIR__ . '/../shared_session_bootstrap.php';
 // Sales reports are restricted to authenticated Admin accounts.
 $current_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
 if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true || $current_role !== 'admin') {

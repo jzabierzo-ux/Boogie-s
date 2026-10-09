@@ -1,5 +1,5 @@
 <?php
-session_start();
+require_once __DIR__ . '/../shared_session_bootstrap.php';
 require_once '../db_supabase.php';
 
 // 1. SECURITY: accept the canonical role names assigned by stafflogin.php
