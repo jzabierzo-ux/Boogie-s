@@ -6,12 +6,86 @@ require_once '../includes/iprog_sms.php';
 // Set default timezone
 date_default_timezone_set('Asia/Manila');
 
-// --- UNIVERSAL SECURITY CHECK ---
-$current_role = isset($_SESSION['role']) ? strtolower(trim($_SESSION['role'])) : '';
+// --- ROLE-BASED SECURITY CHECK ---
+$raw_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
+$role_aliases = [
+    'administrator' => 'admin',
+    'shop manager' => 'manager',
+    'shop_manager' => 'manager',
+    'front desk' => 'receptionist',
+    'front desk / receptionist' => 'receptionist',
+    'front_desk' => 'receptionist',
+    'front_desk_receptionist' => 'receptionist',
+    'grooming staff' => 'groomer',
+    'grooming_staff' => 'groomer',
+    'grooming staff / groomer' => 'groomer',
+    'grooming_staff_groomer' => 'groomer',
+    'pet hotel staff' => 'pet_hotel_staff',
+    'pet hotel staff / attendant' => 'pet_hotel_staff',
+    'pet_hotel_attendant' => 'pet_hotel_staff',
+    'pet_hotel_staff_attendant' => 'pet_hotel_staff',
+    'vet' => 'veterinarian',
+    'veterinary' => 'veterinarian',
+    // Keep legacy labels explicit until existing accounts are reviewed.
+    'staff' => 'groomer',
+    'supervisor' => 'receptionist'
+];
+$current_role = $role_aliases[$raw_role] ?? $raw_role;
+$is_admin = $current_role === 'admin';
+$is_logged_in = ($_SESSION['logged_in'] ?? false) === true;
 
-if (!isset($_SESSION['logged_in']) || !in_array($current_role, ['admin', 'manager', 'vet'], true)) {
-    header("Location: ../staff/stafflogin.php");
+if (!$is_logged_in) {
+    header('Location: ../staff/stafflogin.php');
     exit();
+}
+
+// Veterinary roles use their dedicated portal.
+if (in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)) {
+    header('Location: ../staff/staffdashboard.php');
+    exit();
+}
+
+$booking_page_roles = ['admin', 'manager', 'receptionist', 'groomer', 'pet_hotel_staff'];
+if (!in_array($current_role, $booking_page_roles, true)) {
+    http_response_code(403);
+    exit('Access denied. This role cannot access booking management.');
+}
+
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+$csrf_token = (string)$_SESSION['csrf_token'];
+
+function bookingServiceAllowedForRole(string $role, string $service): bool
+{
+    $service = strtolower(trim($service));
+    if ($role === 'groomer') {
+        return str_starts_with($service, 'grooming');
+    }
+    if ($role === 'pet_hotel_staff') {
+        return str_starts_with($service, 'pet hotel');
+    }
+    return in_array($role, ['admin', 'manager', 'receptionist'], true);
+}
+
+function renderBookingActionForm(
+    string $action,
+    int $bookingId,
+    string $buttonClass,
+    string $buttonHtml,
+    string $title,
+    string $confirmMessage,
+    string $csrfToken
+): void {
+    $confirmJs = 'return confirm(' . json_encode($confirmMessage, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP) . ');';
+    echo '<form method="POST" action="managebooking.php" class="booking-action-form" style="display:inline;margin:0;">';
+    echo '<input type="hidden" name="booking_action" value="1">';
+    echo '<input type="hidden" name="csrf_token" value="' . htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') . '">';
+    echo '<input type="hidden" name="id" value="' . $bookingId . '">';
+    echo '<input type="hidden" name="action" value="' . htmlspecialchars($action, ENT_QUOTES, 'UTF-8') . '">';
+    echo '<button type="submit" class="' . htmlspecialchars($buttonClass, ENT_QUOTES, 'UTF-8') . '" title="' . htmlspecialchars($title, ENT_QUOTES, 'UTF-8') . '" onclick="' . htmlspecialchars($confirmJs, ENT_QUOTES, 'UTF-8') . '">';
+    echo $buttonHtml;
+    echo '</button></form>';
 }
 
 // 2. FETCH ADMIN PROFILE
@@ -44,125 +118,21 @@ if (isset($_SESSION['user_id'])) {
     }
 }
 
-// ==========================================
-// BAGO: WALK-IN BOOKING LOGIC
-// ==========================================
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_walkin'])) {
-    $c_name = trim($_POST['customer_name'] ?? '');
-    $p_name = trim($_POST['pet_name'] ?? '');
-    $service = trim($_POST['service'] ?? '');
-    $date = trim($_POST['appointment_date'] ?? '');
-    $time = trim($_POST['appointment_time'] ?? '');
-    $amount = floatval($_POST['amount'] ?? 0);
-
-    if ($c_name !== '' && $p_name !== '' && $service !== '' && $date !== '' && $time !== '' && $amount >= 0) {
-        try {
-            $pdo->beginTransaction();
-
-            // 1. Gagawa ng mabilis na "dummy" account para sa walk-in
-            $dummy_email = 'walkin_' . time() . '_' . bin2hex(random_bytes(3)) . '@boogies.local';
-
-            $insert_user = $pdo->prepare("
-                INSERT INTO users
-                    (full_name, email, password, role, is_verified)
-                VALUES
-                    (:full_name, :email, :password, 'user', TRUE)
-                RETURNING id
-            ");
-
-            $insert_user->execute([
-                ':full_name' => $c_name . ' (Walk-in)',
-                ':email' => $dummy_email,
-                ':password' => password_hash(bin2hex(random_bytes(16)), PASSWORD_DEFAULT)
-            ]);
-
-            $new_user_id = (int)$insert_user->fetchColumn();
-
-            // 2. I-save yung alagang hayop
-            $insert_pet = $pdo->prepare("
-                INSERT INTO pets
-                    (owner_id, name, pet_type)
-                VALUES
-                    (:owner_id, :name, 'Walk-in Pet')
-                RETURNING id
-            ");
-
-            $insert_pet->execute([
-                ':owner_id' => $new_user_id,
-                ':name' => $p_name
-            ]);
-
-            $new_pet_id = (int)$insert_pet->fetchColumn();
-
-            // 3. I-save sa appointments (Auto-Confirmed at Paid Cash)
-            $insert_appt = $pdo->prepare("
-                INSERT INTO appointments
-                    (
-                        user_id,
-                        pet_id,
-                        service,
-                        appointment_date,
-                        appointment_time,
-                        service_fee,
-                        total_price,
-                        payment_method,
-                        payment_status,
-                        booking_status
-                    )
-                VALUES
-                    (
-                        :user_id,
-                        :pet_id,
-                        :service,
-                        :appointment_date,
-                        :appointment_time,
-                        :service_fee,
-                        :total_price,
-                        'Cash (Walk-in)',
-                        'Paid',
-                        'Completed'
-                    )
-            ");
-
-            $insert_appt->execute([
-                ':user_id' => $new_user_id,
-                ':pet_id' => $new_pet_id,
-                ':service' => $service,
-                ':appointment_date' => $date,
-                ':appointment_time' => $time,
-                ':service_fee' => $amount,
-                ':total_price' => $amount
-            ]);
-
-            $pdo->commit();
-
-            $_SESSION['alert_msg'] = "Walk-in booking successfully added and marked as completed!";
-        } catch (Throwable $e) {
-            if ($pdo->inTransaction()) {
-                $pdo->rollBack();
-            }
-
-            error_log('Walk-in booking error: ' . $e->getMessage());
-            $_SESSION['alert_msg'] = "Unable to add the walk-in booking.";
-        }
-
-        header("Location: managebooking.php");
-        exit();
-    }
-
-    $_SESSION['alert_msg'] = "Please complete all walk-in booking fields.";
-    header("Location: managebooking.php");
-    exit();
-}
-// ==========================================
+// Walk-in submissions are handled by process_walkin.php.
 
 // --- LOGIC: UPDATE STATUS WITH NOTIFICATIONS, PAYMENT & SMS ---
-if (isset($_GET['action']) && isset($_GET['id'])) {
-    $id = (int)$_GET['id'];
-    $requested_status = (string)$_GET['action'];
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['booking_action'])) {
+    $posted_token = (string)($_POST['csrf_token'] ?? '');
+    if (!hash_equals($csrf_token, $posted_token)) {
+        http_response_code(403);
+        exit('Invalid or expired request token. Refresh the page and try again.');
+    }
+
+    $id = (int)($_POST['id'] ?? 0);
+    $requested_status = (string)($_POST['action'] ?? '');
 
     // Allow only the actions used by this page.
-    $allowed_actions = ['pay', 'verify_gcash', 'Completed', 'Confirmed', 'Cancelled', 'No-Show', 'For-Rescheduling'];
+    $allowed_actions = ['pay', 'verify_gcash', 'notify_gcash', 'Completed', 'Confirmed', 'Cancelled', 'No-Show', 'For-Rescheduling'];
 
     if ($id <= 0 || !in_array($requested_status, $allowed_actions, true)) {
         $_SESSION['alert_msg'] = "Invalid booking action.";
@@ -173,17 +143,119 @@ if (isset($_GET['action']) && isset($_GET['id'])) {
     $new_status = $requested_status;
 
     try {
-        // --- MANUAL PAYMENT LOGIC ---
+        // Load booking and related information before every action.
+        $bookingAccessStmt = $pdo->prepare("
+            SELECT a.*, p.name AS pet_real_name, p.owner_id,
+                   u.full_name AS customer_name, u.contact_number
+            FROM appointments a
+            LEFT JOIN pets p ON a.pet_id = p.id
+            LEFT JOIN users u ON a.user_id = u.id
+            WHERE a.id = :id
+            LIMIT 1
+        ");
+        $bookingAccessStmt->execute([':id' => $id]);
+        $bookingForAccess = $bookingAccessStmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$bookingForAccess) {
+            $_SESSION['alert_msg'] = 'Booking not found.';
+            header('Location: managebooking.php');
+            exit();
+        }
+
+        $accessService = (string)($bookingForAccess['service'] ?? '');
+        if (!bookingServiceAllowedForRole($current_role, $accessService)) {
+            http_response_code(403);
+            exit('Access denied for this service booking.');
+        }
+
+        $paymentMethodNow = strtolower(trim((string)($bookingForAccess['payment_method'] ?? '')));
+        $paymentStatusNow = strtolower(trim((string)($bookingForAccess['payment_status'] ?? '')));
+        $bookingStatusNow = strtolower(trim((string)($bookingForAccess['booking_status'] ?? 'pending')));
+
+        // Only Admin may verify GCash after checking the real transaction.
+        if ($new_status === 'verify_gcash') {
+            if (!$is_admin) {
+                http_response_code(403);
+                exit('Only the Admin can verify GCash payments.');
+            }
+            $hasPaymentEvidence = trim((string)($bookingForAccess['gcash_ref'] ?? '')) !== ''
+                || trim((string)($bookingForAccess['gcash_receipt'] ?? '')) !== '';
+            if ($paymentMethodNow !== 'gcash' || $paymentStatusNow !== 'pending verification' || $bookingStatusNow !== 'pending' || !$hasPaymentEvidence) {
+                $_SESSION['alert_msg'] = 'This booking is not awaiting GCash verification or has no reference/receipt to review.';
+                header('Location: managebooking.php');
+                exit();
+            }
+        }
+
+        // Staff may request review; this action does not modify either status.
+        if ($new_status === 'notify_gcash') {
+            if ($is_admin || $paymentMethodNow !== 'gcash' || $paymentStatusNow !== 'pending verification' || $bookingStatusNow !== 'pending') {
+                $_SESSION['alert_msg'] = 'Only unverified GCash bookings can be sent to the Admin for review.';
+                header('Location: managebooking.php');
+                exit();
+            }
+            $message = 'GCash verification requested for Booking #' . $id
+                . ' | Customer: ' . (string)($bookingForAccess['customer_name'] ?? 'Unknown')
+                . ' | Service: ' . $accessService
+                . ' | Pet: ' . (string)($bookingForAccess['pet_real_name'] ?? 'Unknown Pet')
+                . ' | Ref: ' . (string)($bookingForAccess['gcash_ref'] ?? 'Not provided')
+                . '. Please verify the actual GCash transaction before marking Paid.';
+            $notifyStmt = $pdo->prepare('INSERT INTO admin_notifications (message) VALUES (:message)');
+            $notifyStmt->execute([':message' => $message]);
+            $_SESSION['alert_msg'] = 'Admin notified. Payment remains unverified until the actual GCash transaction is checked.';
+            header('Location: managebooking.php');
+            exit();
+        }
+
+        // The generic Pay action is only for cash actually received; never for GCash.
         if ($new_status === 'pay') {
+            if (in_array($bookingStatusNow, ['cancelled', 'no-show'], true)) {
+                $_SESSION['alert_msg'] = 'Cancelled and No-Show bookings cannot be marked Paid through this action.';
+                header('Location: managebooking.php');
+                exit();
+            }
+            if (strpos($paymentMethodNow, 'cash') === false) {
+                http_response_code(403);
+                exit('Only cash actually received can be marked Paid here. GCash requires Admin verification.');
+            }
+            if ($paymentStatusNow === 'paid') {
+                $_SESSION['alert_msg'] = 'This booking is already marked Paid.';
+                header('Location: managebooking.php');
+                exit();
+            }
             $stmt = $pdo->prepare("
                 UPDATE appointments
                 SET payment_status = 'Paid'
                 WHERE id = :id
+                  AND LOWER(COALESCE(payment_method, '')) LIKE '%cash%'
+                  AND UPPER(COALESCE(payment_status, '')) <> 'PAID'
             ");
             $stmt->execute([':id' => $id]);
+            if ($stmt->rowCount() !== 1) {
+                $_SESSION['alert_msg'] = 'Payment was not changed. Confirm cash was received and the booking is still unpaid.';
+                header('Location: managebooking.php');
+                exit();
+            }
 
-            $_SESSION['alert_msg'] = "Payment successfully marked as Paid.";
+            $_SESSION['alert_msg'] = "Cash payment successfully marked as Paid.";
             header("Location: managebooking.php");
+            exit();
+        }
+
+        // Enforce booking state transitions on the server, not only in the visible buttons.
+        if ($new_status === 'Confirmed' && $bookingStatusNow !== 'pending') {
+            $_SESSION['alert_msg'] = 'Only pending bookings can be confirmed.';
+            header('Location: managebooking.php');
+            exit();
+        }
+        if ($new_status === 'Completed' && !in_array($bookingStatusNow, ['confirmed', 'rescheduled', 'pending'], true)) {
+            $_SESSION['alert_msg'] = 'Only a pending walk-in, confirmed booking, or rescheduled booking can be completed.';
+            header('Location: managebooking.php');
+            exit();
+        }
+        if ($new_status === 'Cancelled' && in_array($bookingStatusNow, ['completed', 'cancelled', 'no-show'], true)) {
+            $_SESSION['alert_msg'] = 'This booking can no longer be cancelled from the booking manager.';
+            header('Location: managebooking.php');
             exit();
         }
 
@@ -299,7 +371,7 @@ if (isset($_GET['action']) && isset($_GET['id'])) {
                         INSERT INTO notifications
                             (user_id, title, message, type, is_read, created_at)
                         VALUES
-                            (:user_id, :title, :message, 'booking', FALSE, NOW())
+                            (:user_id, :title, :message, 'booking', 0, NOW())
                     ");
 
                     $notif_stmt->execute([
@@ -344,6 +416,8 @@ if (isset($_GET['action']) && isset($_GET['id'])) {
                 SET payment_status = 'Paid',
                     booking_status = 'Confirmed'
                 WHERE id = :id
+                  AND LOWER(COALESCE(payment_method, '')) = 'gcash'
+                  AND LOWER(COALESCE(payment_status, '')) = 'pending verification'
                   AND COALESCE(appointment_type, 'Online') <> 'Walk-in'
             ");
             $stmt->execute([':id' => $id]);
@@ -360,13 +434,15 @@ if (isset($_GET['action']) && isset($_GET['id'])) {
             if ($new_status === 'Completed') {
                 // Completing a walk-in must NOT automatically mark it as paid.
                 // Payment may be collected after the service is finished.
+                // Completing service never verifies or changes payment status.
+                if ($paymentMethodNow === 'gcash' && $paymentStatusNow !== 'paid') {
+                    $_SESSION['alert_msg'] = 'GCash must be verified by the Admin before this booking can be completed.';
+                    header('Location: managebooking.php');
+                    exit();
+                }
                 $stmt = $pdo->prepare("
                     UPDATE appointments
-                    SET booking_status = 'Completed',
-                        payment_status = CASE
-                            WHEN appointment_type = 'Walk-in' THEN COALESCE(NULLIF(payment_status, ''), 'Pending')
-                            ELSE 'Paid'
-                        END
+                    SET booking_status = 'Completed'
                     WHERE id = :id
                       AND (
                           appointment_type = 'Walk-in'
@@ -381,15 +457,15 @@ if (isset($_GET['action']) && isset($_GET['id'])) {
                     exit();
                 }
             } elseif ($new_status === 'Confirmed') {
-                // Online/manual confirmation keeps the existing paid behavior.
-                // Walk-ins start as Confirmed + Pending and stay Pending until payment.
+                // Confirmation is not evidence of payment.
+                if ($paymentMethodNow === 'gcash' && $paymentStatusNow !== 'paid') {
+                    $_SESSION['alert_msg'] = 'GCash payment must be verified by the Admin before this booking can be confirmed.';
+                    header('Location: managebooking.php');
+                    exit();
+                }
                 $stmt = $pdo->prepare("
                     UPDATE appointments
-                    SET booking_status = 'Confirmed',
-                        payment_status = CASE
-                            WHEN appointment_type = 'Walk-in' THEN COALESCE(NULLIF(payment_status, ''), 'Pending')
-                            ELSE 'Paid'
-                        END
+                    SET booking_status = 'Confirmed'
                     WHERE id = :id
                 ");
                 $stmt->execute([':id' => $id]);
@@ -467,7 +543,7 @@ if (isset($_GET['action']) && isset($_GET['id'])) {
                     INSERT INTO notifications
                         (user_id, title, message, type, is_read, created_at)
                     VALUES
-                        (:user_id, :title, :message, 'booking', FALSE, NOW())
+                        (:user_id, :title, :message, 'booking', 0, NOW())
                 ");
 
                 $notif_stmt->execute([
@@ -540,69 +616,85 @@ if (isset($_GET['action']) && isset($_GET['id'])) {
     exit();
 }
 
-// --- FETCH ADMIN NOTIFICATIONS ---
-try {
-    $admin_notif_stmt = $pdo->prepare("
-        SELECT *
-        FROM admin_notifications
-        WHERE is_read = 0
-        ORDER BY created_at DESC
-    ");
-    $admin_notif_stmt->execute();
-    $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
-} catch (PDOException $e) {
-    $admin_notifications = [];
+// --- ADMIN-ONLY NOTIFICATIONS ---
+$admin_notifications = [];
+$unread_count = 0;
+if ($is_admin) {
+    try {
+        $admin_notif_stmt = $pdo->prepare("
+            SELECT id, message, created_at
+            FROM admin_notifications
+            WHERE is_read = 0
+            ORDER BY created_at DESC
+            LIMIT 20
+        ");
+        $admin_notif_stmt->execute();
+        $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
+        $unread_count = count($admin_notifications);
+    } catch (PDOException $e) {
+        error_log('Admin notification fetch failed: ' . $e->getMessage());
+        $admin_notifications = [];
+        $unread_count = 0;
+    }
 }
 
-$unread_count = count($admin_notifications);
+// --- DYNAMIC COUNTS (service-scoped for Groomer and Pet Hotel Staff) ---
+$count_scope = '';
+$alias_scope = '';
+if ($current_role === 'groomer') {
+    $count_scope = " AND LOWER(COALESCE(service, '')) LIKE 'grooming%'";
+    $alias_scope = "LOWER(COALESCE(a.service, '')) LIKE 'grooming%'";
+} elseif ($current_role === 'pet_hotel_staff') {
+    $count_scope = " AND LOWER(COALESCE(service, '')) LIKE 'pet hotel%'";
+    $alias_scope = "LOWER(COALESCE(a.service, '')) LIKE 'pet hotel%'";
+}
 
-// --- DYNAMIC COUNTS ---
 try {
-    $total_count_stmt = $pdo->query("SELECT COUNT(*) FROM appointments");
+    $total_count_stmt = $pdo->query("SELECT COUNT(*) FROM appointments WHERE 1=1 $count_scope");
     $total_count = (int)$total_count_stmt->fetchColumn();
 
     $pending_count_stmt = $pdo->query("
         SELECT COUNT(*)
         FROM appointments
-        WHERE booking_status = 'Pending'
+        WHERE (LOWER(COALESCE(booking_status, '')) = 'pending'
            OR booking_status IS NULL
-           OR booking_status = ''
+           OR booking_status = '') $count_scope
     ");
     $pending_count = (int)$pending_count_stmt->fetchColumn();
 
     $confirmed_count_stmt = $pdo->query("
         SELECT COUNT(*)
         FROM appointments
-        WHERE booking_status = 'Confirmed'
+        WHERE LOWER(COALESCE(booking_status, '')) = 'confirmed' $count_scope
     ");
     $confirmed_count = (int)$confirmed_count_stmt->fetchColumn();
 
     $completed_count_stmt = $pdo->query("
         SELECT COUNT(*)
         FROM appointments
-        WHERE booking_status = 'Completed'
+        WHERE LOWER(COALESCE(booking_status, '')) = 'completed' $count_scope
     ");
     $completed_count = (int)$completed_count_stmt->fetchColumn();
 
     $cancelled_count_stmt = $pdo->query("
         SELECT COUNT(*)
         FROM appointments
-        WHERE booking_status = 'Cancelled'
-           OR booking_status = 'No-Show'
+        WHERE (LOWER(COALESCE(booking_status, '')) = 'cancelled'
+           OR LOWER(COALESCE(booking_status, '')) = 'no-show') $count_scope
     ");
     $cancelled_count = (int)$cancelled_count_stmt->fetchColumn();
 
     $reschedule_count_stmt = $pdo->query("
         SELECT COUNT(*)
         FROM appointments
-        WHERE booking_status = 'For Rescheduling'
+        WHERE LOWER(COALESCE(booking_status, '')) = 'for rescheduling' $count_scope
     ");
     $reschedule_count = (int)$reschedule_count_stmt->fetchColumn();
 
     $rescheduled_count_stmt = $pdo->query("
         SELECT COUNT(*)
         FROM appointments
-        WHERE booking_status = 'Rescheduled'
+        WHERE LOWER(COALESCE(booking_status, '')) = 'rescheduled' $count_scope
     ");
     $rescheduled_count = (int)$rescheduled_count_stmt->fetchColumn();
 } catch (PDOException $e) {
@@ -615,33 +707,51 @@ try {
 }
 
 // --- DETERMINE FILTER STATUS FROM URL ---
-$filter_status = isset($_GET['status']) ? $_GET['status'] : 'All';
-
-$where_clause = "";
+$status_input = strtolower(trim((string)($_GET['status'] ?? 'all')));
+$status_aliases = [
+    'all' => 'All',
+    'active' => 'Active',
+    'pending' => 'Pending',
+    'confirmed' => 'Confirmed',
+    'for rescheduling' => 'For Rescheduling',
+    'for-rescheduling' => 'For Rescheduling',
+    'rescheduled' => 'Rescheduled',
+    'completed' => 'Completed',
+    'cancelled' => 'Cancelled',
+    'canceled' => 'Cancelled',
+    'no-show' => 'No-Show'
+];
+$filter_status = $status_aliases[$status_input] ?? 'Active';
+$where_parts = [];
 $where_params = [];
 
-if ($filter_status === 'Active') {
-    $where_clause = "WHERE (a.booking_status NOT IN ('Completed', 'Cancelled', 'No-Show') OR a.booking_status IS NULL)";
-} elseif ($filter_status === 'Pending') {
-    $where_clause = "WHERE a.booking_status = 'Pending' OR a.booking_status IS NULL OR a.booking_status = ''";
-} elseif ($filter_status === 'All') {
-    $where_clause = "";
-} elseif ($filter_status === 'Cancelled') {
-    $where_clause = "WHERE a.booking_status IN ('Cancelled', 'No-Show')";
-} elseif (in_array($filter_status, ['Confirmed', 'For Rescheduling', 'Rescheduled', 'Completed', 'No-Show'], true)) {
-    $where_clause = "WHERE a.booking_status = :filter_status";
-    $where_params[':filter_status'] = $filter_status;
-} else {
-    $filter_status = 'Active';
-    $where_clause = "WHERE (a.booking_status NOT IN ('Completed', 'Cancelled', 'No-Show') OR a.booking_status IS NULL)";
+switch ($filter_status) {
+    case 'Active':
+        $where_parts[] = "(LOWER(COALESCE(a.booking_status, '')) NOT IN ('completed', 'cancelled', 'no-show'))";
+        break;
+    case 'Pending':
+        $where_parts[] = "(LOWER(COALESCE(a.booking_status, '')) = 'pending' OR a.booking_status IS NULL OR a.booking_status = '')";
+        break;
+    case 'Cancelled':
+        $where_parts[] = "LOWER(COALESCE(a.booking_status, '')) IN ('cancelled', 'no-show')";
+        break;
+    case 'All':
+        break;
+    default:
+        $where_parts[] = "LOWER(COALESCE(a.booking_status, '')) = :filter_status";
+        $where_params[':filter_status'] = strtolower($filter_status);
+        break;
 }
+
+if ($alias_scope !== '') {
+    $where_parts[] = $alias_scope;
+}
+$where_clause = $where_parts ? 'WHERE ' . implode(' AND ', $where_parts) : '';
 
 // --- FETCH BOOKINGS ---
 try {
     $bookings_sql = "
-        SELECT
-            a.*,
-            p.name AS pet_display_name
+        SELECT a.*, p.name AS pet_display_name
         FROM appointments a
         LEFT JOIN pets p ON a.pet_id = p.id
         $where_clause
@@ -766,7 +876,9 @@ $total_rows_showing = count($bookings);
         .booking-table td { padding: 15px 20px; font-size: 14px; color: #2d3436; border-bottom: 1px solid #edf2f7; vertical-align: middle; }
         .booking-table tr:hover { background-color: #f8fafc; }
         
-        .action-group { display: flex; gap: 8px; flex-wrap: wrap; }
+        .action-group { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+        .booking-action-form { display: inline-flex; margin: 0; padding: 0; }
+        .booking-action-form button { font-family: inherit; cursor: pointer; border: 0; }
         .btn-icon { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; text-decoration: none; color: white; transition: all 0.2s ease; font-size: 14px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
         .btn-icon:hover { transform: translateY(-2px); box-shadow: 0 4px 8px rgba(0,0,0,0.15); }
         .btn-icon-pay { background: #3b82f6; } 
@@ -1121,7 +1233,7 @@ $total_rows_showing = count($bookings);
             <img src="bg.png" alt="Boogie's Logo" class="sidebar-logo">
             <h2>
                 <?php 
-                    echo (isset($_SESSION['role']) && strtolower($_SESSION['role']) === 'admin') ? "Boogie's Admin" : "Boogie's Staff"; 
+                    echo $is_admin ? "Boogie's Admin" : "Boogie's Staff"; 
                 ?>
             </h2>
         </div>
@@ -1130,7 +1242,7 @@ $total_rows_showing = count($bookings);
             <a href="managebooking.php" class="nav-item active"><i class="fas fa-calendar-alt"></i> Bookings</a>
             <a href="manageusers.php" class="nav-item"><i class="fas fa-users"></i> Users</a>
             <a href="managepet.php" class="nav-item"><i class="fas fa-dog"></i> Pets</a>
-            <?php if (isset($_SESSION['role']) && $_SESSION['role'] === 'admin'): ?>
+            <?php if ($is_admin): ?>
                 <a href="managestaff.php" class="nav-item"><i class="fas fa-id-badge"></i> Personnel</a>
                 <a href="managepromo.php" class="nav-item"><i class="fas fa-tags"></i> Promos</a>
                 <a href="manage_services.php" class="nav-item"><i class="fas fa-list-ul"></i> Pricelist</a>
@@ -1167,6 +1279,7 @@ $total_rows_showing = count($bookings);
             </div>
 
             <div class="top-right-actions">
+                <?php if ($is_admin): ?>
                 <div class="notif-wrapper" onclick="toggleNotif(event)">
                     <i class="fa-solid fa-bell" style="font-size: 22px; color: #64748b;"></i>
                     <?php if($unread_count > 0): ?>
@@ -1180,7 +1293,7 @@ $total_rows_showing = count($bookings);
                             <?php endif; ?>
                         </div>
                         <div class="notif-body" id="admin-notif-list">
-                            <?php if($unread_count > 0 && $admin_notif_query): ?>
+                            <?php if ($unread_count > 0 && !empty($admin_notifications)):  ?>
                                 <?php foreach ($admin_notifications as $notif): ?>
                                     <div class="notif-item">
                                         <i class="fa-solid fa-circle-exclamation" style="color: #e11d48; margin-right: 5px;"></i>
@@ -1194,9 +1307,10 @@ $total_rows_showing = count($bookings);
                         </div>
                     </div>
                 </div>
+                <?php endif; ?>
                 
                 <div class="profile-wrapper" onclick="toggleProfile(event)">
-                    <span class="admin-tag <?php echo ($_SESSION['role'] !== 'admin' && $_SESSION['role'] !== 'supervisor') ? 'staff' : ''; ?>">
+                    <span class="admin-tag <?php echo !$is_admin ? 'staff' : ''; ?>">
                         <?php echo strtoupper($_SESSION['role'] ?? 'ADMIN'); ?>
                     </span>
                     <?php if (!empty($profile_img_path) && file_exists($profile_img_path)): ?>
@@ -1210,7 +1324,7 @@ $total_rows_showing = count($bookings);
                     </span>
 
                     <div class="profile-dropdown" id="profileBox" onclick="event.stopPropagation()">
-                        <a href="admin_profile.php" class="profile-item">
+                        <a href="<?php echo $is_admin ? 'admin_profile.php' : '../staff/staff_profile.php'; ?>" class="profile-item">
                             <i class="fas fa-user-circle"></i> My Profile
                         </a>
                         <a href="../logout.php" class="profile-item logout-text">
@@ -1226,7 +1340,7 @@ $total_rows_showing = count($bookings);
                 <div style="background-color: #dcfce7; color: #166534; padding: 15px; border-radius: 8px; margin-bottom: 20px; font-weight: 600; border-left: 5px solid #16a34a; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
                     <i class="fas fa-check-circle" style="margin-right: 8px;"></i>
                     <?php 
-                        echo $_SESSION['alert_msg']; 
+                        echo htmlspecialchars((string)$_SESSION['alert_msg'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); 
                         unset($_SESSION['alert_msg']); 
                     ?>
                 </div>
@@ -1235,7 +1349,7 @@ $total_rows_showing = count($bookings);
             <div class="page-header">
                 <div>
                     <h1>Manage Bookings</h1>
-                    <p>View, verify payments, and manage all active online service bookings.</p>
+                    <p>View and manage bookings permitted for your role. GCash payments require Admin verification.</p>
                 </div>
                 <button class="btn-add-walkin" onclick="openWalkinModal()">
                     <i class="fas fa-plus-circle"></i> Add Walk-in
@@ -1280,12 +1394,14 @@ $total_rows_showing = count($bookings);
                         <option value="cancelled">Cancelled/No-Show</option>
                     </select>
 
+                    <?php if (!in_array($current_role, ['groomer', 'pet_hotel_staff'], true)): ?>
                     <select class="filter-select" id="serviceFilter" style="margin-left: 10px;">
                         <option value="all">All Services</option>
                         <option value="grooming">Grooming</option>
                         <option value="vet">Vet Services</option>
                         <option value="hotel">Pet Hotel</option>
                     </select>
+                    <?php endif; ?>
                     
                     <span id="showingCount" style="font-size: 13px; color: #64748b; margin-left: auto; font-weight: 600;">
                         Showing <?php echo $total_rows_showing; ?> <?php echo htmlspecialchars($filter_status === 'Active' ? 'Active' : $filter_status); ?> bookings
@@ -1318,12 +1434,12 @@ $total_rows_showing = count($bookings);
                                     $pay_bg = (strtoupper($pay_status) === 'PAID') ? '#dcfce7' : '#f1f5f9';
                                     $pay_color = (strtoupper($pay_status) === 'PAID') ? '#166534' : '#475569';
 
-                                    $service_string = htmlspecialchars(strtolower($row['service'] ?? ''));
+                                    $service_string = htmlspecialchars(strtolower((string)($row['service'] ?? '')), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
                                     
                                     $appt_type = $row['appointment_type'] ?? 'Online';
                                     
                                     // Identify if it's a Walk-in or Online
-                                    $booking_type_label = (strpos($pay_method, 'Walk-in') !== false) ? 'WALK-IN' : 'ONLINE';
+                                    $booking_type_label = (strtolower(trim((string)$appt_type)) === 'walk-in') ? 'WALK-IN' : 'ONLINE';
                                 ?>
                                     <tr class="booking-row" data-status="<?php echo strtolower($display_status); ?>" data-service="<?php echo $service_string; ?>">
                                         <td>
@@ -1352,12 +1468,12 @@ $total_rows_showing = count($bookings);
                                                     </span>
                                                 </div>
                                                 
-                                                <?php if ($pay_method === 'GCash' && !empty($row['gcash_ref'])): ?>
+                                                <?php if (strtolower(trim((string)$pay_method)) === 'gcash' && !empty($row['gcash_ref'])): ?>
                                                     <span style="font-size: 11px; color: #0284c7; font-weight: 700; margin-top: 2px;">
                                                         Ref: <?php echo htmlspecialchars($row['gcash_ref']); ?>
                                                     </span>
                                                     <?php if (!empty($row['gcash_receipt'])): ?>
-                                                        <a href="../uploads/<?php echo htmlspecialchars($row['gcash_receipt']); ?>" target="_blank" style="font-size: 11px; color: var(--brand-blue); font-weight: 600; text-decoration: underline;">
+                                                        <a href="../uploads/<?php echo htmlspecialchars(basename((string)$row['gcash_receipt']), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>" target="_blank" style="font-size: 11px; color: var(--brand-blue); font-weight: 600; text-decoration: underline;">
                                                             <i class="fa-solid fa-receipt"></i> View Screenshot
                                                         </a>
                                                     <?php endif; ?>
@@ -1372,54 +1488,37 @@ $total_rows_showing = count($bookings);
                                         </td>
                                         <td>
                                             <div class="action-group">
-                                                <?php if ($pay_status === 'Pending Verification' && $pay_method === 'GCash' && $display_status === 'Pending'): ?>
-                                                    <a href="managebooking.php?action=verify_gcash&id=<?php echo $row['id']; ?>" class="btn-verify-gcash" title="Verify Payment and Confirm Slot" onclick="return confirm('Ensure you have checked the GCash receipt. Verify and confirm booking?');">
-                                                        <i class="fa-solid fa-money-bill-wave"></i> Verify
-                                                    </a>
-                                                    <a href="managebooking.php?action=Cancelled&id=<?php echo $row['id']; ?>" class="btn-icon btn-icon-cancel" title="Reject & Cancel Booking" onclick="return confirm('Reject this booking?');">
-                                                        <i class="fas fa-times"></i>
-                                                    </a>
+                                                <?php
+                                                    $bookingId = (int)$row['id'];
+                                                    $isGcashPending = strtolower(trim((string)$pay_method)) === 'gcash'
+                                                        && strtolower(trim((string)$pay_status)) === 'pending verification'
+                                                        && strtolower(trim((string)$display_status)) === 'pending';
+                                                    $isCashMethod = strpos(strtolower((string)$pay_method), 'cash') !== false;
+                                                ?>
+                                                <?php if ($isGcashPending): ?>
+                                                    <?php if ($is_admin): ?>
+                                                        <?php renderBookingActionForm('verify_gcash', $bookingId, 'btn-verify-gcash', '<i class="fa-solid fa-money-bill-wave"></i> Verify', 'Verify GCash payment', 'Only verify after checking the actual GCash transaction and receipt/reference. Continue?', $csrf_token); ?>
+                                                        <?php renderBookingActionForm('Cancelled', $bookingId, 'btn-icon btn-icon-cancel', '<i class="fas fa-times"></i>', 'Reject and cancel booking', 'Reject and cancel this booking?', $csrf_token); ?>
+                                                    <?php else: ?>
+                                                        <?php renderBookingActionForm('notify_gcash', $bookingId, 'btn-verify-gcash', '<i class="fa-solid fa-bell"></i> Notify Admin', 'Notify Admin to verify GCash', 'Notify the Admin to verify this payment? The payment will remain unverified.', $csrf_token); ?>
+                                                        <?php renderBookingActionForm('Cancelled', $bookingId, 'btn-icon btn-icon-cancel', '<i class="fas fa-times"></i>', 'Cancel booking', 'Cancel this booking?', $csrf_token); ?>
+                                                    <?php endif; ?>
                                                 <?php else: ?>
-                                                    <?php 
-                                                    if (strtoupper($pay_status) !== 'PAID' && $display_status !== 'Cancelled' && $display_status !== 'No-Show'): 
-                                                        if ($display_status === 'Completed'): ?>
-                                                            <a href="managebooking.php?action=pay&id=<?php echo $row['id']; ?>" class="btn-icon btn-icon-pay-process" title="Process Payment" onclick="return confirm('Process receipt of payment for this completed service?');">
-                                                                <i class="fas fa-file-invoice-dollar"></i>
-                                                            </a>
-                                                        <?php else: ?>
-                                                            <a href="managebooking.php?action=pay&id=<?php echo $row['id']; ?>" class="btn-icon btn-icon-pay" title="Mark as Paid" onclick="return confirm('Mark this booking as Paid in advance?');">
-                                                                <i class="fas fa-wallet"></i>
-                                                            </a>
-                                                        <?php endif; 
-                                                    endif; ?>
+                                                    <?php if ($isCashMethod && strtoupper((string)$pay_status) !== 'PAID' && !in_array(strtolower((string)$display_status), ['cancelled', 'no-show'], true)): ?>
+                                                        <?php renderBookingActionForm('pay', $bookingId, 'btn-icon btn-icon-pay', '<i class="fas fa-wallet"></i>', 'Mark cash as Paid after receiving it', 'Confirm cash was actually received. Mark as Paid?', $csrf_token); ?>
+                                                    <?php endif; ?>
 
-                                                    <?php if($display_status == 'Pending'): ?>
-                                                        <a href="managebooking.php?action=Confirmed&id=<?php echo $row['id']; ?>" class="btn-icon btn-icon-confirm" title="Confirm Booking & Mark as Paid" onclick="return confirm('Confirm booking and mark payment as Paid? (An SMS will be sent to the customer)');">
-                                                            <i class="fas fa-check"></i>
-                                                        </a>
-                                                        <a href="managebooking.php?action=Cancelled&id=<?php echo $row['id']; ?>" class="btn-icon btn-icon-cancel" title="Cancel Booking" onclick="return confirm('Are you sure you want to cancel this booking?');">
-                                                            <i class="fas fa-times"></i>
-                                                        </a>
-                                                    <?php elseif($display_status == 'Confirmed'): ?>
-                                                        <a href="managebooking.php?action=Completed&id=<?php echo $row['id']; ?>" class="btn-icon btn-icon-confirm" title="Mark as Completed" onclick="return confirm('Mark as Completed? (This will also set payment to Paid automatically)');">
-                                                            <i class="fas fa-check-double"></i>
-                                                        </a>
-                                                        <a href="managebooking.php?action=Cancelled&id=<?php echo $row['id']; ?>" class="btn-icon btn-icon-cancel" title="Cancel Booking" onclick="return confirm('Are you sure you want to cancel this Confirmed booking?');">
-                                                            <i class="fas fa-times"></i>
-                                                        </a>
-                                                        <a href="managebooking.php?action=For-Rescheduling&id=<?php echo $row['id']; ?>" class="btn-icon btn-icon-reschedule" title="Allow One-Time Reschedule" onclick="return confirm('Mark this booking as For Rescheduling? The customer gets ONE reschedule opportunity within 3 days, and the original payment remains valid for the same service.');">
-                                                            <i class="fas fa-calendar-days"></i>
-                                                        </a>
-                                                        <!-- First missed appointment uses the one-time reschedule path. -->
-
-                                                    <?php elseif($display_status == 'Rescheduled'): ?>
-                                                        <a href="managebooking.php?action=Completed&id=<?php echo $row['id']; ?>" class="btn-icon btn-icon-confirm" title="Mark as Completed" onclick="return confirm('Mark as Completed?');">
-                                                            <i class="fas fa-check-double"></i>
-                                                        </a>
-                                                        <a href="managebooking.php?action=No-Show&id=<?php echo $row['id']; ?>" class="btn-icon btn-icon-noshow" title="Final No-Show After Reschedule" onclick="return confirm('Mark as No-Show? The customer already used the one reschedule. The payment will be forfeited and non-refundable.');">
-                                                            <i class="fas fa-user-slash"></i>
-                                                        </a>
-                                                    <?php elseif($display_status == 'For Rescheduling'): ?>
+                                                    <?php if (strtolower((string)$display_status) === 'pending'): ?>
+                                                        <?php renderBookingActionForm('Confirmed', $bookingId, 'btn-icon btn-icon-confirm', '<i class="fas fa-check"></i>', 'Confirm booking', 'Confirm this booking? Payment status will not be changed by this action.', $csrf_token); ?>
+                                                        <?php renderBookingActionForm('Cancelled', $bookingId, 'btn-icon btn-icon-cancel', '<i class="fas fa-times"></i>', 'Cancel booking', 'Are you sure you want to cancel this booking?', $csrf_token); ?>
+                                                    <?php elseif (strtolower((string)$display_status) === 'confirmed'): ?>
+                                                        <?php renderBookingActionForm('Completed', $bookingId, 'btn-icon btn-icon-confirm', '<i class="fas fa-check-double"></i>', 'Mark service completed', 'Mark this service as completed? This will not mark the payment as Paid.', $csrf_token); ?>
+                                                        <?php renderBookingActionForm('Cancelled', $bookingId, 'btn-icon btn-icon-cancel', '<i class="fas fa-times"></i>', 'Cancel booking', 'Are you sure you want to cancel this confirmed booking?', $csrf_token); ?>
+                                                        <?php renderBookingActionForm('For-Rescheduling', $bookingId, 'btn-icon btn-icon-reschedule', '<i class="fas fa-calendar-days"></i>', 'Allow one-time reschedule', 'Mark this booking for rescheduling? The customer gets one reschedule opportunity within 3 days.', $csrf_token); ?>
+                                                    <?php elseif (strtolower((string)$display_status) === 'rescheduled'): ?>
+                                                        <?php renderBookingActionForm('Completed', $bookingId, 'btn-icon btn-icon-confirm', '<i class="fas fa-check-double"></i>', 'Mark service completed', 'Mark this service as completed?', $csrf_token); ?>
+                                                        <?php renderBookingActionForm('No-Show', $bookingId, 'btn-icon btn-icon-noshow', '<i class="fas fa-user-slash"></i>', 'Mark final no-show', 'Mark as No-Show? Use this only after the one reschedule has been used.', $csrf_token); ?>
+                                                    <?php elseif (strtolower((string)$display_status) === 'for rescheduling'): ?>
                                                         <span style="font-size:12px;font-weight:700;color:#0ea5e9;">Waiting for customer reschedule</span>
                                                     <?php endif; ?>
                                                 <?php endif; ?>
@@ -1461,7 +1560,8 @@ $total_rows_showing = count($bookings);
                 <div class="detail-row">Date: <span id="modalDate" style="color: var(--text-muted);"></span></div>
             </div>
 
-            <form action="cancel_booking.php" method="POST">
+            <form action="../cancel_booking.php" method="POST">
+                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token, ENT_QUOTES, 'UTF-8'); ?>">
                 <input type="hidden" name="appointment_id" id="cancelAppointmentId">
                 <div class="modal-form-group">
                     <label>Reason for Cancellation *</label>
@@ -1497,6 +1597,7 @@ $total_rows_showing = count($bookings);
 
             <form method="POST" action="process_walkin.php" id="walkinForm">
                 <input type="hidden" name="add_walkin" value="1">
+                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token, ENT_QUOTES, 'UTF-8'); ?>">
 
                 <div class="modal-form-group">
                     <label>Customer Name *</label>
@@ -1547,9 +1648,15 @@ $total_rows_showing = count($bookings);
                         <label>Service Category *</label>
                         <select name="service_category" id="walkinCategory" required onchange="updateWalkinServices()">
                             <option value="">Select Category...</option>
-                            <option value="Grooming">Grooming</option>
-                            <option value="Vet Services">Vet Services</option>
-                            <option value="Pet Hotel">Pet Hotel</option>
+                            <?php if (in_array($current_role, ['admin', 'manager', 'receptionist'], true)): ?>
+                                <option value="Grooming">Grooming</option>
+                                <option value="Vet Services">Vet Services</option>
+                                <option value="Pet Hotel">Pet Hotel</option>
+                            <?php elseif ($current_role === 'groomer'): ?>
+                                <option value="Grooming">Grooming</option>
+                            <?php elseif ($current_role === 'pet_hotel_staff'): ?>
+                                <option value="Pet Hotel">Pet Hotel</option>
+                            <?php endif; ?>
                         </select>
                     </div>
                     <div class="modal-form-group">
@@ -1956,8 +2063,10 @@ $total_rows_showing = count($bookings);
 
         window.fetchAdminNotifs = fetchAdminNotifs;
 
+        <?php if ($is_admin): ?>
         fetchAdminNotifs();
         setInterval(fetchAdminNotifs, 3000);
+        <?php endif; ?>
     </script>
 </body>
 </html> 

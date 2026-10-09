@@ -5,6 +5,46 @@ include 'db_supabase.php';
 // Set timezone to Philippines
 date_default_timezone_set('Asia/Manila');
 
+
+/**
+ * Convert a stored pet weight to the size bracket used by booking prices.
+ * Supports both current numeric kg values (e.g. 5.2) and legacy size labels.
+ */
+function bookingSizeFromWeight($weight): ?string
+{
+    $value = trim((string)($weight ?? ''));
+    $allowedSizes = [
+        'Small (1-5kg)',
+        'Medium (6-10kg)',
+        'Large (11-15kg)',
+        'Extra Large (16-20kg)',
+        'XXL Large (21-25kg)'
+    ];
+
+    if ($value === '') {
+        return null;
+    }
+
+    if (in_array($value, $allowedSizes, true)) {
+        return $value;
+    }
+
+    if (!preg_match('/(-?\\d+(?:\\.\\d+)?)/', $value, $matches)) {
+        return null;
+    }
+
+    $kg = (float)$matches[1];
+    if ($kg <= 0 || $kg > 25) {
+        return null;
+    }
+
+    if ($kg <= 5) return 'Small (1-5kg)';
+    if ($kg <= 10) return 'Medium (6-10kg)';
+    if ($kg <= 15) return 'Large (11-15kg)';
+    if ($kg <= 20) return 'Extra Large (16-20kg)';
+    return 'XXL Large (21-25kg)';
+}
+
 // Access Control
 if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
     header("Location: login.php");
@@ -13,7 +53,16 @@ if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
 
 // Get user info
 $full_name = isset($_SESSION['user_name']) ? $_SESSION['user_name'] : (isset($_SESSION['full_name']) ? $_SESSION['full_name'] : 'User');
-$user_id = (int)$_SESSION['user_id'];
+$user_id = (int)($_SESSION['user_id'] ?? 0);
+if ($user_id <= 0) {
+    header('Location: login.php');
+    exit();
+}
+
+// One CSRF token is used by the booking form.
+if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
 
 $success_msg = '';
 $error_msg = '';
@@ -69,10 +118,60 @@ try {
 
 // Protect Backend
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $receipt_filename = '';
+    $posted_csrf = (string)($_POST['csrf_token'] ?? '');
+    $session_csrf = (string)($_SESSION['csrf_token'] ?? '');
+    if ($session_csrf === '' || $posted_csrf === '' || !hash_equals($session_csrf, $posted_csrf)) {
+        $error_msg = 'Your form session expired. Refresh the page and try again.';
+    }
+
+    $registered_pet_id = filter_var($_POST['registered_pet_id'] ?? 0, FILTER_VALIDATE_INT);
+    $registered_pet_id = ($registered_pet_id !== false && $registered_pet_id > 0) ? (int)$registered_pet_id : 0;
+    $registered_pet_row = null;
+
     $pet_name = trim((string)($_POST['pet_name'] ?? ''));
     $pet_gender = trim((string)($_POST['pet_gender'] ?? ''));
     $pet_type = trim((string)($_POST['pet_type'] ?? ''));
     $pet_size = trim((string)($_POST['pet_size'] ?? ''));
+
+    // For a selected registered pet, trust the record owned by the current customer
+    // and derive the price bracket from its saved weight when that weight is available.
+    if (empty($error_msg) && $registered_pet_id > 0) {
+        try {
+            $registered_pet_stmt = $pdo->prepare("
+                SELECT id, name, pet_type, gender, weight
+                FROM pets
+                WHERE id = :pet_id AND owner_id = :owner_id
+                LIMIT 1
+            ");
+            $registered_pet_stmt->execute([
+                ':pet_id' => $registered_pet_id,
+                ':owner_id' => $user_id
+            ]);
+            $registered_pet_row = $registered_pet_stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$registered_pet_row) {
+                $error_msg = 'The selected pet could not be found in your account. Please refresh and select it again.';
+            } else {
+                $pet_name = trim((string)($registered_pet_row['name'] ?? ''));
+                $pet_type = trim((string)($registered_pet_row['pet_type'] ?? ''));
+                $pet_gender = trim((string)($registered_pet_row['gender'] ?? ''));
+                $stored_pet_weight = trim((string)($registered_pet_row['weight'] ?? ''));
+
+                if ($stored_pet_weight !== '') {
+                    $derived_pet_size = bookingSizeFromWeight($stored_pet_weight);
+                    if ($derived_pet_size === null) {
+                        $error_msg = 'The selected pet weight is outside the supported booking size ranges (up to 25 kg). Please contact the clinic.';
+                    } else {
+                        $pet_size = $derived_pet_size;
+                    }
+                }
+            }
+        } catch (PDOException $e) {
+            error_log('Registered pet lookup failed for booking user #' . $user_id . ': ' . $e->getMessage());
+            $error_msg = 'Unable to load the selected pet details. Please try again.';
+        }
+    }
 
     $service_category = trim((string)($_POST['service_category'] ?? ''));
     $specific_service = trim((string)($_POST['specific_service'] ?? ''));
@@ -104,32 +203,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $error_msg = "Error: All required information (including GCash Reference Number) must be filled out.";
     }
 
-    // --- GCASH RECEIPT UPLOAD HANDLING (REQUIRED) ---
-    $receipt_filename = '';
-    if (empty($error_msg)) {
-        if (!isset($_FILES['gcash_receipt']) || $_FILES['gcash_receipt']['error'] === UPLOAD_ERR_NO_FILE) {
-            $error_msg = "Error: Please upload a screenshot of your GCash receipt.";
-        } elseif ($_FILES['gcash_receipt']['error'] === UPLOAD_ERR_OK) {
-            $allowed = ['jpg', 'jpeg', 'png'];
-            $filename = (string)($_FILES['gcash_receipt']['name'] ?? '');
-            $ext = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
+    // Validate values on the server rather than relying on dropdown restrictions.
+    $allowed_pet_types = ['Dog', 'Cat'];
+    $allowed_genders = ['Male', 'Female'];
+    $allowed_sizes = ['Small (1-5kg)', 'Medium (6-10kg)', 'Large (11-15kg)', 'Extra Large (16-20kg)', 'XXL Large (21-25kg)'];
+    $allowed_categories = ['Grooming', 'Vet Services', 'Pet Hotel'];
+    $allowed_times = ['10:00:00', '11:00:00', '12:00:00', '13:00:00', '14:00:00', '15:00:00', '16:00:00', '17:00:00'];
+    $allowed_haircuts = ['Puppy Cut', 'Summer Cut', 'Shave Down', 'Bear Cut', 'Poodle Cut'];
 
-            if (in_array($ext, $allowed, true)) {
-                if (!is_dir('uploads')) {
-                    mkdir('uploads', 0777, true);
-                }
-
-                $receipt_filename = 'receipt_' . time() . '_' . $user_id . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
-
-                if (!move_uploaded_file($_FILES['gcash_receipt']['tmp_name'], 'uploads/' . $receipt_filename)) {
-                    $error_msg = "Failed to upload receipt image.";
-                }
-            } else {
-                $error_msg = "Invalid receipt image format. Only JPG and PNG are allowed.";
-            }
-        } else {
-            $error_msg = "Error uploading receipt image. Please try again.";
-        }
+    if (empty($error_msg) && !in_array($pet_type, $allowed_pet_types, true)) {
+        $error_msg = 'Please select a valid pet type.';
+    } elseif (empty($error_msg) && !in_array($pet_gender, $allowed_genders, true)) {
+        $error_msg = 'Please select a valid pet gender.';
+    } elseif (empty($error_msg) && !in_array($pet_size, $allowed_sizes, true)) {
+        $error_msg = 'Please select a valid pet size.';
+    } elseif (empty($error_msg) && !in_array($service_category, $allowed_categories, true)) {
+        $error_msg = 'Please select a valid service category.';
+    } elseif (empty($error_msg) && strlen($pet_name) > 100) {
+        $error_msg = 'Pet name must be 100 characters or fewer.';
+    } elseif (empty($error_msg) && strlen($gcash_ref) > 100) {
+        $error_msg = 'GCash reference number is too long.';
+    } elseif (empty($error_msg) && !preg_match('/^[A-Za-z0-9 -]{4,100}$/', $gcash_ref)) {
+        $error_msg = 'Please enter a valid GCash reference number.';
+    } elseif (empty($error_msg) && strlen($remarks) > 1000) {
+        $error_msg = 'Remarks must be 1,000 characters or fewer.';
     }
 
     // --- SERVER-SIDE PRICE RECALCULATION ---
@@ -179,6 +276,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
+    if (empty($error_msg) && $service_fee <= 0) {
+        $error_msg = 'The selected service and pet size are not valid. Please choose the service again.';
+    }
+    if (empty($error_msg) && $specific_service === 'Full Grooming Package' && !in_array($haircut_style, $allowed_haircuts, true)) {
+        $error_msg = 'Please choose a valid haircut style for the Full Grooming Package.';
+    }
+
+    $date_obj = DateTimeImmutable::createFromFormat('!Y-m-d', $appointment_date);
+    $date_errors = DateTimeImmutable::getLastErrors();
+    if (empty($error_msg) && (
+        $date_obj === false ||
+        $date_obj->format('Y-m-d') !== $appointment_date ||
+        ($date_errors !== false && ($date_errors['warning_count'] > 0 || $date_errors['error_count'] > 0))
+    )) {
+        $error_msg = 'Please select a valid appointment date.';
+    }
+    if (empty($error_msg) && !in_array($appointment_time, $allowed_times, true)) {
+        $error_msg = 'Please select a valid appointment time between 10:00 AM and 5:00 PM.';
+    }
+
     // --- TIME TRAVEL & CUT-OFF VALIDATION ---
     $current_date = date('Y-m-d');
     $current_time = date('H:i:s');
@@ -195,95 +312,141 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
-    // --- SERVICE-SPECIFIC TIME SLOT BLOCKING ---
+    // --- SERVER-SIDE CAPACITY AND SLOT CHECKS ---
+    // Serialize new bookings for the same service category/date to prevent
+    // concurrent requests from claiming the same slot or exceeding the daily cap.
+    $active_status_sql = "LOWER(BTRIM(COALESCE(booking_status, ''))) NOT IN ('cancelled', 'canceled', 'no-show', 'no show', 'noshow', 'for rescheduling')";
     if (empty($error_msg)) {
         try {
-            $stmt_slot = $pdo->prepare("SELECT COUNT(*) AS slot_count FROM appointments WHERE appointment_date = :appointment_date AND appointment_time = :appointment_time AND service LIKE :service_prefix AND booking_status <> 'Cancelled'");
+            $pdo->beginTransaction();
+            $capacity_lock = $pdo->prepare("SELECT pg_advisory_xact_lock(hashtext(:lock_key)::bigint)");
+            $capacity_lock->execute([
+                ':lock_key' => 'boogie-capacity|' . $appointment_date . '|' . $service_category
+            ]);
+
+            $slot_sql = "SELECT COUNT(*) AS slot_count
+                FROM appointments
+                WHERE appointment_date = :appointment_date
+                  AND appointment_time = :appointment_time
+                  AND service ILIKE :service_prefix
+                  AND " . $active_status_sql;
+            $stmt_slot = $pdo->prepare($slot_sql);
             $stmt_slot->execute([
                 ':appointment_date' => $appointment_date,
                 ':appointment_time' => $appointment_time,
                 ':service_prefix' => $service_category . '%'
             ]);
-            $slot_result = $stmt_slot->fetch();
-
+            $slot_result = $stmt_slot->fetch(PDO::FETCH_ASSOC) ?: [];
             if ((int)($slot_result['slot_count'] ?? 0) >= 1) {
-                $error_msg = "The " . date("g:i A", strtotime($appointment_time)) . " slot is already taken for " . htmlspecialchars($service_category) . ". Please choose another time.";
+                $error_msg = 'The selected time slot is already taken for ' . $service_category . '. Please choose another time.';
+            }
+
+            if (empty($error_msg)) {
+                // Vet already has a six-per-day cap; other categories have eight visible slots.
+                $daily_limit = ($service_category === 'Vet Services') ? 6 : 8;
+                $daily_sql = "SELECT COUNT(*) AS total_bookings
+                    FROM appointments
+                    WHERE appointment_date = :appointment_date
+                      AND service ILIKE :service_prefix
+                      AND " . $active_status_sql;
+                $stmt_daily = $pdo->prepare($daily_sql);
+                $stmt_daily->execute([
+                    ':appointment_date' => $appointment_date,
+                    ':service_prefix' => $service_category . '%'
+                ]);
+                $daily_result = $stmt_daily->fetch(PDO::FETCH_ASSOC) ?: [];
+                if ((int)($daily_result['total_bookings'] ?? 0) >= $daily_limit) {
+                    $error_msg = ($service_category === 'Vet Services')
+                        ? 'Dr. Faith Casayuran is fully booked for this date.'
+                        : $service_category . ' services are fully booked for this date.';
+                }
             }
         } catch (PDOException $e) {
-            $error_msg = "Unable to check the selected time slot. Please try again.";
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            error_log('Appointment capacity check failed: ' . $e->getMessage());
+            $error_msg = 'Unable to check appointment availability. Please try again.';
         }
     }
 
     // --- VET SPECIFIC VALIDATION ---
     if (empty($error_msg) && $service_category === 'Vet Services') {
-        if ($pet_type !== 'Dog' && $pet_type !== 'Cat') {
-            $error_msg = "Error: Only dogs and cats are allowed to book for Vet Services.";
-        } else {
-            $day_of_week = (int)date('N', strtotime($appointment_date));
-            if ($day_of_week === 3 || $day_of_week === 6) {
-                $error_msg = "Dr. Faith Casayuran is not available on Wednesdays and Saturdays.";
-            } else {
-                try {
-                    $stmt_check = $pdo->prepare("SELECT COUNT(*) AS vet_count FROM appointments WHERE appointment_date = :appointment_date AND service LIKE 'Vet Services%' AND booking_status <> 'Cancelled'");
-                    $stmt_check->execute([':appointment_date' => $appointment_date]);
-                    $row_check = $stmt_check->fetch();
+        $day_of_week = (int)date('N', strtotime($appointment_date));
+        if ($day_of_week === 3 || $day_of_week === 6) {
+            $error_msg = 'Dr. Faith Casayuran is not available on Wednesdays and Saturdays.';
+        }
+    }
 
-                    if ((int)($row_check['vet_count'] ?? 0) >= 6) {
-                        $error_msg = "Dr. Faith Casayuran is fully booked for this date.";
+    // Grooming's eight-slot daily limit is enforced in the capacity check above.
+
+    // --- GCASH RECEIPT UPLOAD HANDLING (REQUIRED) ---
+    if (empty($error_msg)) {
+        $receipt_file = $_FILES['gcash_receipt'] ?? null;
+        if (!is_array($receipt_file) || ($receipt_file['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
+            $error_msg = 'Please upload a screenshot of your GCash receipt.';
+        } elseif (($receipt_file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+            $error_msg = 'Error uploading receipt image. Please try again.';
+        } else {
+            $tmp_path = (string)($receipt_file['tmp_name'] ?? '');
+            $file_size = (int)($receipt_file['size'] ?? 0);
+            $extension = strtolower(pathinfo((string)($receipt_file['name'] ?? ''), PATHINFO_EXTENSION));
+            $allowed_mimes = ['jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg', 'png' => 'image/png'];
+            $detected_mime = '';
+            if ($tmp_path !== '' && is_uploaded_file($tmp_path) && class_exists('finfo')) {
+                $file_info = new finfo(FILEINFO_MIME_TYPE);
+                $detected_mime = (string)$file_info->file($tmp_path);
+            }
+            $image_info = ($tmp_path !== '' && is_uploaded_file($tmp_path)) ? @getimagesize($tmp_path) : false;
+
+            if ($file_size <= 0 || $file_size > 5 * 1024 * 1024) {
+                $error_msg = 'Receipt image must be no larger than 5 MB.';
+            } elseif (!isset($allowed_mimes[$extension]) || $detected_mime !== $allowed_mimes[$extension] || $image_info === false) {
+                $error_msg = 'Invalid receipt image. Only genuine JPG and PNG images are allowed.';
+            } else {
+                $upload_dir = __DIR__ . '/uploads';
+                if (!is_dir($upload_dir) && !@mkdir($upload_dir, 0755, true) && !is_dir($upload_dir)) {
+                    $error_msg = 'Receipt storage is unavailable. Please try again later.';
+                } else {
+                    $receipt_filename = 'receipt_' . time() . '_' . $user_id . '_' . bin2hex(random_bytes(8)) . '.' . $extension;
+                    if (!move_uploaded_file($tmp_path, $upload_dir . '/' . $receipt_filename)) {
+                        $receipt_filename = '';
+                        $error_msg = 'Failed to save the receipt image. Please try again.';
                     }
-                } catch (PDOException $e) {
-                    $error_msg = "Unable to check veterinary availability. Please try again.";
                 }
             }
         }
     }
 
-    // --- GROOMING SPECIFIC VALIDATION ---
-    if (empty($error_msg) && $service_category === 'Grooming') {
-        try {
-            $stmt_groom_check = $pdo->prepare("SELECT COUNT(*) AS grooming_count FROM appointments WHERE appointment_date = :appointment_date AND service LIKE 'Grooming%' AND booking_status <> 'Cancelled'");
-            $stmt_groom_check->execute([':appointment_date' => $appointment_date]);
-            $row_groom_check = $stmt_groom_check->fetch();
-
-            if ((int)($row_groom_check['grooming_count'] ?? 0) >= 9) {
-                $error_msg = "Grooming services are fully booked for this date.";
-            }
-        } catch (PDOException $e) {
-            $error_msg = "Unable to check grooming availability. Please try again.";
-        }
-    }
-
     if (empty($error_msg)) {
         try {
-            // 1. Find or Create the Pet
-            $stmt = $pdo->prepare("SELECT id FROM pets WHERE owner_id = :owner_id AND name = :name LIMIT 1");
-            $stmt->execute([
-                ':owner_id' => $user_id,
-                ':name' => $pet_name
-            ]);
-            $pet = $stmt->fetch();
-
-            if ($pet) {
-                $pet_id = (int)$pet['id'];
-
-                $update_pet = $pdo->prepare("UPDATE pets SET weight = :weight, pet_type = :pet_type, gender = :gender WHERE id = :id");
-                $update_pet->execute([
-                    ':weight' => $pet_size,
-                    ':pet_type' => $pet_type,
-                    ':gender' => $pet_gender,
-                    ':id' => $pet_id
-                ]);
+            // 1. Use the selected registered pet directly, without changing its saved
+            // numeric weight into a pricing bracket. Otherwise find/create by name.
+            if ($registered_pet_id > 0 && $registered_pet_row) {
+                $pet_id = (int)$registered_pet_row['id'];
             } else {
-                $insert_pet = $pdo->prepare("INSERT INTO pets (owner_id, name, pet_type, gender, weight) VALUES (:owner_id, :name, :pet_type, :gender, :weight) RETURNING id");
-                $insert_pet->execute([
+                $stmt = $pdo->prepare("SELECT id FROM pets WHERE owner_id = :owner_id AND name = :name LIMIT 1");
+                $stmt->execute([
                     ':owner_id' => $user_id,
-                    ':name' => $pet_name,
-                    ':pet_type' => $pet_type,
-                    ':gender' => $pet_gender,
-                    ':weight' => $pet_size
+                    ':name' => $pet_name
                 ]);
-                $new_pet = $insert_pet->fetch();
-                $pet_id = $new_pet ? (int)$new_pet['id'] : 0;
+                $pet = $stmt->fetch();
+
+                if ($pet) {
+                    // Preserve existing pet-profile data, especially numeric weight.
+                    $pet_id = (int)$pet['id'];
+                } else {
+                    $insert_pet = $pdo->prepare("INSERT INTO pets (owner_id, name, pet_type, gender, weight) VALUES (:owner_id, :name, :pet_type, :gender, :weight) RETURNING id");
+                    $insert_pet->execute([
+                        ':owner_id' => $user_id,
+                        ':name' => $pet_name,
+                        ':pet_type' => $pet_type,
+                        ':gender' => $pet_gender,
+                        ':weight' => $pet_size
+                    ]);
+                    $new_pet = $insert_pet->fetch();
+                    $pet_id = $new_pet ? (int)$new_pet['id'] : 0;
+                }
             }
 
             if ($pet_id <= 0) {
@@ -325,27 +488,64 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             // --- START: AUTOMATIC TASK FOR VET ---
+            // Task creation is secondary; a task-table issue must not discard a valid booking.
             if ($service_category === 'Vet Services') {
-                $formatted_time = date("g:i A", strtotime($appointment_time));
-                $task_msg = "Upcoming Appointment: " . $pet_name . " (" . $specific_service . ") on " . $appointment_date . " at " . $formatted_time;
-                $vet_staff_name = "Dr. Faith Casayuran";
-
-                $stmt_task = $pdo->prepare("INSERT INTO tasks (staff_name, task_text) VALUES (:staff_name, :task_text)");
-                $stmt_task->execute([
-                    ':staff_name' => $vet_staff_name,
-                    ':task_text' => $task_msg
-                ]);
+                $pdo->exec('SAVEPOINT vet_task_savepoint');
+                try {
+                    $formatted_time = date("g:i A", strtotime($appointment_time));
+                    $task_msg = "Upcoming Appointment: " . $pet_name . " (" . $specific_service . ") on " . $appointment_date . " at " . $formatted_time;
+                    $vet_staff_name = "Dr. Faith Casayuran";
+                    $stmt_task = $pdo->prepare("INSERT INTO tasks (staff_name, task_text) VALUES (:staff_name, :task_text)");
+                    $stmt_task->execute([
+                        ':staff_name' => $vet_staff_name,
+                        ':task_text' => $task_msg
+                    ]);
+                    $pdo->exec('RELEASE SAVEPOINT vet_task_savepoint');
+                } catch (PDOException $task_error) {
+                    $pdo->exec('ROLLBACK TO SAVEPOINT vet_task_savepoint');
+                    $pdo->exec('RELEASE SAVEPOINT vet_task_savepoint');
+                    error_log('Vet task creation failed for booking user #' . $user_id . ': ' . $task_error->getMessage());
+                }
             }
 
             // --- START: ADMIN NOTIFICATION ---
-            $admin_msg = $full_name . " booked a new appointment for " . $pet_name . " via GCash. Pending Payment Verification.";
-            $stmt_admin_notif = $pdo->prepare("INSERT INTO admin_notifications (message) VALUES (:message)");
-            $stmt_admin_notif->execute([':message' => $admin_msg]);
+            // A failed optional alert must not roll back an otherwise valid booking.
+            $pdo->exec('SAVEPOINT admin_notif_savepoint');
+            try {
+                $admin_msg = $full_name . " booked a new appointment for " . $pet_name . " via GCash. Pending Payment Verification.";
+                $stmt_admin_notif = $pdo->prepare("INSERT INTO admin_notifications (message) VALUES (:message)");
+                $stmt_admin_notif->execute([':message' => $admin_msg]);
+                $pdo->exec('RELEASE SAVEPOINT admin_notif_savepoint');
+            } catch (PDOException $notif_error) {
+                $pdo->exec('ROLLBACK TO SAVEPOINT admin_notif_savepoint');
+                $pdo->exec('RELEASE SAVEPOINT admin_notif_savepoint');
+                error_log('Admin notification insert failed after booking for user #' . $user_id . ': ' . $notif_error->getMessage());
+            }
 
+            if ($pdo->inTransaction()) {
+                $pdo->commit();
+            }
             header("Location: bookings.php?msg=success");
             exit();
         } catch (PDOException | RuntimeException $e) {
-            $error_msg = "Error booking appointment: " . htmlspecialchars($e->getMessage());
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            error_log('Appointment booking failed for user #' . $user_id . ': ' . $e->getMessage());
+            $error_msg = 'Unable to complete your booking right now. Please verify the details and try again.';
+        }
+    }
+}
+
+// Roll back an open capacity transaction and remove any receipt if booking failed.
+if ($error_msg !== '') {
+    if ($pdo->inTransaction()) {
+        $pdo->rollBack();
+    }
+    if (!empty($receipt_filename)) {
+        $orphan_path = __DIR__ . '/uploads/' . basename($receipt_filename);
+        if (is_file($orphan_path)) {
+            @unlink($orphan_path);
         }
     }
 }
@@ -1866,10 +2066,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <div class="booking-layout">
             <section class="booking-card">
             <form method="POST" action="" id="bookingForm" enctype="multipart/form-data">
+                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'], ENT_QUOTES, 'UTF-8'); ?>">
                 
                 <div class="form-group">
                     <label>Select Registered Pet (Optional)</label>
-                    <select id="pet_selector" onchange="autoFillPet()">
+                    <select id="pet_selector" name="registered_pet_id" onchange="autoFillPet()">
                         <option value="">-- Add New Pet / Enter Manually --</option>
                         <?php foreach($user_pets as $pet): ?>
                             <option value="<?php echo $pet['id']; ?>">
@@ -2216,6 +2417,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         });
 
+        function bookingSizeFromPetWeight(weight) {
+            const value = String(weight ?? '').trim();
+            const sizeSelect = document.getElementById('pet_size');
+            const validSizes = Array.from(sizeSelect.options).map(option => option.value).filter(Boolean);
+
+            // Backward compatibility for older pet records whose weight is already a size label.
+            if (validSizes.includes(value)) return value;
+
+            // Current pet profiles store the actual weight in kilograms (for example, 5.2).
+            const match = value.match(/(-?\d+(?:\.\d+)?)/);
+            if (!match) return '';
+
+            const kg = Number.parseFloat(match[1]);
+            if (!Number.isFinite(kg) || kg <= 0 || kg > 25) return '';
+            if (kg <= 5) return 'Small (1-5kg)';
+            if (kg <= 10) return 'Medium (6-10kg)';
+            if (kg <= 15) return 'Large (11-15kg)';
+            if (kg <= 20) return 'Extra Large (16-20kg)';
+            return 'XXL Large (21-25kg)';
+        }
+
         function autoFillPet() {
             const petSelector = document.getElementById('pet_selector').value;
             const nameInput = document.getElementById('pet_name');
@@ -2224,16 +2446,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             const sizeSelect = document.getElementById('pet_size');
 
             if (petSelector === "") {
-                nameInput.value = ""; nameInput.readOnly = false;
-                typeSelect.value = ""; genderSelect.value = "Male"; sizeSelect.value = "";
+                nameInput.value = "";
+                nameInput.readOnly = false;
+                typeSelect.value = "";
+                genderSelect.value = "Male";
+                sizeSelect.value = "";
             } else {
-                const selectedPet = userPetsArray.find(p => p.id == petSelector);
+                const selectedPet = userPetsArray.find(p => String(p.id) === String(petSelector));
                 if (selectedPet) {
-                    nameInput.value = selectedPet.name; nameInput.readOnly = true; 
-                    typeSelect.value = selectedPet.pet_type; genderSelect.value = selectedPet.gender; sizeSelect.value = selectedPet.weight;
+                    nameInput.value = selectedPet.name ?? '';
+                    nameInput.readOnly = true;
+                    typeSelect.value = selectedPet.pet_type ?? '';
+                    genderSelect.value = selectedPet.gender ?? 'Male';
+                    sizeSelect.value = bookingSizeFromPetWeight(selectedPet.weight);
+                    if (!sizeSelect.value && String(selectedPet.weight ?? '').trim() !== '') {
+                        alert('This pet’s saved weight is outside the supported booking size ranges or is invalid. Please update the pet profile or contact the clinic.');
+                    }
                 }
             }
-            updateOptions(); 
+
+            updateOptions();
         }
 
         const pricingData = {

@@ -1,244 +1,292 @@
 <?php
 session_start();
-include 'db_supabase.php';
+require_once __DIR__ . '/db_supabase.php';
 require_once __DIR__ . '/includes/iprog_sms.php';
 
-// Set default timezone
 date_default_timezone_set('Asia/Manila');
 
-// Access Control
-if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
-    header("Location: login.php");
-    exit();
+function normalizeCancellationRole(string $role): string
+{
+    $role = strtolower(trim($role));
+    $aliases = [
+        'administrator' => 'admin',
+        'shop manager' => 'manager',
+        'shop_manager' => 'manager',
+        'vet' => 'veterinarian',
+        'veterinary' => 'veterinarian',
+        'front desk' => 'receptionist',
+        'front desk / receptionist' => 'receptionist',
+        'front_desk' => 'receptionist',
+        'front_desk_receptionist' => 'receptionist',
+        'veterinary assistant' => 'vet_assistant',
+        'vet assistant' => 'vet_assistant',
+        'veterinary_assistant' => 'vet_assistant',
+        'veterinary nurse' => 'vet_nurse',
+        'vet nurse' => 'vet_nurse',
+        'veterinary_nurse' => 'vet_nurse',
+        'grooming staff' => 'groomer',
+        'grooming staff / groomer' => 'groomer',
+        'grooming_staff' => 'groomer',
+        'grooming_staff_groomer' => 'groomer',
+        'pet hotel staff' => 'pet_hotel_staff',
+        'pet hotel staff / attendant' => 'pet_hotel_staff',
+        'pet_hotel_attendant' => 'pet_hotel_staff',
+        'pet_hotel_staff_attendant' => 'pet_hotel_staff',
+        // Temporary compatibility for older account roles.
+        'staff' => 'groomer',
+        'supervisor' => 'receptionist'
+    ];
+
+    return $aliases[$role] ?? $role;
 }
 
-$full_name = isset($_SESSION['user_name'])
-    ? $_SESSION['user_name']
-    : (isset($_SESSION['full_name']) ? $_SESSION['full_name'] : 'User');
+function cancellationServiceCategory(string $service): string
+{
+    $service = strtolower(trim($service));
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-
-    // Alamin kung sino ang nagca-cancel: Admin ba o mismong Customer?
-    $is_admin = isset($_SESSION['role']) &&
-        in_array(strtolower(trim($_SESSION['role'])), ['admin', 'manager', 'vet']);
-
-    $appointment_id = isset($_POST['appointment_id']) ? intval($_POST['appointment_id']) : 0;
-    $cancel_reason = isset($_POST['cancel_reason']) ? trim($_POST['cancel_reason']) : '';
-
-    if ($appointment_id > 0 && $cancel_reason !== '') {
-
-        try {
-            // 1. Fetch appointment details and verify ownership.
-            // Admin/manager/vet can cancel any appointment.
-            // Customer can only cancel their own appointment.
-            $query = "
-                SELECT
-                    a.appointment_date,
-                    a.appointment_time,
-                    a.booking_status,
-                    a.payment_status,
-                    a.service,
-                    a.user_id,
-                    p.name AS pet_name,
-                    u.contact_number
-                FROM appointments a
-                LEFT JOIN pets p ON a.pet_id = p.id
-                LEFT JOIN users u ON a.user_id = u.id
-                WHERE a.id = :appointment_id
-            ";
-
-            $params = [':appointment_id' => $appointment_id];
-
-            if (!$is_admin) {
-                $query .= " AND a.user_id = :session_user_id";
-                $params[':session_user_id'] = intval($_SESSION['user_id']);
-            }
-
-            $stmt = $pdo->prepare($query);
-            $stmt->execute($params);
-            $row = $stmt->fetch(PDO::FETCH_ASSOC);
-
-            if ($row) {
-                $service_name = $row['service'];
-                $pet_name = !empty($row['pet_name']) ? $row['pet_name'] : 'your pet';
-                $customer_phone = !empty($row['contact_number']) ? $row['contact_number'] : '';
-                $customer_id = $row['user_id'];
-                $appt_date_str = date('M d, Y', strtotime($row['appointment_date']));
-
-                // SECURITY CHECK: Bawal i-cancel kapag Completed, No-Show, o Cancelled na
-                $current_status = strtoupper(trim((string)$row['booking_status']));
-
-                if (in_array($current_status, ['COMPLETED', 'NO-SHOW', 'CANCELLED'], true)) {
-                    $redirect_url = $is_admin
-                        ? "managebooking.php?error=invalid_status"
-                        : "bookings.php?error=invalid_status";
-
-                    header("Location: $redirect_url");
-                    exit();
-                }
-
-                // 2. Calculate exact times
-                $appt_timestamp = strtotime(
-                    $row['appointment_date'] . ' ' . $row['appointment_time']
-                );
-                $current_timestamp = time();
-
-                $time_until_appointment = $appt_timestamp - $current_timestamp;
-                $twenty_four_hours = 24 * 60 * 60;
-
-                // If the appointment is already in the past
-                if ($time_until_appointment <= 0) {
-                    $redirect_url = $is_admin
-                        ? "managebooking.php?error=past_date"
-                        : "bookings.php?error=past_date";
-
-                    header("Location: $redirect_url");
-                    exit();
-                }
-
-                // Enforce 24-Hour Rule for customers.
-                // Admins can bypass this rule.
-                if (!$is_admin && $time_until_appointment < $twenty_four_hours) {
-                    header("Location: bookings.php?error=late_cancellation");
-                    exit();
-                }
-
-                $new_status = 'Cancelled';
-                $new_payment_status = (
-                    $row['payment_status'] === 'Pending Verification' ||
-                    $row['payment_status'] === 'Paid'
-                ) ? 'Refund Requested' : 'Cancelled';
-
-                // 3. Update the database
-                $update_query = "
-                    UPDATE appointments
-                    SET booking_status = :booking_status,
-                        payment_status = :payment_status,
-                        cancel_reason = :cancel_reason
-                    WHERE id = :appointment_id
-                ";
-
-                $update_stmt = $pdo->prepare($update_query);
-                $update_stmt->execute([
-                    ':booking_status' => $new_status,
-                    ':payment_status' => $new_payment_status,
-                    ':cancel_reason' => $cancel_reason,
-                    ':appointment_id' => $appointment_id
-                ]);
-
-                // --- IN-APP NOTIFICATIONS ---
-                if ($is_admin) {
-                    // Notify Customer that Admin cancelled their booking
-                    $notif_title = "Booking Cancelled by Clinic";
-                    $notif_msg = "Sorry, your booking for $pet_name ($service_name) was cancelled by our staff. Reason: $cancel_reason.";
-
-                    $notif_stmt = $pdo->prepare("
-                        INSERT INTO notifications
-                            (user_id, title, message, type, is_read, created_at)
-                        VALUES
-                            (:user_id, :title, :message, 'booking', 0, NOW())
-                    ");
-
-                    $notif_stmt->execute([
-                        ':user_id' => $customer_id,
-                        ':title' => $notif_title,
-                        ':message' => $notif_msg
-                    ]);
-
-                    $redirect_target = "managebooking.php?msg=cancelled";
-                } else {
-                    // Notify Admin that Customer cancelled their booking
-                    $notif_message =
-                        $full_name .
-                        " cancelled their " .
-                        $service_name .
-                        " appointment. Reason: " .
-                        $cancel_reason .
-                        ". (Payment Status: " .
-                        $new_payment_status .
-                        ")";
-
-                    $notif_stmt = $pdo->prepare("
-                        INSERT INTO admin_notifications
-                            (message, is_read, created_at)
-                        VALUES
-                            (:message, 0, NOW())
-                    ");
-
-                    $notif_stmt->execute([
-                        ':message' => $notif_message
-                    ]);
-
-                    $redirect_target = "bookings.php?msg=cancelled";
-                }
-
-                // ==========================================
-                // ==========================================
-                // IPROG SMS LOGIC (For Cancellations)
-                // ==========================================
-                if (!empty($customer_phone) && $customer_phone !== 'N/A') {
-
-                    if ($is_admin) {
-                        $sms_body =
-                            "Hi! Your booking for $pet_name ($service_name) on $appt_date_str " .
-                            "was CANCELLED by the clinic. Reason: $cancel_reason. - Boogie's Pet Care";
-                    } else {
-                        $sms_body =
-                            "Hi $full_name, you have successfully cancelled your booking for " .
-                            "$pet_name ($service_name) on $appt_date_str. - Boogie's Pet Care";
-                    }
-
-                    $sms_result = sendIPROGSMS($customer_phone, $sms_body);
-
-                    if (!empty($sms_result['success'])) {
-                        error_log(
-                            'IPROG SMS queued successfully for cancellation. ' .
-                            'Appointment ID: ' . $appointment_id .
-                            ' | Message ID: ' . ($sms_result['message_id'] ?? 'N/A')
-                        );
-                    } else {
-                        error_log(
-                            'IPROG SMS failed for cancellation. ' .
-                            'Appointment ID: ' . $appointment_id .
-                            ' | HTTP: ' . ($sms_result['http_code'] ?? 0) .
-                            ' | Response: ' . ($sms_result['response'] ?? 'Unknown error')
-                        );
-                    }
-                }
-                // ==========================================
-                header("Location: " . $redirect_target);
-                exit();
-
-            } else {
-                $redirect_url = $is_admin
-                    ? "managebooking.php?error=unauthorized"
-                    : "bookings.php?error=unauthorized";
-
-                header("Location: $redirect_url");
-                exit();
-            }
-
-        } catch (PDOException $e) {
-            // Keep database details out of the browser.
-            $redirect_url = $is_admin
-                ? "managebooking.php?error=db_error"
-                : "bookings.php?error=db_error";
-
-            header("Location: $redirect_url");
-            exit();
-        }
-
-    } else {
-        $redirect_url = isset($_SERVER['HTTP_REFERER'])
-            ? $_SERVER['HTTP_REFERER']
-            : "index.php";
-
-        header("Location: $redirect_url");
-        exit();
+    if (str_contains($service, 'pet hotel') || str_contains($service, 'boarding') || str_contains($service, 'daycare')) {
+        return 'pet_hotel';
     }
 
-} else {
-    header("Location: index.php");
-    exit();
+    if (str_contains($service, 'vet services') || str_contains($service, 'vaccination') || str_contains($service, 'deworming') || str_contains($service, 'consultation')) {
+        return 'vet';
+    }
+
+    if (str_contains($service, 'groom') || str_contains($service, 'bath & blow dry') || str_contains($service, 'bath and blow dry')) {
+        return 'grooming';
+    }
+
+    return 'other';
 }
-?>
+
+function cancellationRedirect(string $role, string $query = ''): void
+{
+    $isPersonnel = in_array($role, [
+        'admin', 'manager', 'receptionist', 'groomer', 'pet_hotel_staff',
+        'veterinarian', 'vet_assistant', 'vet_nurse'
+    ], true);
+
+    if (in_array($role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)) {
+        $target = 'staff/appointments.php';
+    } elseif ($isPersonnel) {
+        $target = 'admin/managebooking.php';
+    } else {
+        $target = 'bookings.php';
+    }
+
+    header('Location: ' . $target . ($query !== '' ? (str_contains($target, '?') ? '&' : '?') . $query : ''));
+    exit;
+}
+
+function cancelBookingError(string $role, string $error): void
+{
+    cancellationRedirect($role, 'error=' . rawurlencode($error));
+}
+
+$rawRole = (string)($_SESSION['role'] ?? 'customer');
+$currentRole = normalizeCancellationRole($rawRole);
+$isLoggedIn = ($_SESSION['logged_in'] ?? false) === true;
+$isPersonnel = in_array($currentRole, [
+    'admin', 'manager', 'receptionist', 'groomer', 'pet_hotel_staff',
+    'veterinarian', 'vet_assistant', 'vet_nurse'
+], true);
+$isAdmin = $currentRole === 'admin';
+
+if (!$isLoggedIn || empty($_SESSION['user_id'])) {
+    header('Location: login.php');
+    exit;
+}
+
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    http_response_code(405);
+    header('Allow: POST');
+    exit('Method not allowed.');
+}
+
+// All cancellation forms must submit the CSRF token generated by the page.
+$sessionToken = (string)($_SESSION['csrf_token'] ?? '');
+$postedToken = (string)($_POST['csrf_token'] ?? '');
+if ($sessionToken === '' || $postedToken === '' || !hash_equals($sessionToken, $postedToken)) {
+    http_response_code(403);
+    exit('Invalid or expired request token. Refresh the page and try again.');
+}
+
+$fullName = (string)($_SESSION['user_name'] ?? $_SESSION['full_name'] ?? 'User');
+$appointmentId = filter_input(INPUT_POST, 'appointment_id', FILTER_VALIDATE_INT);
+$cancelReason = trim((string)($_POST['cancel_reason'] ?? ''));
+
+if (!$appointmentId || $appointmentId <= 0 || $cancelReason === '' || mb_strlen($cancelReason) > 500) {
+    cancelBookingError($currentRole, 'invalid_request');
+}
+
+try {
+    // First load the booking, enforcing ownership for customers.
+    $query = "
+        SELECT
+            a.id,
+            a.appointment_date,
+            a.appointment_time,
+            a.booking_status,
+            a.payment_status,
+            a.payment_method,
+            a.appointment_type,
+            a.service,
+            a.user_id,
+            p.name AS pet_name,
+            p.owner_id,
+            u.contact_number
+        FROM appointments a
+        LEFT JOIN pets p ON a.pet_id = p.id
+        LEFT JOIN users u ON a.user_id = u.id
+        WHERE a.id = :appointment_id
+    ";
+    $params = [':appointment_id' => (int)$appointmentId];
+
+    if (!$isPersonnel) {
+        $query .= ' AND a.user_id = :session_user_id';
+        $params[':session_user_id'] = (int)$_SESSION['user_id'];
+    }
+
+    $query .= ' LIMIT 1';
+    $stmt = $pdo->prepare($query);
+    $stmt->execute($params);
+    $booking = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$booking) {
+        cancelBookingError($currentRole, 'unauthorized_or_not_found');
+    }
+
+    // Role-specific service access: even direct POST requests are checked.
+    if ($isPersonnel && !$isAdmin) {
+        $category = cancellationServiceCategory((string)($booking['service'] ?? ''));
+        $allowed = match ($currentRole) {
+            'groomer' => $category === 'grooming',
+            'pet_hotel_staff' => $category === 'pet_hotel',
+            'veterinarian', 'vet_assistant', 'vet_nurse' => $category === 'vet',
+            'manager', 'receptionist' => in_array($category, ['grooming', 'pet_hotel', 'vet'], true),
+            default => false
+        };
+
+        if (!$allowed) {
+            http_response_code(403);
+            exit('Access denied for this service booking.');
+        }
+    }
+
+    $currentStatus = strtoupper(trim((string)($booking['booking_status'] ?? '')));
+    if (in_array($currentStatus, ['COMPLETED', 'NO-SHOW', 'CANCELLED'], true)) {
+        cancelBookingError($currentRole, 'invalid_status');
+    }
+
+    $dateValue = trim((string)($booking['appointment_date'] ?? ''));
+    $timeValue = trim((string)($booking['appointment_time'] ?? '00:00:00'));
+    $appointmentTimestamp = strtotime($dateValue . ' ' . $timeValue);
+    if ($appointmentTimestamp === false || $appointmentTimestamp <= time()) {
+        cancelBookingError($currentRole, 'past_date');
+    }
+
+    // Customers must cancel at least 24 hours before the appointment.
+    // Authorized personnel can handle operational cancellations at any time before the appointment.
+    if (!$isPersonnel && ($appointmentTimestamp - time()) < 86400) {
+        cancelBookingError($currentRole, 'late_cancellation');
+    }
+
+    $serviceName = (string)($booking['service'] ?? 'Service');
+    $petName = trim((string)($booking['pet_name'] ?? '')) ?: 'your pet';
+    $customerPhone = trim((string)($booking['contact_number'] ?? ''));
+    $customerId = (int)($booking['user_id'] ?? $booking['owner_id'] ?? 0);
+    $appointmentDateDisplay = date('M d, Y', $appointmentTimestamp);
+    $paymentStatus = strtolower(trim((string)($booking['payment_status'] ?? '')));
+
+    // A paid or pending-verification payment is sent for review/refund handling; this endpoint never verifies GCash.
+    $newPaymentStatus = in_array($paymentStatus, ['paid', 'pending verification'], true)
+        ? 'Refund Requested'
+        : 'Cancelled';
+
+    $pdo->beginTransaction();
+
+    $updateStmt = $pdo->prepare("
+        UPDATE appointments
+        SET booking_status = 'Cancelled',
+            payment_status = :payment_status,
+            cancel_reason = :cancel_reason
+        WHERE id = :appointment_id
+          AND UPPER(COALESCE(booking_status, '')) NOT IN ('COMPLETED', 'NO-SHOW', 'CANCELLED')
+    ");
+    $updateStmt->execute([
+        ':payment_status' => $newPaymentStatus,
+        ':cancel_reason' => $cancelReason,
+        ':appointment_id' => (int)$appointmentId
+    ]);
+
+    if ($updateStmt->rowCount() !== 1) {
+        $pdo->rollBack();
+        cancelBookingError($currentRole, 'invalid_status');
+    }
+
+    if ($customerId > 0) {
+        if ($isPersonnel) {
+            $notificationTitle = 'Booking Cancelled by Clinic';
+            $notificationMessage = "Your booking for {$petName} ({$serviceName}) was cancelled by clinic staff. Reason: {$cancelReason}. Payment status: {$newPaymentStatus}.";
+
+            $notificationStmt = $pdo->prepare("
+                INSERT INTO notifications (user_id, title, message, type, is_read, created_at)
+                VALUES (:user_id, :title, :message, 'booking', 0, NOW())
+            ");
+            $notificationStmt->execute([
+                ':user_id' => $customerId,
+                ':title' => $notificationTitle,
+                ':message' => $notificationMessage
+            ]);
+        } else {
+            $notificationMessage = $fullName . ' cancelled their ' . $serviceName
+                . ' appointment. Reason: ' . $cancelReason
+                . '. Payment status: ' . $newPaymentStatus . '.';
+
+            $notificationStmt = $pdo->prepare("
+                INSERT INTO admin_notifications (message, is_read, created_at)
+                VALUES (:message, 0, NOW())
+            ");
+            $notificationStmt->execute([':message' => $notificationMessage]);
+        }
+    }
+
+    $pdo->commit();
+
+    // Send customer SMS only after the DB transaction commits.
+    if ($customerPhone !== '' && strtoupper($customerPhone) !== 'N/A') {
+        if ($isPersonnel) {
+            $smsBody = "Hi! Your booking for {$petName} ({$serviceName}) on {$appointmentDateDisplay} was CANCELLED by the clinic. Reason: {$cancelReason}. - Boogie's Pet Care";
+        } else {
+            $smsBody = "Hi {$fullName}, you have successfully cancelled your booking for {$petName} ({$serviceName}) on {$appointmentDateDisplay}. - Boogie's Pet Care";
+        }
+
+        try {
+            $smsResult = sendIPROGSMS($customerPhone, $smsBody);
+            if (empty($smsResult['success'])) {
+                error_log(
+                    'IPROG SMS failed for cancellation. Appointment ID: ' . (int)$appointmentId
+                    . ' | HTTP: ' . (int)($smsResult['http_code'] ?? 0)
+                    . ' | Response: ' . (string)($smsResult['response'] ?? 'Unknown error')
+                );
+            }
+        } catch (Throwable $smsError) {
+            error_log('IPROG SMS exception for cancellation, appointment #' . (int)$appointmentId . ': ' . $smsError->getMessage());
+        }
+    }
+
+    cancellationRedirect($currentRole, 'msg=cancelled');
+
+} catch (PDOException $e) {
+    if ($pdo->inTransaction()) {
+        $pdo->rollBack();
+    }
+    error_log('Cancel booking database error: ' . $e->getMessage());
+    cancelBookingError($currentRole, 'db_error');
+} catch (Throwable $e) {
+    if ($pdo->inTransaction()) {
+        $pdo->rollBack();
+    }
+    error_log('Cancel booking error: ' . $e->getMessage());
+    cancelBookingError($currentRole, 'unexpected_error');
+}

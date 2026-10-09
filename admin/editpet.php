@@ -2,141 +2,318 @@
 session_start();
 include '../db_supabase.php';
 
-// --- UNIVERSAL SECURITY CHECK ---
-$current_role = isset($_SESSION['role']) ? strtolower(trim($_SESSION['role'])) : '';
+// --- ROLE-BASED ACCESS CONTROL ---
+$raw_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
+$role_aliases = [
+    'administrator' => 'admin',
+    'shop manager' => 'manager',
+    'shop_manager' => 'manager',
+    'front desk' => 'receptionist',
+    'front desk / receptionist' => 'receptionist',
+    'front_desk' => 'receptionist',
+    'front_desk_receptionist' => 'receptionist',
+    'grooming staff' => 'groomer',
+    'grooming staff / groomer' => 'groomer',
+    'grooming_staff' => 'groomer',
+    'grooming_staff_groomer' => 'groomer',
+    'pet hotel staff' => 'pet_hotel_staff',
+    'pet hotel staff / attendant' => 'pet_hotel_staff',
+    'pet_hotel_attendant' => 'pet_hotel_staff',
+    'pet_hotel_staff_attendant' => 'pet_hotel_staff',
+    'vet' => 'veterinarian',
+    'veterinary' => 'veterinarian',
+    'veterinary assistant' => 'vet_assistant',
+    'vet assistant' => 'vet_assistant',
+    'veterinary_assistant' => 'vet_assistant',
+    'veterinary nurse' => 'vet_nurse',
+    'vet nurse' => 'vet_nurse',
+    'veterinary_nurse' => 'vet_nurse',
+    // Keep compatibility with existing legacy staff accounts.
+    'staff' => 'groomer',
+    'supervisor' => 'receptionist',
+];
+$current_role = $role_aliases[$raw_role] ?? $raw_role;
+if ($current_role !== '') {
+    $_SESSION['role'] = $current_role;
+}
+$is_admin = ($current_role === 'admin');
+$can_transfer_owner = in_array($current_role, ['admin', 'manager', 'receptionist'], true);
 
-if (!isset($_SESSION['logged_in']) || !in_array($current_role, ['admin', 'supervisor', 'staff'], true)) {
-    header("Location: stafflogin.php");
+if (($_SESSION['logged_in'] ?? false) !== true) {
+    // Admin and staff login pages remain separate.
+    $login_target = ($current_role === 'admin') ? '../admin_login.php' : '../staff/stafflogin.php';
+    header('Location: ' . $login_target);
     exit();
 }
 
-// --- ADMIN/STAFF PROFILE FOR SHARED ADMIN HEADER ---
-$admin_full_name = "User";
-$profile_img_path = "";
-$first_name = "User";
+if (empty($_SESSION['user_id']) || !is_numeric($_SESSION['user_id'])) {
+    http_response_code(403);
+    exit('Access denied: invalid session.');
+}
 
+// Veterinary roles use their dedicated portal. Pet Hotel Staff are limited to
+// permitted booking functions and cannot open the general pet registry.
+if (in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)) {
+    header('Location: ../staff/staffdashboard.php');
+    exit();
+}
+if ($current_role === 'pet_hotel_staff') {
+    header('Location: managebooking.php');
+    exit();
+}
+
+$allowed_pet_roles = ['admin', 'manager', 'receptionist', 'groomer'];
+if (!in_array($current_role, $allowed_pet_roles, true)) {
+    http_response_code(403);
+    exit('Access denied. This role cannot edit pet records.');
+}
+
+// CSRF protection for the edit form.
+if (empty($_SESSION['editpet_csrf_token']) || !is_string($_SESSION['editpet_csrf_token'])) {
+    $_SESSION['editpet_csrf_token'] = bin2hex(random_bytes(32));
+}
+
+function editpet_post_string(string $key): string
+{
+    $value = $_POST[$key] ?? '';
+    return is_scalar($value) ? trim((string)$value) : '';
+}
+
+// Validate the requested pet ID before querying the database.
+$pet_id = filter_var($_GET['id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+if ($pet_id === false || $pet_id === null) {
+    http_response_code(400);
+    exit('Invalid Pet ID.');
+}
+$pet_id = (int)$pet_id;
+
+$success_msg = '';
+$error_msg = '';
+$admin_full_name = 'User';
+$profile_img_path = '';
+$first_name = 'User';
+
+// --- FETCH SIGNED-IN USER PROFILE ---
 try {
-    if (isset($_SESSION['user_id'])) {
-        $uid = (int)$_SESSION['user_id'];
-        $get_admin = $pdo->prepare("SELECT full_name, profile_image FROM users WHERE id = :id LIMIT 1");
-        $get_admin->execute([':id' => $uid]);
-        $admin_data = $get_admin->fetch(PDO::FETCH_ASSOC);
+    $profile_stmt = $pdo->prepare('SELECT full_name, profile_image FROM users WHERE id = :id LIMIT 1');
+    $profile_stmt->execute([':id' => (int)$_SESSION['user_id']]);
+    $profile_data = $profile_stmt->fetch(PDO::FETCH_ASSOC);
 
-        if ($admin_data) {
-            $admin_full_name = $admin_data['full_name'] ?? 'User';
-            $profile_img_path = $admin_data['profile_image'] ?? '';
-            $_SESSION['user_name'] = $admin_full_name;
-            $first_name = trim(explode(' ', $admin_full_name)[0], ',');
-        }
+    if ($profile_data) {
+        $admin_full_name = (string)($profile_data['full_name'] ?? 'User');
+        $profile_img_path = (string)($profile_data['profile_image'] ?? '');
+        $_SESSION['user_name'] = $admin_full_name;
+    } else {
+        $admin_full_name = (string)($_SESSION['user_name'] ?? 'User');
     }
 } catch (PDOException $e) {
-    $admin_full_name = $_SESSION['user_name'] ?? 'User';
-    $first_name = trim(explode(' ', $admin_full_name)[0], ',');
+    error_log('Edit pet profile fetch failed: ' . $e->getMessage());
+    $admin_full_name = (string)($_SESSION['user_name'] ?? 'User');
+}
+$first_name = trim(explode(' ', $admin_full_name)[0] ?? 'User', ',');
+if ($first_name === '') {
+    $first_name = 'U';
 }
 
-// --- CHECK ID ---
-if (!isset($_GET['id']) || !is_numeric($_GET['id'])) {
-    die("Invalid Pet ID.");
-}
-
-$pet_id = (int)$_GET['id'];
-$success_msg = "";
-$error_msg = "";
-
-// --- FETCH ALL USERS FOR OWNERSHIP TRANSFER ---
-$users_list = [];
+// Load the target pet first. This also prevents updates to a non-existent ID.
 try {
-    $users_query = $pdo->prepare("SELECT id, full_name, email FROM users ORDER BY full_name ASC");
-    $users_query->execute();
-    $users_list = $users_query->fetchAll(PDO::FETCH_ASSOC);
+    $pet_stmt = $pdo->prepare('SELECT * FROM pets WHERE id = :pet_id LIMIT 1');
+    $pet_stmt->execute([':pet_id' => $pet_id]);
+    $row = $pet_stmt->fetch(PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
-    $users_list = [];
-    $error_msg = "Unable to load the customer list.";
+    error_log('Edit pet record fetch failed: ' . $e->getMessage());
+    http_response_code(500);
+    exit('Unable to load the pet record at this time.');
+}
+
+if (!$row) {
+    http_response_code(404);
+    exit('Pet not found in the database.');
+}
+
+// Only customer accounts are eligible to own a pet. This list is used for
+// ownership transfer, not for granting a user access to this page.
+$users_list = [];
+if ($can_transfer_owner) {
+    try {
+        $users_query = $pdo->prepare("SELECT id, full_name, email FROM users WHERE role = 'customer' ORDER BY full_name ASC");
+        $users_query->execute();
+        $users_list = $users_query->fetchAll(PDO::FETCH_ASSOC);
+    } catch (PDOException $e) {
+        error_log('Edit pet customer list fetch failed: ' . $e->getMessage());
+        $error_msg = 'Unable to load the customer list. Please try again later.';
+    }
 }
 
 // --- HANDLE FORM SUBMISSION ---
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $p_name = trim($_POST['name'] ?? '');
-    $p_type = trim($_POST['pet_type'] ?? '');
-    $p_breed = trim($_POST['breed'] ?? '');
-    $p_gender = trim($_POST['gender'] ?? '');
-    $p_age = trim($_POST['age'] ?? '');
-    $p_weight = trim($_POST['weight'] ?? '');
+    $session_token = isset($_SESSION['editpet_csrf_token']) && is_string($_SESSION['editpet_csrf_token'])
+        ? $_SESSION['editpet_csrf_token']
+        : '';
+    $posted_token = isset($_POST['csrf_token']) && is_string($_POST['csrf_token'])
+        ? $_POST['csrf_token']
+        : '';
 
-    $new_owner_id = isset($_POST['owner_id']) ? (int)$_POST['owner_id'] : 0;
-    $new_owner_name = "";
+    if ($session_token === '' || $posted_token === '' || !hash_equals($session_token, $posted_token)) {
+        http_response_code(403);
+        $error_msg = 'Your form session has expired. Refresh this page and try again.';
+    } else {
+        $p_name = editpet_post_string('name');
+        $p_type = editpet_post_string('pet_type');
+        $p_breed = editpet_post_string('breed');
+        $p_gender = editpet_post_string('gender');
+        $p_age = editpet_post_string('age');
+        $p_weight = editpet_post_string('weight');
 
-    foreach ($users_list as $u) {
-        if ((int)$u['id'] === $new_owner_id) {
-            $new_owner_name = $u['full_name'];
+        $validation_error = '';
+        if ($p_name === '' || $p_type === '' || $p_gender === '') {
+            $validation_error = 'Please complete the required pet fields.';
+        } elseif (strlen($p_name) > 150 || strlen($p_type) > 60 || strlen($p_breed) > 120) {
+            $validation_error = 'Pet name, type, or breed is too long.';
+        } elseif (!in_array($p_gender, ['Male', 'Female'], true)) {
+            $validation_error = 'Please select a valid pet gender.';
+        } elseif (strlen($p_age) > 30 || strlen($p_weight) > 60) {
+            $validation_error = 'Age or weight value is too long.';
+        }
+
+        $new_owner_id = (int)($row['owner_id'] ?? 0);
+        $new_owner_name = trim((string)($row['owner_name'] ?? ''));
+
+        if ($validation_error === '' && $can_transfer_owner) {
+            $owner_candidate = $_POST['owner_id'] ?? null;
+            $submitted_owner_id = is_scalar($owner_candidate)
+                ? filter_var($owner_candidate, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]])
+                : false;
+            $selected_customer = null;
+            if ($submitted_owner_id !== false && $submitted_owner_id !== null) {
+                foreach ($users_list as $user) {
+                    if ((int)$user['id'] === (int)$submitted_owner_id) {
+                        $selected_customer = $user;
+                        break;
+                    }
+                }
+            }
+
+            if (!$selected_customer) {
+                $validation_error = 'Please select a valid customer as the pet owner.';
+            } else {
+                $new_owner_id = (int)$selected_customer['id'];
+                $new_owner_name = trim((string)($selected_customer['full_name'] ?? ''));
+                if ($new_owner_name === '') {
+                    $validation_error = 'The selected customer has no valid name.';
+                }
+            }
+        }
+
+        if ($validation_error !== '') {
+            $error_msg = $validation_error;
+        } else {
+            try {
+                if ($can_transfer_owner) {
+                    $update_query = "
+                        UPDATE pets
+                        SET name = :name,
+                            pet_type = :pet_type,
+                            breed = :breed,
+                            gender = :gender,
+                            age = :age,
+                            weight = :weight,
+                            owner_id = :owner_id,
+                            owner_name = :owner_name
+                        WHERE id = :pet_id
+                    ";
+                    $update_params = [
+                        ':name' => $p_name,
+                        ':pet_type' => $p_type,
+                        ':breed' => $p_breed,
+                        ':gender' => $p_gender,
+                        ':age' => $p_age,
+                        ':weight' => $p_weight,
+                        ':owner_id' => $new_owner_id,
+                        ':owner_name' => $new_owner_name,
+                        ':pet_id' => $pet_id,
+                    ];
+                } else {
+                    // Groomers may edit pet details but cannot transfer ownership.
+                    $update_query = "
+                        UPDATE pets
+                        SET name = :name,
+                            pet_type = :pet_type,
+                            breed = :breed,
+                            gender = :gender,
+                            age = :age,
+                            weight = :weight
+                        WHERE id = :pet_id
+                    ";
+                    $update_params = [
+                        ':name' => $p_name,
+                        ':pet_type' => $p_type,
+                        ':breed' => $p_breed,
+                        ':gender' => $p_gender,
+                        ':age' => $p_age,
+                        ':weight' => $p_weight,
+                        ':pet_id' => $pet_id,
+                    ];
+                }
+
+                $update_stmt = $pdo->prepare($update_query);
+                $update_stmt->execute($update_params);
+
+                $row['name'] = $p_name;
+                $row['pet_type'] = $p_type;
+                $row['breed'] = $p_breed;
+                $row['gender'] = $p_gender;
+                $row['age'] = $p_age;
+                $row['weight'] = $p_weight;
+                if ($can_transfer_owner) {
+                    $row['owner_id'] = $new_owner_id;
+                    $row['owner_name'] = $new_owner_name;
+                }
+                $success_msg = 'Pet record successfully updated.';
+            } catch (PDOException $e) {
+                error_log('Edit pet update failed: ' . $e->getMessage());
+                $error_msg = 'Unable to update the pet record. Please check the details and try again.';
+            }
+        }
+    }
+}
+
+$current_owner_display = trim((string)($row['owner_name'] ?? ''));
+if ($current_owner_display === '') {
+    foreach ($users_list as $user) {
+        if ((int)$user['id'] === (int)($row['owner_id'] ?? 0)) {
+            $current_owner_display = trim((string)($user['full_name'] ?? ''));
             break;
         }
     }
-
-    if ($new_owner_id <= 0 || $new_owner_name === '') {
-        $error_msg = "Please select a valid owner.";
-    } elseif ($p_name === '' || $p_type === '' || $p_gender === '') {
-        $error_msg = "Please complete the required pet fields.";
-    } else {
-        try {
-            $update_query = "
-                UPDATE pets
-                SET name = :name,
-                    pet_type = :pet_type,
-                    breed = :breed,
-                    gender = :gender,
-                    age = :age,
-                    weight = :weight,
-                    owner_id = :owner_id,
-                    owner_name = :owner_name
-                WHERE id = :pet_id
-            ";
-
-            $update_stmt = $pdo->prepare($update_query);
-            $update_stmt->execute([
-                ':name' => $p_name,
-                ':pet_type' => $p_type,
-                ':breed' => $p_breed,
-                ':gender' => $p_gender,
-                ':age' => $p_age,
-                ':weight' => $p_weight,
-                ':owner_id' => $new_owner_id,
-                ':owner_name' => $new_owner_name,
-                ':pet_id' => $pet_id
-            ]);
-
-            $success_msg = "Pet record and ownership successfully updated!";
-        } catch (PDOException $e) {
-            $error_msg = "Error updating record.";
-        }
+}
+if ($current_owner_display === '' && (int)($row['owner_id'] ?? 0) > 0) {
+    try {
+        $owner_name_stmt = $pdo->prepare('SELECT full_name FROM users WHERE id = :owner_id LIMIT 1');
+        $owner_name_stmt->execute([':owner_id' => (int)$row['owner_id']]);
+        $current_owner_display = trim((string)($owner_name_stmt->fetchColumn() ?: ''));
+    } catch (PDOException $e) {
+        error_log('Edit pet current owner lookup failed: ' . $e->getMessage());
     }
 }
-
-// --- FETCH CURRENT DATA ---
-try {
-    $query = "SELECT * FROM pets WHERE id = :pet_id LIMIT 1";
-    $stmt = $pdo->prepare($query);
-    $stmt->execute([':pet_id' => $pet_id]);
-    $row = $stmt->fetch(PDO::FETCH_ASSOC);
-} catch (PDOException $e) {
-    die("Unable to load the pet record at this time.");
+if ($current_owner_display === '') {
+    $current_owner_display = 'Customer #' . (int)($row['owner_id'] ?? 0);
 }
 
-if (!$row) {
-    die("Pet not found in the database.");
-}
-
-// --- ADMIN NOTIFICATIONS ---
+// Admin notifications are intentionally visible only to Admin accounts.
 $admin_notifications = [];
 $unread_count = 0;
-try {
-    $admin_notif_stmt = $pdo->prepare("SELECT id, message, created_at FROM admin_notifications WHERE is_read = 0 ORDER BY created_at DESC LIMIT 20");
-    $admin_notif_stmt->execute();
-    $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
-    $unread_count = count($admin_notifications);
-} catch (PDOException $e) {
-    $admin_notifications = [];
-    $unread_count = 0;
+if ($is_admin) {
+    try {
+        $admin_notif_stmt = $pdo->prepare("SELECT id, message, created_at FROM admin_notifications WHERE is_read = 0 ORDER BY created_at DESC LIMIT 20");
+        $admin_notif_stmt->execute();
+        $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
+        $unread_count = count($admin_notifications);
+    } catch (PDOException $e) {
+        error_log('Edit pet admin notification fetch failed: ' . $e->getMessage());
+        $admin_notifications = [];
+        $unread_count = 0;
+    }
 }
 ?>
 <!DOCTYPE html>
@@ -144,7 +321,7 @@ try {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Edit Pet Record | Admin</title>
+    <title>Edit Pet Record | Boogie's Pet Care</title>
     <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
@@ -307,6 +484,7 @@ try {
             </div>
 
             <div class="top-right-actions">
+                <?php if ($is_admin): ?>
                 <div class="notif-wrapper" onclick="toggleNotif(event)">
                     <i class="fa-solid fa-bell" style="font-size:22px;color:#64748b;"></i>
                     <span id="admin-notif-badge" class="notif-badge" style="display:<?php echo $unread_count > 0 ? 'inline-flex' : 'none'; ?>;"> <?php echo $unread_count; ?> </span>
@@ -330,10 +508,11 @@ try {
                         </div>
                     </div>
                 </div>
+                <?php endif; ?>
 
                 <div class="profile-wrapper" onclick="toggleProfile(event)">
                     <span class="admin-tag"><?php echo strtoupper($current_role ?: 'STAFF'); ?></span>
-                    <?php if (!empty($profile_img_path) && file_exists(__DIR__ . '/' . $profile_img_path)): ?>
+                    <?php if (!empty($profile_img_path) && file_exists(__DIR__ . '/' . ltrim($profile_img_path, '/'))): ?>
                         <img src="<?php echo htmlspecialchars($profile_img_path, ENT_QUOTES, 'UTF-8'); ?>" class="top-avatar" alt="Profile Picture">
                     <?php else: ?>
                         <div class="top-avatar-fallback"><?php echo strtoupper(substr($first_name, 0, 1)); ?></div>
@@ -366,6 +545,7 @@ try {
                 <div class="card-title"><i class="fas fa-edit"></i> Edit Pet Profile</div>
 
                 <form action="" method="POST">
+                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['editpet_csrf_token'], ENT_QUOTES, 'UTF-8'); ?>">
                     <div class="form-grid">
                         <div class="form-group">
                             <label>Pet Name</label>
@@ -400,6 +580,7 @@ try {
                             <input type="text" inputmode="decimal" name="weight" value="<?php echo htmlspecialchars($row['weight'] ?? '', ENT_QUOTES, 'UTF-8'); ?>" placeholder="e.g. 5kg">
                         </div>
 
+                        <?php if ($can_transfer_owner): ?>
                         <div class="form-group full-width">
                             <label>Owner Name (Transfer Ownership)</label>
                             <select name="owner_id" required>
@@ -415,6 +596,16 @@ try {
                                 You can reassign this pet to a different customer. Medical history transfers automatically.
                             </small>
                         </div>
+                        <?php else: ?>
+                            <div class="form-group full-width">
+                                <label>Pet Owner</label>
+                                <input type="text" value="<?php echo htmlspecialchars($current_owner_display, ENT_QUOTES, 'UTF-8'); ?>" readonly>
+                                <small class="owner-note" style="color:#64748b;font-size:11px;margin-top:6px;display:flex;align-items:center;gap:5px;font-weight:500;">
+                                    <i class="fas fa-lock" style="color:#64748b;"></i>
+                                    Ownership transfers are restricted to Admin, Manager, and Receptionist roles.
+                                </small>
+                            </div>
+                        <?php endif; ?>
                     </div>
 
                     <button type="submit" class="btn-save"><i class="fas fa-save"></i> Save Changes</button>

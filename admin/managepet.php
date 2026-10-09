@@ -6,20 +6,75 @@ include '../db_supabase.php';
 
 
 
-// --- UNIVERSAL SECURITY CHECK ---
+// --- ROLE-BASED ACCESS CONTROL ---
+$raw_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
+$role_aliases = [
+    'administrator' => 'admin',
+    'shop manager' => 'manager',
+    'shop_manager' => 'manager',
+    'front desk' => 'receptionist',
+    'front desk / receptionist' => 'receptionist',
+    'front_desk' => 'receptionist',
+    'front_desk_receptionist' => 'receptionist',
+    'grooming staff' => 'groomer',
+    'grooming staff / groomer' => 'groomer',
+    'grooming_staff' => 'groomer',
+    'grooming_staff_groomer' => 'groomer',
+    'pet hotel staff' => 'pet_hotel_staff',
+    'pet hotel staff / attendant' => 'pet_hotel_staff',
+    'pet_hotel_attendant' => 'pet_hotel_staff',
+    'pet_hotel_staff_attendant' => 'pet_hotel_staff',
+    'vet' => 'veterinarian',
+    'veterinary' => 'veterinarian',
+    'veterinary assistant' => 'vet_assistant',
+    'vet assistant' => 'vet_assistant',
+    'veterinary_assistant' => 'vet_assistant',
+    'veterinary nurse' => 'vet_nurse',
+    'vet nurse' => 'vet_nurse',
+    'veterinary_nurse' => 'vet_nurse',
+    // Preserve compatibility with the existing legacy staff accounts.
+    'staff' => 'groomer',
+    'supervisor' => 'receptionist',
+];
+$current_role = $role_aliases[$raw_role] ?? $raw_role;
+if ($current_role !== '') {
+    $_SESSION['role'] = $current_role;
+}
+$is_admin = ($current_role === 'admin');
 
-$current_role = isset($_SESSION['role']) ? strtolower(trim($_SESSION['role'])) : '';
-
-
-
-// 1. SECURITY: Payagan ang 'admin', 'manager', at 'vet'
-
-if (!isset($_SESSION['logged_in']) || !in_array($current_role, ['admin', 'manager', 'vet'], true)) {
-
-    header("Location: stafflogin.php");
-
+if (($_SESSION['logged_in'] ?? false) !== true) {
+    // Keep the Admin login separate from the Staff login.
+    $login_target = ($current_role === 'admin') ? '../admin_login.php' : '../staff/stafflogin.php';
+    header('Location: ' . $login_target);
     exit();
+}
 
+if (empty($_SESSION['user_id']) || !is_numeric($_SESSION['user_id'])) {
+    http_response_code(403);
+    exit('Access denied: invalid session.');
+}
+
+// Veterinary roles use their dedicated portal. Pet Hotel Staff are limited
+// to allowed booking functions and must not browse the general pet registry.
+if (in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)) {
+    header('Location: ../staff/staffdashboard.php');
+    exit();
+}
+if ($current_role === 'pet_hotel_staff') {
+    header('Location: managebooking.php');
+    exit();
+}
+
+// Admin, Manager, Receptionist, and Groomer may access Pet Management.
+$allowed_pet_page_roles = ['admin', 'manager', 'receptionist', 'groomer'];
+if (!in_array($current_role, $allowed_pet_page_roles, true)) {
+    http_response_code(403);
+    exit('Access denied. This role cannot access pet management.');
+}
+
+// CSRF token for the Add Pet form.
+if (empty($_SESSION['managepet_csrf_token']) || !is_string($_SESSION['managepet_csrf_token'])) {
+    $_SESSION['managepet_csrf_token'] = bin2hex(random_bytes(32));
 }
 
 
@@ -100,104 +155,109 @@ try {
 
 
 
-$success_msg = '';
-
+$success_msg = (string)($_SESSION['managepet_flash_success'] ?? '');
+unset($_SESSION['managepet_flash_success']);
 $error_msg = '';
 
-
-
 // --- ADD NEW PET LOGIC ---
-
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_pet'])) {
-
-    $owner_id = (int)($_POST['owner_id'] ?? 0);
-
-    $pet_name = trim($_POST['pet_name'] ?? '');
-
-    $pet_type = trim($_POST['pet_type'] ?? '');
-
-    $pet_breed = trim($_POST['pet_breed'] ?? '');
-
-    $pet_gender = trim($_POST['pet_gender'] ?? '');
-
-    $pet_weight = trim($_POST['pet_weight'] ?? '');
-
-
-
-    if ($owner_id > 0 && $pet_name !== '' && $pet_type !== '' && $pet_gender !== '' && $pet_weight !== '') {
-
-        try {
-
-            $insert_query = "
-
-                INSERT INTO pets (owner_id, name, pet_type, breed, gender, weight)
-
-                VALUES (:owner_id, :name, :pet_type, :breed, :gender, :weight)
-
-            ";
-
-
-
-            $insert_stmt = $pdo->prepare($insert_query);
-
-            $insert_stmt->execute([
-
-                ':owner_id' => $owner_id,
-
-                ':name' => $pet_name,
-
-                ':pet_type' => $pet_type,
-
-                ':breed' => $pet_breed,
-
-                ':gender' => $pet_gender,
-
-                ':weight' => $pet_weight
-
-            ]);
-
-
-
-            $success_msg = "New pet '$pet_name' successfully registered to Owner ID #$owner_id!";
-
-        } catch (PDOException $e) {
-
-            $error_msg = "Error adding pet. Please check the pet details and try again.";
-
-        }
-
+    $submitted_token = $_POST['csrf_token'] ?? '';
+    if (!is_string($submitted_token) || !hash_equals($_SESSION['managepet_csrf_token'], $submitted_token)) {
+        http_response_code(403);
+        $error_msg = 'Security check failed. Please refresh the page and try again.';
     } else {
+        $raw_owner_id = $_POST['owner_id'] ?? '';
+        $owner_id = is_string($raw_owner_id) ? filter_var($raw_owner_id, FILTER_VALIDATE_INT) : false;
+        $pet_name = is_string($_POST['pet_name'] ?? null) ? trim($_POST['pet_name']) : '';
+        $pet_type = is_string($_POST['pet_type'] ?? null) ? trim($_POST['pet_type']) : '';
+        $pet_breed = is_string($_POST['pet_breed'] ?? null) ? trim($_POST['pet_breed']) : '';
+        $pet_gender = is_string($_POST['pet_gender'] ?? null) ? trim($_POST['pet_gender']) : '';
+        $pet_weight = is_string($_POST['pet_weight'] ?? null) ? trim($_POST['pet_weight']) : '';
 
-        $error_msg = "Please complete all required pet fields.";
+        $allowed_pet_types = ['Dog', 'Cat'];
+        $allowed_genders = ['Male', 'Female'];
+        $allowed_weights = [
+            'Small (1-5kg)',
+            'Medium (6-10kg)',
+            'Large (11-15kg)',
+            'Extra Large (16-20kg)',
+            'XXL Large (21-25kg)',
+        ];
+        $name_length = function_exists('mb_strlen') ? mb_strlen($pet_name, 'UTF-8') : strlen($pet_name);
+        $breed_length = function_exists('mb_strlen') ? mb_strlen($pet_breed, 'UTF-8') : strlen($pet_breed);
+        $has_control_chars = (bool)preg_match('/[\x00-\x1F\x7F]/', $pet_name);
 
+        if (!is_int($owner_id) || $owner_id < 1 || $pet_name === '' || $pet_type === '' || $pet_gender === '' || $pet_weight === '') {
+            $error_msg = 'Please complete all required pet fields.';
+        } elseif ($name_length > 100 || $breed_length > 100 || $has_control_chars) {
+            $error_msg = 'Pet name and breed must be 100 characters or fewer. Remove any invalid control characters from the pet name.';
+        } elseif (!in_array($pet_type, $allowed_pet_types, true) || !in_array($pet_gender, $allowed_genders, true) || !in_array($pet_weight, $allowed_weights, true)) {
+            $error_msg = 'Please select a valid pet type, gender, and size.';
+        } else {
+            try {
+                // Validate ownership against the database; do not trust a posted owner ID.
+                $owner_stmt = $pdo->prepare("
+                    SELECT id
+                    FROM users
+                    WHERE id = :owner_id
+                      AND LOWER(TRIM(COALESCE(role, ''))) = 'customer'
+                    LIMIT 1
+                ");
+                $owner_stmt->execute([':owner_id' => $owner_id]);
+                $valid_owner_id = $owner_stmt->fetchColumn();
+
+                if ($valid_owner_id === false) {
+                    $error_msg = 'Please select a valid customer account as the pet owner.';
+                } else {
+                    $insert_stmt = $pdo->prepare("
+                        INSERT INTO pets (owner_id, name, pet_type, breed, gender, weight)
+                        VALUES (:owner_id, :name, :pet_type, :breed, :gender, :weight)
+                    ");
+                    $insert_stmt->execute([
+                        ':owner_id' => $owner_id,
+                        ':name' => $pet_name,
+                        ':pet_type' => $pet_type,
+                        ':breed' => $pet_breed,
+                        ':gender' => $pet_gender,
+                        ':weight' => $pet_weight,
+                    ]);
+
+                    $_SESSION['managepet_flash_success'] = sprintf(
+                        'New pet "%s" successfully registered to Owner ID #%d!',
+                        $pet_name,
+                        $owner_id
+                    );
+
+                    // Post/Redirect/Get prevents duplicate inserts on browser refresh.
+                    $redirect_url = 'managepet.php';
+                    $current_gender_filter = $_GET['gender'] ?? '';
+                    if (is_string($current_gender_filter) && in_array($current_gender_filter, ['Male', 'Female'], true)) {
+                        $redirect_url .= '?gender=' . rawurlencode($current_gender_filter);
+                    }
+                    header('Location: ' . $redirect_url, true, 303);
+                    exit();
+                }
+            } catch (PDOException $e) {
+                error_log('Manage Pet add error: ' . $e->getMessage());
+                $error_msg = 'Error adding pet. Please check the pet details and try again.';
+            }
+        }
     }
-
 }
 
-
-
-// FETCH USERS FOR DROPDOWN (For the Add Pet Modal)
-
+// FETCH CUSTOMER ACCOUNTS ONLY FOR THE ADD PET OWNER DROPDOWN.
 try {
-
     $users_list_stmt = $pdo->query("
-
         SELECT id, full_name
-
         FROM users
-
+        WHERE LOWER(TRIM(COALESCE(role, ''))) = 'customer'
         ORDER BY full_name ASC
-
     ");
-
     $users_list = $users_list_stmt->fetchAll(PDO::FETCH_ASSOC);
-
 } catch (PDOException $e) {
-
+    error_log('Manage Pet customer list error: ' . $e->getMessage());
     $users_list = [];
-
-    $error_msg = $error_msg ?: "Unable to load customer list.";
-
+    $error_msg = $error_msg ?: 'Unable to load customer list.';
 }
 
 
@@ -216,7 +276,7 @@ $pets_list = [];
 
 $showing_count = 0;
 
-$filter_gender = $_GET['gender'] ?? '';
+$filter_gender = (isset($_GET['gender']) && is_string($_GET['gender'])) ? $_GET['gender'] : '';
 
 
 
@@ -316,39 +376,27 @@ try {
 
 
 
-// --- FETCH ADMIN NOTIFICATIONS ---
-
+// --- FETCH ADMIN NOTIFICATIONS: ADMIN ONLY ---
 $admin_notifications = [];
+$unread_count = 0;
 
-
-
-try {
-
-    $admin_notif_stmt = $pdo->prepare("
-
-        SELECT *
-
-        FROM admin_notifications
-
-        WHERE is_read = 0
-
-        ORDER BY created_at DESC
-
-    ");
-
-    $admin_notif_stmt->execute();
-
-    $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
-
-} catch (PDOException $e) {
-
-    $admin_notifications = [];
-
+if ($is_admin) {
+    try {
+        $admin_notif_stmt = $pdo->prepare("
+            SELECT *
+            FROM admin_notifications
+            WHERE is_read = 0
+            ORDER BY created_at DESC
+        ");
+        $admin_notif_stmt->execute();
+        $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
+        $unread_count = count($admin_notifications);
+    } catch (PDOException $e) {
+        error_log('Manage Pet admin notification error: ' . $e->getMessage());
+        $admin_notifications = [];
+        $unread_count = 0;
+    }
 }
-
-
-
-$unread_count = count($admin_notifications);
 
 ?>
 
@@ -976,7 +1024,7 @@ $unread_count = count($admin_notifications);
 
                 <?php 
 
-                    echo (isset($_SESSION['role']) && strtolower($_SESSION['role']) === 'admin') ? "Boogie's Admin" : "Boogie's Staff"; 
+                    echo $is_admin ? "Boogie's Admin" : "Boogie's Staff"; 
 
                 ?>
 
@@ -1049,6 +1097,7 @@ $unread_count = count($admin_notifications);
 
             <div class="top-right-actions">
 
+<?php if ($is_admin): ?>
                 <div class="notif-wrapper" onclick="toggleNotif(event)">
 
                     <i class="fa-solid fa-bell" style="font-size: 22px; color: #64748b;"></i>
@@ -1085,7 +1134,7 @@ $unread_count = count($admin_notifications);
 
                                         <i class="fa-solid fa-circle-exclamation" style="color: #e11d48; margin-right: 5px;"></i>
 
-                                        <?php echo htmlspecialchars($notif['message']); ?>
+                                        <?php echo htmlspecialchars((string)($notif['message'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
 
                                         <br><small style="color: #94a3b8; font-size: 11px;"><?php echo date('M d, g:i A', strtotime($notif['created_at'])); ?></small>
 
@@ -1104,22 +1153,23 @@ $unread_count = count($admin_notifications);
                     </div>
 
                 </div>
+                <?php endif; ?>
 
 
 
                 <div class="profile-wrapper" onclick="toggleProfile(event)">
 
-                    <span class="admin-tag"><?php echo strtoupper($current_role); ?></span>
+                    <span class="admin-tag"><?php echo htmlspecialchars(strtoupper($current_role), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></span>
 
 
 
                     <?php if (!empty($profile_img_path) && file_exists($profile_img_path)): ?>
 
-                        <img src="<?php echo htmlspecialchars($profile_img_path); ?>" class="top-avatar" alt="Profile Picture">
+                        <img src="<?php echo htmlspecialchars($profile_img_path, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>" class="top-avatar" alt="Profile Picture">
 
                     <?php else: ?>
 
-                        <div class="top-avatar-fallback"><?php echo strtoupper(substr($first_name, 0, 1)); ?></div>
+                        <div class="top-avatar-fallback"><?php echo htmlspecialchars(strtoupper(substr($first_name, 0, 1)), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></div>
 
                     <?php endif; ?>
 
@@ -1175,7 +1225,7 @@ $unread_count = count($admin_notifications);
 
                 <div style="background: #dcfce7; color: #166534; padding: 12px 20px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #bbf7d0; font-size: 14px; font-weight: 500;">
 
-                    <i class="fas fa-check-circle"></i> <?php echo $success_msg; ?>
+                    <i class="fas fa-check-circle"></i> <?php echo htmlspecialchars($success_msg, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
 
                 </div>
 
@@ -1185,7 +1235,7 @@ $unread_count = count($admin_notifications);
 
                 <div style="background: #fee2e2; color: #991b1b; padding: 12px 20px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #fecaca; font-size: 14px; font-weight: 500;">
 
-                    <i class="fas fa-exclamation-circle"></i> <?php echo $error_msg; ?>
+                    <i class="fas fa-exclamation-circle"></i> <?php echo htmlspecialchars($error_msg, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
 
                 </div>
 
@@ -1245,9 +1295,9 @@ $unread_count = count($admin_notifications);
 
                             <?php foreach($breeds as $breed): ?>
 
-                                <option value="<?php echo htmlspecialchars($breed['breed']); ?>">
+                                <option value="<?php echo htmlspecialchars((string)($breed['breed'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
 
-                                    <?php echo htmlspecialchars($breed['breed']); ?>
+                                    <?php echo htmlspecialchars((string)($breed['breed'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
 
                                 </option>
 
@@ -1297,7 +1347,7 @@ $unread_count = count($admin_notifications);
 
                         <?php foreach($pets_list as $pet): ?>
 
-                        <tr class="pet-row" data-breed="<?php echo htmlspecialchars($pet['breed']); ?>">
+                        <tr class="pet-row" data-breed="<?php echo htmlspecialchars((string)($pet['breed'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
 
                             <td>
 
@@ -1309,13 +1359,13 @@ $unread_count = count($admin_notifications);
 
                                     </div>
 
-                                    <div style="font-weight: 700; color: var(--navy-dark);"><?php echo htmlspecialchars($pet['name']); ?></div>
+                                    <div style="font-weight: 700; color: var(--navy-dark);"><?php echo htmlspecialchars((string)($pet['name'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></div>
 
                                 </div>
 
                             </td>
 
-                            <td style="color: var(--text-muted); font-weight: 500;"><?php echo htmlspecialchars($pet['breed']); ?></td>
+                            <td style="color: var(--text-muted); font-weight: 500;"><?php echo htmlspecialchars((string)($pet['breed'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></td>
 
                             <td>
 
@@ -1396,8 +1446,7 @@ $unread_count = count($admin_notifications);
             <h2><i class="fas fa-paw" style="color: var(--brand-yellow);"></i> Register New Pet</h2>
 
             <form method="POST" action="">
-
-
+                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['managepet_csrf_token'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
 
                 <div class="form-group">
 
@@ -1411,7 +1460,7 @@ $unread_count = count($admin_notifications);
 
                             <option value="<?php echo (int)$user['id']; ?>">
 
-                                ID: <?php echo (int)$user['id']; ?> - <?php echo htmlspecialchars($user['full_name']); ?>
+                                ID: <?php echo (int)$user['id']; ?> - <?php echo htmlspecialchars((string)($user['full_name'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
 
                             </option>
 
@@ -1427,7 +1476,7 @@ $unread_count = count($admin_notifications);
 
                     <label>Pet's Name *</label>
 
-                    <input type="text" name="pet_name" placeholder="e.g. Pochi" required>
+                    <input type="text" name="pet_name" placeholder="e.g. Pochi" maxlength="100" required>
 
                 </div>
 
@@ -1475,7 +1524,7 @@ $unread_count = count($admin_notifications);
 
                         <label>Breed</label>
 
-                        <input type="text" name="pet_breed" placeholder="e.g. Shih Tzu">
+                        <input type="text" name="pet_breed" placeholder="e.g. Shih Tzu" maxlength="100">
 
                     </div>
 
@@ -1741,12 +1790,13 @@ $unread_count = count($admin_notifications);
 
 
 
+    const canFetchAdminNotifications = <?php echo $is_admin ? 'true' : 'false'; ?>;
+
     document.addEventListener('DOMContentLoaded', function() {
-
-        fetchAdminNotifs();
-
-        setInterval(fetchAdminNotifs, 3000);
-
+        if (canFetchAdminNotifications) {
+            fetchAdminNotifs();
+            setInterval(fetchAdminNotifs, 3000);
+        }
     });
 
 
@@ -1789,7 +1839,7 @@ $unread_count = count($admin_notifications);
 
 
 
-                const matchesSearch = petName.includes(searchTerm) || ownerId.includes(searchTerm);
+                const matchesSearch = petName.includes(searchTerm) || breed.includes(searchTerm) || ownerId.includes(searchTerm);
 
                 const matchesBreed = selectedBreed === "" || breed === selectedBreed;
 

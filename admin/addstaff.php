@@ -1,41 +1,55 @@
 <?php
 session_start();
-include '../db_supabase.php';
+require_once '../db_supabase.php';
 
-// --- UNIVERSAL SECURITY CHECK ---
-$current_role = isset($_SESSION['role']) ? strtolower(trim($_SESSION['role'])) : '';
+$current_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
 
-// Allow logged-in Admins, Managers, and Vets.
-// NOTE: Because this file is inside /admin, the staff login path is ../staff/stafflogin.php.
-if (!isset($_SESSION['logged_in']) || !in_array($current_role, ['admin', 'manager', 'vet', 'supervisor', 'staff'], true)) {
-    header("Location: ../staff/stafflogin.php");
+if (($_SESSION['logged_in'] ?? false) !== true) {
+    header('Location: ../admin_login.php');
     exit();
 }
 
-if ($_SERVER["REQUEST_METHOD"] === "POST") {
-    $full_name = trim($_POST['full_name'] ?? '');
-    $username = trim($_POST['username'] ?? '');
-    $role = trim($_POST['role'] ?? '');
-    $position = trim($_POST['position'] ?? '');
-    $plain_password = $_POST['password'] ?? '';
+if ($current_role !== 'admin') {
+    http_response_code(403);
+    exit('Access denied. Admin only.');
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $session_token = (string)($_SESSION['csrf_token'] ?? '');
+    $posted_token = (string)($_POST['csrf_token'] ?? '');
+    if ($session_token === '' || $posted_token === '' || !hash_equals($session_token, $posted_token)) {
+        http_response_code(403);
+        exit('Invalid or expired request token. Refresh Personnel Management and try again.');
+    }
+
+    $full_name = trim((string)($_POST['full_name'] ?? ''));
+    $username = trim((string)($_POST['username'] ?? ''));
+    $role = trim((string)($_POST['role'] ?? ''));
+    $position = trim((string)($_POST['position'] ?? ''));
+    $plain_password = (string)($_POST['password'] ?? '');
 
     if ($full_name === '' || $username === '' || $role === '' || $position === '' || $plain_password === '') {
         echo "<script>alert('Please complete all required fields.'); window.history.back();</script>";
         exit();
     }
 
-    if (!in_array($role, ['admin', 'manager', 'vet', 'supervisor', 'staff'], true)) {
+    if (!in_array($role, ['admin', 'manager', 'receptionist', 'groomer', 'pet_hotel_staff', 'veterinarian', 'vet_assistant', 'vet_nurse', 'vet', 'supervisor', 'staff'], true)) {
         echo "<script>alert('Invalid personnel role selected.'); window.history.back();</script>";
         exit();
     }
 
-    if ($role === 'admin' && $current_role !== 'admin') {
-        echo "<script>alert('Only an Admin can create another Admin account.'); window.history.back();</script>";
+    if (mb_strlen($full_name) > 150 || mb_strlen($username) > 100) {
+        echo "<script>alert('Full name or username is too long.'); window.history.back();</script>";
         exit();
     }
 
     if (mb_strlen($position) > 100) {
         echo "<script>alert('Position is too long. Please keep it within 100 characters.'); window.history.back();</script>";
+        exit();
+    }
+
+    if (strlen($plain_password) < 8) {
+        echo "<script>alert('Password must be at least 8 characters long.'); window.history.back();</script>";
         exit();
     }
 
@@ -55,9 +69,9 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
             exit();
         }
 
-        $dummy_email = strtolower(str_replace(' ', '', $username)) . "@boogies.clinic";
-        $contact = "N/A";
-        $category = "Personnel";
+        $dummy_email = strtolower(str_replace(' ', '', $username)) . '@boogies.clinic';
+        $contact = 'N/A';
+        $category = 'Personnel';
 
         $query = "
             INSERT INTO users
@@ -83,8 +97,8 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                     :role,
                     :position,
                     :user_category,
-                    TRUE,
-                    TRUE
+                    1,
+                    1
                 )
         ";
 
@@ -97,19 +111,18 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
             ':password' => $password,
             ':role' => $role,
             ':position' => $position,
-            ':user_category' => $category
+            ':user_category' => $category,
         ]);
 
         echo "<script>alert('Personnel account created successfully!'); window.location.href='managestaff.php';</script>";
         exit();
-
     } catch (PDOException $e) {
-        error_log("Add staff failed: " . $e->getMessage());
+        error_log('Add staff failed: ' . $e->getMessage());
         echo "<script>alert('Error adding account. Please try again.'); window.history.back();</script>";
         exit();
     }
 }
 
-header("Location: managestaff.php");
+header('Location: managestaff.php');
 exit();
 ?>

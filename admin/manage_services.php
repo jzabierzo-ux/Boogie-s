@@ -1,314 +1,191 @@
 <?php
-
 session_start();
 
-
-
-// 1. SECURITY: STRICTLY ADMIN ONLY (Restricted ito sa Supervisor)
-
-if (
-
-    !isset($_SESSION['logged_in']) ||
-
-    $_SESSION['logged_in'] !== true ||
-
-    ($_SESSION['role'] ?? '') !== 'admin'
-
-) {
-
-    header("Location: adminlogin.php");
-
+// Admin-only authorization.
+$current_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
+if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true || $current_role !== 'admin') {
+    header('Location: ../admin_login.php');
     exit();
-
 }
 
+require_once '../db_supabase.php';
 
+// CSRF token used by all state-changing service actions.
+if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+$csrf_token = $_SESSION['csrf_token'];
 
-// 2. DATABASE CONNECTION
+function redirectWithServiceFlash(string $type, string $message): void
+{
+    $_SESSION['manage_services_flash'] = [
+        'type' => $type === 'success' ? 'success' : 'error',
+        'text' => $message,
+    ];
+    header('Location: manage_services.php');
+    exit();
+}
 
-include('../db_supabase.php');
+// Show one-time feedback following a POST/redirect/GET cycle.
+$flash_message = $_SESSION['manage_services_flash'] ?? null;
+unset($_SESSION['manage_services_flash']);
 
-
-
-// 3. FETCH ADMIN PROFILE
-
-$admin_full_name = "Administrator";
-
-$profile_img_path = "";
-
-$first_name = "Administrator";
-
-
+// Shared Admin header data.
+$admin_full_name = 'Administrator';
+$profile_img_path = '';
+$first_name = 'Administrator';
+$admin_notifications = [];
+$unread_count = 0;
 
 if (isset($_SESSION['user_id'])) {
-
-    $uid = (int)$_SESSION['user_id'];
-
-
-
     try {
-
-        $get_admin = $pdo->prepare("
-
-            SELECT full_name, profile_image
-
-            FROM users
-
-            WHERE id = :id
-
-            LIMIT 1
-
-        ");
-
-        $get_admin->execute([':id' => $uid]);
-
+        $get_admin = $pdo->prepare(
+            'SELECT full_name, profile_image FROM users WHERE id = :id LIMIT 1'
+        );
+        $get_admin->execute([':id' => (int)$_SESSION['user_id']]);
         $admin_data = $get_admin->fetch(PDO::FETCH_ASSOC);
 
-
-
         if ($admin_data) {
-
-            $admin_full_name = $admin_data['full_name'] ?? 'Administrator';
-
-            $profile_img_path = $admin_data['profile_image'] ?? '';
-
+            $admin_full_name = (string)($admin_data['full_name'] ?? 'Administrator');
+            $profile_img_path = (string)($admin_data['profile_image'] ?? '');
             $_SESSION['user_name'] = $admin_full_name;
-
-
-
             $first_name = trim(explode(' ', $admin_full_name)[0], ',');
-
-        }
-
-    } catch (PDOException $e) {
-
-        $admin_full_name = $_SESSION['user_name'] ?? 'Administrator';
-
-        $first_name = trim(explode(' ', $admin_full_name)[0], ',');
-
-    }
-
-}
-
-
-
-// --- FETCH ADMIN NOTIFICATIONS ---
-
-try {
-
-    $admin_notif_stmt = $pdo->prepare("
-
-        SELECT *
-
-        FROM admin_notifications
-
-        WHERE is_read = 0
-
-        ORDER BY created_at DESC
-
-    ");
-
-    $admin_notif_stmt->execute();
-
-    $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
-
-    $unread_count = count($admin_notifications);
-
-} catch (PDOException $e) {
-
-    $admin_notifications = [];
-
-    $unread_count = 0;
-
-}
-
-
-
-// --- HANDLE DELETE ACTION ---
-
-if (isset($_GET['delete_id']) && is_numeric($_GET['delete_id'])) {
-
-    $id = (int)$_GET['delete_id'];
-
-
-
-    try {
-
-        $delete_stmt = $pdo->prepare("
-
-            DELETE FROM services_pricelist
-
-            WHERE id = :id
-
-        ");
-
-        $delete_stmt->execute([':id' => $id]);
-
-    } catch (PDOException $e) {
-
-        // Keep database details out of the browser.
-
-    }
-
-
-
-    header("Location: manage_services.php");
-
-    exit();
-
-}
-
-
-
-// --- HANDLE ADD / UPDATE ACTION ---
-
-if (isset($_POST['save_service'])) {
-
-    $cat = trim($_POST['category'] ?? '');
-
-    $name = trim($_POST['service_name'] ?? '');
-
-    $price = $_POST['price'] ?? '';
-
-    $available = isset($_POST['is_available']) ? (int)$_POST['is_available'] : 1;
-
-
-
-    if ($cat === '' || $name === '' || $price === '' || !is_numeric($price)) {
-
-        header("Location: manage_services.php");
-
-        exit();
-
-    }
-
-
-
-    // Normalize visibility to 0/1.
-
-    $available = $available === 1 ? 1 : 0;
-
-
-
-    try {
-
-        if (!empty($_POST['service_id']) && is_numeric($_POST['service_id'])) {
-
-            $id = (int)$_POST['service_id'];
-
-
-
-            $sql = "
-
-                UPDATE services_pricelist
-
-                SET
-
-                    category = :category,
-
-                    service_name = :service_name,
-
-                    price = :price,
-
-                    is_available = :is_available
-
-                WHERE id = :id
-
-            ";
-
-
-
-            $stmt = $pdo->prepare($sql);
-
-            $stmt->execute([
-
-                ':category' => $cat,
-
-                ':service_name' => $name,
-
-                ':price' => (float)$price,
-
-                ':is_available' => $available,
-
-                ':id' => $id
-
-            ]);
-
         } else {
-
-            $sql = "
-
-                INSERT INTO services_pricelist
-
-                    (category, service_name, price, is_available)
-
-                VALUES
-
-                    (:category, :service_name, :price, :is_available)
-
-            ";
-
-
-
-            $stmt = $pdo->prepare($sql);
-
-            $stmt->execute([
-
-                ':category' => $cat,
-
-                ':service_name' => $name,
-
-                ':price' => (float)$price,
-
-                ':is_available' => $available
-
-            ]);
-
+            $admin_full_name = (string)($_SESSION['user_name'] ?? 'Administrator');
+            $first_name = trim(explode(' ', $admin_full_name)[0], ',');
         }
-
     } catch (PDOException $e) {
-
-        // Keep database details out of the browser.
-
+        error_log('Manage services profile lookup failed: ' . $e->getMessage());
+        $admin_full_name = (string)($_SESSION['user_name'] ?? 'Administrator');
+        $first_name = trim(explode(' ', $admin_full_name)[0], ',');
     }
-
-
-
-    header("Location: manage_services.php");
-
-    exit();
-
 }
-
-
-
-// --- FETCH SERVICES ---
 
 try {
-
-    $services_stmt = $pdo->prepare("
-
-        SELECT *
-
-        FROM services_pricelist
-
-        ORDER BY category ASC, id ASC
-
-    ");
-
-    $services_stmt->execute();
-
-    $services = $services_stmt->fetchAll(PDO::FETCH_ASSOC);
-
+    $admin_notif_stmt = $pdo->prepare(
+        'SELECT id, message, created_at FROM admin_notifications WHERE is_read = 0 ORDER BY created_at DESC'
+    );
+    $admin_notif_stmt->execute();
+    $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
+    $unread_count = count($admin_notifications);
 } catch (PDOException $e) {
-
-    $services = [];
-
+    error_log('Manage services notification lookup failed: ' . $e->getMessage());
+    $admin_notifications = [];
+    $unread_count = 0;
 }
 
+// All changes must be submitted through POST with a valid CSRF token.
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $posted_token = $_POST['csrf_token'] ?? '';
+    if (!is_string($posted_token) || !hash_equals($csrf_token, $posted_token)) {
+        http_response_code(403);
+        exit('Invalid security token. Refresh the page and try again.');
+    }
+
+    // Delete a service using POST, never a query-string GET request.
+    if (isset($_POST['delete_service'])) {
+        $service_id = filter_var($_POST['delete_id'] ?? null, FILTER_VALIDATE_INT);
+        if ($service_id === false || $service_id === null || $service_id <= 0) {
+            redirectWithServiceFlash('error', 'Invalid service selected.');
+        }
+
+        try {
+            $delete_stmt = $pdo->prepare('DELETE FROM services_pricelist WHERE id = :id');
+            $delete_stmt->execute([':id' => $service_id]);
+            if ($delete_stmt->rowCount() !== 1) {
+                redirectWithServiceFlash('error', 'Service not found or already deleted.');
+            }
+            redirectWithServiceFlash('success', 'Service deleted successfully.');
+        } catch (PDOException $e) {
+            error_log('Delete service error: ' . $e->getMessage());
+            redirectWithServiceFlash('error', 'Unable to delete this service. Please check whether it is used by existing bookings.');
+        }
+    }
+
+    // Add or update a service.
+    if (isset($_POST['save_service'])) {
+        $category = trim((string)($_POST['category'] ?? ''));
+        $service_name = trim((string)($_POST['service_name'] ?? ''));
+        $price_raw = trim((string)($_POST['price'] ?? ''));
+        $available_raw = (string)($_POST['is_available'] ?? '');
+        $service_id_raw = trim((string)($_POST['service_id'] ?? ''));
+        $service_id = null;
+
+        if ($service_id_raw !== '') {
+            $validated_id = filter_var($service_id_raw, FILTER_VALIDATE_INT);
+            if ($validated_id === false || $validated_id <= 0) {
+                redirectWithServiceFlash('error', 'Invalid service selected for editing.');
+            }
+            $service_id = $validated_id;
+        }
+
+        if ($category === '' || $service_name === '' || $price_raw === '') {
+            redirectWithServiceFlash('error', 'Please complete all required service fields.');
+        }
+        if (!is_numeric($price_raw) || !is_finite((float)$price_raw) || (float)$price_raw < 0) {
+            redirectWithServiceFlash('error', 'Enter a valid price of zero or greater.');
+        }
+        if (!in_array($available_raw, ['0', '1'], true)) {
+            redirectWithServiceFlash('error', 'Select a valid service visibility option.');
+        }
+
+        // The Supabase schema may store is_available as a smallint, so bind 0/1.
+        $available = (int)$available_raw;
+        try {
+            if ($service_id !== null) {
+                $sql = 'UPDATE services_pricelist
+                        SET category = :category,
+                            service_name = :service_name,
+                            price = :price,
+                            is_available = :is_available
+                        WHERE id = :id';
+                $stmt = $pdo->prepare($sql);
+                $stmt->execute([
+                    ':category' => $category,
+                    ':service_name' => $service_name,
+                    ':price' => (float)$price_raw,
+                    ':is_available' => $available,
+                    ':id' => $service_id,
+                ]);
+                if ($stmt->rowCount() !== 1) {
+                    redirectWithServiceFlash('error', 'Service not found or no longer available.');
+                }
+                redirectWithServiceFlash('success', 'Service details updated successfully.');
+            }
+
+            $sql = 'INSERT INTO services_pricelist (category, service_name, price, is_available)
+                    VALUES (:category, :service_name, :price, :is_available)';
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute([
+                ':category' => $category,
+                ':service_name' => $service_name,
+                ':price' => (float)$price_raw,
+                ':is_available' => $available,
+            ]);
+            redirectWithServiceFlash('success', 'Service added successfully.');
+        } catch (PDOException $e) {
+            error_log('Save service error: ' . $e->getMessage());
+            redirectWithServiceFlash('error', 'Unable to save the service. Please check the service details and database logs.');
+        }
+    }
+
+    http_response_code(400);
+    exit('Invalid service action.');
+}
+
+// Fetch services for the table.
+$services = [];
+try {
+    $services_stmt = $pdo->query('SELECT * FROM services_pricelist ORDER BY category ASC, id ASC');
+    $services = $services_stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    error_log('Fetch services error: ' . $e->getMessage());
+    $flash_message = [
+        'type' => 'error',
+        'text' => 'Unable to load service pricing right now. Please check the application logs.',
+    ];
+}
 ?>
-
-
 
 <!DOCTYPE html>
 
@@ -322,7 +199,7 @@ try {
 
     <title>Manage Services | Boogie's Pet Care</title>
 
-    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght\@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 
@@ -348,13 +225,9 @@ try {
 
         }
 
-
-
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Poppins', sans-serif;}
 
         body { background-color: var(--bg-light); display: flex; min-height: 100vh; }
-
-
 
         /* --- SIDEBAR --- */
 
@@ -365,8 +238,6 @@ try {
         .sidebar-logo { width: 80px; height: auto; object-fit: contain; margin-bottom: 10px; }
 
         .sidebar-header h2 { font-size: 16px; color: var(--brand-yellow); text-transform: uppercase; letter-spacing: 1px; font-weight: 800;}
-
-
 
         /* --- MODERNIZED SIDEBAR NAVIGATION --- */
 
@@ -396,8 +267,6 @@ try {
 
         }
 
-
-
         /* --- MAIN CONTENT & HEADER --- */
 
         main { margin-left: var(--sidebar-width); flex-grow: 1; display: flex; flex-direction: column; }
@@ -405,8 +274,6 @@ try {
         .top-bar { background-color: var(--white); height: 70px; padding: 0 40px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 1px 10px rgba(0,0,0,0.08); position: sticky; top: 0; z-index: 1000; }
 
         .breadcrumb { font-weight: 700; color: var(--navy-dark); font-size: 15px; display: flex; align-items: center; gap: 8px; }
-
-
 
         /* --- NOTIFICATION STYLES --- */
 
@@ -434,8 +301,6 @@ try {
 
         .mark-read-btn:hover { text-decoration: underline; }
 
-
-
         /* --- PROFILE DROPDOWN & AVATAR --- */
 
         .admin-tag { background: var(--navy-dark); color: var(--brand-yellow); padding: 6px 16px; border-radius: 50px; font-size: 10px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; border: 1px solid var(--brand-yellow); }
@@ -445,8 +310,6 @@ try {
         .top-avatar { width: 35px; height: 35px; border-radius: 50%; object-fit: cover; border: 2px solid var(--navy-dark); }
 
         .top-avatar-fallback { width: 35px; height: 35px; border-radius: 50%; background: linear-gradient(135deg, var(--navy-dark), #003366); color: var(--brand-yellow); display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 14px; border: 2px solid var(--brand-yellow); box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-
-
 
         .profile-dropdown { display: none; position: absolute; right: 0; top: 45px; width: 200px; background: white; border: 1px solid #e2e8f0; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); border-radius: 8px; z-index: 1000; overflow: hidden; text-align: left; }
 
@@ -462,15 +325,17 @@ try {
 
         .profile-item.logout-text:hover { background: #fff1f2; color: #be123c; }
 
-
-
         /* --- TABLE & CONTENT --- */
 
         .container { padding: 40px; flex-grow: 1; }
 
         .data-box { background: var(--white); border-radius: 16px; padding: 30px; box-shadow: 0 4px 6px rgba(0,0,0,0.03); border: 1px solid #f1f5f9;}
 
-
+        .flash-message { padding: 12px 16px; border-radius: 8px; margin-bottom: 18px; font-size: 13px; font-weight: 600; line-height: 1.45; }
+        .flash-message.success { color: #166534; background: #dcfce7; border: 1px solid #bbf7d0; }
+        .flash-message.error { color: #991b1b; background: #fee2e2; border: 1px solid #fecaca; }
+        .action-group form { display: inline-flex; margin: 0; }
+        .btn-icon { cursor: pointer; }
 
         .admin-table { width: 100%; border-collapse: collapse; margin-top: 20px; }
 
@@ -480,21 +345,15 @@ try {
 
         .admin-table tr:hover td { background-color: #f8fafc; }
 
-
-
         .status-pill { padding: 6px 14px; border-radius: 20px; font-size: 10px; font-weight: 800; text-transform: uppercase; box-shadow: inset 0 0 0 1px rgba(0,0,0,0.05); letter-spacing: 0.5px;}
 
         .available { background: #dcfce7; color: #166534; }
 
         .hidden { background: #fee2e2; color: #991b1b; }
 
-
-
         .btn-add { background: var(--navy-dark); color: var(--brand-yellow); padding: 12px 24px; border: none; border-radius: 8px; cursor: pointer; font-weight: 700; font-size: 14px; transition: 0.2s; font-family: 'Poppins', sans-serif; display: inline-flex; align-items: center; gap: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);}
 
         .btn-add:hover { transform: translateY(-2px); box-shadow: 0 6px 12px rgba(0,0,0,0.15); opacity: 0.95; }
-
-
 
         /* Modern Action Buttons */
 
@@ -510,8 +369,6 @@ try {
 
         .btn-delete:hover { background: #dc2626; color: white; }
 
-
-
         /* --- MODAL --- */
 
         .modal { position: fixed; z-index: 1001; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,31,63,0.6); display: none; align-items: center; justify-content: center; }
@@ -524,17 +381,11 @@ try {
 
         .modal-content input:focus, .modal-content select:focus { background: white; border-color: var(--navy-dark); box-shadow: 0 0 0 3px rgba(0,31,63,0.1);}
 
-
-
         .btn-save { background: var(--navy-dark); color: var(--brand-yellow); width: 100%; padding: 14px; border: none; border-radius: 8px; cursor: pointer; font-weight: 700; transition: 0.2s; font-family: 'Poppins', sans-serif; font-size: 14px; margin-top: 10px;}
 
         .btn-save:hover { opacity: 0.95; transform: translateY(-2px); box-shadow: 0 4px 10px rgba(0,0,0,0.1);}
 
-
-
         footer { text-align: center; padding: 40px; color: var(--text-muted); font-size: 12px; border-top: 1px solid rgba(0,0,0,0.05);}
-
-    
 
         /* ===== RESPONSIVE ADMIN LAYOUT — same responsive pattern as managepet.php ===== */
         .topbar-left { display:flex; align-items:center; gap:12px; min-width:0; }
@@ -618,8 +469,6 @@ try {
 
 <body>
 
-
-
     <aside>
 
         <div class="sidebar-header">
@@ -639,8 +488,6 @@ try {
             <a href="manageusers.php" class="nav-item"><i class="fas fa-users"></i> Users</a>
 
             <a href="managepet.php" class="nav-item"><i class="fas fa-dog"></i> Pets</a>
-
-
 
             <?php if (isset($_SESSION['role']) && $_SESSION['role'] === 'admin'): ?>
 
@@ -675,8 +522,6 @@ try {
 
             </div>
 
-
-
             </div>
 
 <div class="top-right-actions">
@@ -685,15 +530,11 @@ try {
 
                     <i class="fa-solid fa-bell" style="font-size: 22px; color: #64748b;"></i>
 
-
-
                     <span id="admin-notif-badge" class="notif-badge" style="display: <?php echo ($unread_count > 0) ? 'inline-block' : 'none'; ?>;">
 
                         <?php echo $unread_count; ?>
 
                     </span>
-
-
 
                     <div class="notif-dropdown" id="notifBox" onclick="event.stopPropagation()">
 
@@ -705,8 +546,6 @@ try {
 
                         </div>
 
-
-
                         <div class="notif-body" id="admin-notif-list">
 
                             <?php if($unread_count > 0): ?>
@@ -717,7 +556,7 @@ try {
 
                                         <i class="fa-solid fa-circle-exclamation" style="color: #e11d48; margin-right: 5px;"></i>
 
-                                        <?php echo htmlspecialchars($notif['message']); ?>
+                                        <?php echo htmlspecialchars((string)($notif['message'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>
 
                                         <br><small style="color: #94a3b8; font-size: 11px;"><?php echo date('M d, g:i A', strtotime($notif['created_at'])); ?></small>
 
@@ -737,17 +576,13 @@ try {
 
                 </div>
 
-
-
                 <div class="profile-wrapper" onclick="toggleProfile(event)">
 
                     <span class="admin-tag"><?php echo strtoupper($_SESSION['role'] ?? 'ADMIN'); ?></span>
 
-
-
                     <?php if (!empty($profile_img_path) && file_exists($profile_img_path)): ?>
 
-                        <img src="<?php echo htmlspecialchars($profile_img_path); ?>" class="top-avatar" alt="Profile Picture">
+                        <img src="<?php echo htmlspecialchars($profile_img_path, ENT_QUOTES, 'UTF-8'); ?>" class="top-avatar" alt="Profile Picture">
 
                     <?php else: ?>
 
@@ -755,17 +590,13 @@ try {
 
                     <?php endif; ?>
 
-
-
                     <span style="font-size: 14px; font-weight: 600; color: #4a5568; display: flex; align-items: center; gap: 6px;">
 
-                        <?php echo htmlspecialchars($admin_full_name); ?>
+                        <?php echo htmlspecialchars($admin_full_name, ENT_QUOTES, 'UTF-8'); ?>
 
                         <i class="fas fa-chevron-down" style="font-size: 10px; color: #94a3b8;"></i>
 
                     </span>
-
-
 
                     <div class="profile-dropdown" id="profileBox" onclick="event.stopPropagation()">
 
@@ -789,11 +620,16 @@ try {
 
         </header>
 
-
-
         <div class="container">
 
             <div class="data-box">
+
+                <?php if (is_array($flash_message) && !empty($flash_message['text'])): ?>
+                    <div class="flash-message <?php echo ($flash_message['type'] ?? 'error') === 'success' ? 'success' : 'error'; ?>" role="status">
+                        <i class="fas <?php echo ($flash_message['type'] ?? 'error') === 'success' ? 'fa-check-circle' : 'fa-exclamation-circle'; ?>"></i>
+                        <?php echo htmlspecialchars((string)$flash_message['text'], ENT_QUOTES, 'UTF-8'); ?>
+                    </div>
+                <?php endif; ?>
 
                 <div class="service-page-head" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 25px; border-bottom: 2px solid #f8fafc; padding-bottom: 20px;">
 
@@ -808,8 +644,6 @@ try {
                     <button class="btn-add" onclick="openAddModal()"><i class="fas fa-plus"></i> New Service</button>
 
                 </div>
-
-
 
                 <div class="table-scroll-mobile" style="overflow-x: auto;">
 
@@ -839,9 +673,9 @@ try {
 
                             <tr>
 
-                                <td><span style="background: #f1f5f9; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 700; color: var(--text-muted);"><?php echo htmlspecialchars($service['category']); ?></span></td>
+                                <td><span style="background: #f1f5f9; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 700; color: var(--text-muted);"><?php echo htmlspecialchars((string)$service['category'], ENT_QUOTES, 'UTF-8'); ?></span></td>
 
-                                <td style="font-weight: 600; font-size: 15px;"><?php echo htmlspecialchars($service['service_name']); ?></td>
+                                <td style="font-weight: 600; font-size: 15px;"><?php echo htmlspecialchars((string)$service['service_name'], ENT_QUOTES, 'UTF-8'); ?></td>
 
                                 <td style="font-weight: 800; color: var(--navy-dark); font-size: 15px;">₱<?php echo number_format($service['price'], 2); ?></td>
 
@@ -859,9 +693,13 @@ try {
 
                                     <div class="action-group">
 
-                                        <button class="btn-icon btn-edit" onclick='openEditModal(<?php echo json_encode($service); ?>)' title="Edit Price/Details"><i class="fas fa-edit"></i></button>
+                                        <button class="btn-icon btn-edit" onclick='openEditModal(<?php echo htmlspecialchars(json_encode($service, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT), ENT_QUOTES, "UTF-8"); ?>)' title="Edit Price/Details"><i class="fas fa-edit"></i></button>
 
-                                        <a href="manage_services.php?delete_id=<?php echo $service['id']; ?>" class="btn-icon btn-delete" onclick="return confirm('Delete this service permanently? This cannot be undone.')" title="Delete Service"><i class="fas fa-trash"></i></a>
+                                        <form method="POST" action="manage_services.php" onsubmit="return confirm('Delete this service permanently? This cannot be undone.');">
+                                            <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token, ENT_QUOTES, 'UTF-8'); ?>">
+                                            <input type="hidden" name="delete_id" value="<?php echo (int)$service['id']; ?>">
+                                            <button type="submit" name="delete_service" value="1" class="btn-icon btn-delete" title="Delete Service" aria-label="Delete Service"><i class="fas fa-trash"></i></button>
+                                        </form>
 
                                     </div>
 
@@ -881,8 +719,6 @@ try {
 
         </div>
 
-
-
         <footer>
 
             © <?php echo date("Y"); ?> BOOGIE'S PET CARE & SERVICES - DASMARIÑAS BRANCH
@@ -891,37 +727,28 @@ try {
 
     </main>
 
-
-
     <div id="serviceModal" class="modal">
 
         <div class="modal-content">
 
             <h3 id="modalTitle" style="margin-bottom: 25px; color: var(--navy-dark); font-size: 22px; font-weight: 800;">Add New Service</h3>
 
-            <form method="POST">
+            <form method="POST" action="manage_services.php">
 
+                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token, ENT_QUOTES, 'UTF-8'); ?>">
                 <input type="hidden" name="service_id" id="service_id">
-
-
 
                 <label>Category Group</label>
 
                 <input type="text" name="category" id="cat_input" placeholder="e.g. Grooming, Pet Hotel" required>
 
-
-
                 <label>Service Description</label>
 
                 <input type="text" name="service_name" id="name_input" placeholder="e.g. Small Breed (1-5kg)" required>
 
-
-
                 <label>Standard Price (PHP)</label>
 
-                <input type="number" step="0.01" name="price" id="price_input" placeholder="0.00" required>
-
-
+                <input type="number" min="0" step="0.01" name="price" id="price_input" placeholder="0.00" required>
 
                 <label>Customer Visibility</label>
 
@@ -933,8 +760,6 @@ try {
 
                 </select>
 
-
-
                 <button type="submit" name="save_service" class="btn-save">Save Service Details</button>
 
                 <button type="button" onclick="closeModal()" style="width:100%; margin-top:15px; background:none; border:none; color:#94a3b8; font-weight:600; cursor:pointer; transition: 0.2s; font-family: 'Poppins', sans-serif;" onmouseover="this.style.color='#dc2626'" onmouseout="this.style.color='#94a3b8'">Cancel</button>
@@ -944,8 +769,6 @@ try {
         </div>
 
     </div>
-
-
 
     <script>
 
@@ -989,8 +812,6 @@ try {
 
         }
 
-
-
         function toggleProfile(event) {
 
             event.stopPropagation();
@@ -1000,8 +821,6 @@ try {
             document.getElementById("notifBox").classList.remove("show");
 
         }
-
-
 
         // Close dropdowns and modals when clicking outside
 
@@ -1014,8 +833,6 @@ try {
                 closeModal();
 
             }
-
-
 
             if (!event.target.closest('.notif-wrapper')) {
 
@@ -1051,29 +868,19 @@ try {
 
             const markReadBtn = document.getElementById('mark-read-link');
 
-
-
             if (!badge || !notifList) return;
 
-
-
             const unread = Number(data && data.unread ? data.unread : 0);
-
-
 
             badge.style.display = unread > 0 ? 'inline-block' : 'none';
 
             badge.textContent = unread;
-
-
 
             if (markReadBtn) {
 
                 markReadBtn.style.display = unread > 0 ? 'inline-block' : 'none';
 
             }
-
-
 
             notifList.innerHTML = (data && data.html)
 
@@ -1082,8 +889,6 @@ try {
                 : '<div class="notif-empty">No new notifications.</div>';
 
         }
-
-
 
         function fetchAdminNotifs() {
 
@@ -1123,8 +928,6 @@ try {
 
         }
 
-
-
         fetchAdminNotifs();
 
         setInterval(fetchAdminNotifs, 3000);
@@ -1132,8 +935,6 @@ try {
 // --- MODAL LOGIC ---
 
         const modal = document.getElementById('serviceModal');
-
-
 
         function openAddModal() {
 
@@ -1153,8 +954,6 @@ try {
 
         }
 
-
-
         function openEditModal(service) {
 
             document.getElementById('modalTitle').innerText = "Edit Service Details";
@@ -1172,8 +971,6 @@ try {
             modal.style.display = "flex";
 
         }
-
-
 
         function closeModal() {
 

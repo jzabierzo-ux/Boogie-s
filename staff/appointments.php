@@ -3,13 +3,16 @@ session_start();
 require_once '../db_supabase.php';
 
 // --- SECURITY CHECK: VETERINARIAN PORTAL ONLY ---
-$current_role = isset($_SESSION['role']) ? strtolower(trim($_SESSION['role'])) : '';
+// Accept common boolean representations used by PHP sessions, while keeping
+// this page restricted to the veterinary role.
+$current_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
+$current_role = preg_replace('/[\\s_-]+/', ' ', $current_role);
+$login_flag = $_SESSION['logged_in'] ?? false;
+$is_logged_in = ($login_flag === true || $login_flag === 1 || $login_flag === '1' ||
+    (is_string($login_flag) && strtolower(trim($login_flag)) === 'true'));
+$is_vet_role = in_array($current_role, ['vet', 'veterinarian'], true);
 
-if (
-    !isset($_SESSION['logged_in']) ||
-    $_SESSION['logged_in'] !== true ||
-    $current_role !== 'vet'
-) {
+if (!$is_logged_in || !$is_vet_role) {
     header("Location: stafflogin.php");
     exit();
 }
@@ -57,22 +60,26 @@ $mobile_name_source = trim(preg_replace('/^\s*(?:Dr\.?|Dra\.?|Doc\.?)\s+/i', '',
 $first_name_only = trim((string)(preg_split('/\s+/', $mobile_name_source)[0] ?? ''));
 
 
-// --- FETCH NOTIFICATIONS ---
-try {
-    $admin_notif_stmt = $pdo->prepare("
-        SELECT id, message, created_at
-        FROM admin_notifications
-        WHERE is_read = 0
-        ORDER BY created_at DESC
-        LIMIT 20
-    ");
-    $admin_notif_stmt->execute();
-    $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
-    $unread_count = count($admin_notifications);
-} catch (PDOException $e) {
-    error_log("Staff appointment notifications query failed: " . $e->getMessage());
-    $admin_notifications = [];
-    $unread_count = 0;
+// --- FETCH NOTIFICATIONS FOR THE SIGNED-IN STAFF ACCOUNT ONLY ---
+$staff_user_id = (int)($_SESSION['user_id'] ?? $_SESSION['staff_id'] ?? 0);
+$admin_notifications = [];
+$unread_count = 0;
+
+if ($staff_user_id > 0) {
+    try {
+        $staff_notif_stmt = $pdo->prepare("
+            SELECT id, message, created_at
+            FROM notifications
+            WHERE user_id = :user_id AND is_read = 0
+            ORDER BY created_at DESC, id DESC
+            LIMIT 20
+        ");
+        $staff_notif_stmt->execute([':user_id' => $staff_user_id]);
+        $admin_notifications = $staff_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
+        $unread_count = count($admin_notifications);
+    } catch (PDOException $e) {
+        error_log("Staff appointment notifications query failed: " . $e->getMessage());
+    }
 }
 
 // --- ACTION LOGIC PARA SA APPOINTMENT STATUS ---
@@ -130,6 +137,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['appointment_action'])
                         UPDATE appointments
                         SET booking_status = :status
                         WHERE id = :id
+                          AND service LIKE 'Vet Services%'
                           AND (
                               (:status = 'Confirmed' AND (booking_status = 'Pending' OR booking_status IS NULL OR booking_status = ''))
                               OR (:status = 'Cancelled' AND (booking_status = 'Pending' OR booking_status IS NULL OR booking_status = ''))
@@ -2269,12 +2277,12 @@ input, select, textarea, button, img { max-width:100%; }
                         </div>
                         
                         <div class="notif-body" id="admin-notif-list">
-                            <?php if($unread_count > 0 && $admin_notif_query): ?>
+                            <?php if ($unread_count > 0): ?>
                                 <?php foreach($admin_notifications as $notif): ?>
                                     <div class="notif-item">
                                         <i class="fa-solid fa-circle-exclamation" style="color: #ef4444; margin-right: 5px;"></i>
-                                        <?php echo htmlspecialchars($notif['message']); ?>
-                                        <br><small style="color: #94a3b8; font-size: 11px;"><?php echo date('M d, g:i A', strtotime($notif['created_at'])); ?></small>
+                                        <?php echo htmlspecialchars((string)($notif['message'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
+                                        <br><small style="color: #94a3b8; font-size: 11px;"><?php echo !empty($notif['created_at']) && strtotime((string)$notif['created_at']) !== false ? htmlspecialchars(date('M d, g:i A', strtotime((string)$notif['created_at'])), ENT_QUOTES, 'UTF-8') : ''; ?></small>
                                     </div>
                                 <?php endforeach; ?>
                             <?php else: ?>
@@ -2563,35 +2571,8 @@ input, select, textarea, button, img { max-width:100%; }
             }
         }
 
-        // --- REAL-TIME NOTIFICATION FETCHER ---
-        
-        function fetchAdminNotifs() {
-            fetch('../admin/get_admin_notifs.php')
-                .then(response => response.json())
-                .then(data => {
-                    const badge = document.getElementById('admin-notif-badge');
-                    const notifList = document.getElementById('admin-notif-list');
-                    const markReadBtn = document.getElementById('mark-read-link');
-                    
-                    if (data.unread > 0) {
-                        badge.style.display = 'inline-block';
-                        badge.innerText = data.unread;
-                        if(markReadBtn) markReadBtn.style.display = 'inline-block';
-                    } else {
-                        badge.style.display = 'none';
-                        if(markReadBtn) markReadBtn.style.display = 'none';
-                    }
-
-                    if (data.html !== "") {
-                        notifList.innerHTML = data.html;
-                    } else {
-                        notifList.innerHTML = '<div class="notif-empty">No new notifications.</div>';
-                    }
-                })
-                .catch(error => console.error('Error fetching notifications:', error));
-        }
-
-        setInterval(fetchAdminNotifs, 3000);
+        // Staff notifications are rendered from this signed-in user's notification rows.
+        // Do not poll the Admin-only notification endpoint from the Vet portal.
 
         // --- CLIENT-SIDE SEARCH ---
         (function () {

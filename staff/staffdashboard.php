@@ -1,158 +1,356 @@
 <?php
 session_start();
-require_once '../db_supabase.php';
 
-// --- SECURITY CHECK: VETERINARIAN PORTAL ---
-$current_role = isset($_SESSION['role']) ? strtolower(trim($_SESSION['role'])) : '';
+/* -------------------------------------------------------------------------
+   AUTHENTICATION AND VETERINARY ROLE ACCESS
+   ------------------------------------------------------------------------- */
+$current_role_raw = strtolower(trim((string)($_SESSION['role'] ?? '')));
+$role_aliases = [
+    'vet' => 'veterinarian',
+    'veterinary' => 'veterinarian',
+    'veterinarian' => 'veterinarian',
+    'vet assistant' => 'vet_assistant',
+    'veterinary assistant' => 'vet_assistant',
+    'veterinary_assistant' => 'vet_assistant',
+    'vet_assistant' => 'vet_assistant',
+    'vet nurse' => 'vet_nurse',
+    'veterinary nurse' => 'vet_nurse',
+    'veterinary_nurse' => 'vet_nurse',
+    'vet_nurse' => 'vet_nurse'
+];
+$current_role = $role_aliases[$current_role_raw] ?? $current_role_raw;
 
-if (
-    !isset($_SESSION['logged_in']) ||
-    $_SESSION['logged_in'] !== true ||
-    $current_role !== 'vet'
-) {
-    header("Location: stafflogin.php");
+$session_logged_in = in_array($_SESSION['logged_in'] ?? null, [true, 1, '1'], true)
+    || in_array($_SESSION['staff_logged_in'] ?? null, [true, 1, '1'], true);
+
+if (!$session_logged_in) {
+    header('Location: stafflogin.php');
     exit();
 }
 
-// SET CORRECT TIMEZONE FOR PHILIPPINES
+if (!in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)) {
+    http_response_code(403);
+    exit('Access denied. This dashboard is for veterinary personnel only.');
+}
+
+require_once '../db_supabase.php';
 date_default_timezone_set('Asia/Manila');
+header('Cache-Control: private, no-store, max-age=0');
 
-// Get details from Login session
-$staff_name = $_SESSION['staff_name'] ?? 'Doctor';
+$role_labels = [
+    'veterinarian' => 'Veterinarian',
+    'vet_assistant' => 'Vet Assistant',
+    'vet_nurse' => 'Vet Nurse'
+];
+$role_label = $role_labels[$current_role] ?? 'Veterinary Staff';
+$user_id = (int)($_SESSION['user_id'] ?? $_SESSION['staff_id'] ?? 0);
 
-// --- FETCH STAFF PROFILE IMAGE & FULL NAME ---
-$profile_img_path = "";
-$full_display_name = $staff_name;
+if (empty($_SESSION['staff_dashboard_csrf'])) {
+    $_SESSION['staff_dashboard_csrf'] = bin2hex(random_bytes(32));
+}
+$csrf_token = (string)$_SESSION['staff_dashboard_csrf'];
 
-if (isset($_SESSION['user_id']) || isset($_SESSION['staff_id'])) {
-    $uid = $_SESSION['user_id'] ?? $_SESSION['staff_id'];
+/* -------------------------------------------------------------------------
+   PROFILE IMAGE PATH RESOLUTION
+   Supports profile image URLs and existing local project upload folders.
+   ------------------------------------------------------------------------- */
+function resolveStaffDashboardImageUrl($storedPath): string
+{
+    $storedPath = trim((string)$storedPath);
+    if ($storedPath === '') {
+        return '';
+    }
+
+    if (preg_match('#^https?://#i', $storedPath)) {
+        return filter_var($storedPath, FILTER_VALIDATE_URL) ? $storedPath : '';
+    }
+
+    $cleanPath = str_replace('\\', '/', $storedPath);
+    $cleanPath = ltrim($cleanPath, '/');
+    $cleanPath = preg_replace('#^(?:\./)+#', '', $cleanPath);
+
+    // Do not allow stored paths to escape the project folders.
+    if ($cleanPath === '' || preg_match('#(^|/)\.\.(/|$)#', $cleanPath)) {
+        return '';
+    }
+
+    $projectRoot = dirname(__DIR__);
+    $candidates = [];
+
+    if (str_starts_with($cleanPath, 'admin/')) {
+        $candidates[] = [$projectRoot . '/' . $cleanPath, '../' . $cleanPath];
+    } elseif (str_starts_with($cleanPath, 'staff/')) {
+        $candidates[] = [$projectRoot . '/' . $cleanPath, '../' . $cleanPath];
+    } elseif (str_starts_with($cleanPath, 'uploads/')) {
+        $candidates[] = [__DIR__ . '/' . $cleanPath, $cleanPath];
+        $candidates[] = [$projectRoot . '/admin/' . $cleanPath, '../admin/' . $cleanPath];
+        $candidates[] = [$projectRoot . '/' . $cleanPath, '../' . $cleanPath];
+    } else {
+        $candidates[] = [__DIR__ . '/' . $cleanPath, $cleanPath];
+    }
+
+    foreach ($candidates as [$absolutePath, $urlPath]) {
+        if (is_file($absolutePath)) {
+            return $urlPath;
+        }
+    }
+
+    return '';
+}
+
+/* -------------------------------------------------------------------------
+   STAFF-OWNED NOTIFICATIONS
+   These come from notifications.user_id, not admin_notifications.
+   ------------------------------------------------------------------------- */
+function loadStaffDashboardNotifications(PDO $pdo, int $userId): array
+{
+    if ($userId <= 0) {
+        return [0, []];
+    }
+
+    $countStmt = $pdo->prepare("
+        SELECT COUNT(*)
+        FROM notifications
+        WHERE user_id = :user_id
+          AND is_read = 0
+    ");
+    $countStmt->execute([':user_id' => $userId]);
+    $unreadCount = (int)$countStmt->fetchColumn();
+
+    $listStmt = $pdo->prepare("
+        SELECT id, title, message, type, created_at
+        FROM notifications
+        WHERE user_id = :user_id
+          AND is_read = 0
+        ORDER BY created_at DESC, id DESC
+        LIMIT 20
+    ");
+    $listStmt->execute([':user_id' => $userId]);
+
+    return [$unreadCount, $listStmt->fetchAll(PDO::FETCH_ASSOC)];
+}
+
+function renderStaffDashboardNotifications(array $notifications): string
+{
+    $html = '';
+    $icons = [
+        'success' => 'fa-circle-check',
+        'completed' => 'fa-circle-check',
+        'booking' => 'fa-calendar-check',
+        'appointment' => 'fa-calendar-check',
+        'warning' => 'fa-triangle-exclamation',
+        'error' => 'fa-circle-exclamation',
+        'alert' => 'fa-circle-exclamation'
+    ];
+
+    foreach ($notifications as $notification) {
+        $title = trim((string)($notification['title'] ?? ''));
+        $message = trim((string)($notification['message'] ?? ''));
+        $type = strtolower(trim((string)($notification['type'] ?? '')));
+        $icon = $icons[$type] ?? 'fa-bell';
+
+        $html .= '<div class="notif-item">';
+        $html .= '<i class="fa-solid ' . $icon . '" style="color:#ef4444;margin-right:5px;" aria-hidden="true"></i>';
+
+        if ($title !== '') {
+            $html .= '<strong style="display:block;margin-bottom:3px;">' . htmlspecialchars($title, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</strong>';
+        }
+
+        if ($message !== '') {
+            $html .= '<span>' . nl2br(htmlspecialchars($message, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'), false) . '</span>';
+        } elseif ($title === '') {
+            $html .= 'New notification';
+        }
+
+        $timestamp = !empty($notification['created_at']) ? strtotime((string)$notification['created_at']) : false;
+        if ($timestamp !== false) {
+            $html .= '<br><small style="color:#94a3b8;font-size:11px;">' . htmlspecialchars(date('M d, g:i A', $timestamp), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</small>';
+        }
+
+        $html .= '</div>';
+    }
+
+    if ($html === '') {
+        $html = '<div class="notif-empty">No new clinic alerts.</div>';
+    }
+
+    return $html;
+}
+
+/* -------------------------------------------------------------------------
+   MARK ONLY THIS USER'S NOTIFICATIONS AS READ (POST + CSRF)
+   ------------------------------------------------------------------------- */
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (($_POST['action'] ?? '') !== 'mark_notifications_read') {
+        http_response_code(405);
+        header('Allow: GET, POST');
+        exit('Method not allowed.');
+    }
+
+    $submittedToken = (string)($_POST['csrf_token'] ?? '');
+    if ($submittedToken === '' || !hash_equals($csrf_token, $submittedToken)) {
+        http_response_code(403);
+        exit('Invalid security token. Refresh the page and try again.');
+    }
+
+    if ($user_id <= 0) {
+        http_response_code(403);
+        exit('Unable to identify the staff account.');
+    }
 
     try {
-        // FIX: Idinagdag ang full_name sa query para makuha ang buong pangalan
-        $get_staff = $pdo->prepare("
+        $markReadStmt = $pdo->prepare("
+            UPDATE notifications
+            SET is_read = 1
+            WHERE user_id = :user_id
+              AND is_read = 0
+        ");
+        $markReadStmt->execute([':user_id' => $user_id]);
+    } catch (PDOException $e) {
+        error_log('Staff dashboard mark-notifications-read failed: ' . $e->getMessage());
+        http_response_code(500);
+        exit('Unable to update notifications right now.');
+    }
+
+    header('Location: staffdashboard.php', true, 303);
+    exit();
+}
+
+/* -------------------------------------------------------------------------
+   SAME-FILE AJAX ENDPOINT FOR THE STAFF NOTIFICATION DROPDOWN
+   ------------------------------------------------------------------------- */
+if (($_GET['ajax'] ?? '') === 'notifications') {
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+    header('Pragma: no-cache');
+
+    try {
+        [$ajaxUnreadCount, $ajaxNotifications] = loadStaffDashboardNotifications($pdo, $user_id);
+        echo json_encode([
+            'success' => true,
+            'unread' => $ajaxUnreadCount,
+            'html' => renderStaffDashboardNotifications($ajaxNotifications)
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    } catch (PDOException $e) {
+        error_log('Staff dashboard notification poll failed: ' . $e->getMessage());
+        http_response_code(500);
+        echo json_encode([
+            'success' => false,
+            'unread' => 0,
+            'html' => '<div class="notif-empty">Unable to load notifications.</div>'
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    }
+    exit();
+}
+
+/* -------------------------------------------------------------------------
+   LOAD STAFF PROFILE
+   ------------------------------------------------------------------------- */
+$staff_name = (string)($_SESSION['staff_name'] ?? $_SESSION['user_name'] ?? 'Staff');
+$full_display_name = $staff_name;
+$profile_img_path = '';
+$profile_img_src = '';
+
+if ($user_id > 0) {
+    try {
+        $getStaff = $pdo->prepare("
             SELECT full_name, profile_image
             FROM users
             WHERE id = :uid
             LIMIT 1
         ");
+        $getStaff->execute([':uid' => $user_id]);
+        $staffData = $getStaff->fetch(PDO::FETCH_ASSOC);
 
-        $get_staff->execute([
-            ':uid' => (int)$uid
-        ]);
-
-        $staff_data = $get_staff->fetch(PDO::FETCH_ASSOC);
-
-        if ($staff_data) {
-            $profile_img_path = $staff_data['profile_image'] ?? '';
-
-            if (!empty($staff_data['full_name'])) {
-                $full_display_name = $staff_data['full_name'];
+        if ($staffData) {
+            $profile_img_path = (string)($staffData['profile_image'] ?? '');
+            $profile_img_src = resolveStaffDashboardImageUrl($profile_img_path);
+            if (!empty($staffData['full_name'])) {
+                $full_display_name = (string)$staffData['full_name'];
             }
         }
     } catch (PDOException $e) {
-        error_log("Staff profile query failed: " . $e->getMessage());
+        error_log('Staff profile query failed: ' . $e->getMessage());
     }
 }
 
-// Linisin ang pangalan para sa Avatar Initial
-$clean_name = trim(str_replace('Dr. ', '', $full_display_name), " ,");
-$first_letter = strtoupper(substr($clean_name, 0, 1));
-
-// Siguraduhing may "Dr. " na nakadikit
-$display_with_title = (stripos($full_display_name, 'Dr.') === false)
+$name_without_title = trim((string)preg_replace('/^\s*(?:Dr\.?|Dra\.?|Doc\.?)\s+/i', '', $full_display_name));
+$first_letter = strtoupper(substr($name_without_title !== '' ? $name_without_title : 'U', 0, 1));
+$has_professional_title = preg_match('/^\s*(?:Dr\.?|Dra\.?|Doc\.?)\s+/i', $full_display_name) === 1;
+$display_with_title = ($current_role === 'veterinarian' && !$has_professional_title)
     ? 'Dr. ' . $full_display_name
     : $full_display_name;
-
-// Mobile top bar: show first name only to prevent crowding.
-$mobile_name_source = trim(preg_replace('/^\s*(?:Dr\.?|Dra\.?|Doc\.?)\s+/i', '', (string)$display_with_title));
+$mobile_name_source = trim((string)preg_replace('/^\s*(?:Dr\.?|Dra\.?|Doc\.?)\s+/i', '', $display_with_title));
 $first_name_only = trim((string)(preg_split('/\s+/', $mobile_name_source)[0] ?? ''));
 
-
-// --- FETCH NOTIFICATIONS ---
-$admin_notifications = [];
+/* -------------------------------------------------------------------------
+   INITIAL NOTIFICATION STATE
+   ------------------------------------------------------------------------- */
+$staff_notifications = [];
 $unread_count = 0;
-
 try {
-    $admin_notif_stmt = $pdo->query("
-        SELECT *
-        FROM admin_notifications
-        WHERE is_read = 0
-        ORDER BY created_at DESC
-    ");
-
-    $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
-    $unread_count = count($admin_notifications);
+    [$unread_count, $staff_notifications] = loadStaffDashboardNotifications($pdo, $user_id);
 } catch (PDOException $e) {
-    error_log("Admin notifications query failed: " . $e->getMessage());
+    error_log('Staff dashboard notifications query failed: ' . $e->getMessage());
 }
+$staff_notification_html = renderStaffDashboardNotifications($staff_notifications);
 
 $today = date('Y-m-d');
-$hour = date('H');
-$greeting = ($hour < 12) ? "Good Morning" : (($hour < 17) ? "Good Afternoon" : "Good Evening");
+$hour = (int)date('H');
+$greeting = ($hour < 12) ? 'Good Morning' : (($hour < 17) ? 'Good Afternoon' : 'Good Evening');
 
-// --- SQL QUERIES FOR VET DASHBOARD ---
+/* -------------------------------------------------------------------------
+   DASHBOARD COUNTS AND TODAY'S VETERINARY SCHEDULE
+   ------------------------------------------------------------------------- */
 try {
-    $today_count_stmt = $pdo->prepare("
-        SELECT COUNT(*) AS total
+    $todayCountStmt = $pdo->prepare("
+        SELECT COUNT(*)
         FROM appointments
         WHERE appointment_date = :today
           AND service LIKE 'Vet Services%'
+          AND (booking_status IS NULL OR booking_status <> 'Cancelled')
     ");
-    $today_count_stmt->execute([
-        ':today' => $today
-    ]);
-    $today_count = (int)($today_count_stmt->fetchColumn() ?? 0);
+    $todayCountStmt->execute([':today' => $today]);
+    $today_count = (int)$todayCountStmt->fetchColumn();
 } catch (PDOException $e) {
     error_log("Today's appointments count query failed: " . $e->getMessage());
     $today_count = 0;
 }
 
 try {
-    $completed_count_stmt = $pdo->prepare("
-        SELECT COUNT(*) AS total
+    $completedCountStmt = $pdo->query("
+        SELECT COUNT(*)
         FROM appointments
         WHERE booking_status = 'Completed'
           AND service LIKE 'Vet Services%'
     ");
-    $completed_count_stmt->execute();
-    $completed_count = (int)($completed_count_stmt->fetchColumn() ?? 0);
+    $completed_count = (int)$completedCountStmt->fetchColumn();
 } catch (PDOException $e) {
-    error_log("Completed consultations count query failed: " . $e->getMessage());
+    error_log('Completed consultations count query failed: ' . $e->getMessage());
     $completed_count = 0;
 }
 
 try {
-    $pet_count_stmt = $pdo->query("
-        SELECT COUNT(*) AS total
-        FROM pets
-    ");
-    $pet_count = (int)($pet_count_stmt->fetchColumn() ?? 0);
+    $petCountStmt = $pdo->query('SELECT COUNT(*) FROM pets');
+    $pet_count = (int)$petCountStmt->fetchColumn();
 } catch (PDOException $e) {
-    error_log("Patient count query failed: " . $e->getMessage());
+    error_log('Patient count query failed: ' . $e->getMessage());
     $pet_count = 0;
 }
 
 $today_schedule = [];
-
 try {
-    $today_schedule_stmt = $pdo->prepare("
-        SELECT
-            a.*,
-            p.name AS pet_name
+    $todayScheduleStmt = $pdo->prepare("
+        SELECT a.*, p.name AS pet_name
         FROM appointments a
-        LEFT JOIN pets p
-            ON a.pet_id = p.id
+        LEFT JOIN pets p ON a.pet_id = p.id
         WHERE a.appointment_date = :today
           AND a.service LIKE 'Vet Services%'
           AND (a.booking_status <> 'Cancelled' OR a.booking_status IS NULL)
         ORDER BY a.appointment_time ASC
     ");
-
-    $today_schedule_stmt->execute([
-        ':today' => $today
-    ]);
-
-    $today_schedule = $today_schedule_stmt->fetchAll(PDO::FETCH_ASSOC);
+    $todayScheduleStmt->execute([':today' => $today]);
+    $today_schedule = $todayScheduleStmt->fetchAll(PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
     error_log("Today's schedule query failed: " . $e->getMessage());
     $today_schedule = [];
@@ -164,7 +362,7 @@ try {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Veterinarian Dashboard | Boogie's Pet Care</title>
+    <title><?php echo htmlspecialchars($role_label, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?> Dashboard | Boogie's Pet Care</title>
     <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
@@ -227,6 +425,9 @@ try {
         .notif-body { max-height: 300px; overflow-y: auto; }
         .notif-item { padding: 12px 15px; border-bottom: 1px solid #f1f5f9; font-size: 13px; line-height: 1.4; color: #475569; }
         .notif-item:hover { background: #f8fafc; }
+        .mark-read-btn { border: 0; padding: 0; background: transparent; color: var(--brand-blue); font-size: 11px; font-weight: 700; cursor: pointer; }
+        .mark-read-btn:hover { text-decoration: underline; }
+        .notif-empty { padding: 20px; text-align: center; color: #94a3b8; font-size: 13px; }
 
         /* --- PINAGANDANG ROLE TAG AT PROFILE --- */
         .role-label {
@@ -734,7 +935,6 @@ try {
             input, select, textarea, button { max-width:100%; }
         }
 
-    
 
 /* ================================================================
    FINAL MOBILE-FLEXIBLE STAFF LAYOUT
@@ -1678,7 +1878,6 @@ input, select, textarea, button, img { max-width:100%; }
 }
 
 
-
 /* ================================================================
    FINAL TOP BAR — MATCH ADMIN SIDE / MOBILE-SAFE
    Keep staff name visible on phones without clipping the right edge.
@@ -1906,7 +2105,6 @@ input, select, textarea, button, img { max-width:100%; }
 }
 
 
-
 /* ===== MOBILE STAFF NAME: FIRST NAME ONLY ===== */
 .mobile-profile-first-name { display:none; }
 @media (max-width:560px) {
@@ -2051,49 +2249,37 @@ input, select, textarea, button, img { max-width:100%; }
             
             <div class="top-right-actions">
                 <div class="notif-wrapper" onclick="toggleNotif(event)">
-                    <i class="fa-solid fa-bell" style="font-size: 20px; color: var(--text-muted);"></i>
-                    
-                    <?php if($unread_count > 0): ?>
-                        <span id="admin-notif-badge" class="notif-badge"><?php echo $unread_count; ?></span>
-                    <?php else: ?>
-                        <span id="admin-notif-badge" class="notif-badge" style="display: none;">0</span>
-                    <?php endif; ?>
-                    
+                    <i class="fa-solid fa-bell" style="font-size: 20px; color: var(--text-muted);" aria-hidden="true"></i>
+                    <span id="staff-notif-badge" class="notif-badge" style="display: <?php echo $unread_count > 0 ? 'inline-block' : 'none'; ?>;"><?php echo (int)$unread_count; ?></span>
+
                     <div class="notif-dropdown" id="notifBox" onclick="event.stopPropagation()">
                         <div class="notif-header">
-                            Alerts
-                            <a href="mark_notifications_read.php" id="mark-read-link" class="mark-read-btn" style="display: <?php echo ($unread_count > 0) ? 'inline-block' : 'none'; ?>;">Mark all read</a>
+                            <span>My Alerts</span>
+                            <form method="POST" action="staffdashboard.php" id="mark-read-form" style="display: <?php echo $unread_count > 0 ? 'inline-block' : 'none'; ?>; margin: 0;">
+                                <input type="hidden" name="action" value="mark_notifications_read">
+                                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
+                                <button type="submit" id="mark-read-link" class="mark-read-btn">Mark all read</button>
+                            </form>
                         </div>
-                        
-                        <div class="notif-body" id="admin-notif-list">
-                            <?php if($unread_count > 0 && !empty($admin_notifications)): ?>
-                                <?php foreach($admin_notifications as $notif): ?>
-                                    <div class="notif-item">
-                                        <i class="fa-solid fa-circle-exclamation" style="color: #ef4444; margin-right: 5px;"></i>
-                                        <?php echo htmlspecialchars($notif['message']); ?>
-                                        <br><small style="color: #94a3b8; font-size: 11px;"><?php echo date('M d, g:i A', strtotime($notif['created_at'])); ?></small>
-                                    </div>
-                                <?php endforeach; ?>
-                            <?php else: ?>
-                                <div class="notif-empty">No new clinic alerts.</div>
-                            <?php endif; ?>
+                        <div class="notif-body" id="staff-notif-list">
+                            <?php echo $staff_notification_html; ?>
                         </div>
                     </div>
                 </div>
 
                 <div class="profile-wrapper" onclick="toggleProfile(event)">
                     <div class="role-label">
-                        <i class="fas fa-user-md"></i> VET
+                        <i class="fas fa-user-md"></i> <?php echo htmlspecialchars($role_label); ?>
                     </div>
                     
-                    <?php if (!empty($profile_img_path) && file_exists($profile_img_path)): ?>
-                        <img src="<?php echo htmlspecialchars($profile_img_path); ?>" class="top-avatar" alt="Profile Picture">
+                    <?php if (!empty($profile_img_src)): ?>
+                        <img src="<?php echo htmlspecialchars($profile_img_src, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>" class="top-avatar" alt="Profile Picture">
                     <?php else: ?>
-                        <div class="top-avatar-fallback"><?php echo $first_letter; ?></div>
+                        <div class="top-avatar-fallback"><?php echo htmlspecialchars($first_letter, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></div>
                     <?php endif; ?>
                     
                     <span class="profile-name-text desktop-profile-name" style="font-size: 14px; font-weight: 700; color: var(--sidebar-navy); display: flex; align-items: center; gap: 6px;">
-                        <?php echo htmlspecialchars($display_with_title); ?>
+                        <?php echo htmlspecialchars($display_with_title, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
                         <i class="fas fa-chevron-down" style="font-size: 10px; color: var(--text-muted); opacity: 0.5;"></i>
                     </span>
                     <span class="mobile-profile-first-name">
@@ -2114,7 +2300,7 @@ input, select, textarea, button, img { max-width:100%; }
 
         <div class="container">
             <div class="hero-banner">
-                <h2><?php echo $greeting; ?>, <?php echo htmlspecialchars($display_with_title); ?>!</h2>
+                <h2><?php echo $greeting; ?>, <?php echo htmlspecialchars($display_with_title, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>!</h2>
                 <p>Welcome back to your clinical overview for today, <?php echo date('l, F j, Y'); ?>.</p>
             </div>
 
@@ -2155,17 +2341,17 @@ input, select, textarea, button, img { max-width:100%; }
                         ?>
                             <div class="schedule-item">
                                 <div class="time-box">
-                                    <?php echo date('h:i A', strtotime($appt['appointment_time'])); ?>
+                                    <?php $appointmentTimestamp = !empty($appt['appointment_time']) ? strtotime((string)$appt['appointment_time']) : false; echo $appointmentTimestamp !== false ? date('h:i A', $appointmentTimestamp) : 'Time TBD'; ?>
                                 </div>
                                 <div class="pet-icon">
                                     <i class="fas fa-dog"></i>
                                 </div>
                                 <div class="schedule-info">
                                     <strong><?php echo htmlspecialchars($appt['pet_name'] ?? 'Unknown Pet'); ?></strong>
-                                    <span>Service: <?php echo htmlspecialchars($appt['service']); ?></span>
+                                    <span>Service: <?php echo htmlspecialchars((string)($appt['service'] ?? 'Vet Services'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></span>
                                 </div>
                                 <div>
-                                    <span class="schedule-status <?php echo $s_class; ?>"><?php echo $status; ?></span>
+                                    <span class="schedule-status <?php echo $s_class; ?>"><?php echo htmlspecialchars((string)$status, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></span>
                                 </div>
                             </div>
                         <?php endforeach; ?>
@@ -2240,35 +2426,42 @@ input, select, textarea, button, img { max-width:100%; }
             }
         });
 
-        let previousUnreadCount = <?php echo $unread_count; ?>;
-        
-        function fetchAdminNotifs() {
-            fetch('../admin/get_admin_notifs.php')
-                .then(response => response.json())
-                .then(data => {
-                    const badge = document.getElementById('admin-notif-badge');
-                    const notifList = document.getElementById('admin-notif-list');
-                    const markReadBtn = document.getElementById('mark-read-link');
-                    
-                    if (data.unread > 0) {
-                        badge.style.display = 'inline-block';
-                        badge.innerText = data.unread;
-                        if(markReadBtn) markReadBtn.style.display = 'inline-block';
-                    } else {
-                        badge.style.display = 'none';
-                        if(markReadBtn) markReadBtn.style.display = 'none';
-                    }
+        function fetchStaffNotifs() {
+            fetch('staffdashboard.php?ajax=notifications', {
+                method: 'GET',
+                cache: 'no-store',
+                credentials: 'same-origin',
+                headers: { 'Accept': 'application/json' }
+            })
+            .then(function (response) {
+                if (!response.ok) {
+                    throw new Error('Notification request failed: HTTP ' + response.status);
+                }
+                return response.json();
+            })
+            .then(function (data) {
+                if (!data || data.success !== true) return;
 
-                    if (data.html !== "") {
-                        notifList.innerHTML = data.html;
-                    } else {
-                        notifList.innerHTML = '<div class="notif-empty">No new notifications.</div>';
-                    }
-                })
-                .catch(error => console.error('Error fetching notifications:', error));
+                const badge = document.getElementById('staff-notif-badge');
+                const notifList = document.getElementById('staff-notif-list');
+                const markReadForm = document.getElementById('mark-read-form');
+                if (!badge || !notifList) return;
+
+                const unread = Math.max(0, Number(data.unread) || 0);
+                badge.textContent = String(unread);
+                badge.style.display = unread > 0 ? 'inline-block' : 'none';
+                if (markReadForm) {
+                    markReadForm.style.display = unread > 0 ? 'inline-block' : 'none';
+                }
+                notifList.innerHTML = data.html || '<div class="notif-empty">No new clinic alerts.</div>';
+            })
+            .catch(function (error) {
+                console.error('Error fetching staff notifications:', error);
+            });
         }
 
-        setInterval(fetchAdminNotifs, 3000);
+        fetchStaffNotifs();
+        window.setInterval(fetchStaffNotifs, 15000);
     </script>
 </body>
 </html>

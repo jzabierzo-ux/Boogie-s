@@ -10,7 +10,7 @@ require_once 'db_supabase.php';
 
 $is_logged_in = isset($_SESSION['logged_in']) && $_SESSION['logged_in'] === true;
 
-$user_name = $is_logged_in ? $_SESSION['user_name'] : "Guest";
+$user_name = $is_logged_in ? (string)($_SESSION['user_name'] ?? 'Customer') : 'Guest';
 
 // Fetch ONLY grooming services from your services_pricelist table
 
@@ -36,7 +36,7 @@ try {
 
         )
 
-        AND is_available = 1
+        AND LOWER(CAST(is_available AS TEXT)) IN ('true', 't', '1')
 
         ORDER BY category ASC, price ASC
 
@@ -2674,7 +2674,7 @@ try {
 
                                 </div>
 
-                                <a href="<?php echo $is_logged_in ? 'book_appointment.php?service_id=' . $row['id'] . '&category=Grooming' : 'login.php'; ?>" class="btn-book">
+                                <a href="<?php echo $is_logged_in ? 'book_appointment.php?service_id=' . (int)($row['id'] ?? 0) . '&category=Grooming' : 'login.php'; ?>" class="btn-book">
 
                                     Book Now <i class="fa-solid fa-arrow-right"></i>
 

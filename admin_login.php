@@ -1,66 +1,117 @@
 <?php
 session_start();
-require_once 'db_supabase.php';
+require_once __DIR__ . '/db_supabase.php';
 
 $error_msg = '';
 
-function logAdminAccount(PDO $pdo, $user_id, string $action, string $status): void
+// Generate a CSRF token for the admin login form.
+if (empty($_SESSION['admin_login_csrf']) || !is_string($_SESSION['admin_login_csrf'])) {
+    $_SESSION['admin_login_csrf'] = bin2hex(random_bytes(32));
+}
+
+// If this browser already has a valid admin session, go straight to the dashboard.
+if (
+    ($_SESSION['logged_in'] ?? false) === true &&
+    ($_SESSION['admin_logged_in'] ?? false) === true &&
+    strtolower(trim((string)($_SESSION['role'] ?? ''))) === 'admin' &&
+    (int)($_SESSION['user_id'] ?? 0) > 0
+) {
+    header('Location: ./admin/admindashboard.php');
+    exit();
+}
+
+function logAdminAccount(PDO $pdo, ?int $user_id, string $action, string $status): void
 {
-    $ip_address = $_SERVER['REMOTE_ADDR'] ?? 'UNKNOWN';
-    $user_agent = $_SERVER['HTTP_USER_AGENT'] ?? 'UNKNOWN';
+    $ip_address = (string)($_SERVER['REMOTE_ADDR'] ?? 'UNKNOWN');
+    $user_agent = (string)($_SERVER['HTTP_USER_AGENT'] ?? 'UNKNOWN');
+
+    // Avoid unexpectedly large values in audit columns.
+    $ip_address = substr($ip_address, 0, 100);
+    $user_agent = substr($user_agent, 0, 1000);
 
     try {
-        $stmt = $pdo->prepare("\n            INSERT INTO admin_account_logs\n            (user_id, action, status, ip_address, user_agent)\n            VALUES (:user_id, :action, :status, :ip_address, :user_agent)\n        ");
+        $stmt = $pdo->prepare("
+            INSERT INTO admin_account_logs
+                (user_id, action, status, ip_address, user_agent)
+            VALUES
+                (:user_id, :action, :status, :ip_address, :user_agent)
+        ");
 
         $stmt->execute([
             ':user_id' => $user_id,
             ':action' => $action,
             ':status' => $status,
             ':ip_address' => $ip_address,
-            ':user_agent' => $user_agent
+            ':user_agent' => $user_agent,
         ]);
-    } catch (PDOException $e) {
-        error_log("Admin log insert failed: " . $e->getMessage());
+    } catch (Throwable $e) {
+        // Audit logging must not prevent a legitimate login or error response.
+        error_log('Admin account log insert failed: ' . $e->getMessage());
     }
 }
 
-if ($_SERVER["REQUEST_METHOD"] === "POST") {
-    $username = trim($_POST['username'] ?? '');
-    $password = $_POST['password'] ?? '';
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $postedToken = (string)($_POST['csrf_token'] ?? '');
+    $sessionToken = (string)($_SESSION['admin_login_csrf'] ?? '');
 
-    if ($username === '' || $password === '') {
-        $error_msg = "Please enter your username and password.";
+    if ($sessionToken === '' || $postedToken === '' || !hash_equals($sessionToken, $postedToken)) {
+        $error_msg = 'Your login form expired. Refresh the page and try again.';
+        // Rotate the token so a stale form cannot be submitted repeatedly.
+        $_SESSION['admin_login_csrf'] = bin2hex(random_bytes(32));
     } else {
-        try {
-            $stmt = $pdo->prepare("\n                SELECT *\n                FROM users\n                WHERE username = :username\n                AND role = 'admin'\n                LIMIT 1\n            ");
-            $stmt->execute([':username' => $username]);
-            $user = $stmt->fetch(PDO::FETCH_ASSOC);
+        $username = trim((string)($_POST['username'] ?? ''));
+        $password = (string)($_POST['password'] ?? '');
 
-            if ($user) {
-                if (isset($user['password']) && password_verify($password, $user['password'])) {
-                    logAdminAccount($pdo, (int)$user['id'], 'LOGIN', 'SUCCESS');
-                    session_regenerate_id(true);
+        if ($username === '' || $password === '') {
+            $error_msg = 'Please enter your username and password.';
+        } elseif (mb_strlen($username) > 255 || strlen($password) > 4096) {
+            $error_msg = 'Invalid username or password.';
+        } else {
+            try {
+                $stmt = $pdo->prepare("
+                    SELECT id, username, password, full_name, role
+                    FROM users
+                    WHERE username = :username
+                      AND LOWER(TRIM(COALESCE(role, ''))) = 'admin'
+                    LIMIT 1
+                ");
+                $stmt->execute([':username' => $username]);
+                $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
-                    $_SESSION['logged_in'] = true;
-                    $_SESSION['admin_logged_in'] = true;
-                    $_SESSION['user_id'] = (int)$user['id'];
-                    $_SESSION['role'] = 'admin';
-                    $_SESSION['user_name'] = !empty($user['full_name']) ? $user['full_name'] : 'Admin';
+                if ($user && isset($user['password']) && password_verify($password, (string)$user['password'])) {
+                    $adminId = (int)($user['id'] ?? 0);
 
-                    header("Location: ./admin/admindashboard.php");
-                    exit();
+                    if ($adminId <= 0) {
+                        logAdminAccount($pdo, null, 'LOGIN', 'FAILED');
+                        $error_msg = 'Unable to process login right now. Please try again.';
+                    } else {
+                        session_regenerate_id(true);
+
+                        // Set a clean, explicit admin session.
+                        $_SESSION['logged_in'] = true;
+                        $_SESSION['admin_logged_in'] = true;
+                        $_SESSION['user_id'] = $adminId;
+                        $_SESSION['role'] = 'admin';
+                        $_SESSION['user_name'] = trim((string)($user['full_name'] ?? '')) !== ''
+                            ? (string)$user['full_name']
+                            : 'Admin';
+                        unset($_SESSION['login_temp_email']);
+                        $_SESSION['admin_login_csrf'] = bin2hex(random_bytes(32));
+
+                        logAdminAccount($pdo, $adminId, 'LOGIN', 'SUCCESS');
+                        header('Location: ./admin/admindashboard.php');
+                        exit();
+                    }
                 } else {
-                    logAdminAccount($pdo, (int)$user['id'], 'LOGIN', 'FAILED');
-                    $error_msg = "Incorrect password.";
+                    logAdminAccount($pdo, $user ? (int)($user['id'] ?? 0) : null, 'LOGIN', 'FAILED');
+                    // Use a generic error to avoid revealing whether a username exists.
+                    $error_msg = 'Invalid username or password.';
                 }
-            } else {
+            } catch (PDOException $e) {
+                error_log('Admin login query failed: ' . $e->getMessage());
                 logAdminAccount($pdo, null, 'LOGIN', 'FAILED');
-                $error_msg = "Access Denied: Admin account not found.";
+                $error_msg = 'Unable to process login right now. Please try again.';
             }
-        } catch (PDOException $e) {
-            error_log("Admin login query failed: " . $e->getMessage());
-            logAdminAccount($pdo, null, 'LOGIN', 'FAILED');
-            $error_msg = "Unable to process login right now. Please try again.";
         }
     }
 }
@@ -176,19 +227,20 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
             <p class="subtitle">Authorized administrators only. Sign in to access the management dashboard.</p>
 
             <?php if (!empty($error_msg)): ?>
-                <div class="error">
+                <div class="error" role="alert">
                     <i class="fa-solid fa-circle-exclamation"></i>
-                    <div><?php echo htmlspecialchars($error_msg); ?></div>
+                    <div><?php echo htmlspecialchars($error_msg, ENT_QUOTES, 'UTF-8'); ?></div>
                 </div>
             <?php endif; ?>
 
             <form method="POST" action="">
+                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['admin_login_csrf'], ENT_QUOTES, 'UTF-8'); ?>">
                 <div class="form-group">
                     <label for="username">Username</label>
                     <div class="input-wrap">
                         <i class="fa-solid fa-user"></i>
                         <input type="text" id="username" name="username" class="form-control"
-                               autocomplete="username" autocapitalize="none" spellcheck="false" required>
+                               autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="255" required>
                     </div>
                 </div>
 
@@ -197,7 +249,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                     <div class="input-wrap">
                         <i class="fa-solid fa-lock"></i>
                         <input type="password" id="password" name="password" class="form-control"
-                               autocomplete="current-password" required>
+                               autocomplete="current-password" maxlength="4096" required>
                     </div>
                 </div>
 
@@ -212,7 +264,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
             </div>
         </div>
 
-        <div class="footer-note">© <?php echo date('Y'); ?> Boogie's Pet Care & Services</div>
+        <div class="footer-note">© <?php echo date('Y'); ?> Boogie's Pet Care &amp; Services</div>
     </div>
 </body>
 </html>

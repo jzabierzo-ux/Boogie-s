@@ -1,11 +1,12 @@
 <?php
 session_start();
 
-// SECURITY: Admin only
+// Admin-only access. Keep Admin authentication separate from Staff login.
+$current_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
 if (
     !isset($_SESSION['logged_in']) ||
     $_SESSION['logged_in'] !== true ||
-    ($_SESSION['role'] ?? '') !== 'admin'
+    $current_role !== 'admin'
 ) {
     header('Location: ../admin_login.php');
     exit();
@@ -13,8 +14,13 @@ if (
 
 require_once '../db_supabase.php';
 
-// Shared admin header data for the admin shell
-$current_role = isset($_SESSION['role']) ? strtolower(trim((string)$_SESSION['role'])) : '';
+// CSRF token for promo edits.
+if (empty($_SESSION['edit_promo_csrf']) || !is_string($_SESSION['edit_promo_csrf'])) {
+    $_SESSION['edit_promo_csrf'] = bin2hex(random_bytes(32));
+}
+$csrf_token = $_SESSION['edit_promo_csrf'];
+
+// Shared Admin header data.
 $admin_full_name = $_SESSION['user_name'] ?? 'Admin';
 $profile_img_path = '';
 $first_name = 'Admin';
@@ -23,32 +29,43 @@ $unread_count = 0;
 
 if (isset($_SESSION['user_id'])) {
     try {
-        $profile_stmt = $pdo->prepare("SELECT full_name, profile_image FROM users WHERE id = :id LIMIT 1");
+        $profile_stmt = $pdo->prepare(
+            'SELECT full_name, profile_image FROM users WHERE id = :id LIMIT 1'
+        );
         $profile_stmt->execute([':id' => (int)$_SESSION['user_id']]);
         $profile_data = $profile_stmt->fetch(PDO::FETCH_ASSOC);
+
         if ($profile_data) {
             $admin_full_name = $profile_data['full_name'] ?? $admin_full_name;
             $profile_img_path = $profile_data['profile_image'] ?? '';
             $_SESSION['user_name'] = $admin_full_name;
-            $first_name = trim(explode(' ', $admin_full_name)[0], ',');
         }
     } catch (PDOException $e) {
-        $first_name = trim(explode(' ', $admin_full_name)[0], ',');
+        error_log('Edit promo profile fetch error: ' . $e->getMessage());
     }
 }
+$first_name = trim(explode(' ', (string)$admin_full_name)[0] ?? 'Admin', ',');
 
 try {
-    $admin_notif_stmt = $pdo->prepare("SELECT id, message, created_at FROM admin_notifications WHERE is_read = 0 ORDER BY created_at DESC LIMIT 20");
+    $admin_notif_stmt = $pdo->prepare(
+        'SELECT id, message, created_at
+         FROM admin_notifications
+         WHERE is_read = 0
+         ORDER BY created_at DESC
+         LIMIT 20'
+    );
     $admin_notif_stmt->execute();
     $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
     $unread_count = count($admin_notifications);
 } catch (PDOException $e) {
     $admin_notifications = [];
     $unread_count = 0;
+    error_log('Edit promo notification fetch error: ' . $e->getMessage());
 }
 
 $message = '';
-$promo_id = isset($_GET['id']) && is_numeric($_GET['id']) ? (int)$_GET['id'] : 0;
+$promo_id = filter_input(INPUT_GET, 'id', FILTER_VALIDATE_INT);
+$promo_id = is_int($promo_id) && $promo_id > 0 ? $promo_id : 0;
 
 if ($promo_id <= 0) {
     header('Location: managepromo.php');
@@ -90,17 +107,15 @@ $presets = [
     ]
 ];
 
-// FETCH CURRENT PROMO
+// Fetch the selected promo.
 try {
-    $fetch_stmt = $pdo->prepare('
-        SELECT *
-        FROM promos
-        WHERE id = :id
-        LIMIT 1
-    ');
+    $fetch_stmt = $pdo->prepare(
+        'SELECT * FROM promos WHERE id = :id LIMIT 1'
+    );
     $fetch_stmt->execute([':id' => $promo_id]);
     $promo = $fetch_stmt->fetch(PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
+    error_log('Edit promo fetch error: ' . $e->getMessage());
     $promo = false;
 }
 
@@ -109,148 +124,190 @@ if (!$promo) {
     exit();
 }
 
-// Preserve values after validation errors
+// Preserve entered values when validation fails.
 $form = [
-    'tag' => $promo['tag'] ?? '',
-    'title' => $promo['title'] ?? '',
-    'description' => $promo['description'] ?? '',
-    'theme_color' => $promo['theme_color'] ?? 'purple',
-    'expiry_date' => $promo['expiry_date'] ?? '',
-    'status' => $promo['status'] ?? 'active',
+    'tag' => (string)($promo['tag'] ?? ''),
+    'title' => (string)($promo['title'] ?? ''),
+    'description' => (string)($promo['description'] ?? ''),
+    'theme_color' => (string)($promo['theme_color'] ?? 'purple'),
+    'expiry_date' => (string)($promo['expiry_date'] ?? ''),
+    'status' => (string)($promo['status'] ?? 'active'),
     'image_url' => $promo['image_url'] ?? null,
 ];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $form['tag'] = trim($_POST['tag'] ?? '');
-    $form['title'] = trim($_POST['title'] ?? '');
-    $form['description'] = trim($_POST['description'] ?? '');
-    $form['theme_color'] = trim($_POST['theme_color'] ?? '');
-    $form['expiry_date'] = trim($_POST['expiry_date'] ?? '');
-    $form['status'] = trim($_POST['status'] ?? '');
-
-    $remove_image = isset($_POST['remove_image']) && $_POST['remove_image'] === '1';
-    $new_image_url = $form['image_url'];
-    $new_uploaded_path = null;
-    $old_image_url = $promo['image_url'] ?? null;
-
-    // Validate text fields first
+    $submitted_token = $_POST['csrf_token'] ?? '';
     if (
-        $form['tag'] === '' ||
-        $form['title'] === '' ||
-        $form['description'] === '' ||
-        $form['theme_color'] === '' ||
-        $form['expiry_date'] === '' ||
-        $form['status'] === ''
+        !is_string($submitted_token) ||
+        !hash_equals($csrf_token, $submitted_token)
     ) {
-        $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Please complete all required fields.</div>";
-    } elseif (!in_array($form['theme_color'], ['purple', 'teal', 'red', 'orange'], true)) {
-        $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Invalid color theme selected.</div>";
-    } elseif (!in_array($form['status'], ['active', 'inactive'], true)) {
-        $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Invalid promo status selected.</div>";
-    }
+        $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Your form session expired. Refresh the page and try again.</div>";
+    } else {
+        $read_post_string = static function (string $key): string {
+            $value = $_POST[$key] ?? '';
+            return is_string($value) ? trim($value) : '';
+        };
 
-    // Optional replacement image
-    if ($message === '' && isset($_FILES['promo_image']) && $_FILES['promo_image']['error'] !== UPLOAD_ERR_NO_FILE) {
-        $upload = $_FILES['promo_image'];
-        $allowed_mimes = [
-            'image/jpeg' => 'jpg',
-            'image/png' => 'png',
-            'image/webp' => 'webp'
-        ];
-        $max_size = 5 * 1024 * 1024;
+        $form['tag'] = $read_post_string('tag');
+        $form['title'] = $read_post_string('title');
+        $form['description'] = $read_post_string('description');
+        $form['theme_color'] = $read_post_string('theme_color');
+        $form['expiry_date'] = $read_post_string('expiry_date');
+        $form['status'] = $read_post_string('status');
 
-        if ($upload['error'] !== UPLOAD_ERR_OK) {
-            $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Image upload failed.</div>";
-        } elseif ($upload['size'] > $max_size) {
-            $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Image must be 5 MB or smaller.</div>";
+        $remove_image = isset($_POST['remove_image']) && $_POST['remove_image'] === '1';
+        $new_image_url = $form['image_url'];
+        $new_uploaded_path = null;
+        $old_image_url = $promo['image_url'] ?? null;
+
+        $text_length = static function (string $value): int {
+            return function_exists('mb_strlen') ? mb_strlen($value, 'UTF-8') : strlen($value);
+        };
+
+        // Validate required fields, length limits, allowed options, and date format.
+        if (
+            $form['tag'] === '' ||
+            $form['title'] === '' ||
+            $form['description'] === '' ||
+            $form['theme_color'] === '' ||
+            $form['expiry_date'] === '' ||
+            $form['status'] === ''
+        ) {
+            $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Please complete all required fields.</div>";
+        } elseif (
+            $text_length($form['tag']) > 80 ||
+            $text_length($form['title']) > 120 ||
+            $text_length($form['description']) > 500
+        ) {
+            $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Some promo details exceed the allowed length.</div>";
+        } elseif (!in_array($form['theme_color'], ['purple', 'teal', 'red', 'orange'], true)) {
+            $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Invalid color theme selected.</div>";
+        } elseif (!in_array($form['status'], ['active', 'inactive'], true)) {
+            $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Invalid promo status selected.</div>";
         } else {
-            $finfo = finfo_open(FILEINFO_MIME_TYPE);
-            $mime = $finfo ? finfo_file($finfo, $upload['tmp_name']) : '';
-            if ($finfo) {
-                finfo_close($finfo);
+            $date_check = DateTimeImmutable::createFromFormat('!Y-m-d', $form['expiry_date']);
+            if (!$date_check || $date_check->format('Y-m-d') !== $form['expiry_date']) {
+                $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Please enter a valid expiry date.</div>";
             }
+        }
 
-            if (!isset($allowed_mimes[$mime])) {
-                $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Please upload a JPG, PNG, or WEBP image. <strong>Recommended:</strong> 4:5 poster (e.g. 1080×1350), but other image sizes are supported.</div>";
+        // Optional replacement image.
+        if (
+            $message === '' &&
+            isset($_FILES['promo_image']) &&
+            is_array($_FILES['promo_image']) &&
+            (int)($_FILES['promo_image']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_NO_FILE
+        ) {
+            $upload = $_FILES['promo_image'];
+            $upload_error = (int)($upload['error'] ?? UPLOAD_ERR_NO_FILE);
+            $allowed_mimes = [
+                'image/jpeg' => 'jpg',
+                'image/png' => 'png',
+                'image/webp' => 'webp'
+            ];
+            $max_size = 5 * 1024 * 1024;
+
+            if (
+                $upload_error !== UPLOAD_ERR_OK ||
+                empty($upload['tmp_name']) ||
+                !is_uploaded_file((string)$upload['tmp_name'])
+            ) {
+                $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Image upload failed. Please choose the image again.</div>";
+            } elseif ((int)($upload['size'] ?? 0) > $max_size) {
+                $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Image must be 5 MB or smaller.</div>";
             } else {
-                $upload_dir = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'promos' . DIRECTORY_SEPARATOR;
-
-                if (!is_dir($upload_dir)) {
-                    @mkdir($upload_dir, 0755, true);
+                $finfo = finfo_open(FILEINFO_MIME_TYPE);
+                $mime = $finfo ? finfo_file($finfo, $upload['tmp_name']) : '';
+                if ($finfo) {
+                    finfo_close($finfo);
                 }
 
-                if (!is_dir($upload_dir) || !is_writable($upload_dir)) {
-                    $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Promo upload folder is not writable. Create <strong>uploads/promos</strong> inside the project folder.</div>";
+                $image_info = @getimagesize($upload['tmp_name']);
+                if (!isset($allowed_mimes[$mime]) || $image_info === false) {
+                    $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Please upload a valid JPG, PNG, or WEBP image.</div>";
                 } else {
-                    try {
-                        $random_name = bin2hex(random_bytes(12)) . '.' . $allowed_mimes[$mime];
-                    } catch (Exception $e) {
-                        $random_name = uniqid('promo_', true) . '.' . $allowed_mimes[$mime];
-                    }
+                    $upload_dir = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'promos' . DIRECTORY_SEPARATOR;
 
-                    $destination = $upload_dir . $random_name;
-
-                    if (move_uploaded_file($upload['tmp_name'], $destination)) {
-                        $new_image_url = 'uploads/promos/' . $random_name;
-                        $new_uploaded_path = $destination;
+                    if (!is_dir($upload_dir) && !mkdir($upload_dir, 0755, true) && !is_dir($upload_dir)) {
+                        $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Unable to prepare the promo image folder.</div>";
+                    } elseif (!is_writable($upload_dir)) {
+                        $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Promo upload folder is not writable. Check permissions for <strong>uploads/promos</strong>.</div>";
                     } else {
-                        $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Unable to save the uploaded image.</div>";
+                        try {
+                            $random_name = bin2hex(random_bytes(16)) . '.' . $allowed_mimes[$mime];
+                        } catch (Throwable $e) {
+                            $random_name = hash('sha256', uniqid((string)mt_rand(), true) . microtime(true)) . '.' . $allowed_mimes[$mime];
+                        }
+
+                        $destination = $upload_dir . $random_name;
+                        if (move_uploaded_file($upload['tmp_name'], $destination)) {
+                            $new_image_url = 'uploads/promos/' . $random_name;
+                            $new_uploaded_path = $destination;
+                        } else {
+                            $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Unable to save the uploaded image.</div>";
+                        }
                     }
                 }
             }
         }
-    }
 
-    if ($message === '' && $remove_image && $new_uploaded_path === null) {
-        $new_image_url = null;
-    }
+        if ($message === '' && $remove_image && $new_uploaded_path === null) {
+            $new_image_url = null;
+        }
 
-    // UPDATE DATABASE
-    if ($message === '') {
-        try {
-            $update_stmt = $pdo->prepare('
-                UPDATE promos
-                SET
-                    tag = :tag,
-                    title = :title,
-                    description = :description,
-                    theme_color = :theme_color,
-                    expiry_date = :expiry_date,
-                    status = :status,
-                    image_url = :image_url
-                WHERE id = :id
-            ');
+        // Update the database only after validation and any requested upload succeed.
+        if ($message === '') {
+            try {
+                $update_stmt = $pdo->prepare(
+                    'UPDATE promos
+                     SET tag = :tag,
+                         title = :title,
+                         description = :description,
+                         theme_color = :theme_color,
+                         expiry_date = :expiry_date,
+                         status = :status,
+                         image_url = :image_url
+                     WHERE id = :id'
+                );
+                $update_stmt->execute([
+                    ':tag' => $form['tag'],
+                    ':title' => $form['title'],
+                    ':description' => $form['description'],
+                    ':theme_color' => $form['theme_color'],
+                    ':expiry_date' => $form['expiry_date'],
+                    ':status' => $form['status'],
+                    ':image_url' => $new_image_url,
+                    ':id' => $promo_id
+                ]);
 
-            $update_stmt->execute([
-                ':tag' => $form['tag'],
-                ':title' => $form['title'],
-                ':description' => $form['description'],
-                ':theme_color' => $form['theme_color'],
-                ':expiry_date' => $form['expiry_date'],
-                ':status' => $form['status'],
-                ':image_url' => $new_image_url,
-                ':id' => $promo_id
-            ]);
-
-            // Delete old image only after the database update succeeds
-            if (($new_image_url !== $old_image_url || $remove_image) && !empty($old_image_url)) {
-                $old_name = basename((string)$old_image_url);
-                $old_path = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'promos' . DIRECTORY_SEPARATOR . $old_name;
-                if (is_file($old_path) && realpath($old_path) === realpath(dirname(__DIR__) . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'promos' . DIRECTORY_SEPARATOR . $old_name)) {
-                    @unlink($old_path);
+                // Delete the old local promo image only after the DB update succeeds.
+                if (($new_image_url !== $old_image_url || $remove_image) && !empty($old_image_url)) {
+                    $promo_dir = realpath(dirname(__DIR__) . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'promos');
+                    $old_name = basename((string)parse_url((string)$old_image_url, PHP_URL_PATH));
+                    if ($promo_dir !== false && $old_name !== '') {
+                        $old_path = $promo_dir . DIRECTORY_SEPARATOR . $old_name;
+                        $resolved_old_path = realpath($old_path);
+                        if (
+                            $resolved_old_path !== false &&
+                            is_file($resolved_old_path) &&
+                            str_starts_with($resolved_old_path, $promo_dir . DIRECTORY_SEPARATOR)
+                        ) {
+                            @unlink($resolved_old_path);
+                        }
+                    }
                 }
-            }
 
-            $form['image_url'] = $new_image_url;
-            $promo['image_url'] = $new_image_url;
-            $message = "<div class='alert success'><i class='fa-solid fa-circle-check'></i> Promotion updated successfully. <a href='managepromo.php'>Back to Promotions</a></div>";
-        } catch (PDOException $e) {
-            if ($new_uploaded_path && is_file($new_uploaded_path)) {
-                @unlink($new_uploaded_path);
-            }
+                $form['image_url'] = $new_image_url;
+                $promo['image_url'] = $new_image_url;
+                $message = "<div class='alert success'><i class='fa-solid fa-circle-check'></i> Promotion updated successfully. <a href='managepromo.php'>Back to Promotions</a></div>";
+            } catch (PDOException $e) {
+                if ($new_uploaded_path && is_file($new_uploaded_path)) {
+                    @unlink($new_uploaded_path);
+                }
 
-            $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Unable to update the promo. Make sure the <strong>image_url</strong> column exists in the promos table.</div>";
-            error_log('Edit promo error: ' . $e->getMessage());
+                $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Unable to update the promo. Please check the application log for details.</div>";
+                error_log('Edit promo update error: ' . $e->getMessage());
+            }
         }
     }
 }
@@ -1408,7 +1465,6 @@ $current_image = $form['image_url'] ?? null;
             color: #ffcc00;
         }
 
-
         /* =========================================================
            SIDEBAR — MATCH MANAGEPET.PHP EXACTLY
            Layout/design only; promo functionality is untouched.
@@ -1566,7 +1622,6 @@ $current_image = $form['image_url'] ?? null;
             }
         }
 
-
 /* ===== EDIT PROMOTION POLISH ===== */
 .heading-main{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;}
 .page-back{display:inline-flex;align-items:center;gap:8px;padding:10px 14px;border:1px solid var(--border);border-radius:12px;background:#fff;color:var(--navy);font-size:12px;font-weight:800;text-decoration:none;box-shadow:0 5px 14px rgba(0,31,63,.05);white-space:nowrap;}
@@ -1583,7 +1638,6 @@ $current_image = $form['image_url'] ?? null;
 </style>
 </head>
 <body>
-
 
 <aside class="admin-sidebar" id="adminSidebar">
 
@@ -1626,7 +1680,6 @@ $current_image = $form['image_url'] ?? null;
 <div class="sidebar-backdrop" id="sidebarBackdrop" onclick="closeMobileSidebar()"></div>
 
 <main class="admin-main">
-
 
 <header class="admin-top-bar">
     <div class="topbar-left">
@@ -1685,6 +1738,7 @@ $current_image = $form['image_url'] ?? null;
             <?php echo $message; ?>
 
             <form action="editpromo.php?id=<?php echo $promo_id; ?>" method="POST" enctype="multipart/form-data" id="promoForm">
+                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token, ENT_QUOTES, 'UTF-8'); ?>">
 
                 <label class="section-label">1. Ready-made promo templates</label>
                 <div class="preset-grid">
@@ -1873,7 +1927,6 @@ if (currentImageSrc) {
 
 updatePreview();
 
-
 function toggleMobileSidebar(event) {
 
     if (event) event.stopPropagation();
@@ -2029,7 +2082,6 @@ document.querySelectorAll('.admin-sidebar .nav-item').forEach(function(link) {
 fetchAdminNotifs();
 
 setInterval(fetchAdminNotifs, 3000);
-
 
 </script>
 </body>

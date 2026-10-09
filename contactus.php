@@ -89,50 +89,37 @@ if (isset($_POST['send_contact'])) {
     // CSRF protection
 
     $submitted_csrf = $_POST['contact_csrf'] ?? '';
-
     if (
-
+        !is_string($submitted_csrf) ||
         empty($_SESSION['contact_csrf']) ||
-
+        !is_string($_SESSION['contact_csrf']) ||
         !hash_equals($_SESSION['contact_csrf'], $submitted_csrf)
-
     ) {
-
         echo "<script>alert('Invalid form session. Please refresh the page and try again.'); window.location='contactus.php';</script>";
-
         exit();
+    }
+    $name_raw = $_POST['name'] ?? '';
+    $email_raw = $_POST['email'] ?? '';
+    $message_raw = $_POST['message'] ?? '';
+    $name = is_string($name_raw) ? trim($name_raw) : '';
+    $email = is_string($email_raw) ? trim($email_raw) : '';
+    $message = is_string($message_raw) ? trim($message_raw) : '';
 
+    // Permit common international names, while blocking control characters in email headers.
+    if ($name === '' || strlen($name) > 120 || preg_match('/[\x00-\x1F\x7F]/', $name)) {
+        echo "<script>alert('Please enter a valid name (up to 120 characters).'); window.history.back();</script>";
+        exit();
     }
 
-
-
-    $name = trim($_POST['name'] ?? '');
-
-    $email = trim($_POST['email'] ?? '');
-
-    $message = trim($_POST['message'] ?? '');
-
-
-
-    if (!preg_match("/^[a-zA-Z\s]*$/", $name)) {
-
-        echo "<script>alert('Invalid name. Only letters and spaces are allowed.'); window.history.back();</script>";
-
+    if (strlen($email) > 254 || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        echo "<script>alert('Please enter a valid email address.'); window.history.back();</script>";
         exit();
-
     }
 
-
-
-    if (!preg_match("/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.(com|net|ph)$/i", $email)) {
-
-        echo "<script>alert('Invalid email. Please use a complete address ending in .com, .net, or .ph'); window.history.back();</script>";
-
+    if ($message === '' || strlen($message) > 5000 || strpos($message, chr(0)) !== false) {
+        echo "<script>alert('Please enter a message of up to 5,000 characters.'); window.history.back();</script>";
         exit();
-
     }
-
-
 
     try {
 
@@ -157,6 +144,9 @@ if (isset($_POST['send_contact'])) {
             ':message' => $message
 
         ]);
+
+        // Prevent resubmitting the same contact form after the message is saved.
+        $_SESSION['contact_csrf'] = bin2hex(random_bytes(32));
 
 
 
@@ -296,15 +286,7 @@ if (isset($_POST['send_contact'])) {
 
             $mail->send();
 
-
-
-            // Rotate the one-time token after a successful submission.
-
-            $_SESSION['contact_csrf'] = bin2hex(random_bytes(32));
-
-
-
-            echo "<script>alert('Message sent successfully to Boogie\\'s email! Your message was also saved in our system.'); window.location='contactus.php';</script>";
+echo "<script>alert('Message sent successfully to Boogie\\'s email! Your message was also saved in our system.'); window.location='contactus.php';</script>";
 
             exit();
 
@@ -322,7 +304,7 @@ if (isset($_POST['send_contact'])) {
 
 
 
-            echo "<script>alert('Your message was saved successfully, but the email could not be sent right now. Please try again later.'); window.location='contactus.php';</script>";
+            echo "<script>alert('Your message was saved in our system, but the email notification could not be sent. Please do not submit it again; our team can still review your inquiry.'); window.location='contactus.php';</script>";
 
             exit();
 
@@ -3734,7 +3716,7 @@ $parent_text = ($total_reviews == 1) ? "happy fur-parent" : "happy fur-parents";
 
             </div>
 
-            <div>  &#x20;
+            <div>   
 
                 <h4>Quick Links</h4>
 

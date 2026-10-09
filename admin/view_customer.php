@@ -1,375 +1,278 @@
 <?php
-
 session_start();
+require_once '../db_supabase.php';
+date_default_timezone_set('Asia/Manila');
 
-include '../db_supabase.php';
+// Normalize legacy role names to the same role names used by manageusers.php.
+$raw_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
+$role_aliases = [
+    'administrator' => 'admin',
+    'shop manager' => 'manager',
+    'shop_manager' => 'manager',
+    'vet' => 'veterinarian',
+    'veterinary' => 'veterinarian',
+    'front desk' => 'receptionist',
+    'front desk / receptionist' => 'receptionist',
+    'front_desk' => 'receptionist',
+    'front_desk_receptionist' => 'receptionist',
+    'veterinary assistant' => 'vet_assistant',
+    'vet assistant' => 'vet_assistant',
+    'veterinary_assistant' => 'vet_assistant',
+    'veterinary nurse' => 'vet_nurse',
+    'vet nurse' => 'vet_nurse',
+    'veterinary_nurse' => 'vet_nurse',
+    'grooming staff' => 'groomer',
+    'grooming staff / groomer' => 'groomer',
+    'grooming_staff' => 'groomer',
+    'grooming_staff_groomer' => 'groomer',
+    'pet hotel staff' => 'pet_hotel_staff',
+    'pet hotel staff / attendant' => 'pet_hotel_staff',
+    'pet_hotel_attendant' => 'pet_hotel_staff',
+    'pet_hotel_staff_attendant' => 'pet_hotel_staff',
+    // Legacy mappings retained while old staff accounts are migrated.
+    'staff' => 'groomer',
+    'supervisor' => 'receptionist',
+];
+$current_role = $role_aliases[$raw_role] ?? $raw_role;
+if ($current_role !== '') {
+    $_SESSION['role'] = $current_role;
+}
+$is_admin = ($current_role === 'admin');
 
-
-
-// --- UNIVERSAL SECURITY CHECK ---
-
-$current_role = isset($_SESSION['role']) ? strtolower(trim($_SESSION['role'])) : '';
-
-
-
-// 1. SECURITY: Allow Admin, Supervisor, and Staff
-
-if (!isset($_SESSION['logged_in']) || !in_array($current_role, ['admin', 'supervisor', 'staff'], true)) {
-
-    header("Location: ../staff/stafflogin.php");
-
+if (($_SESSION['logged_in'] ?? false) !== true) {
+    $login_target = ($current_role === 'admin') ? '../admin_login.php' : '../staff/stafflogin.php';
+    header('Location: ' . $login_target);
     exit();
-
 }
 
+if (empty($_SESSION['user_id']) || !is_numeric($_SESSION['user_id']) || (int)$_SESSION['user_id'] < 1) {
+    http_response_code(403);
+    exit('Access denied: invalid session.');
+}
 
+if (in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)) {
+    header('Location: ../staff/staffdashboard.php');
+    exit();
+}
+if ($current_role === 'pet_hotel_staff') {
+    header('Location: managebooking.php');
+    exit();
+}
+$allowed_roles = ['admin', 'manager', 'receptionist', 'groomer'];
+if (!in_array($current_role, $allowed_roles, true)) {
+    http_response_code(403);
+    exit('Access denied. This role cannot access customer details.');
+}
 
-// 2. FETCH ADMIN/SUPERVISOR PROFILE
+// Editing a customer's contact number is an operational permission; permanent deletion is Admin-only.
+$can_update_contact = in_array($current_role, ['admin', 'manager', 'receptionist'], true);
+$can_delete_customer = $is_admin;
 
-$admin_full_name = "User";
+if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+$csrf_token = (string)$_SESSION['csrf_token'];
 
-$profile_img_path = "";
+$admin_full_name = (string)($_SESSION['user_name'] ?? 'User');
+$profile_img_path = '';
+$profile_img_url = '';
+$first_name = trim(explode(' ', $admin_full_name)[0] ?? 'User', ',');
 
-$first_name = "User";
-
-
-
-if (isset($_SESSION['user_id'])) {
-
+try {
     $uid = (int)$_SESSION['user_id'];
+    $get_admin = $pdo->prepare('SELECT full_name, profile_image FROM users WHERE id = :id LIMIT 1');
+    $get_admin->execute([':id' => $uid]);
+    $admin_data = $get_admin->fetch(PDO::FETCH_ASSOC);
+    if ($admin_data) {
+        $admin_full_name = (string)($admin_data['full_name'] ?? $admin_full_name);
+        $profile_img_path = trim((string)($admin_data['profile_image'] ?? ''));
+        $_SESSION['user_name'] = $admin_full_name;
+        $first_name = trim(explode(' ', $admin_full_name)[0] ?? 'User', ',');
+    }
+} catch (PDOException $e) {
+    error_log('view_customer profile lookup failed: ' . $e->getMessage());
+}
 
-
-
-    try {
-
-        $get_admin = $pdo->prepare("
-
-            SELECT full_name, profile_image
-
-            FROM users
-
-            WHERE id = :id
-
-            LIMIT 1
-
-        ");
-
-        $get_admin->execute([':id' => $uid]);
-
-        $admin_data = $get_admin->fetch(PDO::FETCH_ASSOC);
-
-
-
-        if ($admin_data) {
-
-            $admin_full_name = $admin_data['full_name'] ?? 'User';
-
-            $profile_img_path = $admin_data['profile_image'] ?? '';
-
-            $_SESSION['user_name'] = $admin_full_name;
-
-
-
-            $first_name = trim(explode(' ', $admin_full_name)[0], ',');
-
+// Resolve profile images safely against the project's supported local upload paths.
+if ($profile_img_path !== '') {
+    $normalized_profile_path = str_replace('\\', '/', $profile_img_path);
+    if (strpos($normalized_profile_path, 'uploads/') === 0 && strpos($normalized_profile_path, '..') === false) {
+        $admin_upload_path = __DIR__ . '/' . $normalized_profile_path;
+        $root_upload_path = dirname(__DIR__) . '/' . $normalized_profile_path;
+        if (is_file($admin_upload_path)) {
+            $profile_img_url = $normalized_profile_path;
+        } elseif (is_file($root_upload_path)) {
+            $profile_img_url = '../' . $normalized_profile_path;
         }
-
-    } catch (PDOException $e) {
-
-        $admin_full_name = $_SESSION['user_name'] ?? 'User';
-
-        $first_name = trim(explode(' ', $admin_full_name)[0], ',');
-
+    } elseif (strpos($normalized_profile_path, '../uploads/') === 0 && strpos($normalized_profile_path, '..') === 0) {
+        $root_relative = substr($normalized_profile_path, 3);
+        if (strpos($root_relative, 'uploads/') === 0 && is_file(dirname(__DIR__) . '/' . $root_relative)) {
+            $profile_img_url = '../' . $root_relative;
+        }
     }
-
 }
 
-
-
-// Redirect back to manage users if no ID is provided
-
-if (!isset($_GET['id']) || !is_numeric($_GET['id'])) {
-
-    header("Location: manageusers.php");
-
+// Validate the customer ID before any read or write query.
+$requested_id = (string)($_GET['id'] ?? '');
+if ($requested_id === '' || !ctype_digit($requested_id) || (int)$requested_id < 1) {
+    header('Location: manageusers.php');
     exit();
+}
+$customer_id = (int)$requested_id;
+$page_message = '';
+$page_message_type = 'error';
 
+// Show post/redirect/get success message without replaying the submitted form.
+if (!empty($_SESSION['view_customer_flash']) && is_array($_SESSION['view_customer_flash'])) {
+    $page_message = (string)($_SESSION['view_customer_flash']['message'] ?? '');
+    $page_message_type = (string)($_SESSION['view_customer_flash']['type'] ?? 'success');
+    unset($_SESSION['view_customer_flash']);
 }
 
-
-
-$customer_id = (int)$_GET['id'];
-
-
-
-// --- ACTION LOGIC (UPDATE & DELETE) ---
-
-
-
-// A. UPDATE CONTACT NUMBER
-
-if (isset($_POST['update_contact'])) {
-
-    $new_contact = trim($_POST['new_contact'] ?? '');
-
-
-
-    // Strict Validation
-
-    if (!preg_match("/^[0-9]{11}$/", $new_contact)) {
-
-        echo "<script>alert('Invalid contact number. Please enter exactly 11 digits.'); window.history.back();</script>";
-
-        exit();
-
+// Process only explicitly named POST actions. All mutations require a valid CSRF token.
+$is_update_request = ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_contact']));
+$is_delete_request = ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_user']));
+if ($is_update_request || $is_delete_request) {
+    $posted_token = (string)($_POST['csrf_token'] ?? '');
+    if ($posted_token === '' || !hash_equals($csrf_token, $posted_token)) {
+        http_response_code(403);
+        exit('Invalid security token. Please refresh the page and try again.');
     }
-
-
-
-    try {
-
-        $stmt_update = $pdo->prepare("
-
-            UPDATE users
-
-            SET contact_number = :contact_number
-
-            WHERE id = :customer_id
-
-        ");
-
-        $stmt_update->execute([
-
-            ':contact_number' => $new_contact,
-
-            ':customer_id' => $customer_id
-
-        ]);
-
-
-
-        header("Location: view_customer.php?id=" . $customer_id);
-
-        exit();
-
-    } catch (PDOException $e) {
-
-        die("Unable to update the contact number at this time.");
-
-    }
-
 }
 
+if ($is_update_request) {
+    if (!$can_update_contact) {
+        http_response_code(403);
+        exit('Access denied. You do not have permission to edit customer contact details.');
+    }
 
+    $new_contact = trim((string)($_POST['new_contact'] ?? ''));
+    if (!preg_match('/^[0-9]{11}$/', $new_contact)) {
+        $page_message = 'Invalid contact number. Please enter exactly 11 digits.';
+        $page_message_type = 'error';
+    } else {
+        try {
+            $stmt_update = $pdo->prepare("UPDATE users SET contact_number = :contact_number WHERE id = :customer_id AND role = 'customer'");
+            $stmt_update->execute([
+                ':contact_number' => $new_contact,
+                ':customer_id' => $customer_id,
+            ]);
 
-// B. DELETE USER
+            if ($stmt_update->rowCount() !== 1) {
+                $page_message = 'Customer contact number was not updated. Please confirm that the customer still exists.';
+                $page_message_type = 'error';
+            } else {
+                $_SESSION['view_customer_flash'] = [
+                    'message' => 'Contact number updated successfully.',
+                    'type' => 'success',
+                ];
+                header('Location: view_customer.php?id=' . $customer_id);
+                exit();
+            }
+        } catch (PDOException $e) {
+            error_log('view_customer contact update failed: ' . $e->getMessage());
+            $page_message = 'Unable to update the contact number at this time.';
+            $page_message_type = 'error';
+        }
+    }
+}
 
-if (isset($_POST['delete_user'])) {
+if ($is_delete_request) {
+    if (!$can_delete_customer) {
+        http_response_code(403);
+        exit('Access denied. Only an Admin can delete a customer account.');
+    }
 
     try {
-
         $pdo->beginTransaction();
 
-
-
-        // Delete associated appointments first, then pets, then the user.
-
-        // This order is safer when foreign keys are enforced in PostgreSQL.
-
-        $delete_appointments = $pdo->prepare("
-
-            DELETE FROM appointments
-
-            WHERE user_id = :customer_id
-
-        ");
-
-        $delete_appointments->execute([':customer_id' => $customer_id]);
-
-
-
-        $delete_pets = $pdo->prepare("
-
-            DELETE FROM pets
-
-            WHERE owner_id = :customer_id
-
-        ");
-
-        $delete_pets->execute([':customer_id' => $customer_id]);
-
-
-
-        $delete_user = $pdo->prepare("
-
-            DELETE FROM users
-
-            WHERE id = :customer_id
-
-              AND role = 'customer'
-
-        ");
-
-        $delete_user->execute([':customer_id' => $customer_id]);
-
-
-
-        $pdo->commit();
-
-
-
-        header("Location: manageusers.php");
-
-        exit();
-
-    } catch (PDOException $e) {
-
-        if ($pdo->inTransaction()) {
-
+        // Confirm the target is a customer before deleting any related records.
+        $customer_check = $pdo->prepare("SELECT id FROM users WHERE id = :customer_id AND role = 'customer' FOR UPDATE");
+        $customer_check->execute([':customer_id' => $customer_id]);
+        if (!$customer_check->fetchColumn()) {
             $pdo->rollBack();
-
+            header('Location: manageusers.php');
+            exit();
         }
 
+        // Delete dependent rows in FK-safe order. All steps roll back together on failure.
+        $delete_appointments = $pdo->prepare('DELETE FROM appointments WHERE user_id = :customer_id');
+        $delete_appointments->execute([':customer_id' => $customer_id]);
 
+        $delete_pets = $pdo->prepare('DELETE FROM pets WHERE owner_id = :customer_id');
+        $delete_pets->execute([':customer_id' => $customer_id]);
 
-        die("Unable to delete this customer account at this time.");
+        $delete_user = $pdo->prepare("DELETE FROM users WHERE id = :customer_id AND role = 'customer'");
+        $delete_user->execute([':customer_id' => $customer_id]);
+        if ($delete_user->rowCount() !== 1) {
+            throw new RuntimeException('Customer account was not deleted.');
+        }
 
+        $pdo->commit();
+        header('Location: manageusers.php');
+        exit();
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        error_log('view_customer customer deletion failed: ' . $e->getMessage());
+        $page_message = 'Unable to delete this customer account at this time. No partial changes were saved.';
+        $page_message_type = 'error';
     }
-
 }
 
-
-
-// --- FETCH DATA ---
-
-
-
-// 2. Fetch Customer Details
-
+// Fetch the target customer and their records using parameterized queries.
 try {
-
-    $user_stmt = $pdo->prepare("
-
-        SELECT *
-
-        FROM users
-
-        WHERE id = :customer_id
-
-          AND role = 'customer'
-
-        LIMIT 1
-
-    ");
-
+    $user_stmt = $pdo->prepare("SELECT * FROM users WHERE id = :customer_id AND role = 'customer' LIMIT 1");
     $user_stmt->execute([':customer_id' => $customer_id]);
-
     $customer = $user_stmt->fetch(PDO::FETCH_ASSOC);
-
 } catch (PDOException $e) {
-
+    error_log('view_customer customer lookup failed: ' . $e->getMessage());
     $customer = false;
-
 }
-
-
 
 if (!$customer) {
-
-    die("<div style='text-align:center; padding:50px; font-family:sans-serif;'><h2>Customer not found.</h2><a href='manageusers.php'>Go Back</a></div>");
-
+    http_response_code(404);
+    exit("<div style='text-align:center;padding:50px;font-family:sans-serif;'><h2>Customer not found.</h2><a href='manageusers.php'>Go Back</a></div>");
 }
 
-
-
-// 3. Fetch Customer's Pets
-
 try {
-
-    $pets_stmt = $pdo->prepare("
-
-        SELECT *
-
-        FROM pets
-
-        WHERE owner_id = :customer_id
-
-        ORDER BY id ASC
-
-    ");
-
+    $pets_stmt = $pdo->prepare('SELECT * FROM pets WHERE owner_id = :customer_id ORDER BY id ASC');
     $pets_stmt->execute([':customer_id' => $customer_id]);
-
     $pets = $pets_stmt->fetchAll(PDO::FETCH_ASSOC);
-
 } catch (PDOException $e) {
-
+    error_log('view_customer pets lookup failed: ' . $e->getMessage());
     $pets = [];
-
 }
 
-
-
-// 4. Fetch Booking History
-
 try {
-
-    $bookings_stmt = $pdo->prepare("
-
-        SELECT
-
-            a.*,
-
-            p.name AS pet_name
-
-        FROM appointments a
-
-        LEFT JOIN pets p ON a.pet_id = p.id
-
-        WHERE a.user_id = :customer_id
-
-        ORDER BY a.appointment_date DESC
-
-    ");
-
+    $bookings_stmt = $pdo->prepare('SELECT a.*, p.name AS pet_name FROM appointments a LEFT JOIN pets p ON a.pet_id = p.id WHERE a.user_id = :customer_id ORDER BY a.appointment_date DESC');
     $bookings_stmt->execute([':customer_id' => $customer_id]);
-
     $bookings = $bookings_stmt->fetchAll(PDO::FETCH_ASSOC);
-
 } catch (PDOException $e) {
-
+    error_log('view_customer booking history lookup failed: ' . $e->getMessage());
     $bookings = [];
-
 }
 
+$category = !empty($customer['user_category']) ? (string)$customer['user_category'] : 'Pet Owner';
+$cat_class = ($category === 'Pet Breeder') ? 'category-breeder' : 'category-owner';
+$display_customer_name = (string)($customer['full_name'] ?? 'Customer');
 
-
-// 5. User Category Helper
-
-$category = isset($customer['user_category']) && !empty($customer['user_category'])
-
-    ? $customer['user_category']
-
-    : 'Pet Owner';
-
-
-
-$cat_class = ($category === 'Pet Breeder')
-
-    ? 'category-breeder'
-
-    : 'category-owner';
-
-
-// --- ADMIN NOTIFICATIONS FOR SHARED ADMIN HEADER ---
-$admin_notifications=[]; $unread_count=0;
-try {
-    $admin_notif_stmt=$pdo->prepare("SELECT id, message, created_at FROM admin_notifications WHERE is_read=0 ORDER BY created_at DESC LIMIT 20");
-    $admin_notif_stmt->execute();
-    $admin_notifications=$admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
-    $unread_count=count($admin_notifications);
-} catch (PDOException $e) { $admin_notifications=[]; $unread_count=0; }
-
+// This table holds Admin-only alerts; do not expose it to operational staff roles.
+$admin_notifications = [];
+$unread_count = 0;
+if ($is_admin) {
+    try {
+        $admin_notif_stmt = $pdo->prepare('SELECT id, message, created_at FROM admin_notifications WHERE is_read = 0 ORDER BY created_at DESC LIMIT 20');
+        $admin_notif_stmt->execute();
+        $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
+        $unread_count = count($admin_notifications);
+    } catch (PDOException $e) {
+        error_log('view_customer admin notifications lookup failed: ' . $e->getMessage());
+        $admin_notifications = [];
+        $unread_count = 0;
+    }
+}
 ?>
 
 <!DOCTYPE html>
@@ -382,7 +285,7 @@ try {
 
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-    <title><?php echo htmlspecialchars($customer['full_name'] ?? 'Customer'); ?> | Admin View</title>
+    <title><?php echo htmlspecialchars((string)($customer['full_name'] ?? 'Customer'), ENT_QUOTES, 'UTF-8'); ?> | Customer Details</title>
 
     <link href="https://fonts.googleapis.com/css2?family=Poppins:wght\@300;400;500;600;700;800&display=swap" rel="stylesheet">
 
@@ -412,11 +315,7 @@ try {
 
     }
 
-
-
     * { margin: 0; padding: 0; box-sizing: border-box; }
-
-
 
     body { 
 
@@ -429,8 +328,6 @@ try {
         padding: 30px; 
 
     }
-
-
 
     /* Upgraded Back Button */
 
@@ -476,8 +373,6 @@ try {
 
     }
 
-
-
     .profile-grid { 
 
         display: grid; 
@@ -493,8 +388,6 @@ try {
         margin: 0 auto;
 
     }
-
-
 
     /* Upgraded Cards with Top Highlight */
 
@@ -536,8 +429,6 @@ try {
 
     }
 
-
-
     .section-title { 
 
         font-size: 18px; 
@@ -557,8 +448,6 @@ try {
     }
 
     .section-title i { color: var(--brand-purple); }
-
-
 
     /* Circular Avatar */
 
@@ -594,8 +483,6 @@ try {
 
     }
 
-
-
     /* BAGO: Category Tags */
 
     .category-tag {
@@ -622,8 +509,6 @@ try {
 
     .category-breeder { background: #fef3c7; color: #d97706; border: 1px solid #fde68a; }
 
-
-
     /* Customer Info */
 
     .info-item { 
@@ -637,8 +522,6 @@ try {
     }
 
     .info-item:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
-
-
 
     .info-label { 
 
@@ -660,8 +543,6 @@ try {
 
     }
 
-
-
     .info-value { 
 
         font-size: 14px; 
@@ -671,8 +552,6 @@ try {
         color: var(--brand-blue); 
 
     }
-
-
 
     /* Edit Input */
 
@@ -695,8 +574,6 @@ try {
     }
 
     .edit-input:focus { border-color: var(--brand-blue); }
-
-
 
     .btn-save {
 
@@ -721,8 +598,6 @@ try {
     }
 
     .btn-save:hover { opacity: 0.9; }
-
-
 
     .btn-delete {
 
@@ -768,8 +643,6 @@ try {
 
     }
 
-
-
     /* Interactive Pet Items */
 
     .pet-item { 
@@ -801,8 +674,6 @@ try {
         transform: translateX(5px); 
 
     }
-
-
 
     /* Table Styles */
 
@@ -842,8 +713,6 @@ try {
 
     tr:hover td { background-color: #f8fafc; }
 
-
-
     /* Status Pill */
 
     .status-pill { 
@@ -872,15 +741,11 @@ try {
 
     .st-confirmed { background: #e0f2fe; color: #0284c7; }
 
-
-
     @media (max-width: 900px) {
 
         .profile-grid { grid-template-columns: 1fr; }
 
     }
-
-
 
         /* ===== EXTRA MOBILE RESPONSIVENESS ===== */
 
@@ -891,8 +756,6 @@ try {
                 padding: 18px 12px;
 
             }
-
-
 
             .back-btn {
 
@@ -908,8 +771,6 @@ try {
 
             }
 
-
-
             .profile-grid {
 
                 grid-template-columns: 1fr;
@@ -919,8 +780,6 @@ try {
                 max-width: 100%;
 
             }
-
-
 
             .card {
 
@@ -932,8 +791,6 @@ try {
 
             }
 
-
-
             .section-title {
 
                 font-size: 16px;
@@ -942,15 +799,11 @@ try {
 
             }
 
-
-
             .profile-header {
 
                 margin-bottom: 20px;
 
             }
-
-
 
             .avatar-large {
 
@@ -962,8 +815,6 @@ try {
 
             }
 
-
-
             .info-label {
 
                 gap: 8px;
@@ -972,8 +823,6 @@ try {
 
             }
 
-
-
             .info-value {
 
                 font-size: 13px;
@@ -981,8 +830,6 @@ try {
                 overflow-wrap: anywhere;
 
             }
-
-
 
             .edit-input {
 
@@ -996,8 +843,6 @@ try {
 
             }
 
-
-
             #contactForm > div {
 
                 flex-direction: column;
@@ -1005,8 +850,6 @@ try {
                 gap: 8px;
 
             }
-
-
 
             .btn-save {
 
@@ -1016,8 +859,6 @@ try {
 
             }
 
-
-
             .btn-delete {
 
                 min-height: 46px;
@@ -1026,8 +867,6 @@ try {
 
             }
 
-
-
             .pet-item {
 
                 align-items: flex-start;
@@ -1035,8 +874,6 @@ try {
                 padding: 13px;
 
             }
-
-
 
             /* Keep appointment history usable on phones via horizontal scrolling. */
 
@@ -1048,15 +885,11 @@ try {
 
             }
 
-
-
             .main-col table {
 
                 min-width: 620px;
 
             }
-
-
 
             th,
 
@@ -1065,8 +898,6 @@ try {
                 white-space: nowrap;
 
             }
-
-
 
             td strong,
 
@@ -1078,8 +909,6 @@ try {
 
         }
 
-
-
         @media (max-width: 400px) {
 
             body {
@@ -1088,23 +917,17 @@ try {
 
             }
 
-
-
             .card {
 
                 padding: 18px 12px;
 
             }
 
-
-
             .section-title {
 
                 font-size: 15px;
 
             }
-
-
 
             .avatar-large {
 
@@ -1118,9 +941,6 @@ try {
 
         }
 
-
-
-    
 /* ===== SHARED ADMIN SHELL + MOBILE RESPONSIVENESS ===== */
 :root{--navy-dark:#001f3f;--brand-yellow:#ffcc00;--sidebar-width:260px}
 body{padding:0;display:flex;min-height:100vh;overflow-x:hidden}
@@ -1176,10 +996,14 @@ main{margin-left:var(--sidebar-width);flex:1;min-width:0;min-height:100vh}.top-b
   .btn-delete{font-size:10px;}
 }
 
+
+    .flash-message { margin: 0 0 18px; padding: 12px 15px; border-radius: 9px; font-size: 13px; line-height: 1.5; border-left: 4px solid transparent; }
+    .flash-message.success { background: #dcfce7; color: #166534; border-left-color: #16a34a; }
+    .flash-message.error { background: #fee2e2; color: #991b1b; border-left-color: #dc2626; }
+
 </style>
 
 </head>
-
 
 <body>
 <aside>
@@ -1203,20 +1027,21 @@ main{margin-left:var(--sidebar-width);flex:1;min-width:0;min-height:100vh}.top-b
 <header class="top-bar">
   <div class="topbar-left"><button class="mobile-menu-toggle" type="button" aria-label="Open admin menu" aria-expanded="false" onclick="toggleMobileSidebar(event)"><i class="fas fa-bars"></i></button><div class="breadcrumb"><i class="fas fa-users" style="opacity:.5;font-size:14px"></i> Management / Customer Details</div></div>
   <div class="top-right-actions">
+    <?php if ($is_admin): ?>
     <div class="notif-wrapper" onclick="toggleNotif(event)"><i class="fa-solid fa-bell" style="font-size:22px;color:#64748b"></i><span id="admin-notif-badge" class="notif-badge" style="display:<?php echo $unread_count>0?'inline-flex':'none'; ?>"><?php echo $unread_count; ?></span>
       <div class="notif-dropdown" id="notifBox" onclick="event.stopPropagation()"><div class="notif-header">Alerts <a href="mark_notifications_read.php" id="mark-read-link" class="mark-read-btn" style="display:<?php echo $unread_count>0?'inline-block':'none'; ?>">Mark all read</a></div><div class="notif-body" id="admin-notif-list"><?php if($unread_count>0): foreach($admin_notifications as $notif): ?><div class="notif-item"><i class="fa-solid fa-circle-exclamation" style="color:#e11d48;margin-right:5px"></i><?php echo htmlspecialchars((string)($notif['message']??''),ENT_QUOTES,'UTF-8'); ?><br><small style="color:#94a3b8;font-size:11px"><?php echo !empty($notif['created_at'])?date('M d, g:i A',strtotime((string)$notif['created_at'])):''; ?></small></div><?php endforeach; else: ?><div class="notif-empty">No new notifications.</div><?php endif; ?></div></div>
     </div>
-    <div class="profile-wrapper" onclick="toggleProfile(event)"><span class="admin-tag"><?php echo strtoupper($current_role?:'ADMIN'); ?></span><?php if(!empty($profile_img_path)&&file_exists($profile_img_path)): ?><img src="<?php echo htmlspecialchars($profile_img_path,ENT_QUOTES,'UTF-8'); ?>" class="top-avatar" alt="Profile Picture"><?php else: ?><div class="top-avatar-fallback"><?php echo strtoupper(substr($first_name,0,1)); ?></div><?php endif; ?><span style="font-size:14px;font-weight:600;color:#4a5568;display:flex;align-items:center;gap:6px"><?php echo htmlspecialchars($admin_full_name,ENT_QUOTES,'UTF-8'); ?><i class="fas fa-chevron-down" style="font-size:10px;color:#94a3b8"></i></span><div class="profile-dropdown" id="profileBox" onclick="event.stopPropagation()"><a href="admin_profile.php" class="profile-item"><i class="fas fa-user-circle"></i> My Profile</a><a href="../logout.php" class="profile-item logout-text"><i class="fas fa-sign-out-alt"></i> Logout</a></div></div>
+    <?php endif; ?>
+    <div class="profile-wrapper" onclick="toggleProfile(event)"><span class="admin-tag"><?php echo strtoupper($current_role?:'ADMIN'); ?></span><?php if($profile_img_url !== ''): ?><img src="<?php echo htmlspecialchars($profile_img_url,ENT_QUOTES,'UTF-8'); ?>" class="top-avatar" alt="Profile Picture"><?php else: ?><div class="top-avatar-fallback"><?php echo htmlspecialchars(strtoupper(substr($first_name,0,1)), ENT_QUOTES, 'UTF-8'); ?></div><?php endif; ?><span style="font-size:14px;font-weight:600;color:#4a5568;display:flex;align-items:center;gap:6px"><?php echo htmlspecialchars($admin_full_name,ENT_QUOTES,'UTF-8'); ?><i class="fas fa-chevron-down" style="font-size:10px;color:#94a3b8"></i></span><div class="profile-dropdown" id="profileBox" onclick="event.stopPropagation()"><a href="<?php echo $is_admin ? 'admin_profile.php' : '../staff/staff_profile.php'; ?>" class="profile-item"><i class="fas fa-user-circle"></i> My Profile</a><a href="../logout.php" class="profile-item logout-text"><i class="fas fa-sign-out-alt"></i> Logout</a></div></div>
   </div>
 </header>
 <div class="content-shell">
 
-
-
-
     <a href="manageusers.php" class="back-btn"><i class="fas fa-chevron-left"></i> Back to Directory</a>
 
-
+    <?php if ($page_message !== ''): ?>
+        <div class="flash-message <?php echo $page_message_type === 'success' ? 'success' : 'error'; ?>" role="status"><?php echo htmlspecialchars($page_message, ENT_QUOTES, 'UTF-8'); ?></div>
+    <?php endif; ?>
 
     <div class="profile-grid">
 
@@ -1226,15 +1051,13 @@ main{margin-left:var(--sidebar-width);flex:1;min-width:0;min-height:100vh}.top-b
 
                 <div class="profile-header">
 
-                    <div class="avatar-large"><?php echo strtoupper(substr(trim($customer['full_name'], ','), 0, 1)); ?></div>
+                    <div class="avatar-large"><?php echo htmlspecialchars(strtoupper(substr(trim((string)($customer['full_name'] ?? 'Customer'), ','), 0, 1)), ENT_QUOTES, 'UTF-8'); ?></div>
 
-                    <h2 style="font-size: 20px; color: var(--brand-blue);"><?php echo htmlspecialchars($customer['full_name']); ?></h2>
+                    <h2 style="font-size: 20px; color: var(--brand-blue);"><?php echo htmlspecialchars((string)($customer['full_name'] ?? 'Customer'), ENT_QUOTES, 'UTF-8'); ?></h2>
 
-                    <span class="category-tag <?php echo $cat_class; ?>"><?php echo htmlspecialchars($category); ?></span>
+                    <span class="category-tag <?php echo $cat_class; ?>"><?php echo htmlspecialchars($category, ENT_QUOTES, 'UTF-8'); ?></span>
 
                 </div>
-
-
 
                 <div class="info-item">
 
@@ -1252,7 +1075,7 @@ main{margin-left:var(--sidebar-width);flex:1;min-width:0;min-height:100vh}.top-b
 
                         } else {
 
-                            echo htmlspecialchars($raw_email);
+                            echo htmlspecialchars((string)$raw_email, ENT_QUOTES, 'UTF-8');
 
                         }
 
@@ -1262,43 +1085,37 @@ main{margin-left:var(--sidebar-width);flex:1;min-width:0;min-height:100vh}.top-b
 
                 </div>
 
-
-
                 <div class="info-item">
 
                     <div class="info-label">
 
                         Contact Number
 
-                        <a href="#" onclick="toggleEdit()" style="color:var(--brand-purple); text-decoration:none;"><i class="fas fa-edit"></i> Edit</a>
+                        <?php if ($can_update_contact): ?><a href="#" onclick="toggleEdit(); return false;" style="color:var(--brand-purple); text-decoration:none;"><i class="fas fa-edit"></i> Edit</a><?php endif; ?>
 
                     </div>
-
-
 
                     <div class="info-value" id="contactDisplay">
 
-                        <?php echo htmlspecialchars($customer['contact_number'] ?? 'N/A'); ?>
+                        <?php echo htmlspecialchars((string)($customer['contact_number'] ?? 'N/A'), ENT_QUOTES, 'UTF-8'); ?>
 
                     </div>
 
-
-
-                    <form method="POST" id="contactForm" style="display:none; margin-top: 8px;">
-
+                    <?php if ($can_update_contact): ?>
+                    <form method="POST" action="view_customer.php?id=<?php echo $customer_id; ?>" id="contactForm" style="display:none; margin-top: 8px;">
+                        <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token, ENT_QUOTES, 'UTF-8'); ?>">
                         <div style="display: flex; gap: 5px;">
 
-                            <input type="tel" inputmode="numeric" name="new_contact" class="edit-input" value="<?php echo htmlspecialchars($customer['contact_number'] ?? ''); ?>" required maxlength="11" pattern="[0-9]{11}" oninput="this.value = this.value.replace(/[^0-9]/g, '')">
+                            <input type="tel" inputmode="numeric" name="new_contact" class="edit-input" value="<?php echo htmlspecialchars((string)($customer['contact_number'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>" required maxlength="11" pattern="[0-9]{11}" oninput="this.value = this.value.replace(/[^0-9]/g, '')">
 
                             <button type="submit" name="update_contact" class="btn-save">Save</button>
 
                         </div>
 
                     </form>
+                    <?php endif; ?>
 
                 </div>
-
-
 
                 <div class="info-item">
 
@@ -1336,8 +1153,6 @@ main{margin-left:var(--sidebar-width);flex:1;min-width:0;min-height:100vh}.top-b
 
                 </div>
 
-
-
                 <div class="info-item">
 
                     <div class="info-label">Member Since</div>
@@ -1350,21 +1165,16 @@ main{margin-left:var(--sidebar-width);flex:1;min-width:0;min-height:100vh}.top-b
 
                 </div>
 
-
-
-                <form method="POST" onsubmit="return confirm('WARNING: Are you sure you want to delete this user? All their pets and appointment history will also be permanently removed. This action cannot be undone.');">
-
+                <?php if ($can_delete_customer): ?>
+                <form method="POST" action="view_customer.php?id=<?php echo $customer_id; ?>" onsubmit="return confirm('WARNING: Are you sure you want to delete this user? All their pets and appointment history will also be permanently removed. This action cannot be undone.');">
+                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token, ENT_QUOTES, 'UTF-8'); ?>">
                     <button type="submit" name="delete_user" class="btn-delete">
-
                         <i class="fas fa-trash-alt"></i> Delete Account
-
                     </button>
-
                 </form>
+                <?php endif; ?>
 
             </div>
-
-
 
             <div class="card">
 
@@ -1384,9 +1194,9 @@ main{margin-left:var(--sidebar-width);flex:1;min-width:0;min-height:100vh}.top-b
 
                                     <?php 
 
-                                        if (isset($pet['pet_name'])) echo htmlspecialchars($pet['pet_name']);
+                                        if (isset($pet['pet_name'])) echo htmlspecialchars((string)$pet['pet_name'], ENT_QUOTES, 'UTF-8');
 
-                                        elseif (isset($pet['name'])) echo htmlspecialchars($pet['name']);
+                                        elseif (isset($pet['name'])) echo htmlspecialchars((string)$pet['name'], ENT_QUOTES, 'UTF-8');
 
                                         else echo "Unknown Pet";
 
@@ -1396,7 +1206,7 @@ main{margin-left:var(--sidebar-width);flex:1;min-width:0;min-height:100vh}.top-b
 
                                 <div style="font-size: 12px; color: var(--text-muted);">
 
-                                    <?php echo htmlspecialchars($pet['breed'] ?? 'Unknown Breed'); ?>
+                                    <?php echo htmlspecialchars((string)($pet['breed'] ?? 'Unknown Breed'), ENT_QUOTES, 'UTF-8'); ?>
 
                                 </div>
 
@@ -1422,15 +1232,11 @@ main{margin-left:var(--sidebar-width);flex:1;min-width:0;min-height:100vh}.top-b
 
         </div>
 
-
-
         <div class="main-col">
 
             <div class="card">
 
                 <div class="section-title"><i class="fas fa-history"></i> Appointment History</div>
-
-
 
                 <div style="overflow-x: auto;">
 
@@ -1486,7 +1292,7 @@ main{margin-left:var(--sidebar-width);flex:1;min-width:0;min-height:100vh}.top-b
 
                                             <div style="font-size: 11px; color: var(--text-muted); margin-top: 3px;">
 
-                                                <i class="far fa-clock"></i> <?php echo htmlspecialchars($book['appointment_time'] ?? 'N/A'); ?>
+                                                <i class="far fa-clock"></i> <?php echo htmlspecialchars((string)($book['appointment_time'] ?? 'N/A'), ENT_QUOTES, 'UTF-8'); ?>
 
                                             </div>
 
@@ -1494,11 +1300,9 @@ main{margin-left:var(--sidebar-width);flex:1;min-width:0;min-height:100vh}.top-b
 
                                         <td>
 
-                                            <strong style="color: var(--text-main);"><?php echo htmlspecialchars($book['service'] ?? 'General'); ?></strong>
+                                            <strong style="color: var(--text-main);"><?php echo htmlspecialchars((string)($book['service'] ?? 'General'), ENT_QUOTES, 'UTF-8'); ?></strong>
 
                                         </td>
-
-
 
                                         <td>
 
@@ -1506,7 +1310,7 @@ main{margin-left:var(--sidebar-width);flex:1;min-width:0;min-height:100vh}.top-b
 
                                                 if (isset($book['pet_name']) && !empty($book['pet_name'])) {
 
-                                                    echo htmlspecialchars($book['pet_name']);
+                                                    echo htmlspecialchars((string)$book['pet_name'], ENT_QUOTES, 'UTF-8');
 
                                                 } else {
 
@@ -1518,11 +1322,9 @@ main{margin-left:var(--sidebar-width);flex:1;min-width:0;min-height:100vh}.top-b
 
                                         </td>
 
-
-
                                         <td>
 
-                                            <span class="status-pill <?php echo $s_class; ?>"><?php echo htmlspecialchars($status); ?></span>
+                                            <span class="status-pill <?php echo $s_class; ?>"><?php echo htmlspecialchars((string)$status, ENT_QUOTES, 'UTF-8'); ?></span>
 
                                         </td>
 
@@ -1547,7 +1349,6 @@ main{margin-left:var(--sidebar-width);flex:1;min-width:0;min-height:100vh}.top-b
         </div>
 
     </div>
-
 
     </div>
     </main>
@@ -1614,8 +1415,6 @@ main{margin-left:var(--sidebar-width);flex:1;min-width:0;min-height:100vh}.top-b
             var display = document.getElementById('contactDisplay');
 
             var form = document.getElementById('contactForm');
-
-
 
             if (form.style.display === 'none' || form.style.display === '') {
 

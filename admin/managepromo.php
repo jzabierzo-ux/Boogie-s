@@ -24,7 +24,7 @@ if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true || $curren
 
 
 
-    header("Location: adminlogin.php");
+    header("Location: ../admin_login.php");
 
 
 
@@ -32,6 +32,11 @@ if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true || $curren
 
 
 
+}
+
+// Create a CSRF token for state-changing actions on this page.
+if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
 }
 
 
@@ -182,17 +187,16 @@ if (isset($_SESSION['user_id'])) {
 
 $total_promos = 0;
 
-
-
 $active_promos = 0;
-
-
 
 $expired_promos = 0;
 
-
-
 $promos = [];
+
+$filter = $_GET['filter'] ?? 'all';
+if (!is_string($filter) || !in_array($filter, ['all', 'active', 'expired'], true)) {
+    $filter = 'all';
+}
 
 
 
@@ -236,9 +240,7 @@ try {
 
 
 
-        WHERE expiry_date >= CURRENT_DATE
-
-
+        WHERE (expiry_date IS NULL OR expiry_date >= ((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Manila')::date))
 
           AND status = 'active'
 
@@ -264,7 +266,7 @@ try {
 
 
 
-        WHERE expiry_date < CURRENT_DATE
+        WHERE expiry_date < ((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Manila')::date)
 
 
 
@@ -293,10 +295,6 @@ try {
 
 
     // 5. FETCH PROMOS WITH FILTERING
-
-
-
-    $filter = $_GET['filter'] ?? 'all';
 
 
 
@@ -332,9 +330,7 @@ try {
 
 
 
-            WHERE expiry_date >= CURRENT_DATE
-
-
+            WHERE (expiry_date IS NULL OR expiry_date >= ((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Manila')::date))
 
               AND status = 'active'
 
@@ -352,7 +348,7 @@ try {
 
 
 
-            WHERE expiry_date < CURRENT_DATE
+            WHERE expiry_date < ((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Manila')::date)
 
 
 
@@ -390,11 +386,8 @@ try {
 
 } catch (PDOException $e) {
 
-
-
+    error_log('Manage promos query failed: ' . $e->getMessage());
     $promos = [];
-
-
 
 }
 
@@ -404,7 +397,7 @@ try {
 
 
 
-$current_date = date('Y-m-d');
+$current_date = (new DateTimeImmutable('now', new DateTimeZone('Asia/Manila')))->format('Y-m-d');
 
 
 
@@ -948,7 +941,9 @@ try {
 
 
 
-        .btn-delete { background: #fee2e2; color: #dc2626; }
+        .delete-promo-form { display: inline-flex; margin: 0; padding: 0; }
+
+        .btn-delete { background: #fee2e2; color: #dc2626; border: 0; cursor: pointer; font-family: inherit; padding: 0; }
 
 
 
@@ -2112,11 +2107,11 @@ try {
 
 
 
-                                        <?php echo htmlspecialchars($notif['message']); ?>
+                                        <?php echo htmlspecialchars((string)($notif['message'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>
 
 
 
-                                        <br><small style="color: #94a3b8; font-size: 11px;"><?php echo date('M d, g:i A', strtotime($notif['created_at'])); ?></small>
+                                        <br><small style="color: #94a3b8; font-size: 11px;"><?php echo (!empty($notif['created_at']) ? date('M d, g:i A', strtotime((string)$notif['created_at'])) : ''); ?></small>
 
 
 
@@ -2388,11 +2383,11 @@ try {
 
 
 
-                            if(isset($_GET['filter']) && $_GET['filter'] == 'expired') echo 'Expired Promotions';
+                            if ($filter === 'expired') echo 'Expired Promotions';
 
 
 
-                            elseif(isset($_GET['filter']) && $_GET['filter'] == 'active') echo 'Active Promotions';
+                            elseif ($filter === 'active') echo 'Active Promotions';
 
 
 
@@ -2408,7 +2403,7 @@ try {
 
 
 
-                    <?php if(isset($_GET['filter'])): ?>
+                    <?php if ($filter !== 'all'): ?>
 
 
 
@@ -2728,7 +2723,11 @@ try {
 
 
 
-                                                <a href="deletepromo.php?id=<?php echo $promo['id']; ?>" class="btn-icon btn-delete" title="Delete Promo" onclick="return confirm('Are you sure you want to delete this promotional card? This action cannot be undone.');"><i class="fas fa-trash"></i></a>
+                                                <form method="POST" action="deletepromo.php" class="delete-promo-form" onsubmit="return confirm('Are you sure you want to delete this promotional card? This action cannot be undone.');">
+                                                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars((string)$_SESSION['csrf_token'], ENT_QUOTES, 'UTF-8'); ?>">
+                                                    <input type="hidden" name="id" value="<?php echo (int)$promo['id']; ?>">
+                                                    <button type="submit" class="btn-icon btn-delete" title="Delete Promo" aria-label="Delete Promo"><i class="fas fa-trash"></i></button>
+                                                </form>
 
 
 

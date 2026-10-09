@@ -10,58 +10,56 @@ require_once '../db_supabase.php';
 */
 header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
-header('Cache-Control: post-check=0, pre-check=0', false);
 header('Pragma: no-cache');
 header('Expires: 0');
+
+/*
+|--------------------------------------------------------------------------
+| JSON RESPONSE HELPER
+|--------------------------------------------------------------------------
+*/
+function sendAdminNotificationResponse(int $statusCode, array $payload): void
+{
+    http_response_code($statusCode);
+    echo json_encode(
+        $payload,
+        JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE
+    );
+    exit();
+}
 
 /*
 |--------------------------------------------------------------------------
 | ONLY ALLOW GET REQUESTS
 |--------------------------------------------------------------------------
 */
-if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
-    http_response_code(405);
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'GET') {
     header('Allow: GET');
-
-    echo json_encode([
+    sendAdminNotificationResponse(405, [
         'success' => false,
         'unread' => 0,
         'html' => '',
         'message' => 'Method not allowed.'
-    ], JSON_UNESCAPED_UNICODE);
-
-    exit();
+    ]);
 }
 
 /*
 |--------------------------------------------------------------------------
-| AUTHENTICATION / ROLE CHECK
+| ADMIN-ONLY AUTHENTICATION
 |--------------------------------------------------------------------------
+| These are administrator notifications. Staff, managers, and veterinary
+| accounts must use their own role-scoped notification endpoint if needed.
 */
-$current_role = strtolower(
-    trim(
-        (string)($_SESSION['role'] ?? '')
-    )
-);
+$currentRole = strtolower(trim((string)($_SESSION['role'] ?? '')));
+$isLoggedIn = isset($_SESSION['logged_in']) && $_SESSION['logged_in'] === true;
 
-$is_logged_in = (
-    isset($_SESSION['logged_in']) &&
-    $_SESSION['logged_in'] === true
-);
-
-$allowed_roles = ['admin', 'manager', 'vet'];
-
-if (!$is_logged_in || !in_array($current_role, $allowed_roles, true)) {
-    http_response_code(403);
-
-    echo json_encode([
+if (!$isLoggedIn || $currentRole !== 'admin') {
+    sendAdminNotificationResponse(403, [
         'success' => false,
         'unread' => 0,
         'html' => '',
         'message' => 'Unauthorized access.'
-    ], JSON_UNESCAPED_UNICODE);
-
-    exit();
+    ]);
 }
 
 /*
@@ -69,72 +67,57 @@ if (!$is_logged_in || !in_array($current_role, $allowed_roles, true)) {
 | HELPER: FORMAT NOTIFICATION DATE
 |--------------------------------------------------------------------------
 */
-function formatNotificationDate($value): string
+function formatAdminNotificationDate($value): string
 {
-    if (empty($value)) {
+    if ($value === null || $value === '') {
         return '';
     }
 
     $timestamp = strtotime((string)$value);
-
-    if ($timestamp === false) {
-        return '';
-    }
-
-    return date('M d, g:i A', $timestamp);
+    return $timestamp === false ? '' : date('M d, g:i A', $timestamp);
 }
 
 /*
 |--------------------------------------------------------------------------
-| FETCH UNREAD NOTIFICATIONS
+| FETCH NOTIFICATIONS AND ACCURATE UNREAD COUNT
 |--------------------------------------------------------------------------
 */
 try {
-    $stmt = $pdo->prepare("
-        SELECT id, message, created_at
-        FROM admin_notifications
-        WHERE is_read = 0
-        ORDER BY created_at DESC, id DESC
-        LIMIT 20
-    ");
+    // Count all unread notifications; the dropdown itself displays the latest 20.
+    $countStmt = $pdo->query(
+        'SELECT COUNT(*) FROM admin_notifications WHERE is_read = 0'
+    );
+    $unreadCount = (int)$countStmt->fetchColumn();
 
+    $stmt = $pdo->prepare(
+        'SELECT id, message, created_at
+         FROM admin_notifications
+         WHERE is_read = 0
+         ORDER BY created_at DESC, id DESC
+         LIMIT 20'
+    );
     $stmt->execute();
-
     $notifications = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    /*
-    |--------------------------------------------------------------------------
-    | BUILD SAFE HTML
-    |--------------------------------------------------------------------------
-    | Escape all database content before inserting it into HTML.
-    */
+    /* Build safe HTML; all database text is escaped before insertion. */
     $html = '';
 
-    foreach ($notifications as $notif) {
-
+    foreach ($notifications as $notification) {
         $message = htmlspecialchars(
-            (string)($notif['message'] ?? ''),
+            (string)($notification['message'] ?? ''),
             ENT_QUOTES | ENT_SUBSTITUTE,
             'UTF-8'
         );
-
-        $created_at = formatNotificationDate(
-            $notif['created_at'] ?? null
-        );
+        $createdAt = formatAdminNotificationDate($notification['created_at'] ?? null);
 
         $html .= '<div class="notif-item">';
-
-        $html .= '<i class="fa-solid fa-circle-exclamation" ';
-        $html .= 'style="color:#e11d48;margin-right:5px;" ';
-        $html .= 'aria-hidden="true"></i>';
-
+        $html .= '<i class="fa-solid fa-circle-exclamation" style="color:#e11d48;margin-right:5px;" aria-hidden="true"></i>';
         $html .= $message;
 
-        if ($created_at !== '') {
-            $html .= '<br>';
-            $html .= '<small style="color:#94a3b8;font-size:11px;">';
+        if ($createdAt !== '') {
+            $html .= '<br><small style="color:#94a3b8;font-size:11px;">';
             $html .= htmlspecialchars(
-                $created_at,
+                $createdAt,
                 ENT_QUOTES | ENT_SUBSTITUTE,
                 'UTF-8'
             );
@@ -144,48 +127,23 @@ try {
         $html .= '</div>';
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | EMPTY STATE
-    |--------------------------------------------------------------------------
-    */
     if ($html === '') {
-        $html = '<div class="notif-empty">';
-        $html .= 'No new notifications.';
-        $html .= '</div>';
+        $html = '<div class="notif-empty">No new notifications.</div>';
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | JSON RESPONSE
-    |--------------------------------------------------------------------------
-    | Keep unread + html because your existing JavaScript uses them.
-    */
-    echo json_encode([
+    // Keep the existing frontend contract: JavaScript expects unread and html.
+    sendAdminNotificationResponse(200, [
         'success' => true,
-        'unread' => count($notifications),
+        'unread' => $unreadCount,
         'html' => $html
-    ], JSON_UNESCAPED_UNICODE);
-
+    ]);
 } catch (PDOException $e) {
+    error_log('Admin notification fetch error: ' . $e->getMessage());
 
-    /*
-    |--------------------------------------------------------------------------
-    | SERVER-SIDE ERROR LOG
-    |--------------------------------------------------------------------------
-    | Don't expose database details to the browser.
-    */
-    error_log(
-        'Admin notification fetch error: ' . $e->getMessage()
-    );
-
-    http_response_code(500);
-
-    echo json_encode([
+    sendAdminNotificationResponse(500, [
         'success' => false,
         'unread' => 0,
-        'html' => '',
+        'html' => '<div class="notif-empty">Notifications are temporarily unavailable.</div>',
         'message' => 'Unable to fetch notifications.'
-    ], JSON_UNESCAPED_UNICODE);
+    ]);
 }
-?>

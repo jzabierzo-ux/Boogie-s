@@ -1,387 +1,290 @@
-    <?php
+<?php
+session_start();
+require_once __DIR__ . '/../db_supabase.php';
 
-    session_start();
+// This page is part of the Admin portal. Keep Admin and Staff login separate.
+$current_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
+if (
+    !isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true ||
+    $current_role !== 'admin'
+) {
+    header('Location: ../admin_login.php');
+    exit();
+}
 
-    require_once '../db_supabase.php';
+$user_id = filter_var(
+    $_SESSION['user_id'] ?? null,
+    FILTER_VALIDATE_INT,
+    ['options' => ['min_range' => 1]]
+);
+if (!$user_id) {
+    header('Location: ../admin_login.php');
+    exit();
+}
+$user_id = (int)$user_id;
 
+// CSRF token shared by both profile update forms.
+if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+$csrf_token = $_SESSION['csrf_token'];
+$message = '';
+$user_data = [];
+$new_uploaded_path = null;
 
-
-    // --- UNIVERSAL SECURITY CHECK ---
-
-    $current_role = isset($_SESSION['role']) ? strtolower(trim($_SESSION['role'])) : '';
-
-
-
-    // Payagan ang admin, supervisor, at staff
-
-    if (!isset($_SESSION['logged_in']) || !in_array($current_role, ['admin', 'supervisor', 'staff'], true)) {
-
-        header("Location: ../staff/stafflogin.php");
-
-        exit();
-
+function boogiesResolveProfileImageUrl($storedPath): ?string
+{
+    if (!is_string($storedPath) || trim($storedPath) === '') {
+        return null;
     }
 
+    $path = trim(str_replace('\\', '/', $storedPath));
 
-
-    $user_id = (int)($_SESSION['user_id'] ?? 0);
-
-    $message = '';
-
-
-
-    // Kumuha ng user data mula sa database
-
-    $user_data = [];
-
-
-
-    try {
-
-        $get_user = $pdo->prepare("SELECT * FROM users WHERE id = :id LIMIT 1");
-
-        $get_user->execute([':id' => $user_id]);
-
-        $user_data = $get_user->fetch(PDO::FETCH_ASSOC);
-
-
-
-        if (!$user_data) {
-
-            $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> User account not found.</div>';
-
-        }
-
-    } catch (PDOException $e) {
-
-        error_log("Profile fetch failed: " . $e->getMessage());
-
-        $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Failed to load profile.</div>';
-
+    // Supports a future Supabase Storage public URL, but only http(s) URLs.
+    if (preg_match('#^https?://#i', $path)) {
+        return filter_var($path, FILTER_VALIDATE_URL) ? $path : null;
     }
 
+    $path = ltrim($path, '/');
+    $filename = basename($path);
+    if ($filename === '' || $filename === '.' || $filename === '..') {
+        return null;
+    }
 
+    $projectRoot = dirname(__DIR__);
+    $adminUploadPath = __DIR__ . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . $filename;
+    $rootUploadPath = $projectRoot . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . $filename;
 
-    // ---------------------------------------------------------
+    // Admin profile uploads are stored in admin/uploads. Older customer/staff
+    // profile paths may point to the project-root uploads directory.
+    if (strpos($path, 'uploads/') === 0 && is_file($adminUploadPath)) {
+        return 'uploads/' . rawurlencode($filename);
+    }
+    if ((strpos($path, '../uploads/') === 0 || strpos($path, 'uploads/') === 0) && is_file($rootUploadPath)) {
+        return '../uploads/' . rawurlencode($filename);
+    }
 
-    // 1. HANDLE PROFILE & PICTURE UPDATE
+    return null;
+}
 
-    // ---------------------------------------------------------
+// Fetch the signed-in Admin's profile.
+try {
+    $get_user = $pdo->prepare('SELECT * FROM users WHERE id = :id LIMIT 1');
+    $get_user->execute([':id' => $user_id]);
+    $user_data = $get_user->fetch(PDO::FETCH_ASSOC) ?: [];
 
-    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_profile']) && !empty($user_data)) {
+    if (!$user_data) {
+        $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> User account not found.</div>';
+    }
+} catch (PDOException $e) {
+    error_log('Admin profile fetch failed: ' . $e->getMessage());
+    $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Failed to load profile.</div>';
+}
 
-        $full_name = trim($_POST['full_name'] ?? '');
-
-        $username = trim($_POST['username'] ?? '');
-
-        $contact_number = trim($_POST['contact_number'] ?? '');
-
-
-
-        $profile_image = $user_data['profile_image'] ?? ''; // Default to current image
-
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['update_profile']) || isset($_POST['update_password']))) {
+    $submittedToken = $_POST['csrf_token'] ?? '';
+    if (!is_string($submittedToken) || !hash_equals($csrf_token, $submittedToken)) {
+        http_response_code(403);
+        $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Invalid or expired security token. Refresh the page and try again.</div>';
+    } elseif (empty($user_data)) {
+        $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> The user profile could not be loaded.</div>';
+    } elseif (isset($_POST['update_profile'])) {
+        $full_name = trim((string)($_POST['full_name'] ?? ''));
+        $username = trim((string)($_POST['username'] ?? ''));
+        $contact_number = trim((string)($_POST['contact_number'] ?? ''));
+        $profile_image = (string)($user_data['profile_image'] ?? '');
         $has_error = false;
 
-
-
-        // Contact Number Validation (Kung nilagyan ng laman)
-
-        if ($contact_number !== '' && !preg_match("/^[0-9]{11}$/", $contact_number)) {
-
-            $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Invalid contact number. Must be exactly 11 digits.</div>';
-
+        if ($full_name === '' || (function_exists('mb_strlen') ? mb_strlen($full_name, 'UTF-8') : strlen($full_name)) > 150) {
+            $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Enter a full name with no more than 150 characters.</div>';
             $has_error = true;
-
+        } elseif ($username === '' || (function_exists('mb_strlen') ? mb_strlen($username, 'UTF-8') : strlen($username)) > 100) {
+            $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Enter a username with no more than 100 characters.</div>';
+            $has_error = true;
+        } elseif ($contact_number !== '' && !preg_match('/^[0-9]{11}$/', $contact_number)) {
+            $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Invalid contact number. Enter exactly 11 digits or leave it blank.</div>';
+            $has_error = true;
         }
 
-
-
+        // Do not let one Admin overwrite another account's username.
         if (!$has_error) {
-
-            // Handle File Upload
-
-            if (isset($_FILES['profile_picture']) && $_FILES['profile_picture']['error'] === 0) {
-
-                $allowed_ext = ['jpg', 'jpeg', 'png', 'gif'];
-
-                $file_name = $_FILES['profile_picture']['name'] ?? '';
-
-                $file_size = (int)($_FILES['profile_picture']['size'] ?? 0);
-
-                $file_tmp = $_FILES['profile_picture']['tmp_name'] ?? '';
-
-                $file_ext = strtolower(pathinfo($file_name, PATHINFO_EXTENSION));
-
-
-
-                if (in_array($file_ext, $allowed_ext, true)) {
-
-                    if ($file_size < 5000000) { // Limit to 5MB
-
-                        $new_file_name = 'admin_' . $user_id . '_' . time() . '.' . $file_ext;
-
-                        $upload_dir = __DIR__ . '/uploads';
-
-                        $upload_path = $upload_dir . '/' . $new_file_name;
-
-                        $profile_db_path = 'uploads/' . $new_file_name;
-
-
-
-                        if (!is_dir($upload_dir)) {
-
-                            mkdir($upload_dir, 0777, true);
-
-                        }
-
-
-
-                        if (move_uploaded_file($file_tmp, $upload_path)) {
-
-                            $profile_image = $profile_db_path;
-
-                        } else {
-
-                            $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Failed to move uploaded file.</div>';
-
-                            $has_error = true;
-
-                        }
-
-                    } else {
-
-                        $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> File size is too large (Max: 5MB).</div>';
-
-                        $has_error = true;
-
-                    }
-
-                } else {
-
-                    $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Invalid file type. Only JPG, PNG, and GIF allowed.</div>';
-
+            try {
+                $username_check = $pdo->prepare(
+                    'SELECT id FROM users WHERE LOWER(username) = LOWER(:username) AND id <> :id LIMIT 1'
+                );
+                $username_check->execute([':username' => $username, ':id' => $user_id]);
+                if ($username_check->fetchColumn()) {
+                    $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> That username is already in use. Choose another one.</div>';
                     $has_error = true;
+                }
+            } catch (PDOException $e) {
+                error_log('Admin profile username check failed: ' . $e->getMessage());
+                $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Unable to validate the username right now.</div>';
+                $has_error = true;
+            }
+        }
 
+        // Validate optional image replacement using its actual MIME type.
+        if (!$has_error && isset($_FILES['profile_picture']) && (int)($_FILES['profile_picture']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_NO_FILE) {
+            $upload = $_FILES['profile_picture'];
+            $maxSize = 5 * 1024 * 1024;
+            $allowedMimes = [
+                'image/jpeg' => 'jpg',
+                'image/png' => 'png',
+                'image/gif' => 'gif',
+            ];
+
+            if ((int)($upload['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+                $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Image upload failed. Please try again.</div>';
+                $has_error = true;
+            } elseif ((int)($upload['size'] ?? 0) <= 0 || (int)$upload['size'] > $maxSize) {
+                $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> The image must be larger than 0 bytes and no more than 5 MB.</div>';
+                $has_error = true;
+            } elseif (!is_uploaded_file((string)($upload['tmp_name'] ?? ''))) {
+                $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Invalid uploaded image.</div>';
+                $has_error = true;
+            } else {
+                $finfo = function_exists('finfo_open') ? finfo_open(FILEINFO_MIME_TYPE) : false;
+                $mime = $finfo ? finfo_file($finfo, (string)$upload['tmp_name']) : false;
+                if ($finfo) {
+                    finfo_close($finfo);
                 }
 
-            }
+                if (!is_string($mime) || !isset($allowedMimes[$mime])) {
+                    $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Invalid image type. Only JPG, PNG, and GIF files are allowed.</div>';
+                    $has_error = true;
+                } else {
+                    $uploadDir = __DIR__ . DIRECTORY_SEPARATOR . 'uploads';
+                    if (!is_dir($uploadDir) && !@mkdir($uploadDir, 0755, true) && !is_dir($uploadDir)) {
+                        $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> The profile image folder could not be created.</div>';
+                        $has_error = true;
+                    } elseif (!is_writable($uploadDir)) {
+                        $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> The profile image folder is not writable.</div>';
+                        $has_error = true;
+                    } else {
+                        try {
+                            $randomName = 'admin_' . $user_id . '_' . bin2hex(random_bytes(12)) . '.' . $allowedMimes[$mime];
+                        } catch (Throwable $e) {
+                            error_log('Admin profile image filename generation failed: ' . $e->getMessage());
+                            $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Unable to prepare the uploaded image.</div>';
+                            $has_error = true;
+                            $randomName = '';
+                        }
 
+                        if (!$has_error) {
+                            $destination = $uploadDir . DIRECTORY_SEPARATOR . $randomName;
+                            if (move_uploaded_file((string)$upload['tmp_name'], $destination)) {
+                                $new_uploaded_path = $destination;
+                                $profile_image = 'uploads/' . $randomName;
+                            } else {
+                                $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Failed to save the uploaded image.</div>';
+                                $has_error = true;
+                            }
+                        }
+                    }
+                }
+            }
         }
 
-
-
         if (!$has_error) {
-
             try {
-
-                $update_stmt = $pdo->prepare("
-
-                    UPDATE users
-
-                    SET full_name = :full_name,
-
-                        username = :username,
-
-                        contact_number = :contact_number,
-
-                        profile_image = :profile_image
-
-                    WHERE id = :id
-
-                ");
-
-
-
+                $update_stmt = $pdo->prepare(
+                    'UPDATE users SET full_name = :full_name, username = :username, contact_number = :contact_number, profile_image = :profile_image WHERE id = :id'
+                );
                 $update_stmt->execute([
-
                     ':full_name' => $full_name,
-
                     ':username' => $username,
-
                     ':contact_number' => $contact_number,
-
                     ':profile_image' => $profile_image,
-
-                    ':id' => $user_id
-
+                    ':id' => $user_id,
                 ]);
 
-
-
                 $_SESSION['user_name'] = $full_name;
-
                 $message = '<div class="alert alert-success"><i class="fas fa-check-circle"></i> Profile updated successfully!</div>';
 
-
-
-                // Refresh data after update
-
-                $get_user = $pdo->prepare("SELECT * FROM users WHERE id = :id LIMIT 1");
-
+                $get_user = $pdo->prepare('SELECT * FROM users WHERE id = :id LIMIT 1');
                 $get_user->execute([':id' => $user_id]);
-
                 $user_data = $get_user->fetch(PDO::FETCH_ASSOC) ?: $user_data;
-
+                $new_uploaded_path = null; // Keep the new file after the database update succeeds.
             } catch (PDOException $e) {
-
-                error_log("Profile update failed: " . $e->getMessage());
-
-                $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Error updating profile.</div>';
-
-            }
-
-        }
-
-    }
-
-
-
-    // ---------------------------------------------------------
-
-    // 2. HANDLE PASSWORD UPDATE
-
-    // ---------------------------------------------------------
-
-    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_password']) && !empty($user_data)) {
-
-        $current_password = $_POST['current_password'] ?? '';
-
-        $new_password = $_POST['new_password'] ?? '';
-
-        $confirm_password = $_POST['confirm_password'] ?? '';
-
-
-
-        if (password_verify($current_password, $user_data['password'] ?? '')) {
-
-            if ($new_password === $confirm_password) {
-
-                $hashed_new_password = password_hash($new_password, PASSWORD_DEFAULT);
-
-
-
-                try {
-
-                    $update_pass_stmt = $pdo->prepare("UPDATE users SET password = :password WHERE id = :id");
-
-                    $update_pass_stmt->execute([
-
-                        ':password' => $hashed_new_password,
-
-                        ':id' => $user_id
-
-                    ]);
-
-
-
-                    $message = '<div class="alert alert-success"><i class="fas fa-check-circle"></i> Password successfully updated!</div>';
-
-
-
-                    $get_user = $pdo->prepare("SELECT * FROM users WHERE id = :id LIMIT 1");
-
-                    $get_user->execute([':id' => $user_id]);
-
-                    $user_data = $get_user->fetch(PDO::FETCH_ASSOC) ?: $user_data;
-
-                } catch (PDOException $e) {
-
-                    error_log("Password update failed: " . $e->getMessage());
-
-                    $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Failed to update password.</div>';
-
+                if ($new_uploaded_path && is_file($new_uploaded_path)) {
+                    @unlink($new_uploaded_path);
                 }
-
-            } else {
-
-                $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> New passwords do not match.</div>';
-
+                error_log('Admin profile update failed: ' . $e->getMessage());
+                $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Error updating profile. Check that the username is unique and the database columns are available.</div>';
             }
-
-        } else {
-
-            $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Incorrect current password.</div>';
-
         }
+    } elseif (isset($_POST['update_password'])) {
+        $current_password = (string)($_POST['current_password'] ?? '');
+        $new_password = (string)($_POST['new_password'] ?? '');
+        $confirm_password = (string)($_POST['confirm_password'] ?? '');
 
+        if (!password_verify($current_password, (string)($user_data['password'] ?? ''))) {
+            $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Incorrect current password.</div>';
+        } elseif (strlen($new_password) < 8) {
+            $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> The new password must be at least 8 characters.</div>';
+        } elseif (strlen($new_password) > 4096) {
+            $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> The new password is too long.</div>';
+        } elseif ($new_password !== $confirm_password) {
+            $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> New passwords do not match.</div>';
+        } else {
+            try {
+                $hashed_new_password = password_hash($new_password, PASSWORD_DEFAULT);
+                $update_pass_stmt = $pdo->prepare('UPDATE users SET password = :password WHERE id = :id');
+                $update_pass_stmt->execute([':password' => $hashed_new_password, ':id' => $user_id]);
+                $message = '<div class="alert alert-success"><i class="fas fa-check-circle"></i> Password successfully updated!</div>';
+
+                $get_user = $pdo->prepare('SELECT * FROM users WHERE id = :id LIMIT 1');
+                $get_user->execute([':id' => $user_id]);
+                $user_data = $get_user->fetch(PDO::FETCH_ASSOC) ?: $user_data;
+            } catch (PDOException $e) {
+                error_log('Admin password update failed: ' . $e->getMessage());
+                $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Failed to update password.</div>';
+            }
+        }
     }
+}
 
+// Keep submitted profile values visible if validation fails.
+$display_name_raw = (string)($user_data['full_name'] ?? 'User');
+$display_username_raw = (string)($user_data['username'] ?? 'No Username');
+$display_phone_raw = (string)($user_data['contact_number'] ?? '');
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_profile']) && strpos($message, 'alert-error') !== false) {
+    $display_name_raw = trim((string)($_POST['full_name'] ?? $display_name_raw));
+    $display_username_raw = trim((string)($_POST['username'] ?? $display_username_raw));
+    $display_phone_raw = trim((string)($_POST['contact_number'] ?? $display_phone_raw));
+}
+$display_name = htmlspecialchars($display_name_raw, ENT_QUOTES, 'UTF-8');
+$display_username = htmlspecialchars($display_username_raw, ENT_QUOTES, 'UTF-8');
+$display_phone = htmlspecialchars($display_phone_raw, ENT_QUOTES, 'UTF-8');
+$display_image_raw = !empty($user_data['profile_image']) ? (string)$user_data['profile_image'] : null;
+$profile_image_url = boogiesResolveProfileImageUrl($display_image_raw);
+$display_image = $profile_image_url !== null ? htmlspecialchars($profile_image_url, ENT_QUOTES, 'UTF-8') : null;
+$joinTimestamp = !empty($user_data['created_at']) ? strtotime((string)$user_data['created_at']) : false;
+$join_date = $joinTimestamp !== false ? date('F d, Y', $joinTimestamp) : 'Unknown';
 
-
-    // Setup display variables
-
-    $display_name_raw = $user_data['full_name'] ?? 'User';
-
-    $display_username_raw = $user_data['username'] ?? 'No Username';
-
-    $display_phone_raw = $user_data['contact_number'] ?? '';
-
-    $display_image_raw = !empty($user_data['profile_image']) ? $user_data['profile_image'] : null;
-
-
-
-    $display_name = htmlspecialchars($display_name_raw, ENT_QUOTES, 'UTF-8');
-
-    $display_username = htmlspecialchars($display_username_raw, ENT_QUOTES, 'UTF-8');
-
-    $display_phone = htmlspecialchars($display_phone_raw, ENT_QUOTES, 'UTF-8');
-
-    $display_image = $display_image_raw !== null ? htmlspecialchars($display_image_raw, ENT_QUOTES, 'UTF-8') : null;
-
-    $join_date = isset($user_data['created_at']) ? date('F d, Y', strtotime($user_data['created_at'])) : 'Unknown';
-
-
-
-    // Dynamic Badge Logic based on Role
-
-    $display_role_badge = strtoupper($current_role);
-
-    if ($current_role === 'staff') {
-
-        $display_role_badge = 'STAFF / FRONT DESK';
-
-    } elseif ($current_role === 'admin') {
-
-        $display_role_badge = 'SYSTEM ADMIN';
-
-    }
-
-
-    // ---------------------------------------------------------
-    // ADMIN NOTIFICATIONS / TOPBAR PROFILE DATA
-    // ---------------------------------------------------------
+$display_role_badge = 'SYSTEM ADMIN';
+$admin_full_name = $display_name_raw;
+$first_name = trim(explode(' ', $admin_full_name)[0] ?? 'A', ',');
+$admin_notifications = [];
+$unread_count = 0;
+try {
+    $admin_notif_stmt = $pdo->prepare(
+        'SELECT id, message, created_at FROM admin_notifications WHERE is_read = 0 ORDER BY created_at DESC LIMIT 20'
+    );
+    $admin_notif_stmt->execute();
+    $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
+    $unread_count = count($admin_notifications);
+} catch (PDOException $e) {
+    error_log('Admin profile notifications fetch failed: ' . $e->getMessage());
     $admin_notifications = [];
     $unread_count = 0;
+}
 
-    try {
-        $admin_notif_stmt = $pdo->prepare("
-            SELECT id, message, created_at
-            FROM admin_notifications
-            WHERE is_read = 0
-            ORDER BY created_at DESC
-            LIMIT 20
-        ");
-        $admin_notif_stmt->execute();
-        $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
-        $unread_count = count($admin_notifications);
-    } catch (PDOException $e) {
-        $admin_notifications = [];
-        $unread_count = 0;
-    }
-
-    $top_profile_name_raw = $display_name_raw;
-    $top_profile_initial = strtoupper(
-        substr(
-            trim($top_profile_name_raw) !== '' ? trim($top_profile_name_raw) : 'U',
-            0,
-            1
-        )
-    );
-    $top_profile_image = $display_image_raw;
-    ?>
-
-
-
+$top_profile_name_raw = $display_name_raw;
+$top_profile_initial = strtoupper(substr(trim($top_profile_name_raw) !== '' ? trim($top_profile_name_raw) : 'A', 0, 1));
+$top_profile_image = $profile_image_url;
+?>
 
     <!DOCTYPE html>
 
@@ -393,27 +296,27 @@
 
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-        <title>My Profile & Settings | Personnel</title>
+        <title>My Profile &amp; Settings | Boogie's Admin</title>
 
-        <link href="https://fonts.googleapis.com/css2?family=Poppins:wght\@300;400;500;600;700;800&display=swap" rel="stylesheet">
+        <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 
         <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 
         <style>
 
-            :root { 
+            :root {
 
-                --brand-blue: #001f3f; 
+                --brand-blue: #001f3f;
 
-                --brand-yellow: #ffcc00; 
+                --brand-yellow: #ffcc00;
 
-                --bg-light: #f4f7f6; 
+                --bg-light: #f4f7f6;
 
-                --white: #ffffff; 
+                --white: #ffffff;
 
-                --text-main: #1c1e21; 
+                --text-main: #1c1e21;
 
-                --text-muted: #64748b; 
+                --text-muted: #64748b;
 
                 --border: #e2e8f0;
 
@@ -423,11 +326,7 @@
 
             body { background-color: var(--bg-light); color: var(--text-main); display: flex; min-height: 100vh; }
 
-
-
             .container { padding: 40px; width: 100%; max-width: 1100px; margin: 0 auto; }
-
-
 
             .page-header { margin-bottom: 30px; display: flex; justify-content: space-between; align-items: center; }
 
@@ -437,8 +336,6 @@
 
             .btn-back:hover { background: var(--brand-blue); color: var(--brand-yellow); transform: translateY(-2px); }
 
-
-
             /* ALERTS */
 
             .alert { padding: 15px; border-radius: 8px; margin-bottom: 25px; font-size: 14px; display: flex; align-items: center; gap: 10px; font-weight: 500; }
@@ -447,71 +344,65 @@
 
             .alert-error { background: #fee2e2; color: #991b1b; border-left: 4px solid #dc2626; }
 
-
-
             .profile-wrapper { display: grid; grid-template-columns: 320px 1fr; gap: 30px; align-items: start; }
-
-
 
             /* MODERN CARDS */
 
-            .card { 
+            .card {
 
-                background: var(--white); 
+                background: var(--white);
 
-                border-radius: 20px; 
+                border-radius: 20px;
 
-                padding: 30px; 
+                padding: 30px;
 
-                box-shadow: 0 4px 15px rgba(0,0,0,0.03); 
+                box-shadow: 0 4px 15px rgba(0,0,0,0.03);
 
-                position: relative; 
+                position: relative;
 
-                overflow: hidden; 
+                overflow: hidden;
 
                 margin-bottom: 30px;
 
             }
 
-            .card::before { 
+            .card::before {
 
-                content: ''; 
+                content: '';
 
-                position: absolute; 
+                position: absolute;
 
-                top: 0; left: 0; 
+                top: 0; left: 0;
 
-                width: 100%; height: 5px; 
+                width: 100%; height: 5px;
 
-                background: linear-gradient(90deg, var(--brand-blue), var(--brand-yellow)); 
+                background: linear-gradient(90deg, var(--brand-blue), var(--brand-yellow));
 
             }
-
-
 
             /* PROFILE DETAILS (LEFT SIDE) */
 
             .profile-card { text-align: center; }
 
-            .profile-avatar { 
+            .profile-avatar {
 
-                width: 130px; height: 130px; 
+                width: 130px; height: 130px;
 
-                background: #f1f5f9; color: var(--brand-blue); 
+                background: #f1f5f9; color: var(--brand-blue);
 
-                border-radius: 50%; 
+                border-radius: 50%;
 
-                display: flex; align-items: center; justify-content: center; 
+                display: flex; align-items: center; justify-content: center;
 
                 font-size: 50px; font-weight: 800;
 
-                margin: 0 auto 20px; 
+                margin: 0 auto 20px;
 
                 border: 4px solid var(--white);
 
-                box-shadow: 0 8px 16px rgba(0, 31, 63, 0.15); 
+                box-shadow: 0 8px 16px rgba(0, 31, 63, 0.15);
 
-                overflow: hidden; 
+                overflow: hidden;
 
             }
 
@@ -519,19 +410,17 @@
 
             .profile-card h3 { color: var(--brand-blue); font-size: 22px; font-weight: 800; margin-bottom: 5px; }
 
-            .admin-badge { 
+            .admin-badge {
 
-                background: var(--brand-blue); color: var(--brand-yellow); 
+                background: var(--brand-blue); color: var(--brand-yellow);
 
-                padding: 6px 18px; border-radius: 50px; 
+                padding: 6px 18px; border-radius: 50px;
 
-                font-size: 11px; font-weight: 800; letter-spacing: 1px; 
+                font-size: 11px; font-weight: 800; letter-spacing: 1px;
 
-                display: inline-block; margin-bottom: 25px; 
+                display: inline-block; margin-bottom: 25px;
 
             }
-
-
 
             .info-list { text-align: left; margin-top: 20px; font-size: 13px; color: var(--text-muted); line-height: 2; font-weight: 500;}
 
@@ -539,13 +428,9 @@
 
             .info-list i { color: var(--brand-blue); font-size: 16px; width: 16px; text-align: center;}
 
-
-
             /* FORMS (RIGHT SIDE) */
 
             .section-title { font-size: 18px; font-weight: 700; color: var(--brand-blue); margin-bottom: 25px; padding-bottom: 15px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; }
-
-
 
             .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
 
@@ -555,15 +440,13 @@
 
             .form-group label { font-size: 13px; font-weight: 600; color: var(--brand-blue); }
 
+            .form-control {
 
+                width: 100%; padding: 12px 15px;
 
-            .form-control { 
+                border: 1px solid var(--border); border-radius: 8px;
 
-                width: 100%; padding: 12px 15px; 
-
-                border: 1px solid var(--border); border-radius: 8px; 
-
-                font-size: 14px; color: var(--text-main); 
+                font-size: 14px; color: var(--text-main);
 
                 background: #f8fafc; outline: none; transition: 0.2s;
 
@@ -571,27 +454,21 @@
 
             .form-control:focus { background: var(--white); border-color: var(--brand-blue); box-shadow: 0 0 0 3px rgba(0, 31, 63, 0.1); }
 
-
-
             input[type="file"].form-control { padding: 10px; border: 1px dashed #cbd5e1; cursor: pointer; }
 
+            .btn-submit {
 
+                background: var(--brand-blue); color: var(--brand-yellow);
 
-            .btn-submit { 
+                border: none; padding: 12px 25px; border-radius: 8px;
 
-                background: var(--brand-blue); color: var(--brand-yellow); 
+                font-weight: 700; font-size: 14px; cursor: pointer;
 
-                border: none; padding: 12px 25px; border-radius: 8px; 
-
-                font-weight: 700; font-size: 14px; cursor: pointer; 
-
-                transition: 0.3s; display: inline-flex; align-items: center; gap: 8px; 
+                transition: 0.3s; display: inline-flex; align-items: center; gap: 8px;
 
             }
 
             .btn-submit:hover { opacity: 0.9; transform: translateY(-2px); box-shadow: 0 4px 10px rgba(0, 31, 63, 0.2); }
-
-
 
             /* ===== RESPONSIVE ===== */
 
@@ -605,8 +482,6 @@
 
             }
 
-
-
             @media (max-width: 680px) {
 
                 body {
@@ -615,15 +490,11 @@
 
                 }
 
-
-
                 .container {
 
                     padding: 24px 16px 30px;
 
                 }
-
-
 
                 .page-header {
 
@@ -639,15 +510,11 @@
 
                 }
 
-
-
                 .page-header h2 {
 
                     font-size: 23px;
 
                 }
-
-
 
                 .btn-back {
 
@@ -656,8 +523,6 @@
                     width: 100%;
 
                 }
-
-
 
                 .alert {
 
@@ -669,15 +534,11 @@
 
                 }
 
-
-
                 .profile-wrapper {
 
                     gap: 18px;
 
                 }
-
-
 
                 .card {
 
@@ -688,8 +549,6 @@
                     margin-bottom: 18px;
 
                 }
-
-
 
                 .profile-avatar {
 
@@ -703,8 +562,6 @@
 
                 }
 
-
-
                 .profile-card h3 {
 
                     font-size: 20px;
@@ -712,8 +569,6 @@
                     overflow-wrap: anywhere;
 
                 }
-
-
 
                 .admin-badge {
 
@@ -725,15 +580,11 @@
 
                 }
 
-
-
                 .info-list {
 
                     font-size: 12px;
 
                 }
-
-
 
                 .info-list div {
 
@@ -745,8 +596,6 @@
 
                 }
 
-
-
                 .info-list i {
 
                     flex: 0 0 16px;
@@ -754,8 +603,6 @@
                     margin-top: 3px;
 
                 }
-
-
 
                 .section-title {
 
@@ -767,15 +614,11 @@
 
                 }
 
-
-
                 .form-group label {
 
                     font-size: 12px;
 
                 }
-
-
 
                 .form-control {
 
@@ -785,8 +628,6 @@
 
                 }
 
-
-
                 input[type="file"].form-control {
 
                     min-height: 48px;
@@ -794,8 +635,6 @@
                     padding: 9px;
 
                 }
-
-
 
                 .btn-submit {
 
@@ -807,8 +646,6 @@
 
                 }
 
-
-
                 .card form > div[style*="text-align: right"] {
 
                     text-align: stretch !important;
@@ -816,8 +653,6 @@
                 }
 
             }
-
-
 
             @media (max-width: 420px) {
 
@@ -829,23 +664,17 @@
 
                 }
 
-
-
                 .card {
 
                     padding: 20px 15px;
 
                 }
 
-
-
                 .page-header h2 {
 
                     font-size: 21px;
 
                 }
-
-
 
                 .section-title {
 
@@ -855,7 +684,6 @@
 
             }
 
-        
             /* =========================================================
             SHARED ADMIN SHELL / RESPONSIVE MOBILE LAYOUT
             Matches the managepet.php admin layout pattern.
@@ -1401,9 +1229,6 @@
 
     <body>
 
-
-
-        
         <aside>
             <div class="sidebar-header">
                 <img src="bg.png" alt="Boogie's Logo" class="sidebar-logo">
@@ -1525,13 +1350,7 @@
                             <?php echo strtoupper($current_role ?: 'ADMIN'); ?>
                         </span>
 
-                        <?php
-                        $top_image_file = !empty($top_profile_image)
-                            ? __DIR__ . '/' . ltrim((string)$top_profile_image, '/')
-                            : '';
-                        ?>
-
-                        <?php if (!empty($top_profile_image) && is_file($top_image_file)): ?>
+                        <?php if (!empty($top_profile_image)): ?>
                             <img
                                 src="<?php echo htmlspecialchars((string)$top_profile_image, ENT_QUOTES, 'UTF-8'); ?>"
                                 class="top-avatar"
@@ -1562,7 +1381,6 @@
                 </div>
             </header>
 
-
             <div class="container">
 
                 <div class="page-header">
@@ -1577,21 +1395,15 @@
 
                 </div>
 
-
-
                 <?php echo $message; ?>
 
-
-
                 <div class="profile-wrapper">
-
-
 
                     <div class="card profile-card">
 
                         <div class="profile-avatar">
 
-                            <?php if ($display_image && file_exists($display_image)): ?>
+                            <?php if (!empty($display_image)): ?>
 
                                 <img src="<?php echo $display_image; ?>" alt="Profile Picture">
 
@@ -1607,8 +1419,6 @@
 
                         <span class="admin-badge"><?php echo $display_role_badge; ?></span>
 
-
-
                         <div class="info-list">
 
                             <div><i class="fas fa-user"></i> <?php echo $display_username; ?></div>
@@ -1621,13 +1431,13 @@
 
                     </div>
 
-
-
                     <div>
 
                         <div class="card">
 
                             <form method="POST" action="" enctype="multipart/form-data">
+
+                                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token, ENT_QUOTES, 'UTF-8'); ?>">
 
                                 <div class="section-title">
 
@@ -1685,11 +1495,11 @@
 
                         </div>
 
-
-
                         <div class="card">
 
                             <form method="POST" action="">
+
+                                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token, ENT_QUOTES, 'UTF-8'); ?>">
 
                                 <div class="section-title">
 
@@ -1741,14 +1551,11 @@
 
                     </div>
 
-
-
                 </div>
 
             </div>
 
         </main>
-
 
     <script>
     (function () {

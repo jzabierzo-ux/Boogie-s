@@ -3,12 +3,15 @@ session_start();
 require_once '../db_supabase.php';
 
 // --- SECURITY CHECK ---
-$current_role = strtolower(trim($_SESSION['role'] ?? ''));
-$is_personnel_logged_in = isset($_SESSION['logged_in'])
-    && $_SESSION['logged_in'] === true;
+// Normalize role and session login flag consistently with other staff pages.
+$current_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
+$current_role = preg_replace('/[\\s_-]+/', ' ', $current_role);
+$login_flag = $_SESSION['logged_in'] ?? false;
+$is_personnel_logged_in = ($login_flag === true || $login_flag === 1 || $login_flag === '1' ||
+    (is_string($login_flag) && strtolower(trim($login_flag)) === 'true'));
 
 $is_vet_or_admin = $is_personnel_logged_in
-    && in_array($current_role, ['admin', 'vet'], true);
+    && in_array($current_role, ['admin', 'vet', 'veterinarian'], true);
 
 if (!$is_vet_or_admin) {
     header("Location: stafflogin.php");

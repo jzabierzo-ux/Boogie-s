@@ -3,11 +3,12 @@ session_start();
 require_once '../db_supabase.php';
 
 // --- SECURITY CHECK ---
-// This page is the Veterinarian's task portal.
-$current_role = isset($_SESSION['role']) ? strtolower(trim($_SESSION['role'])) : '';
+// This page is for veterinary-team accounts only.
+$current_role = isset($_SESSION['role']) ? strtolower(trim((string)$_SESSION['role'])) : '';
+$vet_roles = ['vet', 'veterinarian', 'vet assistant', 'vet_assistant', 'vet nurse', 'vet_nurse'];
 $is_vet = isset($_SESSION['logged_in'])
     && $_SESSION['logged_in'] === true
-    && $current_role === 'vet';
+    && in_array($current_role, $vet_roles, true);
 
 if (!$is_vet) {
     header("Location: stafflogin.php");
@@ -73,22 +74,44 @@ $mobile_name_source = trim(preg_replace('/^\s*(?:Dr\.?|Dra\.?|Doc\.?)\s+/i', '',
 $first_name_only = trim((string)(preg_split('/\s+/', $mobile_name_source)[0] ?? ''));
 
 
-// --- FETCH NOTIFICATIONS ---
-$admin_notifications = [];
+// Notifications are intentionally not read from admin_notifications here.
+// That table and its polling endpoint belong to the Admin side; a staff-specific
+// notification table/schema was not available to verify safely.
+$staff_notifications = [];
 $unread_count = 0;
 
-try {
-    $admin_notif_stmt = $pdo->query("
-        SELECT *
-        FROM admin_notifications
-        WHERE is_read = 0
-        ORDER BY created_at DESC
-    ");
+// Profile image paths may be stored as a URL or as a path relative to the project root.
+$profile_img_src = '';
+$profile_img_is_remote = false;
+if (is_string($profile_img_path) && trim($profile_img_path) !== '') {
+    $profile_img_path = trim($profile_img_path);
+    $parsed_img_url = filter_var($profile_img_path, FILTER_VALIDATE_URL) ? parse_url($profile_img_path) : false;
+    $profile_img_is_remote = is_array($parsed_img_url)
+        && isset($parsed_img_url['scheme'])
+        && in_array(strtolower($parsed_img_url['scheme']), ['http', 'https'], true);
 
-    $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
-    $unread_count = count($admin_notifications);
-} catch (PDOException $e) {
-    error_log("Admin notifications query failed: " . $e->getMessage());
+    if ($profile_img_is_remote) {
+        $profile_img_src = $profile_img_path;
+    } else {
+        $normalized_img_path = str_replace('\\', '/', $profile_img_path);
+        $clean_img_path = preg_replace('#^(?:\./|\.\./)+#', '', ltrim($normalized_img_path, '/'));
+        $candidate_paths = [
+            __DIR__ . '/' . ltrim($normalized_img_path, '/'),
+            dirname(__DIR__) . '/' . $clean_img_path,
+        ];
+        foreach ($candidate_paths as $candidate_path) {
+            if (is_file($candidate_path)) {
+                if (strpos($normalized_img_path, '/') === 0) {
+                    $profile_img_src = $normalized_img_path;
+                } elseif (strpos($normalized_img_path, '../') === 0) {
+                    $profile_img_src = $normalized_img_path;
+                } else {
+                    $profile_img_src = '../' . $clean_img_path;
+                }
+                break;
+            }
+        }
+    }
 }
 
 // --- TASK LOGIC (Automated from Appointments - SINGLE VET CLINIC) ---
@@ -99,7 +122,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['complete_task'])) {
     $id = filter_input(INPUT_POST, 'appointment_id', FILTER_VALIDATE_INT);
     $csrf = $_POST['csrf_token'] ?? '';
 
-    if (!$id || !hash_equals($tasks_csrf, $csrf)) {
+    if (!is_string($csrf) || !$id || !hash_equals($tasks_csrf, $csrf)) {
         http_response_code(400);
         exit('Invalid request.');
     }
@@ -2067,21 +2090,10 @@ input, select, textarea, button, img { max-width:100%; }
                     <div class="notif-dropdown" id="notifBox" onclick="event.stopPropagation()">
                         <div class="notif-header">
                             Alerts
-                            <a href="mark_notifications_read.php" id="mark-read-link" class="mark-read-btn" style="display: <?php echo ($unread_count > 0) ? 'inline-block' : 'none'; ?>;">Mark all read</a>
                         </div>
                         
-                        <div class="notif-body" id="admin-notif-list">
-                            <?php if($unread_count > 0 && !empty($admin_notifications)): ?>
-                                <?php foreach($admin_notifications as $notif): ?>
-                                    <div class="notif-item">
-                                        <i class="fa-solid fa-circle-exclamation" style="color: #ef4444; margin-right: 5px;"></i>
-                                        <?php echo htmlspecialchars($notif['message']); ?>
-                                        <br><small style="color: #94a3b8; font-size: 11px;"><?php echo date('M d, g:i A', strtotime($notif['created_at'])); ?></small>
-                                    </div>
-                                <?php endforeach; ?>
-                            <?php else: ?>
-                                <div class="notif-empty">No new clinic alerts.</div>
-                            <?php endif; ?>
+                        <div class="notif-body" id="staff-notif-list">
+                            <div class="notif-empty">Staff notifications are not connected on this page yet.</div>
                         </div>
                     </div>
                 </div>
@@ -2091,10 +2103,10 @@ input, select, textarea, button, img { max-width:100%; }
                         <i class="fas fa-user-md"></i> VET
                     </div>
                     
-                    <?php if (!empty($profile_img_path) && file_exists($profile_img_path)): ?>
-                        <img src="<?php echo htmlspecialchars($profile_img_path); ?>" class="top-avatar" alt="Profile Picture">
+                    <?php if ($profile_img_src !== ''): ?>
+                        <img src="<?php echo htmlspecialchars($profile_img_src, ENT_QUOTES, 'UTF-8'); ?>" class="top-avatar" alt="Profile Picture">
                     <?php else: ?>
-                        <div class="top-avatar-fallback"><?php echo $first_letter; ?></div>
+                        <div class="top-avatar-fallback"><?php echo htmlspecialchars($first_letter !== '' ? $first_letter : 'D', ENT_QUOTES, 'UTF-8'); ?></div>
                     <?php endif; ?>
                     
                     <span class="profile-name-text desktop-profile-name" style="font-size: 14px; font-weight: 700; color: var(--sidebar-navy); display: flex; align-items: center; gap: 6px;">
@@ -2168,18 +2180,18 @@ input, select, textarea, button, img { max-width:100%; }
                                     <?php endif; ?>
                                     
                                     <div>
-                                        <div class="task-title"><?php echo htmlspecialchars($task['service']); ?></div>
-                                        <div class="task-text">Patient: <strong><?php echo htmlspecialchars($task['pet_name'] ?? 'Unknown Pet'); ?></strong></div>
+                                        <div class="task-title"><?php echo htmlspecialchars((string)($task['service'] ?? ''), ENT_QUOTES, 'UTF-8'); ?></div>
+                                        <div class="task-text">Patient: <strong><?php echo htmlspecialchars((string)($task['pet_name'] ?? 'Unknown Pet'), ENT_QUOTES, 'UTF-8'); ?></strong></div>
                                         <div class="task-date">
-                                            <span><i class="far fa-calendar-alt"></i> <?php echo date("M d, Y", strtotime($task['appointment_date'])); ?></span>
-                                            <span><i class="far fa-clock"></i> <?php echo !empty($task['appointment_time']) ? date("g:i A", strtotime($task['appointment_time'])) : 'TBA'; ?></span>
+                                            <span><i class="far fa-calendar-alt"></i> <?php echo !empty($task['appointment_date']) && strtotime((string)$task['appointment_date']) !== false ? date("M d, Y", strtotime((string)$task['appointment_date'])) : 'Date TBA'; ?></span>
+                                            <span><i class="far fa-clock"></i> <?php echo !empty($task['appointment_time']) && strtotime((string)$task['appointment_time']) !== false ? date("g:i A", strtotime((string)$task['appointment_time'])) : 'TBA'; ?></span>
                                         </div>
                                     </div>
                                 </div>
                                 
                                 <div>
                                     <span class="status-badge <?php echo $is_done ? 'badge-completed' : 'badge-confirmed'; ?>">
-                                        <?php echo $task['booking_status']; ?>
+                                        <?php echo htmlspecialchars((string)($task['booking_status'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>
                                     </span>
                                 </div>
                             </div>
@@ -2271,36 +2283,7 @@ input, select, textarea, button, img { max-width:100%; }
             }
         });
 
-        // --- REAL-TIME NOTIFICATION FETCHER ---
-        let previousUnreadCount = <?php echo $unread_count; ?>;
-        
-        function fetchAdminNotifs() {
-            fetch('../admin/get_admin_notifs.php')
-                .then(response => response.json())
-                .then(data => {
-                    const badge = document.getElementById('admin-notif-badge');
-                    const notifList = document.getElementById('admin-notif-list');
-                    const markReadBtn = document.getElementById('mark-read-link');
-                    
-                    if (data.unread > 0) {
-                        badge.style.display = 'inline-block';
-                        badge.innerText = data.unread;
-                        if(markReadBtn) markReadBtn.style.display = 'inline-block';
-                    } else {
-                        badge.style.display = 'none';
-                        if(markReadBtn) markReadBtn.style.display = 'none';
-                    }
-
-                    if (data.html !== "") {
-                        notifList.innerHTML = data.html;
-                    } else {
-                        notifList.innerHTML = '<div class="notif-empty">No new notifications.</div>';
-                    }
-                })
-                .catch(error => console.error('Error fetching notifications:', error));
-        }
-
-        setInterval(fetchAdminNotifs, 3000);
+        // Staff notification API/table is not configured here. Do not poll Admin endpoints from staff pages.
     </script>
 </body>
 </html>

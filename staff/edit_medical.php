@@ -8,7 +8,7 @@ $current_role = strtolower(trim($_SESSION['role'] ?? ''));
 if (
     !isset($_SESSION['logged_in']) ||
     $_SESSION['logged_in'] !== true ||
-    $current_role !== 'vet'
+    !in_array($current_role, ['vet', 'veterinarian'], true)
 ) {
     header("Location: stafflogin.php");
     exit();
@@ -58,32 +58,50 @@ $mobile_name_source = trim(preg_replace('/^\s*(?:Dr\.?|Dra\.?|Doc\.?)\s+/i', '',
 $first_name_only = trim((string)(preg_split('/\s+/', $mobile_name_source)[0] ?? ''));
 
 
-// --- FETCH NOTIFICATIONS ---
-$admin_notif_query = $pdo->query("SELECT * FROM admin_notifications WHERE is_read = 0 ORDER BY created_at DESC");
-$admin_notifications = $admin_notif_query ? $admin_notif_query->fetchAll(PDO::FETCH_ASSOC) : [];
-$unread_count = count($admin_notifications);
+// Admin-only notifications are intentionally not queried from the veterinarian portal.
 
-// Check ID
-if (!isset($_GET['id']) || !is_numeric($_GET['id'])) {
-    die("Invalid Patient ID.");
+// Validate the patient ID as a positive integer.
+$pet_id = filter_var($_GET['id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+if ($pet_id === false || $pet_id === null) {
+    http_response_code(400);
+    exit('Invalid Patient ID.');
 }
 
-$pet_id = (int) $_GET['id'];
+// Fetch the patient first so POST updates can only target an existing record.
+try {
+    $stmt = $pdo->prepare('SELECT * FROM pets WHERE id = :id LIMIT 1');
+    $stmt->execute([':id' => $pet_id]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    error_log('Medical record lookup failed: ' . $e->getMessage());
+    http_response_code(500);
+    exit('Unable to load this patient record right now. Please try again.');
+}
+
+if (!$row) {
+    http_response_code(404);
+    exit('Patient not found.');
+}
 
 // --- UPDATE LOGIC ---
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_medical'])) {
     $submitted_token = $_POST['csrf_token'] ?? '';
+    $session_token = $_SESSION['csrf_token'] ?? '';
 
-    if (
-        empty($submitted_token) ||
-        !hash_equals($_SESSION['csrf_token'] ?? '', $submitted_token)
-    ) {
+    if (!is_string($submitted_token) || !is_string($session_token) || $submitted_token === '' || !hash_equals($session_token, $submitted_token)) {
         http_response_code(403);
-        die("Invalid security token. Please refresh the page and try again.");
+        exit('Invalid security token. Please refresh the page and try again.');
     }
 
-    $updated_history = trim($_POST['medical_history'] ?? '');
-    $updated_needs = trim($_POST['special_needs'] ?? '');
+    $history_input = $_POST['medical_history'] ?? '';
+    $needs_input = $_POST['special_needs'] ?? '';
+    if (!is_string($history_input) || !is_string($needs_input)) {
+        http_response_code(400);
+        exit('Invalid medical record data.');
+    }
+
+    $updated_history = trim($history_input);
+    $updated_needs = trim($needs_input);
 
     try {
         $update_stmt = $pdo->prepare("
@@ -99,23 +117,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_medical'])) {
             ':id' => $pet_id
         ]);
 
-        header("Location: view_records.php?id=" . $pet_id);
+        header('Location: view_records.php?id=' . $pet_id);
         exit;
     } catch (PDOException $e) {
-        error_log("Medical record update failed: " . $e->getMessage());
-        $error_msg = "Unable to save medical records right now. Please try again.";
+        error_log('Medical record update failed: ' . $e->getMessage());
+        $error_msg = 'Unable to save medical records right now. Please try again.';
     }
-}
-
-// Fetch pet data
-$query = "SELECT * FROM pets WHERE id = :id LIMIT 1";
-$stmt = $pdo->prepare($query);
-$stmt->execute([':id' => $pet_id]);
-
-$row = $stmt->fetch(PDO::FETCH_ASSOC);
-
-if (!$row) {
-    die("Patient not found.");
 }
 
 $p_name = $row['name'] ?? 'Unknown';
@@ -1947,40 +1954,15 @@ input, select, textarea, button, img { max-width:100%; }
                 <span class="breadcrumb-text">Veterinarian Portal / Edit Records</span></div>
             
             <div class="top-right-actions">
-                <div class="notif-wrapper" onclick="toggleNotif(event)">
-                    <i class="fa-solid fa-bell" style="font-size: 20px; color: var(--text-muted);"></i>
-                    <?php if($unread_count > 0): ?>
-                        <span id="admin-notif-badge" class="notif-badge"><?php echo $unread_count; ?></span>
-                    <?php endif; ?>
-                    <div class="notif-dropdown" id="notifBox" onclick="event.stopPropagation()">
-                        <div class="notif-header">Clinic Alerts</div>
-                        <div class="notif-body">
-                            <?php if($unread_count > 0 && !empty($admin_notifications)): ?>
-                                <?php foreach($admin_notifications as $notif): ?>
-                                    <div class="notif-item">
-                                        <i class="fa-solid fa-circle-exclamation" style="color:#ef4444; margin-right:5px;"></i>
-                                        <?php echo htmlspecialchars($notif['message']); ?>
-                                        <br><small style="color:#94a3b8; font-size:11px;">
-                                            <?php echo date('M d, g:i A', strtotime((string)$notif['created_at'])); ?>
-                                        </small>
-                                    </div>
-                                <?php endforeach; ?>
-                            <?php else: ?>
-                                <div style="padding: 20px; text-align: center; color: var(--text-muted);">No new alerts.</div>
-                            <?php endif; ?>
-                        </div>
-                    </div>
-                </div>
-
                 <div class="profile-wrapper" onclick="toggleProfile(event)">
                     <div class="role-label"><i class="fas fa-user-md"></i> VET</div>
                     <?php if (!empty($profile_img_path) && file_exists($profile_img_path)): ?>
-                        <img src="<?php echo htmlspecialchars($profile_img_path); ?>" class="top-avatar">
+                        <img src="<?php echo htmlspecialchars($profile_img_path, ENT_QUOTES, 'UTF-8'); ?>" class="top-avatar">
                     <?php else: ?>
                         <div class="top-avatar-fallback"><?php echo $first_letter; ?></div>
                     <?php endif; ?>
-                    <span class="desktop-profile-name" style="font-size: 14px; font-weight: 700; color: var(--sidebar-navy);"><?php echo htmlspecialchars($display_with_title); ?></span>
-                    <span class="mobile-profile-first-name"><?php echo htmlspecialchars($first_name_only); ?></span>
+                    <span class="desktop-profile-name" style="font-size: 14px; font-weight: 700; color: var(--sidebar-navy);"><?php echo htmlspecialchars($display_with_title, ENT_QUOTES, 'UTF-8'); ?></span>
+                    <span class="mobile-profile-first-name"><?php echo htmlspecialchars($first_name_only, ENT_QUOTES, 'UTF-8'); ?></span>
                     <div class="profile-dropdown" id="profileBox">
                         <a href="staff_profile.php" class="profile-item"><i class="fas fa-user-circle"></i> My Profile</a>
                         <a href="../logout.php" class="profile-item logout-text" style="color: #ef4444;"><i class="fas fa-sign-out-alt"></i> Logout</a>
@@ -1999,7 +1981,7 @@ input, select, textarea, button, img { max-width:100%; }
                     <div style="background: #f1f5f9; width: 45px; height: 45px; border-radius: 10px; display: flex; align-items: center; justify-content: center;">
                         <i class="fas fa-edit" style="color: var(--sidebar-navy);"></i>
                     </div>
-                    Edit Medical Profile: <?php echo htmlspecialchars($p_name); ?>
+                    Edit Medical Profile: <?php echo htmlspecialchars($p_name, ENT_QUOTES, 'UTF-8'); ?>
                 </div>
 
                 <?php if (!empty($error_msg)): ?>
@@ -2012,12 +1994,12 @@ input, select, textarea, button, img { max-width:100%; }
                     <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token, ENT_QUOTES, 'UTF-8'); ?>">
                     <div class="form-group">
                         <label><i class="fas fa-notes-medical" style="color: #ef4444;"></i> Full Medical History</label>
-                        <textarea name="medical_history" placeholder="Enter complete medical history..."><?php echo htmlspecialchars($med_history); ?></textarea>
+                        <textarea name="medical_history" placeholder="Enter complete medical history..."><?php echo htmlspecialchars($med_history, ENT_QUOTES, 'UTF-8'); ?></textarea>
                     </div>
 
                     <div class="form-group">
                         <label><i class="fas fa-clipboard-list" style="color: var(--brand-blue);"></i> Special Needs / Care Instructions</label>
-                        <textarea name="special_needs" placeholder="E.g., Allergies, daily maintenance..."><?php echo htmlspecialchars($special_needs); ?></textarea>
+                        <textarea name="special_needs" placeholder="E.g., Allergies, daily maintenance..."><?php echo htmlspecialchars($special_needs, ENT_QUOTES, 'UTF-8'); ?></textarea>
                     </div>
 
                     <button type="submit" name="update_medical" class="btn-submit">Save Medical Records</button>
@@ -2072,19 +2054,13 @@ input, select, textarea, button, img { max-width:100%; }
             if (event.key === 'Escape') closeMobileMenu();
         });
 
-        function toggleNotif(event) {
-            event.stopPropagation();
-            document.getElementById("notifBox").classList.toggle("show");
-            document.getElementById("profileBox").classList.remove("show");
-        }
         function toggleProfile(event) {
             event.stopPropagation();
             document.getElementById("profileBox").classList.toggle("show");
-            document.getElementById("notifBox").classList.remove("show");
         }
         window.onclick = function() {
-            document.getElementById("notifBox").classList.remove("show");
-            document.getElementById("profileBox").classList.remove("show");
+            const profileBox = document.getElementById("profileBox");
+            if (profileBox) profileBox.classList.remove("show");
         }
     </script>
 </body>

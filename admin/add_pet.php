@@ -6,19 +6,21 @@ require_once '../db_supabase.php';
 
 
 
-// --- UNIVERSAL SECURITY CHECK ---
 
-$current_role = isset($_SESSION['role']) ? strtolower(trim($_SESSION['role'])) : '';
+ // --- SECURITY CHECK ---
 
+$current_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
 
-
-if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true || !in_array($current_role, ['admin', 'supervisor', 'staff'], true)) {
-
-    header("Location: stafflogin.php");
-
+if (($_SESSION['logged_in'] ?? false) !== true) {
+    header('Location: ../admin_login.php');
     exit();
-
 }
+
+if (!in_array($current_role, ['admin', 'supervisor', 'staff'], true)) {
+    http_response_code(403);
+    exit('Access denied.');
+}
+
 
 
 

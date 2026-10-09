@@ -7,7 +7,7 @@ if (isset($_SESSION['logged_in']) && $_SESSION['logged_in'] === true) {
     exit();
 }
 
-require_once 'db_supabase.php';
+require_once __DIR__ . '/db_supabase.php';
 
 // --- FETCH REAL REVIEWS ---
 $reviews_list = [];
@@ -1686,8 +1686,9 @@ try {
                 <?php if (!empty($promos_list)): ?>
                     <?php foreach ($promos_list as $promo): ?>
                         <?php
-                            $theme_class = !empty($promo['theme_color'])
-                                ? htmlspecialchars($promo['theme_color'], ENT_QUOTES, 'UTF-8')
+                            $theme_candidate = strtolower(trim((string)($promo['theme_color'] ?? 'purple')));
+                            $theme_class = in_array($theme_candidate, ['purple', 'teal', 'red', 'orange'], true)
+                                ? $theme_candidate
                                 : 'purple';
 
                             $image_path = trim((string)($promo['image_url'] ?? ''));

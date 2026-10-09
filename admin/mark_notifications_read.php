@@ -1,85 +1,56 @@
 <?php
-
 session_start();
+
+/*
+|--------------------------------------------------------------------------
+| ADMIN-ONLY ACCESS
+|--------------------------------------------------------------------------
+*/
+$currentRole = strtolower(trim((string)($_SESSION['role'] ?? '')));
+$isLoggedIn = isset($_SESSION['logged_in']) && $_SESSION['logged_in'] === true;
+
+if (!$isLoggedIn || $currentRole !== 'admin') {
+    header('Location: ../admin_login.php');
+    exit;
+}
+
+/*
+|--------------------------------------------------------------------------
+| METHOD CHECK
+|--------------------------------------------------------------------------
+| The current notification dropdown uses a normal GET link. Keep GET
+| compatibility for now; migrate the link and this endpoint to POST + CSRF
+| together to prevent cross-site request forgery.
+*/
+if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'GET') {
+    http_response_code(405);
+    header('Allow: GET');
+    exit('Method not allowed.');
+}
 
 require_once '../db_supabase.php';
 
 /*
 |--------------------------------------------------------------------------
-| SECURITY / AUTHENTICATION CHECK
+| MARK ADMIN NOTIFICATIONS AS READ
 |--------------------------------------------------------------------------
-*/
-$current_role = strtolower(
-    trim(
-        (string)($_SESSION['role'] ?? '')
-    )
-);
-
-$allowed_roles = ['admin', 'manager', 'vet'];
-
-$is_logged_in = (
-    isset($_SESSION['logged_in']) &&
-    $_SESSION['logged_in'] === true
-);
-
-if (!$is_logged_in || !in_array($current_role, $allowed_roles, true)) {
-    http_response_code(403);
-
-    // Keep the response simple and do not expose sensitive information.
-    exit('Unauthorized access.');
-}
-
-/*
-|--------------------------------------------------------------------------
-| ONLY ALLOW GET FOR CURRENT FRONTEND COMPATIBILITY
-|--------------------------------------------------------------------------
-| Your notification dropdown currently uses:
-| mark_notifications_read.php
-|
-| We keep GET here so no frontend changes are required.
-*/
-if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
-    http_response_code(405);
-    header('Allow: GET');
-
-    exit('Method not allowed.');
-}
-
-/*
-|--------------------------------------------------------------------------
-| MARK ALL UNREAD NOTIFICATIONS AS READ
-|--------------------------------------------------------------------------
+| is_read is stored as a numeric flag in the current schema, so use 1/0.
 */
 try {
-
-    $stmt = $pdo->prepare("
+    $stmt = $pdo->prepare('
         UPDATE admin_notifications
         SET is_read = 1
         WHERE is_read = 0
-    ");
-
+    ');
     $stmt->execute();
-
 } catch (PDOException $e) {
-
-    /*
-    |--------------------------------------------------------------------------
-    | LOG SERVER ERROR
-    |--------------------------------------------------------------------------
-    | Do not show database details to the user.
-    */
-    error_log(
-        'Mark notifications read error: ' .
-        $e->getMessage()
-    );
+    error_log('Mark admin notifications read failed: ' . $e->getMessage());
 }
 
 /*
 |--------------------------------------------------------------------------
-| RETURN TO BOOKING MANAGEMENT
+| RETURN TO ADMIN BOOKING MANAGEMENT
 |--------------------------------------------------------------------------
 */
 header('Location: managebooking.php');
-exit();
-
-?>
+exit;

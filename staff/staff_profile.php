@@ -2,13 +2,29 @@
 session_start();
 require_once '../db_supabase.php';
 
-// 1. SECURITY: Check if admin, manager, or vet is logged in
-$current_role = isset($_SESSION['role']) ? strtolower(trim($_SESSION['role'])) : '';
-$is_authorized = isset($_SESSION['logged_in'])
-    && in_array($current_role, ['admin', 'manager', 'vet'], true);
+// 1. SECURITY: accept the canonical role names assigned by stafflogin.php
+$current_role_raw = strtolower(trim((string)($_SESSION['role'] ?? '')));
+$staff_role_aliases = [
+    'vet' => 'veterinarian',
+    'veterinary' => 'veterinarian',
+    'veterinarian' => 'veterinarian',
+    'vet assistant' => 'vet_assistant',
+    'veterinary assistant' => 'vet_assistant',
+    'veterinary_assistant' => 'vet_assistant',
+    'vet_assistant' => 'vet_assistant',
+    'vet nurse' => 'vet_nurse',
+    'veterinary nurse' => 'vet_nurse',
+    'veterinary_nurse' => 'vet_nurse',
+    'vet_nurse' => 'vet_nurse'
+];
+$current_role = $staff_role_aliases[$current_role_raw] ?? $current_role_raw;
+$session_logged_in = in_array($_SESSION['logged_in'] ?? null, [true, 1, '1'], true)
+    || in_array($_SESSION['staff_logged_in'] ?? null, [true, 1, '1'], true);
+$is_authorized = $session_logged_in
+    && in_array($current_role, ['admin', 'manager', 'veterinarian', 'vet_assistant', 'vet_nurse'], true);
 
 if (!$is_authorized) {
-    header("Location: stafflogin.php");
+    header('Location: stafflogin.php');
     exit;
 }
 
@@ -20,6 +36,34 @@ $csrf_token = $_SESSION['csrf_token'];
 
 // Safely get the user ID
 $user_id = (int)($_SESSION['user_id'] ?? $_SESSION['staff_id'] ?? $_SESSION['id'] ?? 0);
+
+
+/** Resolve a stored profile-image value to a browser URL without trusting filesystem paths. */
+function resolveStaffProfileImageUrl($storedPath): string
+{
+    $storedPath = trim((string)$storedPath);
+    if ($storedPath === '') {
+        return '';
+    }
+
+    if (filter_var($storedPath, FILTER_VALIDATE_URL)) {
+        $scheme = strtolower((string)parse_url($storedPath, PHP_URL_SCHEME));
+        return in_array($scheme, ['http', 'https'], true) ? $storedPath : '';
+    }
+
+    $normalized = str_replace('\\', '/', $storedPath);
+    $filename = basename($normalized);
+    if ($filename === '' || $filename === '.' || $filename === '..') {
+        return '';
+    }
+
+    $filePath = __DIR__ . '/../uploads/' . $filename;
+    if (!is_file($filePath)) {
+        return '';
+    }
+
+    return '../uploads/' . rawurlencode($filename);
+}
 
 $success_msg = "";
 $error_msg = "";
@@ -37,10 +81,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['profile_image'])) {
     } elseif ($_FILES['profile_image']['size'] > 2 * 1024 * 1024) {
         $error_msg = "Profile picture must not exceed 2MB.";
     } else {
-        $upload_dir = '../uploads/';
+        $upload_dir = __DIR__ . '/../uploads/';
 
-        if (!is_dir($upload_dir)) {
-            mkdir($upload_dir, 0777, true);
+        if (!is_dir($upload_dir) && !@mkdir($upload_dir, 0755, true) && !is_dir($upload_dir)) {
+            $error_msg = 'The upload folder is not available. On Vercel, configure persistent Supabase Storage for profile pictures.';
+        } elseif (!is_writable($upload_dir)) {
+            $error_msg = 'The upload folder is not writable. On Vercel, configure persistent Supabase Storage for profile pictures.';
         }
 
         $tmp_name = $_FILES['profile_image']['tmp_name'];
@@ -59,12 +105,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['profile_image'])) {
             finfo_close($finfo);
         }
 
-        if (!isset($allowed_mimes[$file_ext]) || $mime_type !== $allowed_mimes[$file_ext]) {
+        if ($error_msg !== '') {
+            // Keep the directory/deployment error above.
+        } elseif (!is_uploaded_file($tmp_name) || !isset($allowed_mimes[$file_ext]) || $mime_type !== $allowed_mimes[$file_ext]) {
             $error_msg = "Invalid image file. Only JPG, PNG, and GIF images are allowed.";
         } else {
             try {
                 $new_filename = 'staff_' . $user_id . '_' . bin2hex(random_bytes(8)) . '.' . $file_ext;
                 $target_path = $upload_dir . $new_filename;
+                $public_image_path = '../uploads/' . $new_filename;
 
                 if (!move_uploaded_file($tmp_name, $target_path)) {
                     $error_msg = "Failed to upload image. Please check folder permissions.";
@@ -76,7 +125,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['profile_image'])) {
                     ");
 
                     $update_img_stmt->execute([
-                        ':profile_image' => $target_path,
+                        ':profile_image' => $public_image_path,
                         ':user_id' => $user_id
                     ]);
 
@@ -106,6 +155,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_profile'])) {
     $new_contact = trim($_POST['contact_number'] ?? '');
 
     if ($submitted_csrf !== '' && hash_equals($csrf_token, $submitted_csrf) && $user_id > 0) {
+        if ($new_name === '' || $new_username === '') {
+            $error_msg = 'Full name and username are required.';
+        } else {
         try {
             // Check muna kung may kaparehas na username ang iba
             $check_user_stmt = $pdo->prepare("
@@ -147,6 +199,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_profile'])) {
         } catch (PDOException $e) {
             error_log("Profile details update failed: " . $e->getMessage());
             $error_msg = "Failed to update profile details.";
+        }
         }
     }
 }
@@ -227,6 +280,7 @@ if ($user_id > 0) {
 // Siguradong full_name ang gagamitin at ilalabas din natin ang username
 $full_display_name = $staff_data['full_name'] ?? $_SESSION['staff_name'] ?? 'Personnel';
 $profile_img_path = $staff_data['profile_image'] ?? '';
+$profile_img_url = resolveStaffProfileImageUrl($profile_img_path);
 $staff_username = $staff_data['username'] ?? '';
 $staff_contact = $staff_data['contact_number'] ?? '';
 $staff_position = $staff_data['position'] ?? strtoupper($current_role);
@@ -237,7 +291,7 @@ $first_name_only = explode(' ', $clean_name)[0];
 $first_letter = strtoupper(substr($clean_name, 0, 1));
 
 // Siguraduhing may "Dr. " sa unahan ng full name para sa formal displays kung VET siya
-if ($current_role === 'vet') {
+if ($current_role === 'veterinarian') {
     $display_with_title = (stripos($full_display_name, 'Dr.') === false)
         ? 'Dr. ' . $full_display_name
         : $full_display_name;
@@ -245,22 +299,25 @@ if ($current_role === 'vet') {
     $display_with_title = $full_display_name;
 }
 
-// --- FETCH NOTIFICATIONS ---
+// Admin notifications are shown only to Admin/Manager accounts, never to Vet accounts.
+$can_view_admin_notifications = in_array($current_role, ['admin', 'manager'], true);
 $admin_notifications = [];
 $unread_count = 0;
 
-try {
-    $admin_notif_stmt = $pdo->query("
-        SELECT *
-        FROM admin_notifications
-        WHERE is_read = 0
-        ORDER BY created_at DESC
-    ");
+if ($can_view_admin_notifications) {
+    try {
+        $admin_notif_stmt = $pdo->query("
+            SELECT *
+            FROM admin_notifications
+            WHERE is_read = 0
+            ORDER BY created_at DESC
+        ");
 
-    $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
-    $unread_count = count($admin_notifications);
-} catch (PDOException $e) {
-    error_log("Admin notifications query failed: " . $e->getMessage());
+        $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
+        $unread_count = count($admin_notifications);
+    } catch (PDOException $e) {
+        error_log("Admin notifications query failed: " . $e->getMessage());
+    }
 }
 ?>
 
@@ -2157,7 +2214,7 @@ input, select, textarea, button, img { max-width:100%; }
             </button>
             <div class="breadcrumb">
                 <i class="fas fa-user-circle" style="color: var(--brand-blue);"></i> 
-                <?php echo ($current_role == 'vet') ? 'Veterinarian Portal' : 'Manager Portal'; ?> / My Profile
+                <?php echo in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true) ? 'Veterinary Portal' : (($current_role === 'admin') ? 'Admin Portal' : 'Manager Portal'); ?> / My Profile
             </div>
             
             <div class="top-right-actions">
@@ -2175,7 +2232,7 @@ input, select, textarea, button, img { max-width:100%; }
                                 <?php foreach($admin_notifications as $notif): ?>
                                     <div class="notif-item">
                                         <i class="fa-solid fa-circle-exclamation" style="color: #ef4444; margin-right: 5px;"></i>
-                                        <?php echo htmlspecialchars($notif['message']); ?>
+                                        <?php echo htmlspecialchars((string)($notif['message'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>
                                         <br><small style="color: #94a3b8; font-size: 11px;"><?php echo date('M d, g:i A', strtotime($notif['created_at'])); ?></small>
                                     </div>
                                 <?php endforeach; ?>
@@ -2188,12 +2245,12 @@ input, select, textarea, button, img { max-width:100%; }
 
                 <div class="profile-wrapper" onclick="toggleProfile(event)">
                     <div class="role-label">
-                        <i class="<?php echo ($current_role == 'vet') ? 'fas fa-user-md' : 'fas fa-user-tie'; ?>"></i> 
+                        <i class="<?php echo in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true) ? 'fas fa-user-md' : 'fas fa-user-tie'; ?>"></i> 
                         <?php echo strtoupper($current_role); ?>
                     </div>
                     
-                    <?php if (!empty($profile_img_path) && file_exists($profile_img_path)): ?>
-                        <img src="<?php echo htmlspecialchars($profile_img_path); ?>" class="top-avatar" alt="Profile Picture">
+                    <?php if ($profile_img_url !== ''): ?>
+                        <img src="<?php echo htmlspecialchars($profile_img_url, ENT_QUOTES, 'UTF-8'); ?>" class="top-avatar" alt="Profile Picture">
                     <?php else: ?>
                         <div class="top-avatar-fallback"><?php echo $first_letter; ?></div>
                     <?php endif; ?>
@@ -2225,11 +2282,11 @@ input, select, textarea, button, img { max-width:100%; }
                 </div>
 
                 <?php if (!empty($success_msg)): ?>
-                    <div class="alert alert-success"><i class="fas fa-check-circle"></i> <?php echo $success_msg; ?></div>
+                    <div class="alert alert-success"><i class="fas fa-check-circle"></i> <?php echo htmlspecialchars($success_msg, ENT_QUOTES, 'UTF-8'); ?></div>
                 <?php endif; ?>
                 
                 <?php if (!empty($error_msg)): ?>
-                    <div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> <?php echo $error_msg; ?></div>
+                    <div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> <?php echo htmlspecialchars($error_msg, ENT_QUOTES, 'UTF-8'); ?></div>
                 <?php endif; ?>
 
                 <form action="" method="POST" enctype="multipart/form-data" id="imageForm" style="display:none;">
@@ -2238,8 +2295,8 @@ input, select, textarea, button, img { max-width:100%; }
                 </form>
 
                 <div class="avatar-upload-container">
-                    <?php if(!empty($profile_img_path) && file_exists($profile_img_path)): ?>
-                        <img src="<?php echo htmlspecialchars($profile_img_path); ?>" class="avatar-preview" alt="Profile">
+                    <?php if ($profile_img_url !== ''): ?>
+                        <img src="<?php echo htmlspecialchars($profile_img_url, ENT_QUOTES, 'UTF-8'); ?>" class="avatar-preview" alt="Profile">
                     <?php else: ?>
                         <div class="avatar-fallback-large"><?php echo $first_letter; ?></div>
                     <?php endif; ?>
@@ -2254,22 +2311,22 @@ input, select, textarea, button, img { max-width:100%; }
                     <div class="form-grid">
                         <div class="form-group full-width">
                             <label>Full Name</label>
-                            <input type="text" name="full_name" value="<?php echo htmlspecialchars($full_display_name); ?>" required>
+                            <input type="text" name="full_name" value="<?php echo htmlspecialchars($full_display_name, ENT_QUOTES, 'UTF-8'); ?>" required>
                         </div>
                         
                         <div class="form-group">
                             <label>Username (Used for Login)</label>
-                            <input type="text" name="username" value="<?php echo htmlspecialchars($staff_username); ?>" required>
+                            <input type="text" name="username" value="<?php echo htmlspecialchars($staff_username, ENT_QUOTES, 'UTF-8'); ?>" required>
                         </div>
 
                         <div class="form-group">
                             <label>Contact Number</label>
-                            <input type="text" name="contact_number" inputmode="numeric" value="<?php echo htmlspecialchars($staff_contact); ?>" placeholder="e.g. 09123456789">
+                            <input type="text" name="contact_number" inputmode="numeric" value="<?php echo htmlspecialchars($staff_contact, ENT_QUOTES, 'UTF-8'); ?>" placeholder="e.g. 09123456789">
                         </div>
 
                         <div class="form-group full-width">
                             <label>Clinic Position</label>
-                            <input type="text" value="<?php echo htmlspecialchars($staff_position); ?>" readonly>
+                            <input type="text" value="<?php echo htmlspecialchars($staff_position, ENT_QUOTES, 'UTF-8'); ?>" readonly>
                         </div>
                     </div>
                     
@@ -2417,7 +2474,9 @@ input, select, textarea, button, img { max-width:100%; }
                 .catch(error => console.error('Error fetching notifications:', error));
         }
 
-        setInterval(fetchAdminNotifs, 3000);
+        if (<?php echo $can_view_admin_notifications ? 'true' : 'false'; ?>) {
+            setInterval(fetchAdminNotifs, 3000);
+        }
     </script>
 </body>
 </html>

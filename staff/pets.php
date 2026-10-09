@@ -8,7 +8,7 @@ $current_role = strtolower(trim($_SESSION['role'] ?? ''));
 if (
     !isset($_SESSION['logged_in']) ||
     $_SESSION['logged_in'] !== true ||
-    !in_array($current_role, ['admin', 'manager', 'vet'], true)
+    !in_array($current_role, ['admin', 'manager', 'vet', 'veterinarian', 'vet assistant', 'vet_assistant', 'vet nurse', 'vet_nurse'], true)
 ) {
     header("Location: stafflogin.php");
     exit();
@@ -41,7 +41,8 @@ if (isset($_SESSION['user_id']) || isset($_SESSION['staff_id'])) {
 
 // Linisin ang pangalan para sa Avatar Initial (Tatanggalin ang "Dr. " at comma)
 $clean_name = trim(str_replace('Dr. ', '', $full_display_name), " ,"); 
-$first_letter = strtoupper(substr($clean_name, 0, 1)); 
+$first_letter = strtoupper(substr($clean_name, 0, 1));
+if ($first_letter === '') { $first_letter = 'D'; } 
 
 // Siguraduhing may "Dr. " na nakadikit sa buong pangalan para formal
 $display_with_title = (stripos($full_display_name, 'Dr.') === false) ? 'Dr. ' . $full_display_name : $full_display_name;
@@ -2090,7 +2091,7 @@ input, select, textarea, button, img { max-width:100%; }
                                 <?php foreach($admin_notifications as $notif): ?>
                                     <div class="notif-item">
                                         <i class="fa-solid fa-circle-exclamation" style="color: #ef4444; margin-right: 5px;"></i>
-                                        <?php echo htmlspecialchars($notif['message']); ?>
+                                        <?php echo htmlspecialchars((string)($notif['message'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>
                                         <br><small style="color: #94a3b8; font-size: 11px;"><?php echo date('M d, g:i A', strtotime($notif['created_at'])); ?></small>
                                     </div>
                                 <?php endforeach; ?>
@@ -2106,17 +2107,17 @@ input, select, textarea, button, img { max-width:100%; }
                         <i class="fas fa-user-md"></i> VET
                     </div>
                     
-                    <?php if (!empty($profile_img_path) && file_exists($profile_img_path)): ?>
-                        <img src="<?php echo htmlspecialchars($profile_img_path); ?>" class="top-avatar" alt="Profile Picture">
+                    <?php if (!empty($profile_img_path) && (filter_var($profile_img_path, FILTER_VALIDATE_URL) || file_exists(__DIR__ . '/../' . ltrim($profile_img_path, '/')))): ?>
+                        <img src="<?php echo htmlspecialchars($profile_img_path, ENT_QUOTES, 'UTF-8'); ?>" class="top-avatar" alt="Profile Picture">
                     <?php else: ?>
                         <div class="top-avatar-fallback"><?php echo $first_letter; ?></div>
                     <?php endif; ?>
                     
                     <span class="profile-name-text desktop-profile-name" style="font-size:14px;font-weight:700;color:var(--sidebar-navy);display:flex;align-items:center;gap:6px;">
-                        <?php echo htmlspecialchars($display_with_title); ?>
+                        <?php echo htmlspecialchars($display_with_title, ENT_QUOTES, 'UTF-8'); ?>
                         <i class="fas fa-chevron-down" style="font-size:10px;color:var(--text-muted);opacity:.5;"></i>
                     </span>
-                    <span class="mobile-profile-first-name"><?php echo htmlspecialchars($first_name_only); ?></span>
+                    <span class="mobile-profile-first-name"><?php echo htmlspecialchars($first_name_only, ENT_QUOTES, 'UTF-8'); ?></span>
 
                     <div class="profile-dropdown" id="profileBox" onclick="event.stopPropagation()">
                         <a href="staff_profile.php" class="profile-item">
@@ -2186,18 +2187,24 @@ input, select, textarea, button, img { max-width:100%; }
                             // --- UPDATED: TABLE FILTER LOGIC ---
                             $filter_type = $_GET['type'] ?? '';
 
-                            if ($filter_type === 'Dog') {
-                                $query = "SELECT * FROM pets WHERE pet_type = 'Dog' ORDER BY id DESC";
-                            } elseif ($filter_type === 'Cat') {
-                                $query = "SELECT * FROM pets WHERE pet_type = 'Cat' ORDER BY id DESC";
-                            } elseif ($filter_type === 'Other') {
-                                $query = "SELECT * FROM pets WHERE pet_type NOT IN ('Dog', 'Cat') ORDER BY id DESC";
-                            } else {
-                                $query = "SELECT * FROM pets ORDER BY id DESC";
+                            $allowed_filters = ['Dog', 'Cat', 'Other'];
+                            if (!in_array($filter_type, $allowed_filters, true)) {
+                                $filter_type = '';
                             }
 
-                            $result = $pdo->query($query);
-                            $rows = $result ? $result->fetchAll(PDO::FETCH_ASSOC) : [];
+                            if ($filter_type === 'Dog' || $filter_type === 'Cat') {
+                                $stmt_pets = $pdo->prepare(
+                                    'SELECT * FROM pets WHERE pet_type = :pet_type ORDER BY id DESC'
+                                );
+                                $stmt_pets->execute([':pet_type' => $filter_type]);
+                            } elseif ($filter_type === 'Other') {
+                                $stmt_pets = $pdo->query(
+                                    "SELECT * FROM pets WHERE pet_type NOT IN ('Dog', 'Cat') ORDER BY id DESC"
+                                );
+                            } else {
+                                $stmt_pets = $pdo->query('SELECT * FROM pets ORDER BY id DESC');
+                            }
+                            $rows = $stmt_pets ? $stmt_pets->fetchAll(PDO::FETCH_ASSOC) : [];
 
                             if (!empty($rows)) {
                                 foreach ($rows as $row) {
@@ -2207,10 +2214,10 @@ input, select, textarea, button, img { max-width:100%; }
                                     $o_name = $row['owner_name'] ?? 'ID: ' . ($row['owner_id'] ?? 'N/A');
 
                                     echo "<tr>";
-                                    echo "<td style='font-weight:700; color: var(--sidebar-navy);'><i class='fas fa-paw' style='color:#cbd5e0; margin-right:10px;'></i>" . htmlspecialchars($p_name) . "</td>";
-                                    echo "<td>" . htmlspecialchars($p_type) . "</td>";
-                                    echo "<td>" . htmlspecialchars($p_breed) . "</td>";
-                                    echo "<td><span class='owner-tag'>" . htmlspecialchars($o_name) . "</span></td>";
+                                    echo "<td style='font-weight:700; color: var(--sidebar-navy);'><i class='fas fa-paw' style='color:#cbd5e0; margin-right:10px;'></i>" . htmlspecialchars((string)$p_name, ENT_QUOTES, 'UTF-8') . "</td>";
+                                    echo "<td>" . htmlspecialchars((string)$p_type, ENT_QUOTES, 'UTF-8') . "</td>";
+                                    echo "<td>" . htmlspecialchars((string)$p_breed, ENT_QUOTES, 'UTF-8') . "</td>";
+                                    echo "<td><span class='owner-tag'>" . htmlspecialchars((string)$o_name, ENT_QUOTES, 'UTF-8') . "</span></td>";
 
                                     echo "<td>
                                             <div class='action-links'>

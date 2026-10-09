@@ -21,6 +21,10 @@ $full_name = $_SESSION['user_name']
 
 $user_id = (int)($_SESSION['user_id'] ?? 0);
 
+// Shared CSRF token used by cancellation and rescheduling forms.
+if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
 
 // ============================================================
 // ONE-TIME RESCHEDULE HANDLER
@@ -36,14 +40,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['reschedule_booking'])
         '14:00:00', '15:00:00', '16:00:00', '17:00:00'
     ];
 
-    $setRescheduleError = static function ($message) {
+    $setRescheduleError = static function ($message) use ($pdo) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
         $_SESSION['booking_reschedule_error'] = $message;
         header("Location: bookings.php");
         exit();
     };
 
+    // Reject forged reschedule submissions.
+    $sessionToken = (string)($_SESSION['csrf_token'] ?? '');
+    $postedToken = (string)($_POST['csrf_token'] ?? '');
+    if (
+        $sessionToken === '' ||
+        $postedToken === '' ||
+        !hash_equals($sessionToken, $postedToken)
+    ) {
+        $setRescheduleError('Your session token expired. Refresh the page and try again.');
+    }
+
     if ($appointment_id <= 0 || $new_date === '' || $new_time === '') {
         $setRescheduleError("Please choose a valid new date and time.");
+    }
+
+    $new_date_object = DateTimeImmutable::createFromFormat('!Y-m-d', $new_date);
+    $new_date_errors = DateTimeImmutable::getLastErrors();
+    if (
+        $new_date_object === false ||
+        $new_date_object->format('Y-m-d') !== $new_date ||
+        ($new_date_errors !== false && ($new_date_errors['warning_count'] > 0 || $new_date_errors['error_count'] > 0))
+    ) {
+        $setRescheduleError("Please select a valid new date.");
     }
 
     if (!in_array($new_time, $allowed_reschedule_times, true)) {
@@ -127,6 +155,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['reschedule_booking'])
             $setRescheduleError("Unable to determine the service category for this booking.");
         }
 
+        // Use the same transaction lock as new bookings before counting capacity.
+        $pdo->beginTransaction();
+        $capacity_lock = $pdo->prepare("SELECT pg_advisory_xact_lock(hashtext(:lock_key)::bigint)");
+        $capacity_lock->execute([
+            ':lock_key' => 'boogie-capacity|' . $new_date . '|' . $service_category
+        ]);
+
         $slot_stmt = $pdo->prepare("
             SELECT COUNT(*) AS slot_count
             FROM appointments
@@ -134,7 +169,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['reschedule_booking'])
               AND appointment_time = :appointment_time
               AND service ILIKE :service_prefix
               AND id <> :appointment_id
-              AND booking_status NOT IN ('Cancelled', 'No-Show', 'For Rescheduling')
+              AND LOWER(BTRIM(COALESCE(booking_status, ''))) NOT IN ('cancelled', 'canceled', 'no-show', 'no show', 'noshow', 'for rescheduling')
         ");
         $slot_stmt->execute([
             ':appointment_date' => $new_date,
@@ -165,7 +200,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['reschedule_booking'])
                 WHERE appointment_date = :appointment_date
                   AND service ILIKE 'Vet Services%'
                   AND id <> :appointment_id
-                  AND booking_status NOT IN ('Cancelled', 'No-Show', 'For Rescheduling')
+                  AND LOWER(BTRIM(COALESCE(booking_status, ''))) NOT IN ('cancelled', 'canceled', 'no-show', 'no show', 'noshow', 'for rescheduling')
             ");
             $daily_stmt->execute([
                 ':appointment_date' => $new_date,
@@ -184,15 +219,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['reschedule_booking'])
                 WHERE appointment_date = :appointment_date
                   AND service ILIKE 'Grooming%'
                   AND id <> :appointment_id
-                  AND booking_status NOT IN ('Cancelled', 'No-Show', 'For Rescheduling')
+                  AND LOWER(BTRIM(COALESCE(booking_status, ''))) NOT IN ('cancelled', 'canceled', 'no-show', 'no show', 'noshow', 'for rescheduling')
             ");
             $daily_stmt->execute([
                 ':appointment_date' => $new_date,
                 ':appointment_id' => $appointment_id
             ]);
 
-            if ((int)($daily_stmt->fetch()['grooming_count'] ?? 0) >= 9) {
+            if ((int)($daily_stmt->fetch()['grooming_count'] ?? 0) >= 8) {
                 $setRescheduleError("Grooming services are fully booked for this date.");
+            }
+        }
+
+        if ($service_category === 'Pet Hotel') {
+            $daily_stmt = $pdo->prepare("
+                SELECT COUNT(*) AS hotel_count
+                FROM appointments
+                WHERE appointment_date = :appointment_date
+                  AND service ILIKE 'Pet Hotel%'
+                  AND id <> :appointment_id
+                  AND LOWER(BTRIM(COALESCE(booking_status, ''))) NOT IN ('cancelled', 'canceled', 'no-show', 'no show', 'noshow', 'for rescheduling')
+            ");
+            $daily_stmt->execute([
+                ':appointment_date' => $new_date,
+                ':appointment_id' => $appointment_id
+            ]);
+
+            if ((int)($daily_stmt->fetch()['hotel_count'] ?? 0) >= 8) {
+                $setRescheduleError("Pet Hotel services are fully booked for this date.");
             }
         }
 
@@ -223,13 +277,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['reschedule_booking'])
         $formatted_time = date('g:i A', strtotime($new_time));
 
         // Notify Admin about the customer's successful reschedule.
-        // Keep this separate so a notification error will not undo the booking update.
+        // A savepoint prevents an optional admin-alert failure from aborting the reschedule transaction.
+        $pdo->exec('SAVEPOINT admin_reschedule_notif_savepoint');
         try {
-            $admin_notif_stmt = $pdo->prepare("
-                INSERT INTO admin_notifications (message)
-                VALUES (:message)
-            ");
-
             $admin_notif_message =
                 ($appointment['customer_name'] ?? $full_name) .
                 " rescheduled " .
@@ -238,11 +288,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['reschedule_booking'])
                 $formatted_date . " at " . $formatted_time .
                 ". GCash payment remains valid. (Booking #" .
                 $appointment_id . ")";
-
-            $admin_notif_stmt->execute([
-                ':message' => $admin_notif_message
-            ]);
+            $admin_notif_stmt = $pdo->prepare('INSERT INTO admin_notifications (message) VALUES (:message)');
+            $admin_notif_stmt->execute([':message' => $admin_notif_message]);
+            $pdo->exec('RELEASE SAVEPOINT admin_reschedule_notif_savepoint');
         } catch (PDOException $e) {
+            $pdo->exec('ROLLBACK TO SAVEPOINT admin_reschedule_notif_savepoint');
+            $pdo->exec('RELEASE SAVEPOINT admin_reschedule_notif_savepoint');
             error_log(
                 'Admin reschedule notification error for appointment #' .
                 $appointment_id . ' | ' . $e->getMessage()
@@ -265,6 +316,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['reschedule_booking'])
                 $formatted_date . ' at ' . $formatted_time .
                 '. This was your one allowed reschedule within 3 days. Please arrive on time.'
         ]);
+
+        if ($pdo->inTransaction()) {
+            $pdo->commit();
+        }
 
         $contact_number = trim((string)($appointment['contact_number'] ?? ''));
 
@@ -300,6 +355,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['reschedule_booking'])
         exit();
 
     } catch (PDOException $e) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
         error_log('Customer reschedule error: ' . $e->getMessage());
         $setRescheduleError("Unable to reschedule this appointment right now. Please try again.");
     }
@@ -2238,6 +2296,8 @@ try {
 
                             $pay_status = $row['payment_status'] ?? 'Pending';
                             $pay_method = $row['payment_method'] ?? 'N/A';
+                            $gcash_ref = trim((string)($row['gcash_ref'] ?? ''));
+                            $is_gcash_payment = (strcasecmp(trim((string)$pay_method), 'GCash') === 0);
                             $payment_upper = strtoupper($pay_status);
 
                             $payment_class = (
@@ -2287,8 +2347,14 @@ try {
                                 </div>
 
                                 <div class="schedule-note">
-                                    Payment: <?php echo htmlspecialchars($pay_method . ' - ' . $pay_status); ?>
+                                    Payment: <?php echo htmlspecialchars($pay_method . ' - ' . $pay_status, ENT_QUOTES, 'UTF-8'); ?>
                                 </div>
+                                <?php if ($is_gcash_payment && $gcash_ref !== ''): ?>
+                                    <div class="schedule-note">
+                                        <i class="fa-solid fa-receipt" aria-hidden="true"></i>
+                                        GCash Reference No.: <?php echo htmlspecialchars($gcash_ref, ENT_QUOTES, 'UTF-8'); ?>
+                                    </div>
+                                <?php endif; ?>
                             </div>
 
                             <div class="schedule-status">
@@ -2391,6 +2457,8 @@ try {
 
                             $pay_status = $row['payment_status'] ?? 'Pending';
                             $pay_method = $row['payment_method'] ?? 'N/A';
+                            $gcash_ref = trim((string)($row['gcash_ref'] ?? ''));
+                            $is_gcash_payment = (strcasecmp(trim((string)$pay_method), 'GCash') === 0);
 
                             $fee = isset($row['total_price'])
                                 ? floatval($row['total_price'])
@@ -2434,8 +2502,14 @@ try {
                                 </div>
 
                                 <div class="schedule-note">
-                                    Payment: <?php echo htmlspecialchars($pay_method . ' - ' . $pay_status); ?>
+                                    Payment: <?php echo htmlspecialchars($pay_method . ' - ' . $pay_status, ENT_QUOTES, 'UTF-8'); ?>
                                 </div>
+                                <?php if ($is_gcash_payment && $gcash_ref !== ''): ?>
+                                    <div class="schedule-note">
+                                        <i class="fa-solid fa-receipt" aria-hidden="true"></i>
+                                        GCash Reference No.: <?php echo htmlspecialchars($gcash_ref, ENT_QUOTES, 'UTF-8'); ?>
+                                    </div>
+                                <?php endif; ?>
                             </div>
 
                             <div class="schedule-status">
@@ -2524,6 +2598,7 @@ try {
 
             <form method="POST" action="">
                 <input type="hidden" name="reschedule_booking" value="1">
+                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'], ENT_QUOTES, 'UTF-8'); ?>">
                 <input type="hidden" name="appointment_id" id="rescheduleAppointmentId">
 
                 <div class="reschedule-form-row">
@@ -2581,6 +2656,7 @@ try {
             </div>
 
             <form action="cancel_booking.php" method="POST">
+                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'], ENT_QUOTES, 'UTF-8'); ?>">
                 <input type="hidden" name="appointment_id" id="cancelAppointmentId">
                 <div class="modal-form-group">
                     <label>Reason for Cancellation *</label>

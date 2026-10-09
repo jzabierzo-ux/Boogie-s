@@ -14,7 +14,7 @@ require_once 'db_supabase.php';
 
 $is_logged_in = isset($_SESSION['logged_in']) && $_SESSION['logged_in'] === true;
 
-$user_name = $is_logged_in ? $_SESSION['user_name'] : "Guest";
+$user_name = $is_logged_in ? (string)($_SESSION['user_name'] ?? 'Customer') : 'Guest';
 
 
 
@@ -24,7 +24,7 @@ $result = [];
 
 try {
 
-    // PostgreSQL/Supabase boolean column
+    // Supports Supabase columns stored as either BOOLEAN or 0/1 numeric values
 
     $stmt = $pdo->query("
 
@@ -32,23 +32,23 @@ try {
 
         FROM services_pricelist
 
-        WHERE category IN (
+        WHERE LOWER(TRIM(CAST(category AS TEXT))) IN (
 
-            'Deworming',
+            'deworming',
 
-            'Vaccination',
+            'vaccination',
 
-            'Consultation',
+            'consultation',
 
-            'Check-up',
+            'check-up',
 
-            'General Check-up',
+            'general check-up',
 
-            'Vet Services'
+            'vet services'
 
         )
 
-        AND is_available = 1
+        AND LOWER(TRIM(CAST(is_available AS TEXT))) IN ('true', 't', '1')
 
         ORDER BY category ASC, price ASC
 
@@ -88,9 +88,9 @@ try {
 
             /* Dasmariñas Branch Brand Colors */
 
-            --brand-yellow: #ffcc00;&#x20;
+            --brand-yellow: #ffcc00;
 
-            --brand-blue: #001f3f;&#x20;
+            --brand-blue: #001f3f;
 
             --brand-blue-light: #002d5b;
             --brand-blue-2: #002d5b;
@@ -2634,7 +2634,7 @@ try {
 
                 <?php if($is_logged_in): ?>
 
-                    <span style="color: var(--brand-blue); font-weight: 600; font-size: 14px;"><i class="fa-regular fa-user"></i> Hi, <?php echo htmlspecialchars($user_name); ?></span>
+                    <span style="color: var(--brand-blue); font-weight: 600; font-size: 14px;"><i class="fa-regular fa-user"></i> Hi, <?php echo htmlspecialchars($user_name, ENT_QUOTES, 'UTF-8'); ?></span>
 
                     <a href="dashboard.php" class="cart-btn">Dashboard</a>
 
@@ -2836,19 +2836,19 @@ try {
 
                             <span class="service-tag <?php echo $tag_class; ?>">
 
-                                <?php echo htmlspecialchars($tag_text); ?>
+                                <?php echo htmlspecialchars((string)$tag_text, ENT_QUOTES, 'UTF-8'); ?>
 
                             </span>
 
 
 
-                            <h3><?php echo htmlspecialchars($category); ?></h3>
+                            <h3><?php echo htmlspecialchars((string)$category, ENT_QUOTES, 'UTF-8'); ?></h3>
 
 
 
                             <div class="service-name">
 
-                                <?php echo htmlspecialchars($row['service_name']); ?>
+                                <?php echo htmlspecialchars((string)$row['service_name'], ENT_QUOTES, 'UTF-8'); ?>
 
                             </div>
 
@@ -2876,7 +2876,7 @@ try {
 
 
 
-                                <a href="<?php echo $is_logged_in ? 'book_appointment.php?service_id=' . $row['id'] . '&category=Vet' : 'login.php'; ?>" class="btn-book">
+                                <a href="<?php echo $is_logged_in ? 'book_appointment.php?service_id=' . (int)$row['id'] . '&category=Vet' : 'login.php'; ?>" class="btn-book">
 
                                     Book Now <i class="fa-solid fa-arrow-right"></i>
 
