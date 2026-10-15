@@ -4,80 +4,120 @@ require_once __DIR__ . '/../shared_session_bootstrap.php';
 
 include '../db_supabase.php';
 
-
-
 // --- ROLE-BASED ACCESS CONTROL ---
+
 $raw_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
+
 $role_aliases = [
+
     'administrator' => 'admin',
+
     'shop manager' => 'manager',
+
     'shop_manager' => 'manager',
+
     'front desk' => 'receptionist',
+
     'front desk / receptionist' => 'receptionist',
+
     'front_desk' => 'receptionist',
+
     'front_desk_receptionist' => 'receptionist',
+
     'grooming staff' => 'groomer',
+
     'grooming staff / groomer' => 'groomer',
+
     'grooming_staff' => 'groomer',
+
     'grooming_staff_groomer' => 'groomer',
+
     'pet hotel staff' => 'pet_hotel_staff',
+
     'pet hotel staff / attendant' => 'pet_hotel_staff',
+
     'pet_hotel_attendant' => 'pet_hotel_staff',
+
     'pet_hotel_staff_attendant' => 'pet_hotel_staff',
+
     'vet' => 'veterinarian',
+
     'veterinary' => 'veterinarian',
+
     'veterinary assistant' => 'vet_assistant',
+
     'vet assistant' => 'vet_assistant',
+
     'veterinary_assistant' => 'vet_assistant',
+
     'veterinary nurse' => 'vet_nurse',
+
     'vet nurse' => 'vet_nurse',
+
     'veterinary_nurse' => 'vet_nurse',
+
     // Preserve compatibility with the existing legacy staff accounts.
+
     'staff' => 'groomer',
+
     'supervisor' => 'receptionist',
+
 ];
+
 $current_role = $role_aliases[$raw_role] ?? $raw_role;
+
 if ($current_role !== '') {
+
     $_SESSION['role'] = $current_role;
+
 }
+
 $is_admin = ($current_role === 'admin');
 
 if (($_SESSION['logged_in'] ?? false) !== true) {
+
     // Keep the Admin login separate from the Staff login.
+
     $login_target = ($current_role === 'admin') ? '../admin_login.php' : '../staff/stafflogin.php';
+
     header('Location: ' . $login_target);
+
     exit();
+
 }
 
 if (empty($_SESSION['user_id']) || !is_numeric($_SESSION['user_id'])) {
+
     http_response_code(403);
+
     exit('Access denied: invalid session.');
+
 }
 
-// Veterinary roles use their dedicated portal. Pet Hotel Staff are limited
-// to allowed booking functions and must not browse the general pet registry.
+// Veterinary roles use their dedicated portal.
 if (in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)) {
     header('Location: ../staff/staffdashboard.php');
     exit();
 }
-if ($current_role === 'pet_hotel_staff') {
-    header('Location: managebooking.php');
-    exit();
-}
 
-// Admin, Manager, Receptionist, and Groomer may access Pet Management.
-$allowed_pet_page_roles = ['admin', 'manager', 'receptionist', 'groomer'];
+// Admin, Manager, Receptionist, Groomer, and Pet Hotel Staff may access Pet Management.
+$allowed_pet_page_roles = ['admin', 'manager', 'receptionist', 'groomer', 'pet_hotel_staff'];
+
 if (!in_array($current_role, $allowed_pet_page_roles, true)) {
+
     http_response_code(403);
+
     exit('Access denied. This role cannot access pet management.');
+
 }
 
 // CSRF token for the Add Pet form.
+
 if (empty($_SESSION['managepet_csrf_token']) || !is_string($_SESSION['managepet_csrf_token'])) {
+
     $_SESSION['managepet_csrf_token'] = bin2hex(random_bytes(32));
+
 }
-
-
 
 // 2. FETCH ADMIN PROFILE
 
@@ -87,15 +127,11 @@ $profile_img_path = "";
 
 $first_name = "User";
 
-
-
 try {
 
     if (isset($_SESSION['user_id'])) {
 
         $uid = (int)$_SESSION['user_id'];
-
-
 
         $get_admin = $pdo->prepare("
 
@@ -113,8 +149,6 @@ try {
 
         $admin_data = $get_admin->fetch(PDO::FETCH_ASSOC);
 
-
-
         if ($admin_data) {
 
             $admin_full_name = $admin_data['full_name'] ?? 'User';
@@ -122,8 +156,6 @@ try {
             $profile_img_path = $admin_data['profile_image'] ?? '';
 
             $_SESSION['user_name'] = $admin_full_name;
-
-
 
             $first_name = explode(' ', $admin_full_name)[0];
 
@@ -153,114 +185,199 @@ try {
 
 }
 
-
-
 $success_msg = (string)($_SESSION['managepet_flash_success'] ?? '');
+
 unset($_SESSION['managepet_flash_success']);
+
 $error_msg = '';
 
 // --- ADD NEW PET LOGIC ---
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_pet'])) {
+
     $submitted_token = $_POST['csrf_token'] ?? '';
+
     if (!is_string($submitted_token) || !hash_equals($_SESSION['managepet_csrf_token'], $submitted_token)) {
+
         http_response_code(403);
+
         $error_msg = 'Security check failed. Please refresh the page and try again.';
+
     } else {
+
         $raw_owner_id = $_POST['owner_id'] ?? '';
+
         $owner_id = is_string($raw_owner_id) ? filter_var($raw_owner_id, FILTER_VALIDATE_INT) : false;
+
         $pet_name = is_string($_POST['pet_name'] ?? null) ? trim($_POST['pet_name']) : '';
+
         $pet_type = is_string($_POST['pet_type'] ?? null) ? trim($_POST['pet_type']) : '';
+
         $pet_breed = is_string($_POST['pet_breed'] ?? null) ? trim($_POST['pet_breed']) : '';
+
         $pet_gender = is_string($_POST['pet_gender'] ?? null) ? trim($_POST['pet_gender']) : '';
+
         $pet_weight = is_string($_POST['pet_weight'] ?? null) ? trim($_POST['pet_weight']) : '';
 
         $allowed_pet_types = ['Dog', 'Cat'];
+
         $allowed_genders = ['Male', 'Female'];
+
         $allowed_weights = [
+
             'Small (1-5kg)',
+
             'Medium (6-10kg)',
+
             'Large (11-15kg)',
+
             'Extra Large (16-20kg)',
+
             'XXL Large (21-25kg)',
+
         ];
+
         $name_length = function_exists('mb_strlen') ? mb_strlen($pet_name, 'UTF-8') : strlen($pet_name);
+
         $breed_length = function_exists('mb_strlen') ? mb_strlen($pet_breed, 'UTF-8') : strlen($pet_breed);
+
         $has_control_chars = (bool)preg_match('/[\x00-\x1F\x7F]/', $pet_name);
 
         if (!is_int($owner_id) || $owner_id < 1 || $pet_name === '' || $pet_type === '' || $pet_gender === '' || $pet_weight === '') {
+
             $error_msg = 'Please complete all required pet fields.';
+
         } elseif ($name_length > 100 || $breed_length > 100 || $has_control_chars) {
+
             $error_msg = 'Pet name and breed must be 100 characters or fewer. Remove any invalid control characters from the pet name.';
+
         } elseif (!in_array($pet_type, $allowed_pet_types, true) || !in_array($pet_gender, $allowed_genders, true) || !in_array($pet_weight, $allowed_weights, true)) {
+
             $error_msg = 'Please select a valid pet type, gender, and size.';
+
         } else {
+
             try {
+
                 // Validate ownership against the database; do not trust a posted owner ID.
+
                 $owner_stmt = $pdo->prepare("
+
                     SELECT id
+
                     FROM users
+
                     WHERE id = :owner_id
+
                       AND LOWER(TRIM(COALESCE(role, ''))) = 'customer'
+
                     LIMIT 1
+
                 ");
+
                 $owner_stmt->execute([':owner_id' => $owner_id]);
+
                 $valid_owner_id = $owner_stmt->fetchColumn();
 
                 if ($valid_owner_id === false) {
+
                     $error_msg = 'Please select a valid customer account as the pet owner.';
+
                 } else {
+
                     $insert_stmt = $pdo->prepare("
+
                         INSERT INTO pets (owner_id, name, pet_type, breed, gender, weight)
+
                         VALUES (:owner_id, :name, :pet_type, :breed, :gender, :weight)
+
                     ");
+
                     $insert_stmt->execute([
+
                         ':owner_id' => $owner_id,
+
                         ':name' => $pet_name,
+
                         ':pet_type' => $pet_type,
+
                         ':breed' => $pet_breed,
+
                         ':gender' => $pet_gender,
+
                         ':weight' => $pet_weight,
+
                     ]);
 
                     $_SESSION['managepet_flash_success'] = sprintf(
+
                         'New pet "%s" successfully registered to Owner ID #%d!',
+
                         $pet_name,
+
                         $owner_id
+
                     );
 
                     // Post/Redirect/Get prevents duplicate inserts on browser refresh.
+
                     $redirect_url = 'managepet.php';
+
                     $current_gender_filter = $_GET['gender'] ?? '';
+
                     if (is_string($current_gender_filter) && in_array($current_gender_filter, ['Male', 'Female'], true)) {
+
                         $redirect_url .= '?gender=' . rawurlencode($current_gender_filter);
+
                     }
+
                     header('Location: ' . $redirect_url, true, 303);
+
                     exit();
+
                 }
+
             } catch (PDOException $e) {
+
                 error_log('Manage Pet add error: ' . $e->getMessage());
+
                 $error_msg = 'Error adding pet. Please check the pet details and try again.';
+
             }
+
         }
+
     }
+
 }
 
 // FETCH CUSTOMER ACCOUNTS ONLY FOR THE ADD PET OWNER DROPDOWN.
+
 try {
+
     $users_list_stmt = $pdo->query("
+
         SELECT id, full_name
+
         FROM users
+
         WHERE LOWER(TRIM(COALESCE(role, ''))) = 'customer'
+
         ORDER BY full_name ASC
+
     ");
+
     $users_list = $users_list_stmt->fetchAll(PDO::FETCH_ASSOC);
+
 } catch (PDOException $e) {
+
     error_log('Manage Pet customer list error: ' . $e->getMessage());
+
     $users_list = [];
+
     $error_msg = $error_msg ?: 'Unable to load customer list.';
+
 }
-
-
 
 // 3. DATABASE INITIALIZATION & SAFETY CHECK
 
@@ -278,8 +395,6 @@ $showing_count = 0;
 
 $filter_gender = (isset($_GET['gender']) && is_string($_GET['gender'])) ? $_GET['gender'] : '';
 
-
-
 try {
 
     // 4. FETCH PET STATISTICS
@@ -290,15 +405,11 @@ try {
 
     $female_pets_stmt = $pdo->query("SELECT COUNT(*) AS count FROM pets WHERE gender = 'Female'");
 
-
-
     $total_pets = (int)($total_pets_stmt->fetch(PDO::FETCH_ASSOC)['count'] ?? 0);
 
     $male_pets = (int)($male_pets_stmt->fetch(PDO::FETCH_ASSOC)['count'] ?? 0);
 
     $female_pets = (int)($female_pets_stmt->fetch(PDO::FETCH_ASSOC)['count'] ?? 0);
-
-
 
     // 5. FETCH BREEDS FOR FILTER
 
@@ -318,15 +429,11 @@ try {
 
     $breeds = $breeds_stmt->fetchAll(PDO::FETCH_ASSOC);
 
-
-
     // 6. FETCH ALL PETS WITH GENDER FILTER
 
     $pets_query = "SELECT * FROM pets";
 
     $pets_params = [];
-
-
 
     if ($filter_gender === 'Male' || $filter_gender === 'Female') {
 
@@ -336,11 +443,7 @@ try {
 
     }
 
-
-
     $pets_query .= " ORDER BY id DESC";
-
-
 
     $pets_stmt = $pdo->prepare($pets_query);
 
@@ -364,8 +467,6 @@ try {
 
     $showing_count = 0;
 
-
-
     if ($error_msg === '') {
 
         $error_msg = "Unable to load pet data from the database.";
@@ -374,33 +475,47 @@ try {
 
 }
 
-
-
 // --- FETCH ADMIN NOTIFICATIONS: ADMIN ONLY ---
+
 $admin_notifications = [];
+
 $unread_count = 0;
 
 if ($is_admin) {
+
     try {
+
         $admin_notif_stmt = $pdo->prepare("
+
             SELECT *
+
             FROM admin_notifications
+
             WHERE is_read = 0
+
             ORDER BY created_at DESC
+
         ");
+
         $admin_notif_stmt->execute();
+
         $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
+
         $unread_count = count($admin_notifications);
+
     } catch (PDOException $e) {
+
         error_log('Manage Pet admin notification error: ' . $e->getMessage());
+
         $admin_notifications = [];
+
         $unread_count = 0;
+
     }
+
 }
 
 ?>
-
-
 
 <!DOCTYPE html>
 
@@ -442,13 +557,9 @@ if ($is_admin) {
 
         }
 
-
-
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Poppins', sans-serif;}
 
         body { background-color: var(--bg-light); display: flex; min-height: 100vh; }
-
-
 
         /* --- SIDEBAR --- */
 
@@ -459,8 +570,6 @@ if ($is_admin) {
         .sidebar-logo { width: 80px; height: auto; object-fit: contain; margin-bottom: 10px; }
 
         .sidebar-header h2 { font-size: 16px; color: var(--brand-yellow); text-transform: uppercase; letter-spacing: 1px; font-weight: 800;}
-
-
 
         /* --- MODERNIZED SIDEBAR NAVIGATION --- */
 
@@ -490,8 +599,6 @@ if ($is_admin) {
 
         }
 
-
-
         /* --- MAIN CONTENT & HEADER --- */
 
         main { margin-left: var(--sidebar-width); flex-grow: 1; display: flex; flex-direction: column; min-height: 100vh; }
@@ -500,13 +607,9 @@ if ($is_admin) {
 
         .breadcrumb { font-weight: 700; color: var(--navy-dark); font-size: 15px; display: flex; align-items: center; gap: 8px; }
 
-
-
         /* Fixed Admin Tag */
 
         .admin-tag { background: var(--navy-dark); color: var(--brand-yellow); padding: 6px 16px; border-radius: 50px; font-size: 10px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; border: 1px solid var(--brand-yellow); }
-
-
 
         /* --- NOTIFICATION STYLES --- */
 
@@ -534,8 +637,6 @@ if ($is_admin) {
 
         .mark-read-btn:hover { text-decoration: underline; }
 
-
-
         /* --- PROFILE DROPDOWN & AVATAR --- */
 
         .profile-wrapper { position: relative; display: inline-flex; align-items: center; gap: 12px; border-left: 1px solid #e2e8f0; padding-left: 20px; cursor: pointer; user-select: none; }
@@ -543,8 +644,6 @@ if ($is_admin) {
         .top-avatar { width: 35px; height: 35px; border-radius: 50%; object-fit: cover; border: 2px solid var(--navy-dark); }
 
         .top-avatar-fallback { width: 35px; height: 35px; border-radius: 50%; background: linear-gradient(135deg, var(--navy-dark), #003366); color: var(--brand-yellow); display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 14px; border: 2px solid var(--brand-yellow); box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-
-
 
         .profile-dropdown { display: none; position: absolute; right: 0; top: 45px; width: 200px; background: white; border: 1px solid #e2e8f0; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); border-radius: 8px; z-index: 1000; overflow: hidden; text-align: left; }
 
@@ -560,8 +659,6 @@ if ($is_admin) {
 
         .profile-item.logout-text:hover { background: #fff1f2; color: #be123c; }
 
-
-
         /* --- PAGE CONTENT --- */
 
         .container { padding: 40px; flex-grow: 1; }
@@ -571,8 +668,6 @@ if ($is_admin) {
         .page-header h1 { font-size: 26px; color: var(--navy-dark); font-weight: 800;}
 
         .page-header p { color: #64748b; margin-top: 5px; font-weight: 500;}
-
-
 
         /* --- SUMMARY CARDS --- */
 
@@ -594,8 +689,6 @@ if ($is_admin) {
 
         .status-card i { position: absolute; right: 25px; top: 25px; font-size: 30px; opacity: 0.2;}
 
-
-
         /* --- SEARCH & FILTERS --- */
 
         .filter-container { background: var(--white); padding: 15px 25px; border-radius: 12px; display: flex; align-items: center; gap: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.03); margin-bottom: 25px; border: 1px solid transparent; justify-content: space-between; flex-wrap: wrap; }
@@ -610,15 +703,11 @@ if ($is_admin) {
 
         .result-count { font-size: 12px; color: #94a3b8; font-weight: 600; }
 
-
-
         /* ADD PET BUTTON */
 
         .btn-add { background: var(--brand-yellow); color: var(--navy-dark); border: none; padding: 10px 20px; border-radius: 8px; font-size: 14px; font-weight: 700; cursor: pointer; transition: 0.3s; display: flex; align-items: center; gap: 8px; white-space: nowrap; }
 
         .btn-add:hover { transform: translateY(-2px); box-shadow: 0 4px 10px rgba(255, 204, 0, 0.4); }
-
-
 
         /* --- MODAL STYLES --- */
 
@@ -632,8 +721,6 @@ if ($is_admin) {
 
         .modal-content h2 { margin-bottom: 20px; color: var(--navy-dark); font-size: 22px; font-weight: 700; }
 
-
-
         .form-group { margin-bottom: 15px; text-align: left;}
 
         .form-row { display: flex; gap: 15px; }
@@ -646,13 +733,9 @@ if ($is_admin) {
 
         .form-group input:focus, .form-group select:focus { border-color: var(--brand-yellow); background: var(--white);}
 
-
-
         .btn-submit-modal { width: 100%; background: var(--navy-dark); color: var(--brand-yellow); border: none; padding: 12px; border-radius: 8px; font-size: 15px; font-weight: 600; cursor: pointer; transition: 0.3s; margin-top: 10px;}
 
         .btn-submit-modal:hover { background: #003366; }
-
-
 
         /* --- TABLE STYLING --- */
 
@@ -664,25 +747,17 @@ if ($is_admin) {
 
         .pet-table tr:hover { background-color: #f8fafc; }
 
-
-
         .gender-badge { font-size: 12px; padding: 4px 10px; border-radius: 20px; font-weight: 600; display: inline-flex; align-items: center; gap: 5px; }
 
         .gender-male { color: #3b82f6; background: #eff6ff; }
 
         .gender-female { color: #f43f5e; background: #fff1f2; }
 
-
-
         .empty-state { background: var(--white); border-radius: 16px; padding: 100px 0; text-align: center; color: #94a3b8; box-shadow: 0 4px 6px rgba(0,0,0,0.03); border: 1px dashed #e2e8f0; }
 
         .empty-state i { font-size: 60px; margin-bottom: 20px; opacity: 0.2; }
 
-
-
         footer { text-align: center; padding: 40px; color: var(--text-muted); font-size: 12px; background: transparent; border-top: 1px solid rgba(0,0,0,0.05); }
-
-
 
         /* Action link hover effects */
 
@@ -694,316 +769,512 @@ if ($is_admin) {
 
         .btn-view:hover { color: var(--brand-yellow); }
 
-
         /* --- RESPONSIVE ADMIN LAYOUT --- */
+
         .topbar-left {
+
             display: flex;
+
             align-items: center;
+
             gap: 12px;
+
             min-width: 0;
+
         }
 
         .mobile-menu-toggle {
+
             display: none;
+
             border: 0;
+
             background: var(--navy-dark);
+
             color: var(--brand-yellow);
+
             width: 40px;
+
             height: 40px;
+
             border-radius: 10px;
+
             cursor: pointer;
+
             font-size: 18px;
+
             align-items: center;
+
             justify-content: center;
+
             flex: 0 0 auto;
+
         }
 
         .sidebar-backdrop {
+
             display: none;
+
         }
 
         @media (max-width: 1200px) {
+
             .status-grid {
+
                 grid-template-columns: repeat(2, minmax(0, 1fr));
+
             }
+
             .container {
+
                 padding: 30px;
+
             }
+
         }
 
         @media (max-width: 900px) {
+
             body {
+
                 overflow-x: hidden;
+
             }
 
             aside {
+
                 transform: translateX(-100%);
+
                 transition: transform 0.25s ease;
+
                 box-shadow: 12px 0 30px rgba(0,0,0,0.18);
+
                 z-index: 2000;
+
             }
 
             aside.mobile-open {
+
                 transform: translateX(0);
+
             }
 
             .sidebar-backdrop {
+
                 position: fixed;
+
                 inset: 0;
+
                 background: rgba(0,31,63,0.48);
+
                 z-index: 1900;
+
             }
 
             .sidebar-backdrop.show {
+
                 display: block;
+
             }
 
             main {
+
                 margin-left: 0;
+
                 width: 100%;
+
                 min-width: 0;
+
             }
 
             .top-bar {
+
                 height: 60px;
+
                 padding: 0 10px;
+
                 gap: 8px;
+
             }
 
             .mobile-menu-toggle {
+
                 display: inline-flex;
+
             }
 
             .breadcrumb {
+
                 font-size: 12px;
+
                 gap: 6px;
+
                 white-space: nowrap;
+
                 overflow: hidden;
+
                 text-overflow: ellipsis;
+
             }
 
             .top-right-actions {
+
                 gap: 8px;
+
                 margin-left: auto;
+
                 flex: 0 0 auto;
+
             }
 
             .profile-wrapper {
+
                 gap: 7px;
+
                 padding-left: 8px;
+
             }
 
             .profile-wrapper > span:last-of-type {
+
                 max-width: 100px;
+
                 overflow: hidden;
+
                 text-overflow: ellipsis;
+
                 white-space: nowrap;
+
                 font-size: 12px !important;
+
             }
 
             .admin-tag {
+
                 padding: 5px 9px;
+
                 font-size: 8px;
+
             }
 
             .top-avatar,
+
             .top-avatar-fallback {
+
                 width: 30px;
+
                 height: 30px;
+
             }
 
             .notif-dropdown {
+
                 width: min(320px, calc(100vw - 20px));
+
                 right: -4px;
+
             }
 
             .container {
+
                 padding: 18px 14px 24px;
+
             }
 
             .page-header h1 {
+
                 font-size: 22px;
+
                 line-height: 1.25;
+
             }
 
             .page-header p {
+
                 font-size: 13px;
+
                 line-height: 1.5;
+
             }
 
             .status-grid {
+
                 grid-template-columns: 1fr;
+
                 gap: 10px;
+
                 margin-bottom: 18px;
+
             }
 
             .status-card {
+
                 padding: 18px;
+
                 border-radius: 14px;
+
             }
 
             .status-card .label {
+
                 font-size: 10px;
+
             }
 
             .status-card .count {
+
                 font-size: 26px;
+
             }
 
             .status-card i {
+
                 right: 18px;
+
                 top: 18px;
+
                 font-size: 24px;
+
             }
 
             .filter-container {
+
                 padding: 14px;
+
                 gap: 12px;
+
                 align-items: stretch;
+
             }
 
             .filter-group {
+
                 flex-direction: column;
+
                 align-items: stretch;
+
                 gap: 10px;
+
                 min-width: 0;
+
             }
 
             .filter-group > .fa-search {
+
                 display: none;
+
             }
 
             .search-input {
+
                 width: 100%;
+
                 min-width: 0;
+
                 padding: 10px 12px;
+
                 border: 1px solid #e2e8f0;
+
                 border-radius: 8px;
+
                 background: #fff;
+
             }
 
             .breed-select {
+
                 width: 100%;
+
             }
 
             .result-count {
+
                 font-size: 11px;
+
             }
 
             .filter-actions {
+
                 width: 100%;
+
             }
 
             .btn-add {
+
                 width: 100%;
+
                 justify-content: center;
+
                 min-height: 44px;
+
             }
 
             .pet-table {
+
                 min-width: 720px;
+
             }
 
             .table-scroll,
+
             .pet-table-wrapper {
+
                 overflow-x: auto;
+
                 -webkit-overflow-scrolling: touch;
+
             }
 
             .modal {
+
                 padding: 12px;
+
             }
 
             .modal-content {
+
                 max-height: calc(100dvh - 24px);
+
                 padding: 22px 18px;
+
                 border-radius: 14px;
+
             }
 
             .form-row {
+
                 flex-direction: column;
+
                 gap: 0;
+
             }
 
             footer {
+
                 padding: 24px 12px;
+
                 font-size: 10px;
+
             }
+
         }
 
         @media (max-width: 560px) {
+
             .top-bar {
+
                 height: 58px;
+
                 padding: 0 8px;
+
             }
 
             .topbar-left {
+
                 gap: 7px;
+
                 min-width: 0;
+
             }
 
             .mobile-menu-toggle {
+
                 width: 36px;
+
                 height: 36px;
+
                 border-radius: 9px;
+
                 font-size: 16px;
+
             }
 
             .breadcrumb {
+
                 font-size: 11px;
+
             }
 
             .top-right-actions {
+
                 gap: 5px;
+
             }
 
             .notif-wrapper > i {
+
                 font-size: 19px !important;
+
             }
 
             .profile-wrapper {
+
                 gap: 5px;
+
                 padding-left: 6px;
+
             }
 
             .profile-wrapper > span:last-of-type {
+
                 display: none !important;
+
             }
 
             .admin-tag {
+
                 padding: 4px 7px;
+
                 font-size: 7px;
+
             }
 
             .top-avatar,
+
             .top-avatar-fallback {
+
                 width: 29px;
+
                 height: 29px;
+
             }
 
             .container {
+
                 padding: 16px 12px 22px;
+
             }
 
             .page-header h1 {
+
                 font-size: 21px;
+
             }
 
             .page-header p {
+
                 font-size: 12px;
+
             }
 
             .status-card {
+
                 padding: 17px;
+
             }
 
             .filter-container {
+
                 border-radius: 12px;
+
             }
 
             .modal-content h2 {
+
                 font-size: 19px;
+
             }
+
         }
 
     </style>
@@ -1011,8 +1282,6 @@ if ($is_admin) {
 </head>
 
 <body>
-
-
 
     <aside>
 
@@ -1042,8 +1311,6 @@ if ($is_admin) {
 
             <a href="managepet.php" class="nav-item active"><i class="fas fa-dog"></i> Pets</a>
 
-
-
             <?php if (isset($_SESSION['role']) && $_SESSION['role'] === 'admin'): ?>
 
                 <a href="managestaff.php" class="nav-item"><i class="fas fa-id-badge"></i> Personnel</a>
@@ -1059,8 +1326,6 @@ if ($is_admin) {
                     Sales Report
 
                 </a>
-
-
 
                 <!-- ACCOUNT LOGS: ADMIN ONLY -->
 
@@ -1083,34 +1348,38 @@ if ($is_admin) {
     <main>
 
         <header class="top-bar">
+
             <div class="topbar-left">
+
                 <button class="mobile-menu-toggle" type="button" aria-label="Open admin menu" aria-expanded="false" onclick="toggleMobileSidebar(event)">
+
                     <i class="fas fa-bars"></i>
+
                 </button>
+
                 <div class="breadcrumb">
+
                     <i class="fas fa-dog" style="opacity: 0.5; font-size: 14px;"></i>
+
                     Management / Pets
+
                 </div>
+
             </div>
-
-
 
             <div class="top-right-actions">
 
 <?php if ($is_admin): ?>
+
                 <div class="notif-wrapper" onclick="toggleNotif(event)">
 
                     <i class="fa-solid fa-bell" style="font-size: 22px; color: #64748b;"></i>
-
-
 
                     <span id="admin-notif-badge" class="notif-badge" style="display: <?php echo ($unread_count > 0) ? 'inline-block' : 'none'; ?>;">
 
                         <?php echo $unread_count; ?>
 
                     </span>
-
-
 
                     <div class="notif-dropdown" id="notifBox" onclick="event.stopPropagation()">
 
@@ -1121,8 +1390,6 @@ if ($is_admin) {
                             <a href="mark_notifications_read.php" id="mark-read-link" class="mark-read-btn" style="display: <?php echo ($unread_count > 0) ? 'inline-block' : 'none'; ?>;">Mark all read</a>
 
                         </div>
-
-
 
                         <div class="notif-body" id="admin-notif-list">
 
@@ -1153,15 +1420,12 @@ if ($is_admin) {
                     </div>
 
                 </div>
+
                 <?php endif; ?>
-
-
 
                 <div class="profile-wrapper" onclick="toggleProfile(event)">
 
                     <span class="admin-tag"><?php echo htmlspecialchars(strtoupper($current_role), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></span>
-
-
 
                     <?php if (!empty($profile_img_path) && file_exists($profile_img_path)): ?>
 
@@ -1173,8 +1437,6 @@ if ($is_admin) {
 
                     <?php endif; ?>
 
-
-
                     <span style="font-size: 14px; font-weight: 600; color: #4a5568; display: flex; align-items: center; gap: 6px;">
 
                         <?php echo htmlspecialchars($admin_full_name); ?>
@@ -1182,8 +1444,6 @@ if ($is_admin) {
                         <i class="fas fa-chevron-down" style="font-size: 10px; color: #94a3b8;"></i>
 
                     </span>
-
-
 
                     <div class="profile-dropdown" id="profileBox" onclick="event.stopPropagation()">
 
@@ -1207,8 +1467,6 @@ if ($is_admin) {
 
         </header>
 
-
-
         <div class="container">
 
             <div class="page-header">
@@ -1218,8 +1476,6 @@ if ($is_admin) {
                 <p>View and manage all registered pet profiles and their medical history.</p>
 
             </div>
-
-
 
             <?php if(!empty($success_msg)): ?>
 
@@ -1240,8 +1496,6 @@ if ($is_admin) {
                 </div>
 
             <?php endif; ?>
-
-
 
             <div class="status-grid">
 
@@ -1276,8 +1530,6 @@ if ($is_admin) {
                 </div>
 
             </div>
-
-
 
             <div class="filter-container">
 
@@ -1319,10 +1571,10 @@ if ($is_admin) {
 
             </div>
 
-
-
             <?php if ($showing_count > 0): ?>
+
                 <div class="pet-table-wrapper">
+
                     <table class="pet-table" id="petsTable">
 
                     <thead>
@@ -1383,8 +1635,6 @@ if ($is_admin) {
 
                             <td style="color: var(--text-muted); font-weight: 600;">#<?php echo $pet['owner_id']; ?></td>
 
-
-
                             <td style="text-align: center;">
 
                                 <a href="view_records.php?id=<?php echo $pet['id']; ?>" class="action-link btn-view" title="View Records">
@@ -1392,8 +1642,6 @@ if ($is_admin) {
                                     <i class="fas fa-file-medical"></i>
 
                                 </a>
-
-
 
                                 <a href="editpet.php?id=<?php echo $pet['id']; ?>" class="action-link" title="Edit">
 
@@ -1410,7 +1658,9 @@ if ($is_admin) {
                     </tbody>
 
                     </table>
+
                 </div>
+
             <?php else: ?>
 
                 <div class="empty-state">
@@ -1425,8 +1675,6 @@ if ($is_admin) {
 
         </div>
 
-
-
         <footer>
 
             © <?php echo date("Y"); ?> BOOGIE'S PET CARE & SERVICES - DASMARIÑAS BRANCH
@@ -1434,8 +1682,6 @@ if ($is_admin) {
         </footer>
 
     </main>
-
-
 
     <div id="addPetModal" class="modal">
 
@@ -1446,6 +1692,7 @@ if ($is_admin) {
             <h2><i class="fas fa-paw" style="color: var(--brand-yellow);"></i> Register New Pet</h2>
 
             <form method="POST" action="">
+
                 <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['managepet_csrf_token'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
 
                 <div class="form-group">
@@ -1470,8 +1717,6 @@ if ($is_admin) {
 
                 </div>
 
-
-
                 <div class="form-group">
 
                     <label>Pet's Name *</label>
@@ -1479,8 +1724,6 @@ if ($is_admin) {
                     <input type="text" name="pet_name" placeholder="e.g. Pochi" maxlength="100" required>
 
                 </div>
-
-
 
                 <div class="form-row">
 
@@ -1516,8 +1759,6 @@ if ($is_admin) {
 
                 </div>
 
-
-
                 <div class="form-row">
 
                     <div class="form-group">
@@ -1552,8 +1793,6 @@ if ($is_admin) {
 
                 </div>
 
-
-
                 <button type="submit" name="add_pet" class="btn-submit-modal">Register Pet</button>
 
             </form>
@@ -1561,8 +1800,6 @@ if ($is_admin) {
         </div>
 
     </div>
-
-
 
     <script>
 
@@ -1574,15 +1811,11 @@ if ($is_admin) {
 
     }
 
-
-
     function closePetModal() {
 
         document.getElementById('addPetModal').style.display = 'none';
 
     }
-
-
 
     // Close modal if clicked outside the content box
 
@@ -1595,8 +1828,6 @@ if ($is_admin) {
             modal.style.display = "none";
 
         }
-
-
 
         // existing notification logic
 
@@ -1626,8 +1857,6 @@ if ($is_admin) {
 
     }
 
-
-
     // --- Notification & Profile Toggle Logic ---
 
     function toggleNotif(event) {
@@ -1640,8 +1869,6 @@ if ($is_admin) {
 
     }
 
-
-
     function toggleProfile(event) {
 
         event.stopPropagation();
@@ -1652,15 +1879,16 @@ if ($is_admin) {
 
     }
 
-
-
-
     // --- MOBILE SIDEBAR ---
+
     function toggleMobileSidebar(event) {
+
         if (event) event.stopPropagation();
 
         const sidebar = document.querySelector('aside');
+
         const backdrop = document.getElementById('sidebarBackdrop');
+
         const button = document.querySelector('.mobile-menu-toggle');
 
         if (!sidebar) return;
@@ -1668,36 +1896,57 @@ if ($is_admin) {
         const open = sidebar.classList.toggle('mobile-open');
 
         if (backdrop) {
+
             backdrop.classList.toggle('show', open);
+
         }
 
         if (button) {
+
             button.setAttribute('aria-expanded', open ? 'true' : 'false');
+
         }
+
     }
 
     function closeMobileSidebar() {
+
         const sidebar = document.querySelector('aside');
+
         const backdrop = document.getElementById('sidebarBackdrop');
+
         const button = document.querySelector('.mobile-menu-toggle');
 
         if (sidebar) sidebar.classList.remove('mobile-open');
+
         if (backdrop) backdrop.classList.remove('show');
+
         if (button) button.setAttribute('aria-expanded', 'false');
+
     }
 
     document.addEventListener('keydown', function(event) {
+
         if (event.key === 'Escape') {
+
             closeMobileSidebar();
+
         }
+
     });
 
     document.querySelectorAll('.nav-item').forEach(function(link) {
+
         link.addEventListener('click', function() {
+
             if (window.innerWidth <= 900) {
+
                 closeMobileSidebar();
+
             }
+
         });
+
     });
 
     // --- REAL-TIME NOTIFICATION FETCHER ---
@@ -1710,29 +1959,19 @@ if ($is_admin) {
 
         const markReadBtn = document.getElementById('mark-read-link');
 
-
-
         if (!badge || !notifList) return;
 
-
-
         const unread = Number(data && data.unread ? data.unread : 0);
-
-
 
         badge.style.display = unread > 0 ? 'inline-block' : 'none';
 
         badge.textContent = unread;
-
-
 
         if (markReadBtn) {
 
             markReadBtn.style.display = unread > 0 ? 'inline-block' : 'none';
 
         }
-
-
 
         notifList.innerHTML =
 
@@ -1743,8 +1982,6 @@ if ($is_admin) {
                 : '<div class="notif-empty">No new notifications.</div>';
 
     }
-
-
 
     function fetchAdminNotifs() {
 
@@ -1784,22 +2021,21 @@ if ($is_admin) {
 
     }
 
-
-
     window.fetchAdminNotifs = fetchAdminNotifs;
-
-
 
     const canFetchAdminNotifications = <?php echo $is_admin ? 'true' : 'false'; ?>;
 
     document.addEventListener('DOMContentLoaded', function() {
+
         if (canFetchAdminNotifications) {
+
             fetchAdminNotifs();
+
             setInterval(fetchAdminNotifs, 3000);
+
         }
+
     });
-
-
 
     // --- Pet Filter Logic ---
 
@@ -1813,11 +2049,7 @@ if ($is_admin) {
 
         const countText = document.getElementById('showingCountText');
 
-
-
         const baseFilteredTotal = <?php echo $showing_count; ?>;
-
-
 
         function performFilter() {
 
@@ -1827,8 +2059,6 @@ if ($is_admin) {
 
             let visibleCount = 0;
 
-
-
             tableRows.forEach(row => {
 
                 const petName = row.querySelector('td:first-child').innerText.toLowerCase();
@@ -1837,13 +2067,9 @@ if ($is_admin) {
 
                 const breed = row.getAttribute('data-breed').toLowerCase();
 
-
-
                 const matchesSearch = petName.includes(searchTerm) || breed.includes(searchTerm) || ownerId.includes(searchTerm);
 
                 const matchesBreed = selectedBreed === "" || breed === selectedBreed;
-
-
 
                 if (matchesSearch && matchesBreed) {
 
@@ -1859,13 +2085,9 @@ if ($is_admin) {
 
             });
 
-
-
             countText.textContent = `Showing ${visibleCount} of ${baseFilteredTotal} pets`;
 
         }
-
-
 
         searchInput.addEventListener('input', performFilter);
 

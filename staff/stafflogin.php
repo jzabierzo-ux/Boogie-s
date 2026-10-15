@@ -4,7 +4,27 @@ require_once __DIR__ . '/../shared_session_bootstrap.php';
 
 require_once '../db_supabase.php';
 
+// An authenticated admin should remain in the Admin Portal.
 
+// Admin credentials are accepted only by admin_login.php.
+
+if (
+
+    ($_SESSION['logged_in'] ?? false) === true
+
+    && ($_SESSION['admin_logged_in'] ?? false) === true
+
+    && strtolower(trim((string)($_SESSION['role'] ?? ''))) === 'admin'
+
+    && (int)($_SESSION['user_id'] ?? 0) > 0
+
+) {
+
+    header('Location: ../admin/admindashboard.php?portal=admin');
+
+    exit();
+
+}
 
 /*
 
@@ -23,8 +43,6 @@ function logAdminAccount($pdo, $user_id, $action, $status)
     $ip_address = $_SERVER['REMOTE_ADDR'] ?? 'UNKNOWN';
 
     $user_agent = $_SERVER['HTTP_USER_AGENT'] ?? 'UNKNOWN';
-
-
 
     try {
 
@@ -63,8 +81,6 @@ function logAdminAccount($pdo, $user_id, $action, $status)
     }
 
 }
-
-
 
 /** Normalize role labels without changing the stored database role. */
 
@@ -121,38 +137,50 @@ function normalizePersonnelRole($role)
         'pet_hotel_attendant' => 'pet_hotel_staff',
 
         'pet_hotel_staff_attendant' => 'pet_hotel_staff',
+
         // Normalize legacy database labels consistently with the other staff pages.
+
         'staff' => 'groomer',
+
         'supervisor' => 'receptionist'
 
     ];
-
-
 
     return $aliases[$role] ?? $role;
 
 }
 
-
-
 /**
+
  * Only personnel roles may use this login. Admin accounts use admin_login.php.
+
  */
 
 function isAllowedPersonnelRole($role)
-{
-    // Admin is intentionally excluded because Admin has a separate login page.
-    return in_array($role, [
-        'manager',
-        'receptionist',
-        'groomer',
-        'pet_hotel_staff',
-        'veterinarian',
-        'vet_assistant',
-        'vet_nurse'
-    ], true);
-}
 
+{
+
+    // Admin is intentionally excluded because Admin has a separate login page.
+
+    return in_array($role, [
+
+        'manager',
+
+        'receptionist',
+
+        'groomer',
+
+        'pet_hotel_staff',
+
+        'veterinarian',
+
+        'vet_assistant',
+
+        'vet_nurse'
+
+    ], true);
+
+}
 
 function showPersonnelLoginError($message)
 
@@ -172,35 +200,35 @@ function showPersonnelLoginError($message)
 
 }
 
-
-
 if (empty($_SESSION['personnel_login_csrf']) || !is_string($_SESSION['personnel_login_csrf'])) {
-    $_SESSION['personnel_login_csrf'] = bin2hex(random_bytes(32));
-}
 
+    $_SESSION['personnel_login_csrf'] = bin2hex(random_bytes(32));
+
+}
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     $expectedCsrf = (string)($_SESSION['personnel_login_csrf'] ?? '');
+
     $postedCsrf = (string)($_POST['personnel_login_csrf'] ?? '');
+
     if ($expectedCsrf === '' || $postedCsrf === '' || !hash_equals($expectedCsrf, $postedCsrf)) {
+
         http_response_code(403);
+
         showPersonnelLoginError('Your login form expired. Refresh the page and try again.');
+
     }
 
     $usernameInput = trim((string)($_POST['username'] ?? ''));
 
     $passwordInput = (string)($_POST['password'] ?? '');
 
-
-
     if ($usernameInput === '' || $passwordInput === '') {
 
         showPersonnelLoginError('Please enter your username/email and password.');
 
     }
-
-
 
     try {
 
@@ -230,8 +258,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
-
-
         if (
 
             !$user ||
@@ -258,13 +284,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         }
 
-
-
         $normalizedRole = normalizePersonnelRole($user['role'] ?? '');
 
         if ($normalizedRole === 'admin') {
+
             logAdminAccount($pdo, (int)$user['id'], 'LOGIN', 'FAILED');
-            showPersonnelLoginError('Admin accounts must sign in through the separate Admin Login page.');
+
+            showPersonnelLoginError('This account is not authorized for the Personnel Portal.');
+
         }
 
         if (!isAllowedPersonnelRole($normalizedRole)) {
@@ -277,12 +304,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         }
 
-
-
         logAdminAccount($pdo, (int)$user['id'], 'LOGIN', 'SUCCESS');
+
         session_regenerate_id(true);
+
         $_SESSION = [];
+
         $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+
         $_SESSION['logged_in'] = true;
 
         $_SESSION['staff_logged_in'] = true;
@@ -309,8 +338,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             : 'Personnel';
 
-
-
         // Route each role to its intended area. Destination pages must enforce
 
         // their own server-side authorization; redirects are not permissions.
@@ -331,8 +358,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         }
 
-
-
         if (in_array(
 
             $normalizedRole,
@@ -343,13 +368,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         )) {
 
-            header('Location: ../admin/admindashboard.php');
+            header('Location: ../admin/admindashboard.php?portal=staff');
 
             exit;
 
         }
-
-
 
         // Defensive fallback; should be unreachable for an allowed role.
 
@@ -360,8 +383,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         http_response_code(403);
 
         exit('Unauthorized personnel role.');
-
-
 
     } catch (PDOException $e) {
 
@@ -374,1339 +395,191 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 ?>
-
-
-
 <!DOCTYPE html>
-
 <html lang="en">
-
 <head>
-
-    <meta charset="UTF-8">
-
-    <meta
-
-        name="viewport"
-
-        content="width=device-width, initial-scale=1.0"
-
-    >
-
-
-
-    <title>Personnel Portal - Boogie's Pet Care Services</title>
-
-
-
-    <link
-
-        rel="stylesheet"
-
-        href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
-
-    >
-
-
-
-    <style>
-
-        :root {
-
-            --brand-yellow: #ffcc00;
-
-            --brand-navy: #001a33;
-
-            --white: #ffffff;
-
-            --light-gray: #f1f5f9;
-
-            --text-dark: #001f3f;
-
-            --text-gray: #64748b;
-
-            --staff-note-bg: #fdf4ff;
-
-            --staff-note-text: #701a75;
-
-        }
-
-
-
-        * {
-
-            box-sizing: border-box;
-
-        }
-
-
-
-        body {
-
-            margin: 0;
-
-            padding: 0;
-
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-
-            background-color: var(--brand-yellow);
-
-            display: flex;
-
-            justify-content: center;
-
-            align-items: center;
-
-            min-height: 100vh;
-
-            position: relative;
-
-            padding: 20px;
-
-        }
-
-
-
-        .back-home {
-
-            position: absolute;
-
-            top: 25px;
-
-            left: 25px;
-
-            text-decoration: none;
-
-            color: var(--brand-navy);
-
-            font-weight: 700;
-
-            display: flex;
-
-            align-items: center;
-
-            gap: 8px;
-
-            font-size: 14px;
-
-            text-transform: uppercase;
-
-        }
-
-
-
-        .back-home:hover {
-
-            opacity: 0.75;
-
-        }
-
-
-
-        .login-card {
-
-            background: var(--white);
-
-            padding: 45px;
-
-            border-radius: 20px;
-
-            box-shadow: 0 15px 35px rgba(0, 0, 0, 0.1);
-
-            width: 100%;
-
-            max-width: 420px;
-
-            text-align: center;
-
-            border-bottom: 5px solid var(--brand-navy);
-
-        }
-
-
-
-        .login-icon {
-
-            font-size: 50px;
-
-            color: var(--brand-navy);
-
-            margin-bottom: 15px;
-
-        }
-
-
-
-        h2 {
-
-            margin: 0 0 5px 0;
-
-            color: var(--text-dark);
-
-            font-size: 28px;
-
-            font-weight: 800;
-
-        }
-
-
-
-        .branch-tag {
-
-            font-size: 12px;
-
-            color: var(--text-gray);
-
-            font-weight: 600;
-
-            text-transform: uppercase;
-
-            letter-spacing: 1px;
-
-            margin-bottom: 25px;
-
-            display: block;
-
-        }
-
-
-
-        .form-group {
-
-            text-align: left;
-
-            margin-bottom: 20px;
-
-        }
-
-
-
-        label {
-
-            display: block;
-
-            font-size: 14px;
-
-            font-weight: 700;
-
-            margin-bottom: 8px;
-
-            color: var(--text-dark);
-
-        }
-
-
-
-        input {
-
-            width: 100%;
-
-            padding: 14px;
-
-            border: 1px solid #e2e8f0;
-
-            border-radius: 10px;
-
-            font-size: 15px;
-
-            transition: all 0.3s ease;
-
-            outline-color: var(--brand-yellow);
-
-        }
-
-
-
-        input:focus {
-
-            border-color: var(--brand-navy);
-
-            box-shadow: 0 0 0 3px rgba(0, 26, 51, 0.08);
-
-        }
-
-
-
-        .login-btn {
-
-            width: 100%;
-
-            padding: 16px;
-
-            background-color: var(--brand-navy);
-
-            color: var(--brand-yellow);
-
-            border: none;
-
-            border-radius: 10px;
-
-            font-size: 16px;
-
-            font-weight: 800;
-
-            cursor: pointer;
-
-            margin-top: 10px;
-
-            text-transform: uppercase;
-
-            display: flex;
-
-            align-items: center;
-
-            justify-content: center;
-
-            gap: 10px;
-
-            transition: 0.3s;
-
-        }
-
-
-
-        .login-btn:hover {
-
-            opacity: 0.9;
-
-            transform: translateY(-2px);
-
-        }
-
-
-
-        .staff-note {
-
-            background: var(--staff-note-bg);
-
-            border: 1px solid #fae8ff;
-
-            padding: 12px;
-
-            border-radius: 10px;
-
-            margin-top: 20px;
-
-            text-align: left;
-
-            font-size: 12px;
-
-            color: var(--staff-note-text);
-
-            line-height: 1.4;
-
-            display: flex;
-
-            align-items: center;
-
-            gap: 10px;
-
-        }
-
-
-
-        .footer-links {
-
-            margin-top: 30px;
-
-            padding-top: 20px;
-
-            border-top: 1px solid var(--light-gray);
-
-            display: flex;
-
-            justify-content: center;
-
-            gap: 15px;
-
-        }
-
-
-
-        .footer-links a {
-
-            color: var(--text-gray);
-
-            text-decoration: none;
-
-            font-size: 13px;
-
-            font-weight: 600;
-
-        }
-
-
-
-        .footer-links a:hover {
-
-            color: var(--brand-navy);
-
-        }
-
-
-
-        .brand-footer {
-
-            margin-top: 15px;
-
-            font-size: 11px;
-
-            color: var(--text-gray);
-
-        }
-
-
-
-        @media (max-width: 600px) {
-
-            .login-card {
-
-                padding: 30px 25px;
-
-            }
-
-
-
-            .back-home {
-
-                top: 15px;
-
-                left: 15px;
-
-                font-size: 12px;
-
-            }
-
-
-
-            .login-icon {
-
-                font-size: 42px;
-
-            }
-
-
-
-            h2 {
-
-                font-size: 24px;
-
-            }
-
-        }
-
-
-
-        /* --- MOBILE RESPONSIVE --- */
-
-        @media (max-width: 600px) {
-
-            body {
-
-                align-items: flex-start;
-
-                min-height: 100svh;
-
-                padding: 72px 14px 20px;
-
-            }
-
-
-
-            .back-home {
-
-                top: 18px;
-
-                left: 14px;
-
-                right: 14px;
-
-                width: auto;
-
-                font-size: 11px;
-
-            }
-
-
-
-            .login-card {
-
-                width: 100%;
-
-                max-width: 420px;
-
-                padding: 30px 20px 22px;
-
-                border-radius: 16px;
-
-            }
-
-
-
-            .login-icon {
-
-                font-size: 42px;
-
-                margin-bottom: 12px;
-
-            }
-
-
-
-            h2 {
-
-                font-size: 24px;
-
-                line-height: 1.25;
-
-            }
-
-
-
-            .branch-tag {
-
-                font-size: 11px;
-
-                margin-bottom: 22px;
-
-            }
-
-
-
-            .form-group {
-
-                margin-bottom: 17px;
-
-            }
-
-
-
-            label {
-
-                font-size: 13px;
-
-                margin-bottom: 7px;
-
-            }
-
-
-
-            input {
-
-                min-height: 50px;
-
-                padding: 13px 14px;
-
-                font-size: 16px;
-
-            }
-
-
-
-            .login-btn {
-
-                min-height: 52px;
-
-                padding: 14px 16px;
-
-                font-size: 14px;
-
-                margin-top: 7px;
-
-            }
-
-
-
-            .staff-note {
-
-                font-size: 11.5px;
-
-                padding: 12px 11px;
-
-                margin-top: 18px;
-
-                gap: 8px;
-
-            }
-
-
-
-            .staff-note i {
-
-                flex-shrink: 0;
-
-            }
-
-
-
-            .footer-links {
-
-                margin-top: 24px;
-
-                padding-top: 17px;
-
-                gap: 8px;
-
-            }
-
-
-
-            .footer-links a {
-
-                font-size: 12px;
-
-                text-align: center;
-
-            }
-
-
-
-            .brand-footer {
-
-                margin-top: 13px;
-
-                font-size: 10px;
-
-                line-height: 1.4;
-
-            }
-
-        }
-
-
-
-        @media (max-width: 380px) {
-
-            body {
-
-                padding-left: 10px;
-
-                padding-right: 10px;
-
-            }
-
-
-
-            .login-card {
-
-                padding: 26px 16px 20px;
-
-            }
-
-
-
-            .back-home {
-
-                left: 10px;
-
-                right: 10px;
-
-                top: 14px;
-
-            }
-
-
-
-            .login-icon {
-
-                font-size: 38px;
-
-            }
-
-
-
-            h2 {
-
-                font-size: 22px;
-
-            }
-
-
-
-            .branch-tag {
-
-                font-size: 10px;
-
-                letter-spacing: 0.7px;
-
-            }
-
-
-
-            .staff-note {
-
-                font-size: 11px;
-
-            }
-
-
-
-            .footer-links a {
-
-                font-size: 11px;
-
-            }
-
-        }
-
-
-
-        @media (max-height: 650px) and (max-width: 600px) {
-
-            body {
-
-                align-items: flex-start;
-
-                padding-top: 58px;
-
-            }
-
-
-
-            .login-card {
-
-                padding-top: 22px;
-
-                padding-bottom: 18px;
-
-            }
-
-
-
-            .login-icon {
-
-                font-size: 34px;
-
-                margin-bottom: 8px;
-
-            }
-
-
-
-            .branch-tag {
-
-                margin-bottom: 15px;
-
-            }
-
-
-
-            .form-group {
-
-                margin-bottom: 12px;
-
-            }
-
-
-
-            .staff-note,
-
-            .footer-links {
-
-                margin-top: 14px;
-
-            }
-
-        }
-
-
-
-
-
-        /* ===== Mobile-flexible layout additions ===== */
-
-        html { width: 100%; overflow-x: hidden; }
-
-        body { width: 100%; max-width: 100%; }
-
-        img { max-width: 100%; }
-
-        input, select, textarea, button { max-width: 100%; }
-
-
-
-
-
-        /* ===== Final small-screen containment ===== */
-
-        @media (max-width: 600px) {
-
-            html, body { width:100%; max-width:100%; overflow-x:hidden; }
-
-            .container, .login-card { width:100%; max-width:100%; }
-
-            input, select, textarea, button { width:100%; max-width:100%; }
-
-            img { max-width:100%; height:auto; }
-
-        }
-
-
-
-
-
-/* ================================================================
-
-   FINAL STAFF TOP BAR FIX — MATCH ADMIN MOBILE BEHAVIOR
-
-   Keep the staff name visible on phones while preventing overflow.
-
-   ================================================================ */
-
-.profile-name-text {
-
-    white-space: nowrap !important;
-
-    min-width: 0 !important;
-
-}
-
-
-
-@media (max-width: 640px) {
-
-    .main-content > header,
-
-    .main-content > header:first-child {
-
-        width: 100% !important;
-
-        min-width: 0 !important;
-
-        height: 60px !important;
-
-        min-height: 60px !important;
-
-        padding: 0 10px !important;
-
-        display: flex !important;
-
-        flex-wrap: nowrap !important;
-
-        align-items: center !important;
-
-        gap: 7px !important;
-
-        overflow: visible !important;
-
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#001f3f">
+  <title>Personnel Portal | Boogie's Pet Care Services</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    :root {
+      --navy: #001f3f;
+      --navy-2: #0b355c;
+      --yellow: #ffcc00;
+      --ink: #12263a;
+      --muted: #66778a;
+      --line: #e2e9f0;
+      --surface: #f4f7fb;
+      --white: #fff;
+      --shadow: 0 24px 70px rgba(0, 31, 63, .16);
     }
-
-
-
-    .mobile-menu-btn {
-
-        display: inline-flex !important;
-
-        width: 36px !important;
-
-        min-width: 36px !important;
-
-        height: 36px !important;
-
-        flex: 0 0 36px !important;
-
-        align-items: center !important;
-
-        justify-content: center !important;
-
+    * { box-sizing: border-box; }
+    html { min-height: 100%; }
+    body {
+      margin: 0; min-height: 100vh; min-height: 100svh; padding: 28px;
+      display: grid; place-items: center; background: var(--surface); color: var(--ink);
+      font-family: 'Poppins', sans-serif;
     }
-
-
-
-    .topbar-left {
-
-        flex: 0 0 auto !important;
-
-        min-width: 0 !important;
-
+    a { color: inherit; }
+    .page-shell {
+      width: min(100%, 1020px); min-height: 610px; display: grid;
+      grid-template-columns: .95fr 1.05fr; background: var(--white);
+      border: 1px solid rgba(226,233,240,.95); border-radius: 28px;
+      overflow: hidden; box-shadow: var(--shadow);
     }
-
-
-
-    /* On mobile the breadcrumb is unnecessary beside the menu button. */
-
-    .breadcrumb {
-
-        display: none !important;
-
+    .brand-panel {
+      position: relative; isolation: isolate; overflow: hidden; padding: 38px 40px;
+      display: flex; flex-direction: column; justify-content: space-between;
+      color: var(--white); background: linear-gradient(145deg, var(--navy) 0%, #062d50 58%, #0d4167 100%);
     }
-
-
-
-    .top-right-actions {
-
-        display: flex !important;
-
-        align-items: center !important;
-
-        justify-content: flex-end !important;
-
-        gap: 7px !important;
-
-        flex: 1 1 auto !important;
-
-        min-width: 0 !important;
-
-        margin-left: auto !important;
-
+    .brand-panel::before, .brand-panel::after {
+      content: ''; position: absolute; z-index: -1; border-radius: 50%; pointer-events: none;
+      border: 1px solid rgba(255,204,0,.18);
     }
-
-
-
-    .notif-wrapper {
-
-        flex: 0 0 auto !important;
-
+    .brand-panel::before { width: 380px; height: 380px; right: -185px; top: -120px; box-shadow: 0 0 0 28px rgba(255,204,0,.035), 0 0 0 58px rgba(255,204,0,.025); }
+    .brand-panel::after { width: 300px; height: 300px; left: -190px; bottom: -145px; }
+    .back-home { display: inline-flex; align-items: center; gap: 9px; width: fit-content; color: rgba(255,255,255,.82); text-decoration: none; font-size: 12px; font-weight: 600; transition: color .2s; }
+    .back-home:hover { color: var(--yellow); }
+    .brand-main { padding: 46px 0 42px; }
+    .brand-logo-wrap { width: 86px; height: 86px; padding: 6px; display: grid; place-items: center; border-radius: 20px; background: var(--white); box-shadow: 0 9px 28px rgba(0,0,0,.18); margin-bottom: 25px; }
+    .brand-logo { display: block; width: 100%; height: 100%; object-fit: contain; border-radius: 13px; }
+    .brand-eyebrow { margin: 0 0 10px; color: var(--yellow); text-transform: uppercase; letter-spacing: 1.8px; font-weight: 800; font-size: 10px; }
+    .brand-title { margin: 0; max-width: 360px; font-size: clamp(28px, 3vw, 39px); line-height: 1.18; letter-spacing: -.8px; font-weight: 800; }
+    .brand-description { max-width: 340px; margin: 15px 0 0; color: rgba(255,255,255,.75); font-size: 13px; line-height: 1.8; }
+    .role-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 28px; }
+    .role-chip { padding: 7px 11px; border: 1px solid rgba(255,255,255,.19); border-radius: 999px; background: rgba(255,255,255,.07); color: rgba(255,255,255,.88); font-size: 10px; font-weight: 600; }
+    .brand-footer { display: flex; align-items: center; gap: 10px; color: rgba(255,255,255,.56); font-size: 10px; }
+    .brand-footer i { color: var(--yellow); }
+    .form-panel { display: flex; flex-direction: column; justify-content: center; padding: 52px clamp(28px, 5vw, 62px); }
+    .form-topline { display: flex; align-items: center; gap: 8px; margin-bottom: 25px; color: #6b7b8c; font-size: 10px; font-weight: 800; letter-spacing: 1.15px; text-transform: uppercase; }
+    .form-topline span { width: 23px; height: 3px; border-radius: 4px; background: var(--yellow); }
+    .form-title { margin: 0; color: var(--navy); font-size: clamp(27px, 3vw, 34px); line-height: 1.2; letter-spacing: -.6px; font-weight: 800; }
+    .form-subtitle { margin: 10px 0 27px; color: var(--muted); font-size: 12px; line-height: 1.8; }
+    .security-note { display: flex; gap: 10px; align-items: flex-start; padding: 12px 13px; margin-bottom: 24px; background: #fff9df; border: 1px solid #ffe58a; border-radius: 12px; color: #705a08; font-size: 10px; line-height: 1.6; }
+    .security-note i { margin-top: 2px; color: #997800; }
+    .form-group { margin-bottom: 18px; }
+    label { display: block; margin-bottom: 8px; color: #20384f; font-size: 11px; font-weight: 700; }
+    .input-wrap { position: relative; }
+    .input-wrap > i { position: absolute; top: 50%; left: 15px; transform: translateY(-50%); color: #8393a5; font-size: 14px; pointer-events: none; }
+    input {
+      display: block; width: 100%; height: 51px; padding: 0 44px 0 43px;
+      color: var(--ink); background: #fbfcfe; border: 1px solid #dbe4ed;
+      border-radius: 12px; outline: none; font: inherit; font-size: 12px;
+      transition: border-color .2s, box-shadow .2s, background .2s;
     }
-
-
-
-    .notif-wrapper > i {
-
-        font-size: 19px !important;
-
+    input::placeholder { color: #9aa7b6; }
+    input:focus { background: var(--white); border-color: #537da1; box-shadow: 0 0 0 4px rgba(11,59,102,.09); }
+    .password-toggle { position: absolute; top: 50%; right: 10px; transform: translateY(-50%); display: grid; place-items: center; width: 32px; height: 32px; border: 0; border-radius: 8px; background: transparent; color: #74869a; cursor: pointer; }
+    .password-toggle:hover { background: #edf2f7; color: var(--navy); }
+    .login-btn { display: flex; justify-content: center; align-items: center; gap: 10px; width: 100%; min-height: 52px; margin-top: 7px; padding: 13px 18px; border: 0; border-radius: 12px; background: var(--navy); color: var(--yellow); font: inherit; font-weight: 800; font-size: 11px; letter-spacing: .8px; cursor: pointer; box-shadow: 0 8px 18px rgba(0,31,63,.16); transition: transform .18s, background .18s, box-shadow .18s; }
+    .login-btn:hover { transform: translateY(-1px); background: #082b4b; box-shadow: 0 12px 22px rgba(0,31,63,.2); }
+    .login-btn:focus-visible, .password-toggle:focus-visible, a:focus-visible { outline: 3px solid #7da9d1; outline-offset: 3px; }
+    .form-links { display: flex; justify-content: center; flex-wrap: wrap; gap: 14px 20px; padding-top: 22px; margin-top: 23px; border-top: 1px solid #edf1f5; }
+    .form-links a { display: inline-flex; align-items: center; gap: 7px; color: #667a8e; text-decoration: none; font-size: 10px; font-weight: 600; }
+    .form-links a:hover { color: var(--navy); }
+    .form-links .customer-link { color: var(--navy); }
+    .copyright { margin-top: 27px; color: #9aa7b6; font-size: 9px; text-align: center; }
+    @media (max-width: 760px) {
+      body { padding: 16px; align-items: start; }
+      .page-shell { max-width: 480px; min-height: auto; grid-template-columns: 1fr; border-radius: 22px; margin: auto; }
+      .brand-panel { padding: 22px 24px 25px; }
+      .brand-main { display: grid; grid-template-columns: 66px minmax(0,1fr); grid-template-areas: "logo eyebrow" "logo title" "description description" "roles roles"; column-gap: 16px; align-items: center; padding: 26px 0 14px; }
+      .brand-logo-wrap { width: 66px; height: 66px; border-radius: 16px; margin: 0; grid-row: span 2; }
+      .brand-eyebrow { margin-bottom: 5px; font-size: 9px; letter-spacing: 1.1px; }
+      .brand-title { font-size: 25px; }
+      .brand-description { grid-column: 1 / -1; margin-top: 15px; font-size: 11px; }
+      .role-list { display: none; }
+      .brand-footer { font-size: 9px; }
+      .form-panel { padding: 29px 25px 25px; }
+      .form-topline { margin-bottom: 16px; }
+      .form-subtitle { margin-bottom: 20px; }
+      .security-note { margin-bottom: 20px; }
+      .copyright { margin-top: 20px; }
     }
-
-
-
-    .role-label {
-
-        display: inline-flex !important;
-
-        align-items: center !important;
-
-        justify-content: center !important;
-
-        flex: 0 0 auto !important;
-
-        white-space: nowrap !important;
-
-        padding: 4px 7px !important;
-
-        font-size: 8px !important;
-
+    @media (max-width: 380px) {
+      body { padding: 10px; }
+      .brand-panel { padding: 18px 18px 21px; }
+      .form-panel { padding: 25px 18px 20px; }
+      .brand-title { font-size: 22px; }
+      .form-title { font-size: 27px; }
+      .form-links { gap: 12px; }
     }
-
-
-
-    .profile-wrapper {
-
-        display: flex !important;
-
-        align-items: center !important;
-
-        flex: 0 1 auto !important;
-
-        min-width: 0 !important;
-
-        max-width: 150px !important;
-
-        gap: 6px !important;
-
-        padding-left: 7px !important;
-
-        border-left: 1px solid var(--border) !important;
-
-        overflow: visible !important;
-
-    }
-
-
-
-    .top-avatar,
-
-    .top-avatar-fallback {
-
-        width: 30px !important;
-
-        height: 30px !important;
-
-        min-width: 30px !important;
-
-        flex: 0 0 30px !important;
-
-    }
-
-
-
-    /* Keep the staff name visible like the admin top bar. */
-
-    .profile-name-text {
-
-        display: block !important;
-
-        flex: 0 1 105px !important;
-
-        width: 105px !important;
-
-        min-width: 0 !important;
-
-        max-width: 105px !important;
-
-        overflow: hidden !important;
-
-        text-overflow: ellipsis !important;
-
-        white-space: nowrap !important;
-
-        line-height: 1.2 !important;
-
-        font-size: 12px !important;
-
-        font-weight: 700 !important;
-
-        padding-right: 13px !important;
-
-        position: relative !important;
-
-    }
-
-
-
-    .profile-name-text i {
-
-        display: none !important;
-
-    }
-
-
-
-    .profile-name-text::after {
-
-        content: '\\\f078';
-
-        font-family: 'Font Awesome 6 Free';
-
-        font-weight: 900;
-
-        position: absolute;
-
-        right: 0;
-
-        top: 50%;
-
-        transform: translateY(-50%);
-
-        font-size: 9px;
-
-        color: var(--text-muted, #64748b);
-
-        opacity: .7;
-
-    }
-
-}
-
-
-
-@media (max-width: 480px) {
-
-    .main-content > header,
-
-    .main-content > header:first-child {
-
-        padding: 0 9px !important;
-
-        gap: 6px !important;
-
-    }
-
-
-
-    .top-right-actions {
-
-        gap: 6px !important;
-
-    }
-
-
-
-    .role-label {
-
-        padding: 4px 7px !important;
-
-        font-size: 8px !important;
-
-    }
-
-
-
-    .profile-wrapper {
-
-        gap: 5px !important;
-
-        max-width: 138px !important;
-
-        padding-left: 6px !important;
-
-    }
-
-
-
-    .profile-name-text {
-
-        flex-basis: 92px !important;
-
-        width: 92px !important;
-
-        max-width: 92px !important;
-
-        font-size: 11px !important;
-
-    }
-
-}
-
-
-
-@media (max-width: 400px) {
-
-    .role-label {
-
-        display: none !important;
-
-    }
-
-
-
-    .profile-wrapper {
-
-        max-width: 135px !important;
-
-        padding-left: 5px !important;
-
-    }
-
-
-
-    .profile-name-text {
-
-        flex-basis: 100px !important;
-
-        width: 100px !important;
-
-        max-width: 100px !important;
-
-    }
-
-}
-
-
-
-</style>
-
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; } }
+  </style>
 </head>
-
-
-
 <body>
-
-
-
-    <a href="../home.php" class="back-home">
-
-        <i class="fas fa-chevron-left"></i>
-
-        BACK TO WEBSITE
-
-    </a>
-
-
-
-
-
-    <div class="login-card">
-
-
-
-        <div class="login-icon">
-
-            <i class="fas fa-user-shield"></i>
-
+  <main class="page-shell">
+    <section class="brand-panel" aria-label="Boogie's Pet Care Services">
+      <a href="../home.php" class="back-home"><i class="fa-solid fa-arrow-left" aria-hidden="true"></i> Back to website</a>
+      <div class="brand-main">
+        <div class="brand-logo-wrap" style="grid-area:logo"><img src="../admin/bg.png" class="brand-logo" alt="Boogie's Pet Care Services logo"></div>
+        <p class="brand-eyebrow" style="grid-area:eyebrow">Boogie's Pet Care &amp; Services</p>
+        <h1 class="brand-title" style="grid-area:title">Your work. Their care.</h1>
+        <p class="brand-description" style="grid-area:description">Sign in to access the staff tools for bookings, customer details, and pet care records assigned to your role.</p>
+        <div class="role-list" style="grid-area:roles" aria-label="Authorized personnel roles">
+          <span class="role-chip">Manager</span>
+          <span class="role-chip">Receptionist</span>
+          <span class="role-chip">Groomer</span>
+          <span class="role-chip">Pet Hotel Staff</span>
+          <span class="role-chip">Veterinary Team</span>
         </div>
-
-
-
-        <h2>Personnel Portal</h2>
-
-
-
-        <span class="branch-tag">
-
-            DASMARIÑAS BRANCH
-
-        </span>
-
-
-
-
-
-        <form
-
-            action="<?php echo htmlspecialchars($_SERVER["PHP_SELF"]); ?>"
-
-            method="POST"
-
-        >
-            <input type="hidden" name="personnel_login_csrf" value="<?php echo htmlspecialchars($_SESSION['personnel_login_csrf'], ENT_QUOTES, 'UTF-8'); ?>">
-
-            <div class="form-group">
-
-
-
-                <label for="username">
-
-                    Username
-
-                </label>
-
-
-
-                <input
-
-                    type="text"
-
-                    id="username"
-
-                    name="username"
-
-                    placeholder="Enter assigned username"
-
-                    autocomplete="username"
-
-                    required
-
-                >
-
-
-
-            </div>
-
-
-
-
-
-            <div class="form-group">
-
-
-
-                <label for="password">
-
-                    Security Password
-
-                </label>
-
-
-
-                <input
-
-                    type="password"
-
-                    id="password"
-
-                    name="password"
-
-                    placeholder="••••••••"
-
-                    autocomplete="current-password"
-
-                    required
-
-                >
-
-
-
-            </div>
-
-
-
-
-
-            <button
-
-                type="submit"
-
-                class="login-btn"
-
-            >
-
-                SECURE LOGIN
-
-                <i class="fas fa-right-to-bracket"></i>
-
-            </button>
-
-
-
-        </form>
-
-
-
-
-
-        <div class="staff-note">
-
-
-
-            <i class="fas fa-info-circle"></i>
-
-
-
-            <span>
-
-                <strong>Note:</strong>
-
-                This portal is for authorized staff only: Manager, Receptionist,
-
-                Groomer, Pet Hotel Staff, Veterinarian, Vet Assistant, and Vet Nurse.
-
-                Admin accounts must use the separate Admin Login portal.
-
-            </span>
-
-
-
+      </div>
+      <div class="brand-footer"><i class="fa-solid fa-shield-halved" aria-hidden="true"></i> Secure access for authorized personnel</div>
+    </section>
+
+    <section class="form-panel" aria-labelledby="login-title">
+      <div class="form-topline"><span></span> Personnel Portal</div>
+      <h2 class="form-title" id="login-title">Welcome back</h2>
+      <p class="form-subtitle">Enter your assigned username or email and password to continue.</p>
+
+      <div class="security-note"><i class="fa-solid fa-circle-info" aria-hidden="true"></i><div><strong>Staff access only.</strong> Your account permissions determine which pages and actions you can use.</div></div>
+
+      <form action="<?php echo htmlspecialchars($_SERVER['PHP_SELF'], ENT_QUOTES, 'UTF-8'); ?>" method="POST" autocomplete="on">
+        <input type="hidden" name="personnel_login_csrf" value="<?php echo htmlspecialchars($_SESSION['personnel_login_csrf'], ENT_QUOTES, 'UTF-8'); ?>">
+        <div class="form-group">
+          <label for="username">Username or email</label>
+          <div class="input-wrap">
+            <i class="fa-regular fa-user" aria-hidden="true"></i>
+            <input type="text" id="username" name="username" placeholder="Enter your username or email" autocomplete="username" autocapitalize="none" spellcheck="false" required>
+          </div>
         </div>
-
-
-
-
-
-        <div class="footer-links">
-
-            <a href="../admin_login.php">
-                <i class="fas fa-user-shield"></i>
-                Admin Login
-            </a>
-
-            <a href="../login.php">
-
-                <i class="fas fa-user"></i>
-
-                Switch to Customer Login
-
-            </a>
-
-
-
+        <div class="form-group">
+          <label for="password">Password</label>
+          <div class="input-wrap">
+            <i class="fa-solid fa-lock" aria-hidden="true"></i>
+            <input type="password" id="password" name="password" placeholder="Enter your password" autocomplete="current-password" required>
+            <button class="password-toggle" type="button" id="togglePassword" aria-label="Show password" aria-pressed="false"><i class="fa-regular fa-eye" aria-hidden="true"></i></button>
+          </div>
         </div>
+        <button type="submit" class="login-btn">Sign in securely <i class="fa-solid fa-arrow-right-to-bracket" aria-hidden="true"></i></button>
+      </form>
 
-
-
-
-
-        <div class="brand-footer">
-
-            © <?php echo date("Y"); ?> Boogie's Pet Care Services
-
-        </div>
-
-
-
-    </div>
-
-
-
+      <nav class="form-links" aria-label="Other pages">
+        <a href="../home.php"><i class="fa-solid fa-house" aria-hidden="true"></i> Back to website</a>
+        <a class="customer-link" href="../login.php"><i class="fa-regular fa-user" aria-hidden="true"></i> Customer login</a>
+      </nav>
+      <p class="copyright">&copy; <?php echo date('Y'); ?> Boogie's Pet Care &amp; Services</p>
+    </section>
+  </main>
+  <script>
+    (function () {
+      const password = document.getElementById('password');
+      const toggle = document.getElementById('togglePassword');
+      if (!password || !toggle) return;
+      toggle.addEventListener('click', function () {
+        const visible = password.type === 'password';
+        password.type = visible ? 'text' : 'password';
+        toggle.setAttribute('aria-pressed', visible ? 'true' : 'false');
+        toggle.setAttribute('aria-label', visible ? 'Hide password' : 'Show password');
+        const icon = toggle.querySelector('i');
+        if (icon) icon.className = visible ? 'fa-regular fa-eye-slash' : 'fa-regular fa-eye';
+      });
+    }());
+  </script>
 </body>
-
 </html>

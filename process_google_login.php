@@ -93,7 +93,7 @@ try {
             )
             VALUES (
                 :full_name, :contact_number, :email, :password, :role, :position,
-                :user_category, :otp, FALSE
+                :user_category, :otp, 0
             )
             RETURNING id
         ');
@@ -159,7 +159,7 @@ try {
     if (isset($pdo) && $pdo instanceof PDO && $created_user_id > 0 && $otp !== null) {
         try {
             if (!empty($is_new_user)) {
-                $cleanup = $pdo->prepare('DELETE FROM users WHERE id = :id AND is_verified = FALSE AND otp_code = :otp');
+                $cleanup = $pdo->prepare('DELETE FROM users WHERE id = :id AND is_verified = 0 AND otp_code = :otp');
                 $cleanup->execute([':id' => $created_user_id, ':otp' => $otp]);
             } else {
                 $cleanup = $pdo->prepare('UPDATE users SET otp_code = NULL WHERE id = :id AND otp_code = :otp');

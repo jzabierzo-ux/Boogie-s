@@ -54,18 +54,14 @@ if (in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true
     header('Location: ../staff/staffdashboard.php');
     exit();
 }
-if ($current_role === 'pet_hotel_staff') {
-    header('Location: managebooking.php');
-    exit();
-}
-$allowed_roles = ['admin', 'manager', 'receptionist', 'groomer'];
+$allowed_roles = ['admin', 'manager', 'receptionist', 'groomer', 'pet_hotel_staff'];
 if (!in_array($current_role, $allowed_roles, true)) {
     http_response_code(403);
     exit('Access denied. This role cannot access customer details.');
 }
 
 // Editing a customer's contact number is an operational permission; permanent deletion is Admin-only.
-$can_update_contact = in_array($current_role, ['admin', 'manager', 'receptionist'], true);
+$can_update_contact = in_array($current_role, ['admin', 'manager', 'receptionist', 'groomer', 'pet_hotel_staff'], true);
 $can_delete_customer = $is_admin;
 
 if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {

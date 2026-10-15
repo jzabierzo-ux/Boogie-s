@@ -2582,6 +2582,11 @@ try {
     }
 }
 
+        /* Let cards follow their own description length instead of matching the tallest card in the row. */
+        .services-grid { align-items: start; }
+        .service-card { min-height: 0; height: auto; align-self: start; }
+        .service-body { flex: 0 1 auto; }
+
 </style>
 
 </head>
@@ -2758,21 +2763,209 @@ try {
 
 
 
-            <div class="services-grid">
+            <div class="services-grid"><?php if (!empty($result)): ?>
 
-
-
-            <?php if (!empty($result)): ?>
-
+                <?php $service_index = 0; ?>
+                <?php $deworming_index = 0; ?>
                 <?php foreach ($result as $row): ?>
 
                     <?php
-
-                        $category = $row['category'];
-
+                        $service_index++;
+                        $category = (string)($row['category'] ?? '');
                         $category_lower = strtolower($category);
+                        $service_name_text = trim((string)($row['service_name'] ?? ''));
+                        $service_name_lower = strtolower($service_name_text);
+                        $size_source = strtolower($service_name_text . ' ' . (string)($row['pet_size'] ?? '') . ' ' . (string)($row['size'] ?? ''));
+                        $size_key = '';
 
+                        // Detect weight brackets when they are included in the service label.
+                        if (preg_match('/xxl|21\s*(?:-|–|to)\s*25\s*kg|21\s*to\s*25/', $size_source)) {
+                            $size_key = 'xxl';
+                        } elseif (preg_match('/extra\s*large|xl|16\s*(?:-|–|to)\s*20\s*kg|16\s*to\s*20/', $size_source)) {
+                            $size_key = 'xl';
+                        } elseif (preg_match('/medium|6\s*(?:-|–|to)\s*10\s*kg|6\s*to\s*10/', $size_source)) {
+                            $size_key = 'medium';
+                        } elseif (preg_match('/small|1\s*(?:-|–|to)\s*5\s*kg|1\s*to\s*5/', $size_source)) {
+                            $size_key = 'small';
+                        } elseif (preg_match('/large|11\s*(?:-|–|to)\s*15\s*kg|11\s*to\s*15/', $size_source)) {
+                            $size_key = 'large';
+                        }
 
+                        $size_labels = [
+                            'small' => 'Small (1–5 kg)',
+                            'medium' => 'Medium (6–10 kg)',
+                            'large' => 'Large (11–15 kg)',
+                            'xl' => 'Extra Large (16–20 kg)',
+                            'xxl' => 'XXL Large (21–25 kg)',
+                        ];
+                        $size_label = $size_labels[$size_key] ?? '';
+                        $description = '';
+
+                        // Write descriptions by exact service type and weight bracket so
+                        // repeated category names still have different, relevant copy.
+                        if (strpos($category_lower, 'vaccination') !== false || strpos($service_name_lower, 'vaccin') !== false) {
+                            if (strpos($service_name_lower, 'anti rabies') !== false || strpos($service_name_lower, 'rabies') !== false) {
+                                $vaccine_key = 'rabies';
+                            } elseif (strpos($service_name_lower, '8 in 1') !== false || strpos($service_name_lower, '8-in-1') !== false) {
+                                $vaccine_key = '8in1';
+                            } elseif (strpos($service_name_lower, '6 in 1') !== false || strpos($service_name_lower, '6-in-1') !== false) {
+                                $vaccine_key = '6in1';
+                            } elseif (strpos($service_name_lower, '5 in 1') !== false || strpos($service_name_lower, '5-in-1') !== false) {
+                                $vaccine_key = '5in1';
+                            } elseif (strpos($service_name_lower, '4 in 1') !== false || strpos($service_name_lower, '4-in-1') !== false || strpos($service_name_lower, 'cat') !== false || strpos($service_name_lower, 'feline') !== false) {
+                                $vaccine_key = '4in1cat';
+                            } else {
+                                $vaccine_key = 'general';
+                            }
+
+                            $vaccine_descriptions = [
+                                'rabies' => [
+                                    'small' => 'Keep your pet’s anti-rabies record current. For the Small (1–5 kg) rate, the team will check the last dose date and confirm whether another vaccination is due.',
+                                    'medium' => 'This anti-rabies option is priced for the Medium (6–10 kg) bracket. Bring the vaccination card so the vet can verify the history and advise on timing.',
+                                    'large' => 'For a Large (11–15 kg) pet, this visit focuses on rabies-prevention records and confirming the correct schedule before the vaccine is given.',
+                                    'xl' => 'Anti-rabies care for the Extra Large (16–20 kg) bracket starts with a review of earlier doses. The clinic will explain whether your pet is due for a follow-up.',
+                                    'xxl' => 'This listing covers the XXL Large (21–25 kg) bracket. The veterinarian will review the rabies vaccine history and discuss the next scheduled dose, if needed.',
+                                    'default' => 'Anti-rabies vaccination helps protect pets against rabies. The veterinary team will review the vaccination history and confirm the appropriate timing before proceeding.'
+                                ],
+                                '5in1' => [
+                                    'small' => 'The 5-in-1 option is listed for the Small (1–5 kg) bracket. The vet will review your dog’s age and previous doses before confirming whether this vaccine fits the schedule.',
+                                    'medium' => 'For a Medium (6–10 kg) dog, this 5-in-1 visit is a chance to check the vaccination card and plan any next dose or booster with the clinic.',
+                                    'large' => 'This 5-in-1 rate corresponds to the Large (11–15 kg) bracket. The veterinarian will check the record and explain when the next vaccination should be considered.',
+                                    'xl' => 'The Extra Large (16–20 kg) 5-in-1 listing is for dogs following a planned vaccine schedule; the clinic will confirm the record and your dog’s readiness first.',
+                                    'xxl' => 'For the XXL Large (21–25 kg) bracket, the 5-in-1 appointment gives the vet a chance to review previous doses and talk through the remaining schedule.',
+                                    'default' => 'The 5-in-1 vaccine may be included in a dog’s preventive-care plan. The veterinary team will check prior doses and confirm the schedule before administration.'
+                                ],
+                                '6in1' => [
+                                    'small' => 'This 6-in-1 option is shown for the Small (1–5 kg) bracket. Bring your dog’s vaccination record so the vet can confirm the correct point in the schedule.',
+                                    'medium' => 'The Medium (6–10 kg) 6-in-1 visit centers on reviewing earlier doses and checking whether a booster or another appointment should be planned.',
+                                    'large' => 'For a Large (11–15 kg) dog, the 6-in-1 service helps keep combination-vaccine records in order. The vet will verify the dates before proceeding.',
+                                    'xl' => 'This 6-in-1 rate is for the Extra Large (16–20 kg) bracket. The clinic will review the vaccine history and discuss the next step in your dog’s routine.',
+                                    'xxl' => 'The XXL Large (21–25 kg) 6-in-1 listing supports a planned vaccination routine; the veterinarian will check the record and clarify any follow-up due.',
+                                    'default' => 'The 6-in-1 vaccination is a combination-vaccine option for dogs. The vet will review previous doses and confirm the appropriate timing.'
+                                ],
+                                '8in1' => [
+                                    'small' => 'For the Small (1–5 kg) bracket, the 8-in-1 appointment begins with a review of your dog’s age, current condition, and vaccination card.',
+                                    'medium' => 'The 8-in-1 option for Medium (6–10 kg) dogs helps you keep combination-vaccine care on track; the team will check what doses have already been given.',
+                                    'large' => 'This 8-in-1 rate is for the Large (11–15 kg) bracket. The veterinarian will compare the prior vaccine dates with the schedule recommended for your dog.',
+                                    'xl' => 'For an Extra Large (16–20 kg) dog, this 8-in-1 service includes a check of earlier doses and a discussion of any next appointment needed.',
+                                    'xxl' => 'The XXL Large (21–25 kg) 8-in-1 option is intended for planned preventive care. The clinic will confirm the vaccine record before administration.',
+                                    'default' => 'The 8-in-1 vaccine is a combination-vaccine option for dogs. The veterinary team will review the history and confirm the recommended schedule.'
+                                ],
+                                '4in1cat' => [
+                                    'small' => 'This cat 4-in-1 option is listed for the Small (1–5 kg) bracket. The vet will review your cat’s age and past doses before advising on timing.',
+                                    'medium' => 'For a Medium (6–10 kg) cat, the 4-in-1 appointment includes checking the vaccination record and explaining any follow-up that may be needed.',
+                                    'large' => 'This 4-in-1 listing corresponds to the Large (11–15 kg) bracket. The veterinarian will check your cat’s health history and confirm the next step.',
+                                    'xl' => 'The Extra Large (16–20 kg) cat 4-in-1 option gives the clinic a chance to review previous doses and discuss the preventive-care schedule with you.',
+                                    'xxl' => 'For the XXL Large (21–25 kg) bracket, the feline 4-in-1 visit starts by checking earlier vaccinations and whether another dose is due.',
+                                    'default' => 'The feline 4-in-1 vaccine is a preventive-care option for cats. The vet will review your cat’s history and confirm suitable timing.'
+                                ],
+                                'general' => [
+                                    'small' => 'This vaccination entry is priced for the Small (1–5 kg) bracket. The clinic will confirm the vaccine type and check the previous-dose record first.',
+                                    'medium' => 'For the Medium (6–10 kg) bracket, bring any vaccine card or clinic record so the veterinarian can verify the plan for this vaccination.',
+                                    'large' => 'This rate is assigned to the Large (11–15 kg) bracket. The team will confirm which vaccine is listed and whether your pet is ready for it.',
+                                    'xl' => 'The Extra Large (16–20 kg) vaccination option includes a review of the health record so the vet can explain the right timing.',
+                                    'xxl' => 'For a pet in the XXL Large (21–25 kg) bracket, the clinic will check earlier doses and clarify what this vaccine means for the ongoing schedule.',
+                                    'default' => 'The clinic will confirm the vaccine type, review your pet’s vaccination history, and explain the recommended schedule before administration.'
+                                ]
+                            ];
+                            $description = $vaccine_descriptions[$vaccine_key][$size_key] ?? $vaccine_descriptions[$vaccine_key]['default'];
+
+                        } elseif (strpos($category_lower, 'deworm') !== false || strpos($service_name_lower, 'deworm') !== false) {
+                            $deworming_index++;
+
+                            // Some service-price records do not include a size label in
+                            // service_name/pet_size/size. For those deworming records,
+                            // infer the displayed price bracket from the existing clinic
+                            // price bands so the correct size-specific description is used.
+                            if ($size_key === '') {
+                                $deworming_price = (float)($row['price'] ?? 0);
+                                $price_size_map = [
+                                    200 => 'small',
+                                    250 => 'medium',
+                                    300 => 'large',
+                                    350 => 'xl',
+                                    450 => 'xxl',
+                                ];
+                                foreach ($price_size_map as $known_price => $known_size) {
+                                    if (abs($deworming_price - $known_price) < 0.01) {
+                                        $size_key = $known_size;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            $deworming_descriptions = [
+                                'small' => 'For a Small (1–5 kg) pet, this deworming visit helps you keep track of early parasite-prevention care. The vet can review the last dose and explain when to check back.',
+                                'medium' => 'For a Medium (6–10 kg) pet, this deworming service focuses on keeping treatment records up to date. Share the date of the previous dose so the vet can discuss the next interval.',
+                                'large' => 'This deworming option is listed for Large (11–15 kg) pets. The team can confirm your pet’s current weight and review any stomach or appetite changes you have noticed.',
+                                'xl' => 'For an Extra Large (16–20 kg) pet, this visit is a chance to review past deworming and check that the care plan matches your pet’s current weight and history.',
+                                'xxl' => 'This rate is for the XXL Large (21–25 kg) bracket. Bring your pet’s treatment record, if available, so the vet can review previous deworming and advise about follow-up timing.',
+                            ];
+
+                            // Keep even unlabelled/custom-priced deworming entries distinct.
+                            $deworming_other_descriptions = [
+                                'Use this deworming appointment to review your pet’s previous parasite treatment and ask the veterinarian which signs should prompt a follow-up.',
+                                'This deworming service gives the clinic time to check your pet’s treatment history and discuss a practical schedule for ongoing parasite prevention.',
+                                'During this visit, tell the vet about any recent changes in appetite or digestion and share the date of your pet’s last deworming dose.',
+                                'A deworming check is an opportunity to confirm your pet’s current weight, review past treatment, and understand any after-care instructions.',
+                                'Keep your pet’s parasite-care record current with this deworming visit; the veterinarian can explain when the next review may be appropriate.',
+                            ];
+
+                            $description = $deworming_descriptions[$size_key]
+                                ?? $deworming_other_descriptions[($deworming_index - 1) % count($deworming_other_descriptions)];
+
+                        } elseif (strpos($category_lower, 'consultation') !== false || strpos($service_name_lower, 'consult') !== false) {
+                            $consultation_descriptions = [
+                                'small' => 'For a Small (1–5 kg) pet, the consultation can cover appetite, energy, and any small changes you have noticed at home.',
+                                'medium' => 'This Medium (6–10 kg) consultation gives you time to explain symptoms and daily habits while the vet assesses your pet and answers your questions.',
+                                'large' => 'For the Large (11–15 kg) bracket, use the visit to discuss changes in behaviour or activity and ask which signs should be monitored afterward.',
+                                'xl' => 'The Extra Large (16–20 kg) consultation focuses on your main concerns, a review of relevant history, and advice about possible follow-up care.',
+                                'xxl' => 'For an XXL Large (21–25 kg) pet, this appointment offers a chance to discuss ongoing health concerns and receive guidance after the veterinarian’s assessment.',
+                            ];
+                            $description = $consultation_descriptions[$size_key] ?? 'A veterinary consultation gives you time to raise health concerns, review your pet’s condition, and ask the vet about possible next steps.';
+
+                        } elseif (strpos($category_lower, 'general check-up') !== false) {
+                            $general_checkup_descriptions = [
+                                'small' => 'A general check-up for a Small (1–5 kg) pet can help you review everyday signs such as appetite, activity, and comfort during handling.',
+                                'medium' => 'For a Medium (6–10 kg) pet, this general check-up is a useful time to discuss routine care and any changes since the last visit.',
+                                'large' => 'This general check-up covers the Large (11–15 kg) bracket. Share your pet’s recent habits and concerns so the vet can decide what needs closer attention.',
+                                'xl' => 'For the Extra Large (16–20 kg) bracket, a general check-up lets the veterinary team review overall condition and talk through age-appropriate care.',
+                                'xxl' => 'A general check-up for an XXL Large (21–25 kg) pet can help identify topics to discuss, from daily activity to changes that may need follow-up.',
+                            ];
+                            $description = $general_checkup_descriptions[$size_key] ?? 'A general check-up provides an opportunity to review your pet’s overall condition and discuss routine care with the veterinary team.';
+
+                        } elseif (strpos($category_lower, 'check') !== false || strpos($service_name_lower, 'check-up') !== false || strpos($service_name_lower, 'check up') !== false) {
+                            $checkup_descriptions = [
+                                'small' => 'For the Small (1–5 kg) bracket, this check-up can review your pet’s routine, appetite, and any recent signs that concern you.',
+                                'medium' => 'This Medium (6–10 kg) check-up is a chance to ask about preventive care and discuss symptoms or changes you have observed.',
+                                'large' => 'A check-up for a Large (11–15 kg) pet gives the vet an opportunity to assess reported concerns and explain which next steps may be useful.',
+                                'xl' => 'For an Extra Large (16–20 kg) pet, the check-up can cover overall condition, activity changes, and whether another assessment should be planned.',
+                                'xxl' => 'This check-up listing is for the XXL Large (21–25 kg) bracket. Tell the vet about any changes at home so they can guide the next stage of care.',
+                            ];
+                            $description = $checkup_descriptions[$size_key] ?? 'The check-up is an opportunity to review your pet’s current condition, raise concerns, and get advice on monitoring or follow-up.';
+                        }
+
+                        // Distinct service-specific copy for other vet items, rather than
+                        // cycling through the same generic sentence for similar services.
+                        if ($description === '') {
+                            $service_specific_descriptions = [
+                                'Use this veterinary service to discuss the concern that prompted your visit. Bring relevant records so the team can explain an appropriate next step.',
+                                'This care option gives you time to ask focused questions about your pet’s health and understand how the clinic plans to carry out the service.',
+                                'Share any recent changes in eating, movement, or behaviour during this visit. The vet can consider these details when advising you.',
+                                'The clinic will review your pet’s current condition and previous care before explaining what to expect from this service.',
+                                'This appointment is a chance to review your pet’s needs with the veterinary team and clarify any preparation or after-care guidance.',
+                                'Tell the veterinarian about your pet’s routine and the concerns you have noticed so the visit can focus on the right details.',
+                                'Bring any useful health records for this service; the team can review them, answer your questions, and discuss possible follow-up.',
+                                'During this visit, the vet can explain the purpose of the service and which changes or signs are worth watching afterward.'
+                            ];
+                            $description = $service_specific_descriptions[($service_index - 1) % count($service_specific_descriptions)];
+                            if ($service_name_text !== '') {
+                                $description .= ' Listed service: ' . $service_name_text . '.';
+                            }
+                            if ($size_label !== '') {
+                                $description .= ' This rate is listed for the ' . $size_label . ' bracket.';
+                            }
+                        }
 
                         $card_class = 'default';
 
@@ -2856,9 +3049,7 @@ try {
 
                             <p class="service-description">
 
-                                Professional veterinary care designed to help keep your pet healthy,
-
-                                protected, and comfortable.
+                                <?php echo htmlspecialchars($description, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
 
                             </p>
 

@@ -29,6 +29,12 @@ function bookingSizeFromWeight($weight): ?string
         return $value;
     }
 
+    // Daycare categories are wider than the existing weight tiers used by other services.
+    // Do not silently treat a wide category label as an exact weight for grooming/boarding.
+    if (in_array($value, ['Small (1-10kg)', 'Medium (11-20kg)', 'Large (21-50kg)', 'Cat (All Sizes)'], true)) {
+        return null;
+    }
+
     if (!preg_match('/(-?\\d+(?:\\.\\d+)?)/', $value, $matches)) {
         return null;
     }
@@ -43,6 +49,208 @@ function bookingSizeFromWeight($weight): ?string
     if ($kg <= 15) return 'Large (11-15kg)';
     if ($kg <= 20) return 'Extra Large (16-20kg)';
     return 'XXL Large (21-25kg)';
+}
+
+/**
+ * Convert pet weight or a legacy size label to the client-confirmed Pet Daycare class.
+ * Daycare uses different brackets from grooming/boarding: dogs 1-10, 11-20, 21-50 kg;
+ * cats use one all-sizes rate.
+ */
+function bookingDaycareSizeFromWeight($weight, string $petType): ?string
+{
+    if ($petType === 'Cat') {
+        return 'Cat (All Sizes)';
+    }
+
+    $value = trim((string)($weight ?? ''));
+    if ($value === '') {
+        return null;
+    }
+
+    $legacyMap = [
+        'Small (1-10kg)' => 'Small (1-10kg)',
+        'Medium (11-20kg)' => 'Medium (11-20kg)',
+        'Large (21-50kg)' => 'Large (21-50kg)',
+        'Small (1-5kg)' => 'Small (1-10kg)',
+        'Medium (6-10kg)' => 'Small (1-10kg)',
+        'Large (11-15kg)' => 'Medium (11-20kg)',
+        'Extra Large (16-20kg)' => 'Medium (11-20kg)',
+        'XXL Large (21-25kg)' => 'Large (21-50kg)',
+    ];
+    if (isset($legacyMap[$value])) {
+        return $legacyMap[$value];
+    }
+
+    if (!preg_match('/(-?\d+(?:\.\d+)?)/', $value, $matches)) {
+        return null;
+    }
+
+    $kg = (float)$matches[1];
+    if ($kg <= 0 || $kg > 50) {
+        return null;
+    }
+
+    if ($kg <= 10) return 'Small (1-10kg)';
+    if ($kg <= 20) return 'Medium (11-20kg)';
+    return 'Large (21-50kg)';
+}
+
+/** Convert strict 30-minute appointment start values to minutes after midnight. */
+function bookingTimeToMinutes($time): ?int
+{
+    $value = trim((string)($time ?? ''));
+    if (!preg_match('/^(0[9]|1[0-7]):(00|30):00$/', $value, $matches)) {
+        return null;
+    }
+    return ((int)$matches[1] * 60) + (int)$matches[2];
+}
+
+/** Identify the top-level category from the service text already stored in appointments. */
+function bookingCategoryFromStoredService(string $service): ?string
+{
+    foreach (['Grooming', 'Vet Services', 'Pet Hotel'] as $category) {
+        if (stripos(trim($service), $category . ' -') === 0 || strcasecmp(trim($service), $category) === 0) {
+            return $category;
+        }
+    }
+    return null;
+}
+
+/** Whether a Pet Hotel service is an overnight boarding reservation. */
+function bookingIsHotelBoarding(string $serviceName): bool
+{
+    $name = strtolower(trim($serviceName));
+    return strpos($name, 'boarding') !== false || strpos($name, 'overnight') !== false;
+}
+
+/** Whether a Pet Hotel service is hourly daycare. */
+function bookingIsHotelDaycare(string $serviceName): bool
+{
+    return strpos(strtolower(trim($serviceName)), 'daycare') !== false;
+}
+
+/** Parse daycare pickup times on the half-hour grid, including the 6:00 PM closing boundary. */
+function bookingPickupTimeToMinutes($time): ?int
+{
+    $value = trim((string)($time ?? ''));
+    if (!preg_match('/^(\d{1,2}):(00|30)(?::00)?$/', $value, $matches)) return null;
+    $hour = (int)$matches[1];
+    $minute = (int)$matches[2];
+    if ($hour < 9 || $hour > 18 || ($hour === 18 && $minute !== 0)) return null;
+    return ($hour * 60) + $minute;
+}
+
+/**
+ * Default duration assumptions shared with check_slots.php.
+ * These are initial values based on the client interview/adviser examples and can be adjusted later.
+ */
+function bookingServiceDurationMinutes(string $category, string $serviceName): int
+{
+    $name = strtolower(trim($serviceName));
+
+    if ($category === 'Grooming') {
+        if (strpos($name, 'full grooming package') !== false || preg_match('/\\bfg\\b/', $name)) return 120;
+        if (strpos($name, 'bath & blow dry') !== false || strpos($name, 'bath and blow dry') !== false || strpos($name, 'cat bath') !== false) return 90;
+        if (strpos($name, 'basic pet grooming') !== false || strpos($name, 'cat grooming (basic)') !== false) return 60;
+        return 120; // Sa hindi pa kumpirmadong grooming duration, gamitin ang conservative default.
+    }
+
+    if ($category === 'Vet Services') return 30;
+
+    if ($category === 'Pet Hotel') {
+        if (strpos($name, 'daycare') !== false) return 180;
+        // The appointment time marks the standard 9:00 AM check-in; checkout_date controls the overnight room-reservation range.
+        if (strpos($name, 'boarding') !== false || strpos($name, 'overnight') !== false) return 30;
+        return 180;
+    }
+
+    return 60;
+}
+
+
+/**
+ * Generate the online start times for a service-duration-aligned schedule.
+ * Each work period starts at its own boundary (9:00 AM and 1:00 PM); times
+ * then advance by the selected service duration. Capacity validation still
+ * checks the entire service interval against existing appointments.
+ */
+function bookingDurationAlignedStartTimes(string $category, string $serviceName): array
+{
+    $openingMinutes = 9 * 60;
+    $breakStartMinutes = 12 * 60;
+    $breakEndMinutes = 13 * 60;
+    $closingMinutes = 18 * 60;
+
+    if ($category === 'Pet Hotel' && bookingIsHotelBoarding($serviceName)) {
+        return [$openingMinutes]; // Overnight stays always check in at 9:00 AM.
+    }
+
+    if ($category === 'Pet Hotel' && bookingIsHotelDaycare($serviceName)) {
+        $times = [];
+        foreach ([[$openingMinutes, $breakStartMinutes], [$breakEndMinutes, $closingMinutes]] as [$periodStart, $periodEnd]) {
+            for ($start = $periodStart; $start < $periodEnd; $start += 30) $times[] = $start;
+        }
+        return $times;
+    }
+
+    $duration = bookingServiceDurationMinutes($category, $serviceName);
+    if ($duration <= 0) return [];
+
+    $times = [];
+    foreach ([[$openingMinutes, $breakStartMinutes], [$breakEndMinutes, $closingMinutes]] as [$periodStart, $periodEnd]) {
+        for ($start = $periodStart; $start < $periodEnd && ($start + $duration) <= $closingMinutes; $start += $duration) {
+            $times[] = $start;
+        }
+    }
+
+    return array_values(array_unique($times));
+}
+
+function bookingIntervalsOverlap(int $startA, int $endA, int $startB, int $endB): bool
+{
+    return $startA < $endB && $startB < $endA;
+}
+
+/** Capacity available at a point in time while lunch breaks are staggered. */
+function bookingCapacityAtMinute(string $category, int $minute, int $normalCapacity, int $breakStart, int $breakEnd): int
+{
+    // One of the two groomers is assumed to take lunch, leaving one available.
+    if ($category === 'Grooming' && $minute >= $breakStart && $minute < $breakEnd) return 1;
+
+    // Vet/Hotel coverage remains at the configured capacity because staff shifts
+    // are not currently stored in the database.
+    return $normalCapacity;
+}
+
+/** Collect start points where active bookings or the lunch capacity can change. */
+function bookingCapacityCheckpoints(int $candidateStart, int $candidateEnd, array $appointments, int $breakStart, int $breakEnd): array
+{
+    $checkpoints = [$candidateStart];
+    foreach ([$breakStart, $breakEnd] as $boundary) {
+        if ($boundary > $candidateStart && $boundary < $candidateEnd) $checkpoints[] = $boundary;
+    }
+    foreach ($appointments as $appointment) {
+        if (!bookingIntervalsOverlap($candidateStart, $candidateEnd, $appointment['start'], $appointment['end'])) continue;
+        if ($appointment['start'] > $candidateStart && $appointment['start'] < $candidateEnd) $checkpoints[] = $appointment['start'];
+        if ($appointment['end'] > $candidateStart && $appointment['end'] < $candidateEnd) $checkpoints[] = $appointment['end'];
+    }
+    $checkpoints = array_values(array_unique($checkpoints));
+    sort($checkpoints);
+    return $checkpoints;
+}
+
+/** True when adding a booking would exceed the category's capacity at any point. */
+function bookingWouldExceedCapacity(int $candidateStart, int $candidateEnd, array $appointments, string $category, int $normalCapacity, int $breakStart, int $breakEnd): bool
+{
+    foreach (bookingCapacityCheckpoints($candidateStart, $candidateEnd, $appointments, $breakStart, $breakEnd) as $point) {
+        $activeExisting = 0;
+        foreach ($appointments as $appointment) {
+            if ($appointment['start'] <= $point && $appointment['end'] > $point) $activeExisting++;
+        }
+        $capacity = bookingCapacityAtMinute($category, $point, $normalCapacity, $breakStart, $breakEnd);
+        if ($activeExisting + 1 > $capacity) return true;
+    }
+    return false;
 }
 
 // Access Control
@@ -133,6 +341,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $pet_gender = trim((string)($_POST['pet_gender'] ?? ''));
     $pet_type = trim((string)($_POST['pet_type'] ?? ''));
     $pet_size = trim((string)($_POST['pet_size'] ?? ''));
+    $posted_category_for_size = trim((string)($_POST['service_category'] ?? ''));
+    $posted_service_for_size = trim((string)($_POST['specific_service'] ?? ''));
+    $posted_is_daycare_for_size = ($posted_category_for_size === 'Pet Hotel' && bookingIsHotelDaycare($posted_service_for_size));
 
     // For a selected registered pet, trust the record owned by the current customer
     // and derive the price bracket from its saved weight when that weight is available.
@@ -159,11 +370,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stored_pet_weight = trim((string)($registered_pet_row['weight'] ?? ''));
 
                 if ($stored_pet_weight !== '') {
-                    $derived_pet_size = bookingSizeFromWeight($stored_pet_weight);
-                    if ($derived_pet_size === null) {
-                        $error_msg = 'The selected pet weight is outside the supported booking size ranges (up to 25 kg). Please contact the clinic.';
+                    if ($posted_is_daycare_for_size) {
+                        $derived_pet_size = bookingDaycareSizeFromWeight($stored_pet_weight, $pet_type);
+                        if ($derived_pet_size === null) {
+                            $error_msg = 'Pet Daycare supports dog weights up to 50 kg. Please check the saved weight or contact the clinic.';
+                        } else {
+                            $pet_size = $derived_pet_size;
+                        }
                     } else {
-                        $pet_size = $derived_pet_size;
+                        $daycareOnlyLabels = ['Small (1-10kg)', 'Medium (11-20kg)', 'Large (21-50kg)', 'Cat (All Sizes)'];
+                        if (in_array($stored_pet_weight, $daycareOnlyLabels, true)) {
+                            // A Daycare range cannot be safely converted to an exact grooming/weight tier.
+                            // Use the generic range selected in this form instead of guessing.
+                            $pet_size = trim((string)($_POST['pet_size'] ?? ''));
+                            if ($pet_size === '') {
+                                $error_msg = 'This pet profile has a Pet Daycare size range saved. Please select the pet\'s current size/weight for this service.';
+                            }
+                        } else {
+                            $derived_pet_size = bookingSizeFromWeight($stored_pet_weight);
+                            if ($derived_pet_size === null) {
+                                $error_msg = 'The selected pet weight is outside the supported booking size ranges (up to 25 kg). Please contact the clinic.';
+                            } else {
+                                $pet_size = $derived_pet_size;
+                            }
+                        }
                     }
                 }
             }
@@ -179,7 +409,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     $appointment_date = trim((string)($_POST['appointment_date'] ?? ''));
     $appointment_time = trim((string)($_POST['appointment_time'] ?? ''));
+    $pickup_time = trim((string)($_POST['pickup_time'] ?? ''));
+    $checkout_date = trim((string)($_POST['checkout_date'] ?? ''));
     $remarks = trim((string)($_POST['remarks'] ?? ''));
+
+    $is_overnight_boarding = ($service_category === 'Pet Hotel' && bookingIsHotelBoarding($specific_service));
+    $is_daycare = ($service_category === 'Pet Hotel' && bookingIsHotelDaycare($specific_service));
+    if ($is_daycare && $pet_size !== '') {
+        $normalized_daycare_size = bookingDaycareSizeFromWeight($pet_size, $pet_type);
+        if ($normalized_daycare_size !== null) {
+            $pet_size = $normalized_daycare_size;
+        }
+    }
+    // Overnight boarding uses the client's standard 9:00 AM check-in marker.
+    if ($is_overnight_boarding) {
+        $appointment_time = '09:00:00';
+        $pickup_time = '';
+    } elseif (!$is_daycare) {
+        $checkout_date = '';
+        $pickup_time = '';
+    } else {
+        // Daycare uses the appointment time as drop-off and pickup_time as the interval end.
+        $checkout_date = '';
+    }
 
     $gcash_ref = trim((string)($_POST['gcash_ref'] ?? ''));
 
@@ -206,9 +458,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Validate values on the server rather than relying on dropdown restrictions.
     $allowed_pet_types = ['Dog', 'Cat'];
     $allowed_genders = ['Male', 'Female'];
-    $allowed_sizes = ['Small (1-5kg)', 'Medium (6-10kg)', 'Large (11-15kg)', 'Extra Large (16-20kg)', 'XXL Large (21-25kg)'];
+    $allowed_sizes = $is_daycare
+        ? ($pet_type === 'Cat'
+            ? ['Cat (All Sizes)']
+            : ['Small (1-10kg)', 'Medium (11-20kg)', 'Large (21-50kg)'])
+        : ['Small (1-5kg)', 'Medium (6-10kg)', 'Large (11-15kg)', 'Extra Large (16-20kg)', 'XXL Large (21-25kg)'];
     $allowed_categories = ['Grooming', 'Vet Services', 'Pet Hotel'];
-    $allowed_times = ['10:00:00', '11:00:00', '12:00:00', '13:00:00', '14:00:00', '15:00:00', '16:00:00', '17:00:00'];
     $allowed_haircuts = ['Puppy Cut', 'Summer Cut', 'Shave Down', 'Bear Cut', 'Poodle Cut'];
 
     if (empty($error_msg) && !in_array($pet_type, $allowed_pet_types, true)) {
@@ -246,7 +501,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 "Vaccination - 8 in 1" => ["default" => 750]
             ],
             "Pet Hotel" => [
-                "Pet Daycare (1st Hour - Succeeding fees apply)" => ["Small (1-5kg)" => 100, "Medium (6-10kg)" => 100, "Large (11-15kg)" => 150, "Extra Large (16-20kg)" => 150, "XXL Large (21-25kg)" => 200],
+                "Pet Daycare (1st Hour - Succeeding fees apply)" => ["Small (1-10kg)" => 100, "Medium (11-20kg)" => 150, "Large (21-50kg)" => 200],
                 "Pet Boarding (Overnight)" => ["Small (1-5kg)" => 500, "Medium (6-10kg)" => 500, "Large (11-15kg)" => 600, "Extra Large (16-20kg)" => 600, "XXL Large (21-25kg)" => 800]
             ]
         ],
@@ -267,12 +522,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ]
     ];
 
-    if (isset($pricing_data[$pet_type][$service_category][$specific_service])) {
+    if ($is_daycare) {
+        if ($pet_type === 'Cat') {
+            $service_fee = ($pet_size === 'Cat (All Sizes)') ? 150.0 : 0.0;
+        } else {
+            $daycare_base_rates = [
+                'Small (1-10kg)' => 100.0,
+                'Medium (11-20kg)' => 150.0,
+                'Large (21-50kg)' => 200.0,
+            ];
+            $service_fee = (float)($daycare_base_rates[$pet_size] ?? 0);
+        }
+    } elseif (isset($pricing_data[$pet_type][$service_category][$specific_service])) {
         $service_prices = $pricing_data[$pet_type][$service_category][$specific_service];
         if (isset($service_prices['default'])) {
             $service_fee = (float)$service_prices['default'];
         } elseif (isset($service_prices[$pet_size])) {
             $service_fee = (float)$service_prices[$pet_size];
+        }
+    }
+
+    // Client-confirmed Pet Daycare billing: the first hour uses the displayed base rate;
+    // succeeding time is ₱30/hour, billed in ₱15 half-hour blocks. Any started half-hour
+    // block after the first hour is charged as one ₱15 block.
+    if (empty($error_msg) && $is_daycare && $service_fee > 0) {
+        $daycare_start_for_price = bookingTimeToMinutes($appointment_time);
+        $daycare_end_for_price = bookingPickupTimeToMinutes($pickup_time);
+        if ($daycare_end_for_price === null) {
+            $error_msg = 'Please choose an expected pickup time for Pet Daycare.';
+        } elseif ($daycare_start_for_price === null || $daycare_end_for_price <= $daycare_start_for_price) {
+            $error_msg = 'Expected pickup time must be later than drop-off time.';
+        } else {
+            $daycare_duration = $daycare_end_for_price - $daycare_start_for_price;
+            $extra_minutes_after_first_hour = max(0, $daycare_duration - 60);
+            $half_hour_blocks = (int)ceil($extra_minutes_after_first_hour / 30);
+            $service_fee += $half_hour_blocks * 15;
         }
     }
 
@@ -292,93 +576,282 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     )) {
         $error_msg = 'Please select a valid appointment date.';
     }
-    if (empty($error_msg) && !in_array($appointment_time, $allowed_times, true)) {
-        $error_msg = 'Please select a valid appointment time between 10:00 AM and 5:00 PM.';
+    if (empty($error_msg) && bookingTimeToMinutes($appointment_time) === null) {
+        $error_msg = 'Please select a valid appointment start time from the available schedule.';
     }
-
-    // --- TIME TRAVEL & CUT-OFF VALIDATION ---
-    $current_date = date('Y-m-d');
-    $current_time = date('H:i:s');
-
-    if (empty($error_msg)) {
-        if ($appointment_date < $current_date) {
-            $error_msg = "Error: Cannot book appointments on past dates.";
-        } elseif ($appointment_date === $current_date && $current_time >= '18:00:00') {
-            $error_msg = "Error: Cut-off time for same-day bookings is 6:00 PM. Please book for tomorrow or another day.";
-        } elseif ($appointment_date === $current_date && $appointment_time < $current_time) {
-            $error_msg = "Error: The selected time has already passed for today. Please select a different time.";
-        } elseif ($appointment_time > '18:00:00') {
-            $error_msg = "Shop is closed at this time. Please select an earlier time.";
+    if (empty($error_msg) && $is_daycare) {
+        $daycare_start_for_price = bookingTimeToMinutes($appointment_time);
+        $daycare_end_for_price = bookingPickupTimeToMinutes($pickup_time);
+        if ($daycare_end_for_price === null) {
+            $error_msg = 'Please choose an expected pickup time for Pet Daycare.';
+        } elseif ($daycare_start_for_price === null || $daycare_end_for_price <= $daycare_start_for_price) {
+            $error_msg = 'Expected pickup time must be later than drop-off time.';
+        } elseif ($daycare_end_for_price > 18 * 60) {
+            $error_msg = 'Pet Daycare pickup must be no later than 6:00 PM.';
         }
     }
 
-    // --- SERVER-SIDE CAPACITY AND SLOT CHECKS ---
-    // Serialize new bookings for the same service category/date to prevent
-    // concurrent requests from claiming the same slot or exceeding the daily cap.
+    $stay_nights = 1;
+    $checkout_date_to_save = null;
+    if (empty($error_msg) && $is_overnight_boarding) {
+        $checkin_object = DateTimeImmutable::createFromFormat('!Y-m-d', $appointment_date);
+        $checkin_errors = DateTimeImmutable::getLastErrors();
+        $checkout_object = DateTimeImmutable::createFromFormat('!Y-m-d', $checkout_date);
+        $checkout_errors = DateTimeImmutable::getLastErrors();
+        $checkin_valid = $checkin_object !== false && $checkin_object->format('Y-m-d') === $appointment_date
+            && ($checkin_errors === false || ($checkin_errors['warning_count'] === 0 && $checkin_errors['error_count'] === 0));
+        $checkout_valid = $checkout_object !== false && $checkout_object->format('Y-m-d') === $checkout_date
+            && ($checkout_errors === false || ($checkout_errors['warning_count'] === 0 && $checkout_errors['error_count'] === 0));
+
+        if (!$checkin_valid || !$checkout_valid) {
+            $error_msg = 'Please select valid check-in and check-out dates for Pet Boarding.';
+        } elseif ($checkout_date <= $appointment_date) {
+            $error_msg = 'The check-out date must be at least one day after check-in.';
+        } else {
+            $stay_nights = (int)$checkin_object->diff($checkout_object)->days;
+            if ($stay_nights < 1) {
+                $error_msg = 'Pet Boarding must be booked for at least one night.';
+            } else {
+                $checkout_date_to_save = $checkout_date;
+                // Existing overnight prices are treated as per-night rates.
+                $service_fee *= $stay_nights;
+            }
+        }
+    }
+
+    // --- SERVICE DURATION, OPERATING HOURS, STAFF BREAK, AND CAPACITY VALIDATION ---
+    // Existing active-status rule retained; all capacity checks are repeated server-side.
     $active_status_sql = "LOWER(BTRIM(COALESCE(booking_status, ''))) NOT IN ('cancelled', 'canceled', 'no-show', 'no show', 'noshow', 'for rescheduling')";
+
     if (empty($error_msg)) {
-        try {
-            $pdo->beginTransaction();
-            $capacity_lock = $pdo->prepare("SELECT pg_advisory_xact_lock(hashtext(:lock_key)::bigint)");
-            $capacity_lock->execute([
-                ':lock_key' => 'boogie-capacity|' . $appointment_date . '|' . $service_category
-            ]);
+        $selected_start_minutes = bookingTimeToMinutes($appointment_time);
+        $selected_pickup_minutes = $is_daycare ? bookingPickupTimeToMinutes($pickup_time) : null;
+        $service_duration_minutes = bookingServiceDurationMinutes($service_category, $specific_service);
+        $opening_minutes = 9 * 60;
+        $closing_minutes = 18 * 60;
+        $break_start_minutes = 12 * 60;
+        $break_end_minutes = 13 * 60;
+        $selected_end_minutes = $is_daycare
+            ? (int)($selected_pickup_minutes ?? 0)
+            : (($selected_start_minutes ?? 0) + $service_duration_minutes);
+        $current_date = date('Y-m-d');
+        $current_minutes = ((int)date('H') * 60) + (int)date('i');
 
-            $slot_sql = "SELECT COUNT(*) AS slot_count
-                FROM appointments
-                WHERE appointment_date = :appointment_date
-                  AND appointment_time = :appointment_time
-                  AND service ILIKE :service_prefix
-                  AND " . $active_status_sql;
-            $stmt_slot = $pdo->prepare($slot_sql);
-            $stmt_slot->execute([
-                ':appointment_date' => $appointment_date,
-                ':appointment_time' => $appointment_time,
-                ':service_prefix' => $service_category . '%'
-            ]);
-            $slot_result = $stmt_slot->fetch(PDO::FETCH_ASSOC) ?: [];
-            if ((int)($slot_result['slot_count'] ?? 0) >= 1) {
-                $error_msg = 'The selected time slot is already taken for ' . $service_category . '. Please choose another time.';
-            }
+        if ($appointment_date < $current_date) {
+            $error_msg = 'Cannot book appointments on past dates.';
+        } elseif ($appointment_date === $current_date && $current_minutes >= $closing_minutes) {
+            $error_msg = 'Same-day bookings are closed after 6:00 PM. Please select another date.';
+        } elseif ($appointment_date === $current_date && $selected_start_minutes !== null && $selected_start_minutes <= $current_minutes) {
+            $error_msg = 'The selected appointment time has already passed. Please choose a later time.';
+        } elseif ($selected_start_minutes === null) {
+            $error_msg = 'Please select a valid appointment time.';
+        } elseif ($is_daycare && ($selected_pickup_minutes === null || $selected_pickup_minutes <= $selected_start_minutes)) {
+            $error_msg = 'Please choose an expected pickup time later than the drop-off time.';
+        } elseif (!in_array($selected_start_minutes, bookingDurationAlignedStartTimes($service_category, $specific_service), true)) {
+            $error_msg = 'Please select one of the available start times listed for this service duration.';
+        } elseif ($selected_start_minutes < $opening_minutes || $selected_end_minutes > $closing_minutes) {
+            $error_msg = 'This service does not fit within business hours (9:00 AM–6:00 PM). Please choose an earlier time.';
+        } elseif ($selected_start_minutes >= $break_start_minutes && $selected_start_minutes < $break_end_minutes) {
+            $error_msg = 'New appointments cannot start between 12:00 PM and 1:00 PM. Services started before lunch may continue through lunch if staff capacity allows.';
+        } elseif ($service_category === 'Vet Services' && in_array((int)date('N', strtotime($appointment_date)), [3, 6], true)) {
+            $error_msg = 'The veterinarian is not available on Wednesdays and Saturdays.';
+        }
 
-            if (empty($error_msg)) {
-                // Vet already has a six-per-day cap; other categories have eight visible slots.
-                $daily_limit = ($service_category === 'Vet Services') ? 6 : 8;
-                $daily_sql = "SELECT COUNT(*) AS total_bookings
-                    FROM appointments
-                    WHERE appointment_date = :appointment_date
-                      AND service ILIKE :service_prefix
-                      AND " . $active_status_sql;
-                $stmt_daily = $pdo->prepare($daily_sql);
-                $stmt_daily->execute([
-                    ':appointment_date' => $appointment_date,
-                    ':service_prefix' => $service_category . '%'
-                ]);
-                $daily_result = $stmt_daily->fetch(PDO::FETCH_ASSOC) ?: [];
-                if ((int)($daily_result['total_bookings'] ?? 0) >= $daily_limit) {
-                    $error_msg = ($service_category === 'Vet Services')
-                        ? 'Dr. Faith Casayuran is fully booked for this date.'
-                        : $service_category . ' services are fully booked for this date.';
+        if (empty($error_msg)) {
+            try {
+                $pdo->beginTransaction();
+
+                $daily_limits = ['Grooming' => 10, 'Vet Services' => 30, 'Pet Hotel' => 6];
+                $simultaneous_limits = ['Grooming' => 2, 'Vet Services' => 1, 'Pet Hotel' => 6];
+
+                // Boarding locks each occupied date in chronological order so a regular booking
+                // and another boarding request serialize against the same date-level capacity.
+                if ($is_overnight_boarding) {
+                    $stay_start = new DateTimeImmutable($appointment_date, new DateTimeZone('Asia/Manila'));
+                    $stay_end = new DateTimeImmutable($checkout_date, new DateTimeZone('Asia/Manila'));
+                    for ($lock_day = $stay_start; $lock_day < $stay_end; $lock_day = $lock_day->modify('+1 day')) {
+                        $capacity_lock = $pdo->prepare("SELECT pg_advisory_xact_lock(hashtext(:lock_key)::bigint)");
+                        $capacity_lock->execute([':lock_key' => 'boogie-capacity|' . $lock_day->format('Y-m-d')]);
+                    }
+
+                    $stmt_existing = $pdo->prepare("
+                        SELECT appointment_date::text AS appointment_date,
+                               appointment_time::text AS appointment_time,
+                               checkout_date::text AS checkout_date,
+                               pickup_time::text AS pickup_time,
+                               service
+                        FROM appointments
+                        WHERE {$active_status_sql}
+                          AND appointment_date < CAST(:checkout_date AS date)
+                          AND COALESCE(checkout_date, appointment_date + 1) > CAST(:checkin_date AS date)
+                        ORDER BY appointment_date, appointment_time
+                    ");
+                    $stmt_existing->execute([
+                        ':checkout_date' => $checkout_date,
+                        ':checkin_date' => $appointment_date,
+                    ]);
+                    $range_rows = $stmt_existing->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+                    for ($stay_day = $stay_start; $stay_day < $stay_end; $stay_day = $stay_day->modify('+1 day')) {
+                        $day_string = $stay_day->format('Y-m-d');
+                        $day_total = 0;
+                        $day_hotel_count = 0;
+                        $day_hotel_intervals = [];
+
+                        foreach ($range_rows as $existing_row) {
+                            $stored_service = (string)($existing_row['service'] ?? '');
+                            $stored_category = bookingCategoryFromStoredService($stored_service);
+                            $existing_date = substr((string)($existing_row['appointment_date'] ?? ''), 0, 10);
+                            if ($existing_date === '') continue;
+
+                            $existing_is_boarding = ($stored_category === 'Pet Hotel' && bookingIsHotelBoarding($stored_service));
+                            if ($existing_is_boarding) {
+                                $existing_checkout = substr((string)($existing_row['checkout_date'] ?? ''), 0, 10);
+                                if ($existing_checkout === '') {
+                                    $existing_checkout = (new DateTimeImmutable($existing_date))->modify('+1 day')->format('Y-m-d');
+                                }
+                                $active_on_day = ($existing_date <= $day_string && $existing_checkout > $day_string);
+                            } else {
+                                $active_on_day = ($existing_date === $day_string);
+                            }
+
+                            if (!$active_on_day) continue;
+                            $day_total++;
+
+                            if ($stored_category === 'Pet Hotel') {
+                                $day_hotel_count++;
+                                if ($existing_is_boarding) {
+                                    // A boarding pet occupies its room throughout each date before checkout.
+                                    $day_hotel_intervals[] = ['start' => 0, 'end' => 1440];
+                                } else {
+                                    $existing_start = bookingTimeToMinutes((string)($existing_row['appointment_time'] ?? ''));
+                                    if ($existing_start !== null) {
+                                        $stored_pickup = bookingIsHotelDaycare($stored_service)
+                                            ? bookingPickupTimeToMinutes((string)($existing_row['pickup_time'] ?? ''))
+                                            : null;
+                                        $existing_end = ($stored_pickup !== null && $stored_pickup > $existing_start)
+                                            ? $stored_pickup
+                                            : ($existing_start + bookingServiceDurationMinutes('Pet Hotel', $stored_service));
+                                        $day_hotel_intervals[] = ['start' => $existing_start, 'end' => $existing_end];
+                                    }
+                                }
+                            }
+                        }
+
+                        if ($day_total >= 20) {
+                            $error_msg = 'The overall daily capacity of 20 pets has been reached on ' . $day_string . '. Please choose a shorter stay or different dates.';
+                            break;
+                        }
+                        if ($day_hotel_count >= $daily_limits['Pet Hotel']) {
+                            $error_msg = 'Pet Hotel has reached its capacity on ' . $day_string . '. Please choose different dates.';
+                            break;
+                        }
+                        if (bookingWouldExceedCapacity(0, 1440, $day_hotel_intervals, 'Pet Hotel', $simultaneous_limits['Pet Hotel'], $break_start_minutes, $break_end_minutes)) {
+                            $error_msg = 'No Pet Hotel room is available for the entire stay. Capacity is reached on ' . $day_string . '.';
+                            break;
+                        }
+                    }
+                } else {
+                    $capacity_lock = $pdo->prepare("SELECT pg_advisory_xact_lock(hashtext(:lock_key)::bigint)");
+                    $capacity_lock->execute([':lock_key' => 'boogie-capacity|' . $appointment_date]);
+
+                    // Also include overnight pets whose stay began earlier and continues today.
+                    $stmt_existing = $pdo->prepare("
+                        SELECT appointment_date::text AS appointment_date,
+                               appointment_time::text AS appointment_time,
+                               checkout_date::text AS checkout_date,
+                               pickup_time::text AS pickup_time,
+                               service
+                        FROM appointments
+                        WHERE {$active_status_sql}
+                          AND (
+                              appointment_date = CAST(:appointment_date_exact AS date)
+                              OR (
+                                  service ILIKE 'Pet Hotel%boarding%'
+                                  AND appointment_date < CAST(:appointment_date_before AS date)
+                                  AND COALESCE(checkout_date, appointment_date + 1) > CAST(:appointment_date_active AS date)
+                              )
+                          )
+                        ORDER BY appointment_time
+                    ");
+                    $stmt_existing->execute([
+                        ':appointment_date_exact' => $appointment_date,
+                        ':appointment_date_before' => $appointment_date,
+                        ':appointment_date_active' => $appointment_date,
+                    ]);
+                    $existing_rows = $stmt_existing->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+                    $total_daily_bookings = count($existing_rows);
+                    $category_daily_counts = ['Grooming' => 0, 'Vet Services' => 0, 'Pet Hotel' => 0];
+                    $existing_intervals = ['Grooming' => [], 'Vet Services' => [], 'Pet Hotel' => []];
+
+                    foreach ($existing_rows as $existing_row) {
+                        $stored_service = (string)($existing_row['service'] ?? '');
+                        $stored_category = bookingCategoryFromStoredService($stored_service);
+                        if ($stored_category === null) continue;
+                        $category_daily_counts[$stored_category]++;
+
+                        $existing_date = substr((string)($existing_row['appointment_date'] ?? ''), 0, 10);
+                        $existing_is_boarding = ($stored_category === 'Pet Hotel' && bookingIsHotelBoarding($stored_service));
+                        if ($existing_is_boarding && $existing_date <= $appointment_date) {
+                            $existing_checkout = substr((string)($existing_row['checkout_date'] ?? ''), 0, 10);
+                            if ($existing_checkout === '') {
+                                $existing_checkout = (new DateTimeImmutable($existing_date))->modify('+1 day')->format('Y-m-d');
+                            }
+                            if ($existing_checkout > $appointment_date) {
+                                $existing_intervals['Pet Hotel'][] = ['start' => 0, 'end' => 1440];
+                            }
+                            continue;
+                        }
+
+                        if ($existing_date !== $appointment_date) continue;
+                        $existing_start = bookingTimeToMinutes((string)($existing_row['appointment_time'] ?? ''));
+                        if ($existing_start === null) continue;
+                        $stored_pickup = ($stored_category === 'Pet Hotel' && bookingIsHotelDaycare($stored_service))
+                            ? bookingPickupTimeToMinutes((string)($existing_row['pickup_time'] ?? ''))
+                            : null;
+                        $existing_end = ($stored_pickup !== null && $stored_pickup > $existing_start)
+                            ? $stored_pickup
+                            : ($existing_start + bookingServiceDurationMinutes($stored_category, $stored_service));
+                        $existing_intervals[$stored_category][] = [
+                            'start' => $existing_start,
+                            'end' => $existing_end,
+                        ];
+                    }
+
+                    if ($total_daily_bookings >= 20) {
+                        $error_msg = 'The overall daily capacity of 20 pets has been reached. Please select another date.';
+                    } elseif ($category_daily_counts[$service_category] >= $daily_limits[$service_category]) {
+                        $error_msg = $service_category . ' has reached its daily capacity. Please select another date.';
+                    } elseif (bookingWouldExceedCapacity(
+                        $selected_start_minutes,
+                        $selected_end_minutes,
+                        $existing_intervals[$service_category],
+                        $service_category,
+                        $simultaneous_limits[$service_category],
+                        $break_start_minutes,
+                        $break_end_minutes
+                    )) {
+                        if ($service_category === 'Grooming') {
+                            $error_msg = 'Both groomers are already booked during part of this service. Please select another time.';
+                        } elseif ($service_category === 'Vet Services') {
+                            $error_msg = 'The veterinarian is already booked during this time. Please select another time.';
+                        } else {
+                            $error_msg = 'No Pet Hotel room is available during this time. Please select another time.';
+                        }
+                    }
                 }
+            } catch (PDOException $e) {
+                if ($pdo->inTransaction()) $pdo->rollBack();
+                error_log('Appointment capacity check failed: ' . $e->getMessage());
+                $error_msg = 'Unable to check appointment availability. Please try again.';
+            } catch (Throwable $e) {
+                if ($pdo->inTransaction()) $pdo->rollBack();
+                error_log('Appointment capacity calculation failed: ' . $e->getMessage());
+                $error_msg = 'Unable to verify the selected schedule. Please try again.';
             }
-        } catch (PDOException $e) {
-            if ($pdo->inTransaction()) {
-                $pdo->rollBack();
-            }
-            error_log('Appointment capacity check failed: ' . $e->getMessage());
-            $error_msg = 'Unable to check appointment availability. Please try again.';
         }
     }
-
-    // --- VET SPECIFIC VALIDATION ---
-    if (empty($error_msg) && $service_category === 'Vet Services') {
-        $day_of_week = (int)date('N', strtotime($appointment_date));
-        if ($day_of_week === 3 || $day_of_week === 6) {
-            $error_msg = 'Dr. Faith Casayuran is not available on Wednesdays and Saturdays.';
-        }
-    }
-
-    // Grooming's eight-slot daily limit is enforced in the capacity check above.
 
     // --- GCASH RECEIPT UPLOAD HANDLING (REQUIRED) ---
     if (empty($error_msg)) {
@@ -464,22 +937,63 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $payment_status = 'Pending Verification';
             $booking_status = 'Pending';
 
-            $insert_appt = $pdo->prepare("INSERT INTO appointments (user_id, pet_id, service, appointment_date, appointment_time, service_fee, total_price, gcash_ref, gcash_receipt, payment_method, payment_status, booking_status, remarks) VALUES (:user_id, :pet_id, :service, :appointment_date, :appointment_time, :service_fee, :total_price, :gcash_ref, :gcash_receipt, :payment_method, :payment_status, :booking_status, :remarks) RETURNING id");
-            $insert_appt->execute([
-                ':user_id' => $user_id,
-                ':pet_id' => $pet_id,
-                ':service' => $final_service_name,
-                ':appointment_date' => $appointment_date,
-                ':appointment_time' => $appointment_time,
-                ':service_fee' => $service_fee,
-                ':total_price' => $service_fee,
-                ':gcash_ref' => $gcash_ref,
-                ':gcash_receipt' => $receipt_filename,
-                ':payment_method' => $payment_method,
-                ':payment_status' => $payment_status,
-                ':booking_status' => $booking_status,
-                ':remarks' => $remarks
-            ]);
+            if ($checkout_date_to_save !== null) {
+                // Boarding stores its check-out date so the entire stay can be checked later.
+                $insert_appt = $pdo->prepare("INSERT INTO appointments (user_id, pet_id, service, appointment_date, appointment_time, checkout_date, service_fee, total_price, gcash_ref, gcash_receipt, payment_method, payment_status, booking_status, remarks) VALUES (:user_id, :pet_id, :service, :appointment_date, :appointment_time, :checkout_date, :service_fee, :total_price, :gcash_ref, :gcash_receipt, :payment_method, :payment_status, :booking_status, :remarks) RETURNING id");
+                $insert_appt->execute([
+                    ':user_id' => $user_id,
+                    ':pet_id' => $pet_id,
+                    ':service' => $final_service_name,
+                    ':appointment_date' => $appointment_date,
+                    ':appointment_time' => $appointment_time,
+                    ':checkout_date' => $checkout_date_to_save,
+                    ':service_fee' => $service_fee,
+                    ':total_price' => $service_fee,
+                    ':gcash_ref' => $gcash_ref,
+                    ':gcash_receipt' => $receipt_filename,
+                    ':payment_method' => $payment_method,
+                    ':payment_status' => $payment_status,
+                    ':booking_status' => $booking_status,
+                    ':remarks' => $remarks
+                ]);
+            } elseif ($is_daycare) {
+                // Store the expected pickup time so staff can see the full reserved interval.
+                $insert_appt = $pdo->prepare("INSERT INTO appointments (user_id, pet_id, service, appointment_date, appointment_time, pickup_time, service_fee, total_price, gcash_ref, gcash_receipt, payment_method, payment_status, booking_status, remarks) VALUES (:user_id, :pet_id, :service, :appointment_date, :appointment_time, :pickup_time, :service_fee, :total_price, :gcash_ref, :gcash_receipt, :payment_method, :payment_status, :booking_status, :remarks) RETURNING id");
+                $insert_appt->execute([
+                    ':user_id' => $user_id,
+                    ':pet_id' => $pet_id,
+                    ':service' => $final_service_name,
+                    ':appointment_date' => $appointment_date,
+                    ':appointment_time' => $appointment_time,
+                    ':pickup_time' => $pickup_time,
+                    ':service_fee' => $service_fee,
+                    ':total_price' => $service_fee,
+                    ':gcash_ref' => $gcash_ref,
+                    ':gcash_receipt' => $receipt_filename,
+                    ':payment_method' => $payment_method,
+                    ':payment_status' => $payment_status,
+                    ':booking_status' => $booking_status,
+                    ':remarks' => $remarks
+                ]);
+            } else {
+                // Preserve the existing insert path for Grooming and Vet bookings.
+                $insert_appt = $pdo->prepare("INSERT INTO appointments (user_id, pet_id, service, appointment_date, appointment_time, service_fee, total_price, gcash_ref, gcash_receipt, payment_method, payment_status, booking_status, remarks) VALUES (:user_id, :pet_id, :service, :appointment_date, :appointment_time, :service_fee, :total_price, :gcash_ref, :gcash_receipt, :payment_method, :payment_status, :booking_status, :remarks) RETURNING id");
+                $insert_appt->execute([
+                    ':user_id' => $user_id,
+                    ':pet_id' => $pet_id,
+                    ':service' => $final_service_name,
+                    ':appointment_date' => $appointment_date,
+                    ':appointment_time' => $appointment_time,
+                    ':service_fee' => $service_fee,
+                    ':total_price' => $service_fee,
+                    ':gcash_ref' => $gcash_ref,
+                    ':gcash_receipt' => $receipt_filename,
+                    ':payment_method' => $payment_method,
+                    ':payment_status' => $payment_status,
+                    ':booking_status' => $booking_status,
+                    ':remarks' => $remarks
+                ]);
+            }
             $appointment_row = $insert_appt->fetch();
             $appointment_id = $appointment_row ? (int)$appointment_row['id'] : 0;
 
@@ -2151,23 +2665,30 @@ if ($error_msg !== '') {
 
                 <div class="form-row">
                     <div class="form-group">
-                        <label>Select Date *</label>
+                        <label id="appointmentDateLabel" for="appointment_date">Select Date *</label>
                         <input type="date" name="appointment_date" id="appointment_date" required>
                     </div>
                     <div class="form-group">
-                        <label>Select Time *</label>
+                        <label id="appointmentTimeLabel" for="appointment_time">Select Time *</label>
                         <select name="appointment_time" id="appointment_time" required>
-                            <option value="">Choose a time slot</option>
-                            <option value="10:00:00">10:00 AM</option>
-                            <option value="11:00:00">11:00 AM</option>
-                            <option value="12:00:00">12:00 PM</option>
-                            <option value="13:00:00">01:00 PM</option>
-                            <option value="14:00:00">02:00 PM</option>
-                            <option value="15:00:00">03:00 PM</option>
-                            <option value="16:00:00">04:00 PM</option>
-                            <option value="17:00:00">05:00 PM</option>
+                            <option value="">Choose a date, category, and specific service first</option>
                         </select>
+                        <p id="availabilityMessage" role="status" aria-live="polite" style="margin-top:8px;color:#6b7c8f;font-size:10px;line-height:1.5;">Available time slots will appear after you choose a date and service.</p>
                     </div>
+                </div>
+
+                <div class="form-group hidden" id="checkoutDateGroup">
+                    <label for="checkout_date">Check-out Date *</label>
+                    <input type="date" name="checkout_date" id="checkout_date">
+                    <p style="margin-top:8px;color:#6b7c8f;font-size:10px;line-height:1.5;">Choose the date your pet will check out. The checkout date must be after check-in. The system checks room capacity for every night of the stay. The displayed overnight rate is charged per night.</p>
+                </div>
+
+                <div class="form-group hidden" id="pickupTimeGroup">
+                    <label for="pickup_time">Expected Pickup Time *</label>
+                    <select name="pickup_time" id="pickup_time">
+                        <option value="">Choose drop-off time first</option>
+                    </select>
+                    <p style="margin-top:8px;color:#6b7c8f;font-size:10px;line-height:1.5;">Pet Daycare includes the first-hour rate. After the first hour, the additional fee is ₱30 per hour, billed in ₱15 half-hour blocks. Pickup must be by 6:00 PM.</p>
                 </div>
 
                 <div class="form-group">
@@ -2182,7 +2703,7 @@ if ($error_msg !== '') {
 
                 <div class="gcash-section" id="gcashSection">
                     <h4><i class="fa-solid fa-mobile-screen-button"></i> GCash Payment Detail</h4>
-                    <p>To secure your appointment, please send the exact amount to our GCash account. <strong>Your time slot will not be blocked until the payment is verified.</strong></p>
+                    <p>To submit your booking, please send the exact amount to our GCash account and upload your receipt. Your booking will remain pending until the admin verifies your payment, and the selected time is checked again when you submit.</p>
                     
                     <div class="gcash-qr-card" aria-label="Boogie's GCash QR payment">
                         <div class="gcash-qr-inner">
@@ -2395,13 +2916,19 @@ if ($error_msg !== '') {
                 // BAGO: CUT-OFF TIME LOGIC
                 const dateInput = document.getElementById('appointment_date');
                 const now = new Date();
-                const todayStr = now.toISOString().split('T')[0];
+                const formatLocalDate = (date) => {
+                    const year = date.getFullYear();
+                    const month = String(date.getMonth() + 1).padStart(2, '0');
+                    const day = String(date.getDate()).padStart(2, '0');
+                    return `${year}-${month}-${day}`;
+                };
+                const todayStr = formatLocalDate(now);
                 
                 // Kung lampas na ng 6:00 PM (18:00), bukas na ang pwedeng i-book
                 if (now.getHours() >= 18) {
                     const tomorrow = new Date(now);
                     tomorrow.setDate(tomorrow.getDate() + 1);
-                    const tomorrowStr = tomorrow.toISOString().split('T')[0];
+                    const tomorrowStr = formatLocalDate(tomorrow);
                     dateInput.setAttribute('min', tomorrowStr);
                     
                     // Mag-alert sa user kung bakit bukas na siya pinapabook
@@ -2417,18 +2944,37 @@ if ($error_msg !== '') {
             }
         });
 
-        function bookingSizeFromPetWeight(weight) {
+        function bookingSizeFromPetWeight(weight, petType = document.getElementById('pet_type').value, daycareMode = isDaycareSelected()) {
             const value = String(weight ?? '').trim();
-            const sizeSelect = document.getElementById('pet_size');
-            const validSizes = Array.from(sizeSelect.options).map(option => option.value).filter(Boolean);
+            if (!value) return '';
 
-            // Backward compatibility for older pet records whose weight is already a size label.
-            if (validSizes.includes(value)) return value;
+            if (daycareMode) {
+                if (petType === 'Cat') return 'Cat (All Sizes)';
+                const daycareLabels = {
+                    'Small (1-10kg)': 'Small (1-10kg)',
+                    'Medium (11-20kg)': 'Medium (11-20kg)',
+                    'Large (21-50kg)': 'Large (21-50kg)',
+                    'Small (1-5kg)': 'Small (1-10kg)',
+                    'Medium (6-10kg)': 'Small (1-10kg)',
+                    'Large (11-15kg)': 'Medium (11-20kg)',
+                    'Extra Large (16-20kg)': 'Medium (11-20kg)',
+                    'XXL Large (21-25kg)': 'Large (21-50kg)'
+                };
+                if (daycareLabels[value]) return daycareLabels[value];
+                const match = value.match(/(-?\d+(?:\.\d+)?)/);
+                if (!match) return '';
+                const kg = Number.parseFloat(match[1]);
+                if (!Number.isFinite(kg) || kg <= 0 || kg > 50) return '';
+                if (kg <= 10) return 'Small (1-10kg)';
+                if (kg <= 20) return 'Medium (11-20kg)';
+                return 'Large (21-50kg)';
+            }
 
-            // Current pet profiles store the actual weight in kilograms (for example, 5.2).
+            const legacySizes = ['Small (1-5kg)', 'Medium (6-10kg)', 'Large (11-15kg)', 'Extra Large (16-20kg)', 'XXL Large (21-25kg)'];
+            if (legacySizes.includes(value)) return value;
+            if (['Small (1-10kg)', 'Medium (11-20kg)', 'Large (21-50kg)', 'Cat (All Sizes)'].includes(value)) return '';
             const match = value.match(/(-?\d+(?:\.\d+)?)/);
             if (!match) return '';
-
             const kg = Number.parseFloat(match[1]);
             if (!Number.isFinite(kg) || kg <= 0 || kg > 25) return '';
             if (kg <= 5) return 'Small (1-5kg)';
@@ -2438,6 +2984,59 @@ if ($error_msg !== '') {
             return 'XXL Large (21-25kg)';
         }
 
+        function getSelectedRegisteredPet() {
+            const selector = document.getElementById('pet_selector');
+            if (!selector || !selector.value) return null;
+            return userPetsArray.find(p => String(p.id) === String(selector.value)) || null;
+        }
+
+        function updatePetSizeOptions() {
+            const sizeSelect = document.getElementById('pet_size');
+            if (!sizeSelect) return;
+
+            const petType = document.getElementById('pet_type').value;
+            const daycareMode = isDaycareSelected();
+            const previousValue = sizeSelect.value;
+            const selectedPet = getSelectedRegisteredPet();
+            let options;
+
+            if (daycareMode && petType === 'Cat') {
+                options = [{ value: 'Cat (All Sizes)', label: 'Cat (All Sizes)' }];
+            } else if (daycareMode) {
+                options = [
+                    { value: 'Small (1-10kg)', label: 'Small (1-10kg)' },
+                    { value: 'Medium (11-20kg)', label: 'Medium (11-20kg)' },
+                    { value: 'Large (21-50kg)', label: 'Large (21-50kg)' }
+                ];
+            } else {
+                options = [
+                    { value: 'Small (1-5kg)', label: 'Small (1-5kg)' },
+                    { value: 'Medium (6-10kg)', label: 'Medium (6-10kg)' },
+                    { value: 'Large (11-15kg)', label: 'Large (11-15kg)' },
+                    { value: 'Extra Large (16-20kg)', label: 'Extra Large (16-20kg)' },
+                    { value: 'XXL Large (21-25kg)', label: 'XXL Large (21-25kg)' }
+                ];
+            }
+
+            let nextValue = '';
+            if (selectedPet && String(selectedPet.weight ?? '').trim() !== '') {
+                nextValue = bookingSizeFromPetWeight(selectedPet.weight, petType, daycareMode);
+            } else if (daycareMode) {
+                nextValue = bookingSizeFromPetWeight(previousValue, petType, true);
+            } else if (options.some(option => option.value === previousValue)) {
+                nextValue = previousValue;
+            }
+
+            sizeSelect.innerHTML = '<option value="">Select Size / Weight</option>';
+            options.forEach(item => {
+                const option = document.createElement('option');
+                option.value = item.value;
+                option.textContent = item.label;
+                sizeSelect.appendChild(option);
+            });
+            sizeSelect.value = options.some(option => option.value === nextValue) ? nextValue : '';
+        }
+
         function autoFillPet() {
             const petSelector = document.getElementById('pet_selector').value;
             const nameInput = document.getElementById('pet_name');
@@ -2445,27 +3044,37 @@ if ($error_msg !== '') {
             const genderSelect = document.getElementById('pet_gender');
             const sizeSelect = document.getElementById('pet_size');
 
-            if (petSelector === "") {
-                nameInput.value = "";
+            if (petSelector === '') {
+                nameInput.value = '';
                 nameInput.readOnly = false;
-                typeSelect.value = "";
-                genderSelect.value = "Male";
-                sizeSelect.value = "";
+                typeSelect.value = '';
+                genderSelect.value = 'Male';
+                sizeSelect.value = '';
             } else {
-                const selectedPet = userPetsArray.find(p => String(p.id) === String(petSelector));
+                const selectedPet = getSelectedRegisteredPet();
                 if (selectedPet) {
                     nameInput.value = selectedPet.name ?? '';
                     nameInput.readOnly = true;
                     typeSelect.value = selectedPet.pet_type ?? '';
                     genderSelect.value = selectedPet.gender ?? 'Male';
-                    sizeSelect.value = bookingSizeFromPetWeight(selectedPet.weight);
-                    if (!sizeSelect.value && String(selectedPet.weight ?? '').trim() !== '') {
-                        alert('This pet’s saved weight is outside the supported booking size ranges or is invalid. Please update the pet profile or contact the clinic.');
-                    }
                 }
             }
 
             updateOptions();
+            const selectedPet = getSelectedRegisteredPet();
+            const serviceChosen = Boolean(document.getElementById('service_category').value && document.getElementById('specific_service').value);
+            if (selectedPet && serviceChosen && String(selectedPet.weight ?? '').trim() !== '' && !sizeSelect.value) {
+                const daycareMode = isDaycareSelected();
+                const savedWeight = String(selectedPet.weight ?? '').trim();
+                const daycareOnlyLabels = ['Small (1-10kg)', 'Medium (11-20kg)', 'Large (21-50kg)', 'Cat (All Sizes)'];
+                if (!daycareMode && daycareOnlyLabels.includes(savedWeight)) {
+                    alert('This pet profile has a Pet Daycare size range saved. Please select the pet’s current size/weight for this service.');
+                } else {
+                    const maximum = daycareMode && selectedPet.pet_type === 'Dog' ? '50 kg for Pet Daycare' : '25 kg';
+                    alert(`This pet’s saved weight could not be matched to the current size options (supported up to ${maximum}). Please check the saved pet weight or contact the clinic.`);
+                }
+            }
+            calculatePrice();
         }
 
         const pricingData = {
@@ -2483,7 +3092,7 @@ if ($error_msg !== '') {
                     "Vaccination - 8 in 1": { default: 750 }
                 },
                 "Pet Hotel": {
-                    "Pet Daycare (1st Hour - Succeeding fees apply)": { "Small (1-5kg)": 100, "Medium (6-10kg)": 100, "Large (11-15kg)": 150, "Extra Large (16-20kg)": 150, "XXL Large (21-25kg)": 200 },
+                    "Pet Daycare (1st Hour - Succeeding fees apply)": { "Small (1-10kg)": 100, "Medium (11-20kg)": 150, "Large (21-50kg)": 200 },
                     "Pet Boarding (Overnight)": { "Small (1-5kg)": 500, "Medium (6-10kg)": 500, "Large (11-15kg)": 600, "Extra Large (16-20kg)": 600, "XXL Large (21-25kg)": 800 }
                 }
             },
@@ -2544,10 +3153,122 @@ if ($error_msg !== '') {
                     specificServiceDropdown.appendChild(option);
                 });
             }
-            
+
+            updatePetSizeOptions();
             validateVetDate();
-            calculatePrice();
-            checkRealTimeAvailability(); 
+            handleServiceChange();
+        }
+
+        function isOvernightBoardingSelected() {
+            const category = document.getElementById('service_category').value;
+            const specific = document.getElementById('specific_service').value.toLowerCase();
+            return category === 'Pet Hotel' && (specific.includes('boarding') || specific.includes('overnight'));
+        }
+
+        function isDaycareSelected() {
+            const category = document.getElementById('service_category').value;
+            const specific = document.getElementById('specific_service').value.toLowerCase();
+            return category === 'Pet Hotel' && specific.includes('daycare');
+        }
+
+        function jsTimeToMinutes(value) {
+            const match = String(value || '').match(/^(\d{1,2}):(\d{2})/);
+            if (!match) return null;
+            return Number(match[1]) * 60 + Number(match[2]);
+        }
+
+        function jsMinutesToTime(value) {
+            return `${String(Math.floor(value / 60)).padStart(2, '0')}:${String(value % 60).padStart(2, '0')}:00`;
+        }
+
+        function jsMinutesToLabel(value) {
+            const hour = Math.floor(value / 60);
+            const minute = value % 60;
+            const suffix = hour >= 12 ? 'PM' : 'AM';
+            const displayHour = hour % 12 || 12;
+            return `${displayHour}:${String(minute).padStart(2, '0')} ${suffix}`;
+        }
+
+        function populateDaycareDropoffTimes() {
+            const select = document.getElementById('appointment_time');
+            if (!select) return;
+            const previous = select.value;
+            resetTimeOptions('Choose drop-off time');
+            const times = [];
+            [[9 * 60, 12 * 60], [13 * 60, 18 * 60]].forEach(([periodStart, periodEnd]) => {
+                for (let value = periodStart; value < periodEnd; value += 30) times.push(value);
+            });
+            times.forEach(value => {
+                const option = document.createElement('option');
+                option.value = jsMinutesToTime(value);
+                option.textContent = jsMinutesToLabel(value);
+                select.appendChild(option);
+            });
+            if (times.some(value => jsMinutesToTime(value) === previous)) select.value = previous;
+            updateDaycarePickupTimes();
+        }
+
+        function updateDaycarePickupTimes() {
+            const group = document.getElementById('pickupTimeGroup');
+            const select = document.getElementById('pickup_time');
+            if (!select) return;
+            const previous = select.value;
+            select.innerHTML = '';
+            const start = jsTimeToMinutes(document.getElementById('appointment_time')?.value || '');
+            const placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.textContent = start === null ? 'Choose drop-off time first' : 'Choose expected pickup time';
+            select.appendChild(placeholder);
+            if (start !== null) {
+                for (let value = start + 30; value <= 18 * 60; value += 30) {
+                    const option = document.createElement('option');
+                    option.value = jsMinutesToTime(value);
+                    option.textContent = jsMinutesToLabel(value);
+                    select.appendChild(option);
+                }
+            }
+            if (Array.from(select.options).some(option => option.value === previous)) select.value = previous;
+        }
+
+        function updateBoardingFields() {
+            const isBoarding = isOvernightBoardingSelected();
+            const isDaycare = isDaycareSelected();
+            const checkoutGroup = document.getElementById('checkoutDateGroup');
+            const checkoutInput = document.getElementById('checkout_date');
+            const pickupGroup = document.getElementById('pickupTimeGroup');
+            const pickupInput = document.getElementById('pickup_time');
+            const dateLabel = document.getElementById('appointmentDateLabel');
+            const timeLabel = document.getElementById('appointmentTimeLabel');
+
+            if (checkoutGroup && checkoutInput) {
+                checkoutGroup.classList.toggle('hidden', !isBoarding);
+                checkoutInput.required = isBoarding;
+                if (!isBoarding) checkoutInput.value = '';
+            }
+            if (pickupGroup && pickupInput) {
+                pickupGroup.classList.toggle('hidden', !isDaycare);
+                pickupInput.required = isDaycare;
+                if (!isDaycare) pickupInput.value = '';
+            }
+            if (dateLabel) dateLabel.textContent = isBoarding ? 'Check-in Date *' : (isDaycare ? 'Daycare Date *' : 'Select Date *');
+            if (timeLabel) timeLabel.textContent = isBoarding ? 'Check-in Time *' : (isDaycare ? 'Drop-off Time *' : 'Select Time *');
+            updateCheckoutDateMinimum();
+            if (isDaycare) populateDaycareDropoffTimes();
+        }
+
+        function updateCheckoutDateMinimum() {
+            const checkinInput = document.getElementById('appointment_date');
+            const checkoutInput = document.getElementById('checkout_date');
+            if (!checkinInput || !checkoutInput) return;
+            if (!checkinInput.value) {
+                checkoutInput.removeAttribute('min');
+                return;
+            }
+            const checkin = new Date(checkinInput.value + 'T12:00:00');
+            checkin.setDate(checkin.getDate() + 1);
+            const minDate = `${checkin.getFullYear()}-${String(checkin.getMonth() + 1).padStart(2, '0')}-${String(checkin.getDate()).padStart(2, '0')}`;
+            checkoutInput.min = minDate;
+            if (checkoutInput.value && checkoutInput.value < minDate) checkoutInput.value = '';
         }
 
         function handleServiceChange() {
@@ -2562,7 +3283,10 @@ if ($error_msg !== '') {
                 haircutContainer.classList.add('hidden');
                 haircutSelect.required = false;
             }
+            updatePetSizeOptions();
+            updateBoardingFields();
             calculatePrice();
+            checkRealTimeAvailability();
         }
 
         function validateVetDate() {
@@ -2570,7 +3294,8 @@ if ($error_msg !== '') {
             const dateInput = document.getElementById('appointment_date');
             
             if (category === 'Vet Services' && dateInput.value) {
-                const selectedDate = new Date(dateInput.value);
+                const [year, month, dayOfMonth] = dateInput.value.split('-').map(Number);
+                const selectedDate = new Date(year, month - 1, dayOfMonth);
                 const day = selectedDate.getDay(); 
                 
                 if (day === 3 || day === 6) {
@@ -2583,48 +3308,215 @@ if ($error_msg !== '') {
         if (document.getElementById('appointment_date')) {
             document.getElementById('appointment_date').addEventListener('change', () => {
                 validateVetDate();
+                updateCheckoutDateMinimum();
+                calculatePrice();
+                checkRealTimeAvailability();
+            });
+        }
+        if (document.getElementById('checkout_date')) {
+            document.getElementById('checkout_date').addEventListener('change', () => {
+                calculatePrice();
+                checkRealTimeAvailability();
+            });
+        }
+        if (document.getElementById('appointment_time')) {
+            document.getElementById('appointment_time').addEventListener('change', () => {
+                if (isDaycareSelected()) updateDaycarePickupTimes();
+                calculatePrice();
+
+                // Pet Boarding uses a fixed 9:00 AM check-in. Availability is already
+                // checked when the check-in/check-out dates change, so fetching again
+                // when the user selects 9:00 AM would clear the selected option.
+                // Keep the selected boarding time in place; continue refreshing slots
+                // normally for Daycare, Grooming, and Vet appointments.
+                if (!isOvernightBoardingSelected()) {
+                    checkRealTimeAvailability();
+                }
+            });
+        }
+        if (document.getElementById('pickup_time')) {
+            document.getElementById('pickup_time').addEventListener('change', () => {
+                calculatePrice();
                 checkRealTimeAvailability();
             });
         }
 
-        // --- REAL-TIME SLOT AVAILABILITY CHECKER ---
+        // --- SERVICE DURATION AND CAPACITY-AWARE SLOT AVAILABILITY ---
+        let availabilityRequestId = 0;
+
+        function setAvailabilityMessage(message, isError = false) {
+            const messageEl = document.getElementById('availabilityMessage');
+            if (!messageEl) return;
+            messageEl.textContent = message;
+            messageEl.style.color = isError ? '#b72f3a' : '#6b7c8f';
+        }
+
+        function resetTimeOptions(message = 'Choose a date, category, and specific service first.') {
+            const timeSelect = document.getElementById('appointment_time');
+            if (!timeSelect) return;
+            timeSelect.innerHTML = '';
+            const placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.textContent = message;
+            timeSelect.appendChild(placeholder);
+        }
+
         function checkRealTimeAvailability() {
+            const requestId = ++availabilityRequestId;
             const date = document.getElementById('appointment_date').value;
             const category = document.getElementById('service_category').value;
+            const specificService = document.getElementById('specific_service').value;
+            const checkoutDate = document.getElementById('checkout_date') ? document.getElementById('checkout_date').value : '';
+            const isBoarding = isOvernightBoardingSelected();
+            const isDaycare = isDaycareSelected();
             const timeSelect = document.getElementById('appointment_time');
 
-            if (!date || !category) return;
+            if (isDaycare) {
+                if (!date || !category || !specificService) {
+                    resetTimeOptions('Choose a date and Pet Daycare service first');
+                    updateDaycarePickupTimes();
+                    setAvailabilityMessage('Choose a date, then select the daycare drop-off and expected pickup times.');
+                    return;
+                }
+                populateDaycareDropoffTimes();
+                const dropoffTime = timeSelect.value;
+                const pickupTime = document.getElementById('pickup_time').value;
+                if (!dropoffTime || !pickupTime) {
+                    setAvailabilityMessage('Select both drop-off and expected pickup times to check capacity and calculate the total.');
+                    calculatePrice();
+                    return;
+                }
+                setAvailabilityMessage('Checking Pet Daycare room capacity for the complete stay…');
+                const daycareUrl = `check_slots.php?date=${encodeURIComponent(date)}&category=${encodeURIComponent(category)}&specific_service=${encodeURIComponent(specificService)}&dropoff_time=${encodeURIComponent(dropoffTime)}&pickup_time=${encodeURIComponent(pickupTime)}`;
+                fetch(daycareUrl, { cache: 'no-store' })
+                    .then(response => {
+                        if (!response.ok) throw new Error('Availability endpoint returned HTTP ' + response.status);
+                        return response.json();
+                    })
+                    .then(data => {
+                        if (requestId !== availabilityRequestId) return;
+                        if (data.error) {
+                            setAvailabilityMessage(data.error, true);
+                        } else if (data.available) {
+                            setAvailabilityMessage(`Daycare room available for ${data.duration_display || 'the selected stay'}; ${Number(data.remaining_slots || 0)} room(s) available during the full interval.`);
+                        } else {
+                            setAvailabilityMessage(data.reason || 'No Pet Daycare room is available for the entire selected interval.', true);
+                        }
+                        calculatePrice();
+                    })
+                    .catch(error => {
+                        if (requestId !== availabilityRequestId) return;
+                        console.error('Error fetching Pet Daycare availability:', error);
+                        setAvailabilityMessage('Unable to confirm Pet Daycare capacity. Please check your connection and try again.', true);
+                    });
+                return;
+            }
 
-            const originalTimes = {
-                "10:00:00": "10:00 AM", "11:00:00": "11:00 AM", "12:00:00": "12:00 PM",
-                "13:00:00": "01:00 PM", "14:00:00": "02:00 PM", "15:00:00": "03:00 PM",
-                "16:00:00": "04:00 PM", "17:00:00": "05:00 PM"
-            };
+            resetTimeOptions();
+            if (!date || !category || !specificService) {
+                setAvailabilityMessage('Available times will appear after you choose a date, category, and specific service.');
+                return;
+            }
+            if (isBoarding && (!checkoutDate || checkoutDate <= date)) {
+                resetTimeOptions('Choose valid check-in and check-out dates first');
+                setAvailabilityMessage('For Pet Boarding, choose a check-out date at least one day after check-in.');
+                return;
+            }
 
-            Array.from(timeSelect.options).forEach(opt => {
-                if (opt.value !== "") { opt.disabled = false; opt.text = originalTimes[opt.value]; }
-            });
+            // Preserve the customer's chosen check-in/start time when the availability
+            // refresh runs after the select's change event. Without this, rebuilding
+            // the dropdown clears the selection and makes it appear impossible to choose.
+            const previouslySelectedTime = timeSelect ? timeSelect.value : '';
 
-            fetch(`check_slots.php?date=${date}&category=${encodeURIComponent(category)}`)
-                .then(response => response.json())
+            resetTimeOptions('Checking available times…');
+            setAvailabilityMessage('Checking availability based on service duration and remaining capacity…');
+
+            let url = `check_slots.php?date=${encodeURIComponent(date)}&category=${encodeURIComponent(category)}&specific_service=${encodeURIComponent(specificService)}`;
+            if (isBoarding) url += `&checkout_date=${encodeURIComponent(checkoutDate)}`;
+            fetch(url, { cache: 'no-store' })
+                .then(response => {
+                    if (!response.ok) throw new Error('Availability endpoint returned HTTP ' + response.status);
+                    return response.json();
+                })
                 .then(data => {
-                    if (data.is_full) {
-                        alert('The selected date is fully booked for ' + category + '. Please choose another date.');
-                        timeSelect.value = "";
-                        Array.from(timeSelect.options).forEach(opt => {
-                            if (opt.value !== "") opt.disabled = true;
-                        });
+                    if (requestId !== availabilityRequestId) return;
+                    resetTimeOptions('Choose an available time');
+
+                    if (data.error) {
+                        resetTimeOptions('Availability could not be loaded');
+                        setAvailabilityMessage(data.error, true);
+                        return;
+                    }
+
+                    if (!Array.isArray(data.slots)) {
+                        resetTimeOptions('Availability could not be loaded');
+                        setAvailabilityMessage('The availability response is incomplete. Please refresh the page or try again.', true);
+                        return;
+                    }
+
+                    let enabledCount = 0;
+                    let visibleCount = 0;
+                    data.slots.forEach(slot => {
+                        const reason = String(slot.reason || '');
+                        const normalizedReason = reason.toLowerCase();
+
+                        // Keep the dropdown focused on start times the customer can reasonably choose.
+                        // Hide times outside closing hours, starts during the 12:00 PM–1:00 PM break,
+                        // and start times that have already passed. Keep valid-but-full slots visible
+                        // and disabled so customers can understand that the time is booked.
+                        const shouldHide =
+                            normalizedReason === 'outside operating hours' ||
+                            normalizedReason.startsWith('staff break') ||
+                            normalizedReason === 'time has passed';
+                        if (shouldHide) return;
+
+                        const option = document.createElement('option');
+                        option.value = slot.time;
+                        option.disabled = !slot.available;
+                        visibleCount++;
+
+                        if (slot.available) {
+                            enabledCount++;
+                            const remaining = Number(slot.remaining_slots || 0);
+                            option.textContent = `${slot.label} — ${remaining} slot${remaining === 1 ? '' : 's'} available`;
+                        } else {
+                            option.textContent = `${slot.label} — ${reason || 'Fully booked'}`;
+                        }
+                        timeSelect.appendChild(option);
+                    });
+
+                    // Restore the previous time only when it still exists and remains available.
+                    // If capacity changed and the time is no longer selectable, leave the placeholder.
+                    if (previouslySelectedTime) {
+                        const stillAvailableOption = Array.from(timeSelect.options).find(
+                            option => option.value === previouslySelectedTime && !option.disabled
+                        );
+                        if (stillAvailableOption) {
+                            timeSelect.value = previouslySelectedTime;
+                        }
+                    }
+
+                    if (visibleCount === 0) {
+                        resetTimeOptions('No valid start times for this date and service');
+                        setAvailabilityMessage(data.full_reason || 'No valid start times remain within business hours for this service.', true);
+                    } else if (enabledCount === 0 || data.is_full) {
+                        setAvailabilityMessage(data.full_reason || 'No available time slots remain for this date and service.', true);
                     } else {
-                        data.booked_times.forEach(bookedTime => {
-                            let option = timeSelect.querySelector(`option[value="${bookedTime}"]`);
-                            if (option) {
-                                option.disabled = true;
-                                option.text += ' (Taken)';
-                            }
-                        });
+                        const duration = Number(data.duration_minutes || 0);
+                        const durationDisplay = String(data.duration_display || `${duration} minutes`);
+                        if (isBoarding) {
+                            setAvailabilityMessage(`Pet boarding stay: ${durationDisplay}. Standard check-in is 9:00 AM; check-out is 6:00 AM on the selected check-out date.`);
+                        } else {
+                            setAvailabilityMessage(`Service duration: ${durationDisplay}. The displayed times show the full reserved service window. New appointments cannot start from 12:00 PM–1:00 PM.`);
+                        }
                     }
                 })
-                .catch(error => console.error("Error fetching slots:", error));
+                .catch(error => {
+                    if (requestId !== availabilityRequestId) return;
+                    console.error('Error fetching appointment availability:', error);
+                    resetTimeOptions('Availability could not be loaded');
+                    setAvailabilityMessage('Unable to load available times. Please check your connection and try again.', true);
+                });
         }
 
         function calculatePrice() {
@@ -2632,39 +3524,72 @@ if ($error_msg !== '') {
             const size = document.getElementById('pet_size').value;
             const category = document.getElementById('service_category').value;
             const specific = document.getElementById('specific_service').value;
-            
+
             const displayBox = document.getElementById('priceDisplay');
             const priceText = document.getElementById('priceText');
             const gcashSection = document.getElementById('gcashSection');
             const gcashRefInput = document.getElementById('gcash_ref_input');
             const gcashReceiptInput = document.getElementById('gcash_receipt_input');
 
-            if (petType && size && category && specific) {
-                let price = 0;
+            if (petType && size && category && specific && pricingData[petType] && pricingData[petType][category]) {
+                let basePrice = 0;
                 const serviceData = pricingData[petType][category][specific];
-
-                if (serviceData.default) {
-                    price = serviceData.default;
-                } else if (serviceData[size]) {
-                    price = serviceData[size];
+                if (serviceData && serviceData.default) {
+                    basePrice = Number(serviceData.default);
+                } else if (serviceData && serviceData[size]) {
+                    basePrice = Number(serviceData[size]);
                 }
 
-                if (price > 0) {
-                    priceText.innerText = '₱' + price.toFixed(2);
+                if (basePrice > 0) {
+                    let totalPrice = basePrice;
+                    if (isOvernightBoardingSelected()) {
+                        const checkin = document.getElementById('appointment_date').value;
+                        const checkout = document.getElementById('checkout_date').value;
+                        if (!checkin || !checkout || checkout <= checkin) {
+                            priceText.innerText = `₱${basePrice.toFixed(2)} per night — choose check-out date`;
+                        } else {
+                            const checkinDate = new Date(checkin + 'T12:00:00');
+                            const checkoutDate = new Date(checkout + 'T12:00:00');
+                            const nights = Math.round((checkoutDate - checkinDate) / 86400000);
+                            if (nights < 1) {
+                                priceText.innerText = `₱${basePrice.toFixed(2)} per night — choose a valid stay`;
+                            } else {
+                                totalPrice = basePrice * nights;
+                                priceText.innerText = `₱${totalPrice.toFixed(2)} (${nights} night${nights === 1 ? '' : 's'} × ₱${basePrice.toFixed(2)})`;
+                            }
+                        }
+                    } else if (isDaycareSelected()) {
+                        const dropoff = jsTimeToMinutes(document.getElementById('appointment_time').value);
+                        const pickup = jsTimeToMinutes(document.getElementById('pickup_time').value);
+                        if (dropoff === null || pickup === null || pickup <= dropoff) {
+                            priceText.innerText = `₱${basePrice.toFixed(2)} first hour — choose drop-off and pickup times`;
+                        } else {
+                            const durationMinutes = pickup - dropoff;
+                            const extraMinutes = Math.max(0, durationMinutes - 60);
+                            const halfHourBlocks = Math.ceil(extraMinutes / 30);
+                            const extraFee = halfHourBlocks * 15;
+                            totalPrice = basePrice + extraFee;
+                            const hours = Math.floor(durationMinutes / 60);
+                            const minutes = durationMinutes % 60;
+                            priceText.innerText = `₱${totalPrice.toFixed(2)} (${hours ? `${hours}h ` : ''}${minutes ? `${minutes}m` : ''}; first hour ₱${basePrice.toFixed(2)} + ₱${extraFee.toFixed(2)} extra)`;
+                        }
+                    } else {
+                        priceText.innerText = '₱' + totalPrice.toFixed(2);
+                    }
                     displayBox.style.display = 'block';
-                    
-                    // Show GCash Section and make REF and Receipt required
                     gcashSection.style.display = 'block';
                     gcashRefInput.required = true;
                     gcashReceiptInput.required = true;
                     return;
                 }
             }
+
             displayBox.style.display = 'none';
             gcashSection.style.display = 'none';
             gcashRefInput.required = false;
             gcashReceiptInput.required = false;
         }
+
     </script>
 </body>
 </html>

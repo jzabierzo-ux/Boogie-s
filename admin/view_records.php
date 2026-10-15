@@ -57,13 +57,8 @@ if (in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true
     header('Location: ../staff/staffdashboard.php');
     exit();
 }
-if ($current_role === 'pet_hotel_staff') {
-    header('Location: managebooking.php');
-    exit();
-}
-
-// Only roles with access to the general Pet Management area can view these records.
-$allowed_record_roles = ['admin', 'manager', 'receptionist', 'groomer'];
+// Admin, Manager, Receptionist, Groomer, and Pet Hotel Staff can view pet records.
+$allowed_record_roles = ['admin', 'manager', 'receptionist', 'groomer', 'pet_hotel_staff'];
 if (!in_array($current_role, $allowed_record_roles, true)) {
     http_response_code(403);
     exit('Access denied. This role cannot view pet records.');

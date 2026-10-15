@@ -5,66 +5,106 @@ require_once __DIR__ . '/../shared_session_bootstrap.php';
 include '../db_supabase.php';
 
 // --- ROLE-BASED ACCESS CONTROL ---
+
 $raw_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
+
 $role_aliases = [
+
     'administrator' => 'admin',
+
     'shop manager' => 'manager',
+
     'shop_manager' => 'manager',
+
     'vet' => 'veterinarian',
+
     'veterinary' => 'veterinarian',
+
     'front desk' => 'receptionist',
+
     'front desk / receptionist' => 'receptionist',
+
     'front_desk' => 'receptionist',
+
     'front_desk_receptionist' => 'receptionist',
+
     'veterinary assistant' => 'vet_assistant',
+
     'vet assistant' => 'vet_assistant',
+
     'veterinary_assistant' => 'vet_assistant',
+
     'veterinary nurse' => 'vet_nurse',
+
     'vet nurse' => 'vet_nurse',
+
     'veterinary_nurse' => 'vet_nurse',
+
     'grooming staff' => 'groomer',
+
     'grooming staff / groomer' => 'groomer',
+
     'grooming_staff' => 'groomer',
+
     'grooming_staff_groomer' => 'groomer',
+
     'pet hotel staff' => 'pet_hotel_staff',
+
     'pet hotel staff / attendant' => 'pet_hotel_staff',
+
     'pet_hotel_attendant' => 'pet_hotel_staff',
+
     'pet_hotel_staff_attendant' => 'pet_hotel_staff',
+
     // Legacy account mappings retained pending account review.
+
     'staff' => 'groomer',
+
     'supervisor' => 'receptionist',
+
 ];
+
 $current_role = $role_aliases[$raw_role] ?? $raw_role;
+
 if ($current_role !== '') {
+
     $_SESSION['role'] = $current_role;
+
 }
+
 $is_admin = ($current_role === 'admin');
 
 if (($_SESSION['logged_in'] ?? false) !== true) {
+
     // Keep the Admin login separate from the staff login.
+
     $login_target = ($current_role === 'admin') ? '../admin_login.php' : '../staff/stafflogin.php';
+
     header('Location: ' . $login_target);
+
     exit();
+
 }
 
 if (empty($_SESSION['user_id']) || !is_numeric($_SESSION['user_id'])) {
+
     http_response_code(403);
+
     exit('Access denied: invalid session.');
+
 }
 
 if (in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)) {
+
     header('Location: ../staff/staffdashboard.php');
+
     exit();
+
 }
 
-// Groomer is allowed to view Users per the requested four-page operational view.
-// Pet Hotel Staff is restricted to Pet Hotel bookings and cannot browse customer lists.
-$allowed_user_page_roles = ['admin', 'manager', 'receptionist', 'groomer'];
+// Admin, Manager, Receptionist, Groomer, and Pet Hotel Staff may view customer accounts.
+$allowed_user_page_roles = ['admin', 'manager', 'receptionist', 'groomer', 'pet_hotel_staff'];
 if (!in_array($current_role, $allowed_user_page_roles, true)) {
-    if ($current_role === 'pet_hotel_staff') {
-        header('Location: managebooking.php');
-        exit();
-    }
     http_response_code(403);
     exit('Access denied. This role cannot access customer management.');
 }
@@ -126,25 +166,45 @@ if (isset($_SESSION['user_id'])) {
 }
 
 // --- ADMIN-ONLY NOTIFICATIONS ---
+
 $admin_notifications = [];
+
 $unread_count = 0;
+
 if ($is_admin) {
+
     try {
+
         $admin_notif_stmt = $pdo->prepare("
+
             SELECT id, message, created_at
+
             FROM admin_notifications
+
             WHERE is_read = 0
+
             ORDER BY created_at DESC
+
             LIMIT 20
+
         ");
+
         $admin_notif_stmt->execute();
+
         $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
+
         $unread_count = count($admin_notifications);
+
     } catch (PDOException $e) {
+
         error_log('Manage users admin notification fetch failed: ' . $e->getMessage());
+
         $admin_notifications = [];
+
         $unread_count = 0;
+
     }
+
 }
 
 // 3. FETCH USER STATISTICS
@@ -194,10 +254,15 @@ try {
     $contact_users = (int)($contact_q->fetch(PDO::FETCH_ASSOC)['count'] ?? 0);
 
 } catch (PDOException $e) {
+
     error_log('Manage users statistics query failed: ' . $e->getMessage());
+
     $total_users = 0;
+
     $verified_users = 0;
+
     $contact_users = 0;
+
 }
 
 // 4. FETCH USER LIST WITH SEARCH & FILTER
@@ -211,7 +276,9 @@ try {
     $query = "
 
         SELECT id, full_name, user_category, email, contact_number, is_verified, created_at
+
         FROM users
+
         WHERE role = 'customer'
 
     ";
@@ -265,9 +332,13 @@ try {
     $displayed_count = count($users_list);
 
 } catch (PDOException $e) {
+
     error_log('Manage users list query failed: ' . $e->getMessage());
+
     $users_list = [];
+
     $displayed_count = 0;
+
 }
 
 ?>
@@ -447,7 +518,9 @@ try {
         .user-info h3 { font-size: 18px; color: var(--navy-dark); margin-bottom: 5px; font-weight: 700;}
 
         .info-item { display: flex; align-items: center; gap: 10px; color: #64748b; font-size: 13px; margin-bottom: 5px; font-weight: 500;}
+
         .info-item { min-width: 0; }
+
         .info-item span { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
 
         /* User Category Badge Styling */
@@ -1021,20 +1094,35 @@ try {
         </div>
 
                 <nav class="nav-links">
+
             <a href="admindashboard.php" class="nav-item"><i class="fas fa-chart-line"></i> Dashboard</a>
+
             <a href="managebooking.php" class="nav-item"><i class="fas fa-calendar-alt"></i> Bookings</a>
+
             <a href="manageusers.php" class="nav-item active"><i class="fas fa-users"></i> Users</a>
+
             <a href="managepet.php" class="nav-item"><i class="fas fa-dog"></i> Pets</a>
+
             <?php if ($is_admin): ?>
+
                 <a href="managestaff.php" class="nav-item"><i class="fas fa-id-badge"></i> Personnel</a>
+
                 <a href="managepromo.php" class="nav-item"><i class="fas fa-tags"></i> Promos</a>
+
                 <a href="manage_services.php" class="nav-item"><i class="fas fa-list-ul"></i> Pricelist</a>
+
                 <a href="sales_report.php" class="nav-item"><i class="fas fa-file-invoice-dollar"></i> Sales Report</a>
+
                 <a href="admin_account_logs.php" class="nav-item">
+
                     <i class="fas fa-clock-rotate-left"></i>
+
                     <span>Account Logs</span>
+
                 </a>
+
             <?php endif; ?>
+
         </nav>
 
     </aside>
@@ -1064,6 +1152,7 @@ try {
             <div class="top-right-actions">
 
                 <?php if ($is_admin): ?>
+
                 <div class="notif-wrapper" onclick="toggleNotif(event)">
 
                     <i class="fa-solid fa-bell" style="font-size: 22px; color: #64748b;"></i>
@@ -1113,6 +1202,7 @@ try {
                     </div>
 
                 </div>
+
                 <?php endif; ?>
 
                 <div class="profile-wrapper" onclick="toggleProfile(event)">
@@ -1236,8 +1326,11 @@ try {
                             $cat_class = ($category === 'Pet Breeder') ? 'category-breeder' : 'category-owner';
 
                             $raw_email = trim((string)($user['email'] ?? ''));
+
                             $normalized_email = strtolower($raw_email);
+
                             $is_walkin_email = ($normalized_email === '')
+
                                 || preg_match('/@(guest|boogies|walkin)\.local$/i', $normalized_email) === 1;
 
                             if ($is_walkin_email) {
@@ -1521,8 +1614,11 @@ try {
         }
 
         <?php if ($is_admin): ?>
+
         fetchAdminNotifs();
+
         setInterval(fetchAdminNotifs, 3000);
+
         <?php endif; ?>
 
     </script>

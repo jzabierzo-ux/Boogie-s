@@ -2588,43 +2588,78 @@ try {
 
                     <?php
 
-                        $category = $row['category'];
-
+                        $category = (string)($row['category'] ?? '');
                         $category_lower = strtolower($category);
+                        $service_name_text = (string)($row['service_name'] ?? '');
+                        $service_name_lower = strtolower($service_name_text);
 
-                        if (stripos($category_lower, 'basic') !== false) {
-
-                            $visual_class = 'basic';
-
-                            $tag_class = 'tag-basic';
-
-                            $tag_text = 'Basic grooming';
-
-                        } elseif (stripos($category_lower, 'full') !== false) {
-
-                            $visual_class = 'full';
-
-                            $tag_class = 'tag-full';
-
-                            $tag_text = 'Full package';
-
-                        } elseif (stripos($category_lower, 'bath') !== false) {
-
-                            $visual_class = 'bath';
-
-                            $tag_class = 'tag-bath';
-
-                            $tag_text = 'Bath & care';
-
+                        // Identify the pet-size row so the description is specific to
+                        // the size/weight even when several cards share one service.
+                        if (strpos($service_name_lower, 'xxl') !== false || strpos($service_name_lower, '21-25') !== false || strpos($service_name_lower, '21–25') !== false) {
+                            $size_key = 'xxl';
+                            $size_label = 'XXL Large (21–25 kg)';
+                        } elseif (strpos($service_name_lower, 'extra large') !== false || strpos($service_name_lower, '16-20') !== false || strpos($service_name_lower, '16–20') !== false) {
+                            $size_key = 'extra_large';
+                            $size_label = 'Extra Large (16–20 kg)';
+                        } elseif (strpos($service_name_lower, 'medium') !== false || strpos($service_name_lower, '6-10') !== false || strpos($service_name_lower, '6–10') !== false) {
+                            $size_key = 'medium';
+                            $size_label = 'Medium (6–10 kg)';
+                        } elseif (strpos($service_name_lower, 'small') !== false || strpos($service_name_lower, '1-5') !== false || strpos($service_name_lower, '1–5') !== false) {
+                            $size_key = 'small';
+                            $size_label = 'Small (1–5 kg)';
                         } else {
-
-                            $visual_class = 'default';
-
-                            $tag_class = 'tag-default';
-
-                            $tag_text = 'Grooming service';
-
+                            $size_key = 'large';
+                            $size_label = 'Large (11–15 kg)';
                         }
+
+                        $descriptions = [
+                            'basic' => [
+                                'small' => 'For small pets weighing 1–5 kg, this basic session focuses on everyday coat care and a tidy finish without making the routine more involved than needed.',
+                                'medium' => 'Made for pets in the 6–10 kg range, this visit helps refresh a medium-sized coat and manage loose fur from daily play and activity.',
+                                'large' => 'For pets weighing 11–15 kg, this practical grooming option helps keep a larger coat presentable by lifting everyday dirt and loose hair.',
+                                'extra_large' => 'Suited to pets in the 16–20 kg range, this session gives a bigger coat routine upkeep and helps keep surface dirt and shedding under control.',
+                                'xxl' => 'For very large pets weighing 21–25 kg, this straightforward grooming visit is ideal for maintaining a neat coat between more detailed grooming sessions.'
+                            ],
+                            'full' => [
+                                'small' => 'This fuller grooming routine is tailored to small pets weighing 1–5 kg, giving them a more complete refresh and a carefully finished look.',
+                                'medium' => 'For 6–10 kg pets, the full package offers a more thorough tidy-up for the coat, helping your pet look well groomed after the visit.',
+                                'large' => 'Designed for pets weighing 11–15 kg, this package provides a more complete grooming session for a larger body and coat than a basic maintenance visit.',
+                                'extra_large' => 'For pets in the 16–20 kg range, this full package supports a more detailed coat refresh and a neat finish suited to a larger pet.',
+                                'xxl' => 'Created for pets weighing 21–25 kg, this package allows for a more thorough grooming refresh to help a very large coat look neat and well cared for.'
+                            ],
+                            'bath' => [
+                                'small' => 'A gentle wash and blow-dry for pets weighing 1–5 kg helps rinse away daily dirt and leave a small coat fresh and easier to brush.',
+                                'medium' => 'For 6–10 kg pets, the bath and blow-dry service washes away everyday grime, then dries the coat so it feels fresher after the visit.',
+                                'large' => 'This wash-and-dry option suits pets in the 11–15 kg range, helping clean a larger coat and remove lingering everyday odors.',
+                                'extra_large' => 'For pets weighing 16–20 kg, bathing followed by blow-drying helps freshen a bigger coat and makes routine brushing easier afterward.',
+                                'xxl' => 'A useful wash-and-dry refresh for very large pets weighing 21–25 kg, helping rinse away built-up dirt and leave the coat clean and dry.'
+                            ]
+                        ];
+
+                        if (strpos($category_lower, 'basic') !== false) {
+                            $visual_class = 'basic';
+                            $tag_class = 'tag-basic';
+                            $tag_text = 'Basic grooming';
+                            $description_group = 'basic';
+                        } elseif (strpos($category_lower, 'full') !== false) {
+                            $visual_class = 'full';
+                            $tag_class = 'tag-full';
+                            $tag_text = 'Full package';
+                            $description_group = 'full';
+                        } elseif (strpos($category_lower, 'bath') !== false) {
+                            $visual_class = 'bath';
+                            $tag_class = 'tag-bath';
+                            $tag_text = 'Bath & care';
+                            $description_group = 'bath';
+                        } else {
+                            $visual_class = 'default';
+                            $tag_class = 'tag-default';
+                            $tag_text = 'Grooming service';
+                            $description_group = 'basic';
+                        }
+
+                        $service_description = $descriptions[$description_group][$size_key]
+                            ?? ('This grooming option is listed for ' . $size_label . ' pets. Review the service name and rate to choose the option that fits your pet.');
 
                     ?>
 
@@ -2658,9 +2693,7 @@ try {
 
                             <p class="service-description">
 
-                                Professional grooming care designed to help your pet
-
-                                stay clean, comfortable, fresh, and looking their best.
+                                <?php echo htmlspecialchars($service_description, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
 
                             </p>
 

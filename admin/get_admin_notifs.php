@@ -64,17 +64,32 @@ if (!$isLoggedIn || $currentRole !== 'admin') {
 
 /*
 |--------------------------------------------------------------------------
-| HELPER: FORMAT NOTIFICATION DATE
+| HELPER: FORMAT NOTIFICATION DATE IN PHILIPPINE TIME
 |--------------------------------------------------------------------------
+| Supabase timestamps may be returned with a UTC offset or without an offset.
+| When no offset is present, interpret the database timestamp as UTC, then
+| explicitly convert it to Asia/Manila. This avoids relying on php.ini's
+| default timezone, which can differ between page requests and this endpoint.
 */
 function formatAdminNotificationDate($value): string
 {
-    if ($value === null || $value === '') {
+    if ($value === null || trim((string)$value) === '') {
         return '';
     }
 
-    $timestamp = strtotime((string)$value);
-    return $timestamp === false ? '' : date('M d, g:i A', $timestamp);
+    try {
+        $timestamp = new DateTimeImmutable(
+            trim((string)$value),
+            new DateTimeZone('UTC')
+        );
+
+        return $timestamp
+            ->setTimezone(new DateTimeZone('Asia/Manila'))
+            ->format('M d, g:i A');
+    } catch (Throwable $e) {
+        error_log('Admin notification timestamp format error: ' . $e->getMessage());
+        return '';
+    }
 }
 
 /*

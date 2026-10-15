@@ -2087,8 +2087,9 @@ try {
                 flex-basis: 34px !important;
             }
         }
+        /* Desktop header uses the same shared layout as petservices.php and grooming.php. */
 
-</style>
+    </style>
 </head>
 <body>
 

@@ -78,7 +78,7 @@ try {
 
 
 
-        ORDER BY category DESC, price ASC
+        ORDER BY category DESC, price ASC, id ASC
 
 
 
@@ -5336,103 +5336,132 @@ try {
 
 
 
+                <?php $hotel_card_positions = []; ?>
                 <?php foreach ($result as $row): ?>
 
 
 
                     <?php
-
-
-
-                        $category = $row['category'];
-
-
-
-                        $category_lower = strtolower($category);
-
-
-
-
-
-
-
-                        if (stripos($category_lower, 'daycare') !== false) {
-
-
-
-                            $visual_class = 'daycare';
-
-
-
-                            $tag_class = 'tag-daycare';
-
-
-
-                            $icon = 'fa-sun';
-
-
-
-                            $tag_text = 'Daycare';
-
-
-
-                            $description = 'A supervised daytime stay where your pet can relax, play, and enjoy a comfortable environment.';
-
-
-
-                        } elseif (stripos($category_lower, 'boarding') !== false) {
-
-
-
-                            $visual_class = 'boarding';
-
-
-
-                            $tag_class = 'tag-boarding';
-
-
-
-                            $icon = 'fa-bed';
-
-
-
-                            $tag_text = 'Overnight boarding';
-
-
-
-                            $description = 'A safe and comfortable place for your pet to stay while you are away.';
-
-
-
-                        } else {
-
-
-
-                            $visual_class = 'default';
-
-
-
-                            $tag_class = 'tag-default';
-
-
-
-                            $icon = 'fa-hotel';
-
-
-
-                            $tag_text = 'Pet hotel';
-
-
-
-                            $description = 'Comfortable pet care designed to give your furry companion a safe and pleasant stay.';
-
-
-
+                        $category = (string)($row['category'] ?? 'Pet Hotel');
+                        $category_lower = strtolower(trim($category));
+                        $service_name_text = trim((string)($row['service_name'] ?? ''));
+                        $service_name_lower = strtolower($service_name_text);
+                        $service_price = (float)($row['price'] ?? 0);
+                        // Client-confirmed hourly daycare rate is ₱30/hour after the first hour,
+                        // regardless of dog/cat type. Normalize stale labels stored in the pricelist.
+                        $display_service_name = $service_name_text;
+                        if (stripos($category, 'daycare') !== false) {
+                            $display_service_name = preg_replace_callback(
+                                '/(\b1st\s+Hour\s*\()([^)]*)(\))/i',
+                                static fn($m) => $m[1] . '+₱30/hr after' . $m[3],
+                                $service_name_text
+                            );
                         }
 
+                        // Track positions only for a safe fallback when a service name has no pet type/size.
+                        $category_key = strtolower(trim($category));
+                        if (!isset($hotel_card_positions[$category_key])) {
+                            $hotel_card_positions[$category_key] = 0;
+                        }
+                        $hotel_position = $hotel_card_positions[$category_key]++;
 
+                        // Read the actual service label first. This supports the site's real labels such as
+                        // Small (1-10kg), Medium (11-20kg), Large (21-50kg), and Cat (All Sizes).
+                        $weight_range = '';
+                        if (preg_match('/(\d+)\s*[-–]\s*(\d+)\s*kg/i', $service_name_text, $range_match)) {
+                            $weight_range = $range_match[1] . '–' . $range_match[2] . ' kg';
+                        }
 
+                        if (preg_match('/\bcat(?:s)?\b/i', $service_name_text)) {
+                            $pet_profile = 'cat';
+                            $pet_description = 'cats of all sizes';
+                        } elseif (preg_match('/\bxxl\b|\bextra[\s-]*large\b/i', $service_name_text)) {
+                            $pet_profile = 'extra_large';
+                            $pet_description = 'extra-large pets' . ($weight_range !== '' ? ' weighing ' . $weight_range : '');
+                        } elseif (preg_match('/\bsmall\b/i', $service_name_text)) {
+                            $pet_profile = 'small';
+                            $pet_description = 'small pets' . ($weight_range !== '' ? ' weighing ' . $weight_range : '');
+                        } elseif (preg_match('/\bmedium\b/i', $service_name_text)) {
+                            $pet_profile = 'medium';
+                            $pet_description = 'medium-sized pets' . ($weight_range !== '' ? ' weighing ' . $weight_range : '');
+                        } elseif (preg_match('/\blarge\b/i', $service_name_text)) {
+                            $pet_profile = 'large';
+                            $pet_description = 'large pets' . ($weight_range !== '' ? ' weighing ' . $weight_range : '');
+                        } elseif ($weight_range !== '') {
+                            $pet_profile = 'sized';
+                            $pet_description = 'pets weighing ' . $weight_range;
+                        } else {
+                            $pet_profile = 'other';
+                            $pet_description = 'your pet';
+                        }
+
+                        if (stripos($category_lower, 'daycare') !== false) {
+                            $visual_class = 'daycare';
+                            $tag_class = 'tag-daycare';
+                            $icon = 'fa-sun';
+                            $tag_text = 'Daycare';
+
+                            switch ($pet_profile) {
+                                case 'cat':
+                                    $description = 'For cats of all sizes, this daycare option provides a supervised daytime place to settle in, rest, and wait comfortably for pickup.';
+                                    break;
+                                case 'small':
+                                    $description = 'For ' . $pet_description . ', this daycare rate offers a supervised place to spend the day, take breaks, and stay comfortable until pickup.';
+                                    break;
+                                case 'medium':
+                                    $description = 'This daycare option is made for ' . $pet_description . ' and provides a comfortable daytime stay with time to settle down and rest before pickup.';
+                                    break;
+                                case 'large':
+                                    $description = 'For ' . $pet_description . ', this daytime service offers a supervised place to stay while you are busy or away from home.';
+                                    break;
+                                case 'extra_large':
+                                    $description = 'This daycare rate is intended for ' . $pet_description . ' that need a daytime place to relax and remain under care until pickup.';
+                                    break;
+                                case 'sized':
+                                    $description = 'This daycare service is for ' . $pet_description . ' and provides a supervised daytime stay with breaks before pickup.';
+                                    break;
+                                default:
+                                    $description = 'This daycare option provides a supervised daytime stay for your pet, with a comfortable place to rest until pickup (service option ' . ($hotel_position + 1) . ').';
+                                    break;
+                            }
+                        } elseif (stripos($category_lower, 'boarding') !== false) {
+                            $visual_class = 'boarding';
+                            $tag_class = 'tag-boarding';
+                            $icon = 'fa-bed';
+                            $tag_text = 'Overnight boarding';
+
+                            switch ($pet_profile) {
+                                case 'cat':
+                                    $description = 'For cats of all sizes, overnight boarding offers a temporary place to rest while you are away, with pickup at the arranged time.';
+                                    break;
+                                case 'small':
+                                    $description = 'For ' . $pet_description . ', overnight boarding provides a temporary place to rest when your pet cannot stay at home with you.';
+                                    break;
+                                case 'medium':
+                                    $description = 'This overnight boarding option suits ' . $pet_description . ' and gives your companion a comfortable place to stay until the arranged pickup time.';
+                                    break;
+                                case 'large':
+                                    $description = 'For ' . $pet_description . ', this boarding service provides a temporary overnight stay at the pet hotel while you are away.';
+                                    break;
+                                case 'extra_large':
+                                    $description = 'This overnight stay is intended for ' . $pet_description . ' that need a place to rest at the pet hotel until pickup.';
+                                    break;
+                                case 'sized':
+                                    $description = 'This boarding rate is for ' . $pet_description . ' and covers a temporary overnight stay at the pet hotel.';
+                                    break;
+                                default:
+                                    $description = 'This pet boarding option gives your pet a temporary place to rest overnight until the arranged pickup time (service option ' . ($hotel_position + 1) . ').';
+                                    break;
+                            }
+                        } else {
+                            $visual_class = 'default';
+                            $tag_class = 'tag-default';
+                            $icon = 'fa-hotel';
+                            $tag_text = 'Pet hotel';
+                            $description = 'This pet hotel option is listed for ' . $pet_description . ' at the displayed rate of ₱' . number_format($service_price, 2) . '.';
+                        }
                     ?>
+
 
 
 
@@ -5496,7 +5525,7 @@ try {
 
 
 
-                                <?php echo htmlspecialchars($row['service_name']); ?>
+                                <?php echo htmlspecialchars($display_service_name); ?>
 
 
 

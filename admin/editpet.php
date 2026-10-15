@@ -51,18 +51,14 @@ if (empty($_SESSION['user_id']) || !is_numeric($_SESSION['user_id'])) {
     exit('Access denied: invalid session.');
 }
 
-// Veterinary roles use their dedicated portal. Pet Hotel Staff are limited to
-// permitted booking functions and cannot open the general pet registry.
+// Veterinary roles use their dedicated portal. Grooming and Pet Hotel Staff
+// may edit pet details, but ownership transfers remain restricted below.
 if (in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)) {
     header('Location: ../staff/staffdashboard.php');
     exit();
 }
-if ($current_role === 'pet_hotel_staff') {
-    header('Location: managebooking.php');
-    exit();
-}
 
-$allowed_pet_roles = ['admin', 'manager', 'receptionist', 'groomer'];
+$allowed_pet_roles = ['admin', 'manager', 'receptionist', 'groomer', 'pet_hotel_staff'];
 if (!in_array($current_role, $allowed_pet_roles, true)) {
     http_response_code(403);
     exit('Access denied. This role cannot edit pet records.');
@@ -234,7 +230,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         ':pet_id' => $pet_id,
                     ];
                 } else {
-                    // Groomers may edit pet details but cannot transfer ownership.
+                    // Grooming and Pet Hotel Staff may edit pet details but cannot transfer ownership.
                     $update_query = "
                         UPDATE pets
                         SET name = :name,

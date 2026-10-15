@@ -32,15 +32,40 @@ $role_aliases = [
 ];
 $current_role = $role_aliases[$raw_role] ?? $raw_role;
 $is_admin = $current_role === 'admin';
-$is_logged_in = ($_SESSION['logged_in'] ?? false) === true;
+$requested_portal = strtolower(trim((string)($_POST['login_portal'] ?? $_GET['portal'] ?? 'admin')));
+$admin_session_valid = (
+    ($_SESSION['logged_in'] ?? false) === true
+    && ($_SESSION['admin_logged_in'] ?? false) === true
+    && $current_role === 'admin'
+    && (int)($_SESSION['user_id'] ?? 0) > 0
+);
+$staff_booking_roles = ['manager', 'receptionist', 'groomer', 'pet_hotel_staff'];
+$staff_session_valid = (
+    ($_SESSION['logged_in'] ?? false) === true
+    && ($_SESSION['staff_logged_in'] ?? false) === true
+    && in_array($current_role, $staff_booking_roles, true)
+    && (int)($_SESSION['user_id'] ?? 0) > 0
+);
 
-if (!$is_logged_in) {
-    header('Location: ../staff/stafflogin.php');
+if (!$admin_session_valid && !$staff_session_valid) {
+    if ($requested_portal === 'staff') {
+        header('Location: ../staff/stafflogin.php');
+    } else {
+        header('Location: ../admin_login.php');
+    }
+    exit();
+}
+
+if ($current_role === 'admin' && !$admin_session_valid) {
+    header('Location: ../admin_login.php');
     exit();
 }
 
 // Veterinary roles use their dedicated portal.
-if (in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)) {
+if (
+    $staff_session_valid === false
+    && in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)
+) {
     header('Location: ../staff/staffdashboard.php');
     exit();
 }
@@ -50,6 +75,297 @@ if (!in_array($current_role, $booking_page_roles, true)) {
     http_response_code(403);
     exit('Access denied. This role cannot access booking management.');
 }
+
+// AJAX endpoint for flexible-time Grooming and Vet walk-ins.
+// Walk-ins may be recorded at any minute during operating hours; they do not
+// have to match the half-hour online appointment start times. Capacity is still
+// checked for the requested service duration and the exact time submitted.
+if (($_GET['ajax'] ?? '') === 'walkin_service_capacity') {
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+    header('Pragma: no-cache');
+
+    $selectedDate = trim((string)($_GET['date'] ?? ''));
+    $selectedTime = trim((string)($_GET['time'] ?? ''));
+    $category = trim((string)($_GET['category'] ?? ''));
+    $specificService = trim((string)($_GET['specific_service'] ?? ''));
+    $dateObj = DateTimeImmutable::createFromFormat('!Y-m-d', $selectedDate, new DateTimeZone('Asia/Manila'));
+    $dateErrors = DateTimeImmutable::getLastErrors();
+    $validDate = $dateObj !== false && $dateObj->format('Y-m-d') === $selectedDate
+        && ($dateErrors === false || ($dateErrors['warning_count'] === 0 && $dateErrors['error_count'] === 0));
+    $timeObj = DateTimeImmutable::createFromFormat('!H:i', $selectedTime, new DateTimeZone('Asia/Manila'));
+    $timeErrors = DateTimeImmutable::getLastErrors();
+    $validTime = $timeObj !== false && $timeObj->format('H:i') === $selectedTime
+        && ($timeErrors === false || ($timeErrors['warning_count'] === 0 && $timeErrors['error_count'] === 0));
+
+    if (!$validDate || !$validTime || !in_array($category, ['Grooming', 'Vet Services'], true) || $specificService === '') {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'available' => false, 'error' => 'Enter a valid date, actual walk-in time, and service.']);
+        exit;
+    }
+
+    $todayManila = new DateTimeImmutable('today', new DateTimeZone('Asia/Manila'));
+    if ($dateObj < $todayManila) {
+        echo json_encode(['success' => true, 'available' => false, 'capacity' => $category === 'Grooming' ? 2 : 1,
+            'remaining_slots' => 0, 'reason' => 'Walk-in bookings cannot be recorded for a past date.']);
+        exit;
+    }
+
+    $startMinutes = ((int)$timeObj->format('H') * 60) + (int)$timeObj->format('i');
+    $durationMinutes = $category === 'Grooming'
+        ? (stripos($specificService, 'Full Grooming Package') !== false ? 120 : 60)
+        : 30;
+    $endMinutes = $startMinutes + $durationMinutes;
+    $timeLabel = $timeObj->format('g:i A');
+    $simultaneousLimit = $category === 'Grooming' ? 2 : 1;
+    $dailyLimit = $category === 'Grooming' ? 10 : 30;
+
+    if ($startMinutes < 9 * 60 || $startMinutes >= 18 * 60 || ($startMinutes >= 12 * 60 && $startMinutes < 13 * 60)) {
+        echo json_encode(['success' => true, 'available' => false, 'capacity' => $simultaneousLimit,
+            'remaining_slots' => 0, 'duration_minutes' => $durationMinutes, 'label' => $timeLabel,
+            'reason' => 'Walk-in time must be during operating hours (9:00 AM–6:00 PM), excluding the 12:00 PM–1:00 PM lunch break.']);
+        exit;
+    }
+    if ($endMinutes > 18 * 60) {
+        echo json_encode(['success' => true, 'available' => false, 'capacity' => $simultaneousLimit,
+            'remaining_slots' => 0, 'duration_minutes' => $durationMinutes, 'label' => $timeLabel,
+            'reason' => 'This service would finish after closing time. Choose an earlier walk-in time.']);
+        exit;
+    }
+    if ($category === 'Vet Services' && in_array((int)$dateObj->format('N'), [3, 6], true)) {
+        echo json_encode(['success' => true, 'available' => false, 'capacity' => $simultaneousLimit,
+            'remaining_slots' => 0, 'duration_minutes' => $durationMinutes, 'label' => $timeLabel,
+            'reason' => 'The veterinarian is not available on Wednesdays and Saturdays.']);
+        exit;
+    }
+
+    try {
+        $activeStatusSql = "LOWER(BTRIM(COALESCE(booking_status, ''))) NOT IN ('cancelled', 'canceled', 'no-show', 'no show', 'noshow', 'for rescheduling')";
+        $existingStmt = $pdo->prepare("
+            SELECT appointment_date::text AS appointment_date,
+                   appointment_time::text AS appointment_time,
+                   checkout_date::text AS checkout_date,
+                   service,
+                   booking_status
+            FROM appointments
+            WHERE {$activeStatusSql}
+              AND (
+                appointment_date = CAST(:selected_date AS date)
+                OR (
+                  LOWER(COALESCE(service, '')) LIKE 'pet hotel%boarding%'
+                  AND appointment_date < CAST(:selected_date_before AS date)
+                  AND COALESCE(checkout_date, appointment_date + 1) > CAST(:selected_date_active AS date)
+                )
+              )
+        ");
+        $existingStmt->execute([
+            ':selected_date' => $selectedDate,
+            ':selected_date_before' => $selectedDate,
+            ':selected_date_active' => $selectedDate
+        ]);
+        $rows = $existingStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+        $dailyTotal = 0;
+        $categoryCount = 0;
+        $overlaps = 0;
+        foreach ($rows as $row) {
+            $storedService = trim((string)($row['service'] ?? ''));
+            $storedDate = substr((string)($row['appointment_date'] ?? ''), 0, 10);
+            if ($storedDate === '') continue;
+            $storedBoarding = stripos($storedService, 'Pet Hotel -') === 0 && stripos($storedService, 'boarding') !== false;
+            $storedCheckout = substr((string)($row['checkout_date'] ?? ''), 0, 10);
+            if ($storedCheckout === '') {
+                $storedCheckout = (new DateTimeImmutable($storedDate, new DateTimeZone('Asia/Manila')))->modify('+1 day')->format('Y-m-d');
+            }
+            $activeOnDate = $storedBoarding
+                ? ($storedDate <= $selectedDate && $storedCheckout > $selectedDate)
+                : ($storedDate === $selectedDate);
+            if (!$activeOnDate) continue;
+
+            $dailyTotal++;
+            if (stripos($storedService, $category . ' -') === 0) {
+                $categoryCount++;
+            }
+
+            // Pet Hotel bookings occupy rooms and daily capacity, but do not
+            // occupy a Grooming or Vet service slot.
+            if (stripos($storedService, $category . ' -') !== 0 || $storedBoarding || $storedDate !== $selectedDate) continue;
+            $storedTime = substr((string)($row['appointment_time'] ?? ''), 0, 5);
+            if (!preg_match('/^\d{2}:\d{2}$/', $storedTime)) continue;
+            $storedStart = ((int)substr($storedTime, 0, 2) * 60) + (int)substr($storedTime, 3, 2);
+            $storedDuration = $category === 'Grooming'
+                ? (stripos($storedService, 'Full Grooming Package') !== false ? 120 : 60)
+                : 30;
+            $storedEnd = $storedStart + $storedDuration;
+            if ($startMinutes < $storedEnd && $endMinutes > $storedStart) $overlaps++;
+        }
+
+        $globalDailyLimit = 20;
+        $remaining = max(0, min($simultaneousLimit - $overlaps, $dailyLimit - $categoryCount, $globalDailyLimit - $dailyTotal));
+        $reason = '';
+        if ($dailyTotal >= $globalDailyLimit) {
+            $reason = 'The overall daily capacity of 20 pets has been reached. Please choose another date.';
+        } elseif ($categoryCount >= $dailyLimit) {
+            $reason = $category . ' has reached its daily capacity. Please choose another date.';
+        } elseif ($overlaps >= $simultaneousLimit) {
+            $reason = $category === 'Grooming'
+                ? 'Both groomers are already busy during this time. Choose a different walk-in time.'
+                : 'The veterinarian is already busy during this time. Choose a different walk-in time.';
+        }
+
+        $isAvailable = $remaining > 0;
+        echo json_encode([
+            'success' => true,
+            'available' => $isAvailable,
+            'capacity' => $simultaneousLimit,
+            'remaining_slots' => $isAvailable ? $remaining : 0,
+            'daily_capacity' => $dailyLimit,
+            'daily_remaining' => max(0, $dailyLimit - $categoryCount),
+            'overall_remaining' => max(0, $globalDailyLimit - $dailyTotal),
+            'duration_minutes' => $durationMinutes,
+            'label' => $timeLabel,
+            'reason' => $isAvailable ? '' : ($reason !== '' ? $reason : 'No service capacity is available at this time.')
+        ], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    } catch (Throwable $e) {
+        error_log('Walk-in service capacity check failed: ' . $e->getMessage());
+        http_response_code(500);
+        echo json_encode(['success' => false, 'available' => false, 'error' => 'Unable to check service availability right now. Please try again.']);
+    }
+    exit;
+}
+
+// AJAX endpoint used by the Add Walk-in form to show Pet Boarding room capacity
+// for every night of the selected stay. Saving is still re-validated by process_walkin.php.
+if (($_GET['ajax'] ?? '') === 'walkin_boarding_capacity') {
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+    header('Pragma: no-cache');
+
+    $checkin = trim((string)($_GET['date'] ?? ''));
+    $checkout = trim((string)($_GET['checkout_date'] ?? ''));
+    $checkinDate = DateTimeImmutable::createFromFormat('!Y-m-d', $checkin, new DateTimeZone('Asia/Manila'));
+    $checkoutDate = DateTimeImmutable::createFromFormat('!Y-m-d', $checkout, new DateTimeZone('Asia/Manila'));
+    $checkinErrors = DateTimeImmutable::getLastErrors();
+    $checkoutErrors = DateTimeImmutable::getLastErrors();
+    $validCheckin = $checkinDate !== false && $checkinDate->format('Y-m-d') === $checkin
+        && ($checkinErrors === false || ($checkinErrors['warning_count'] === 0 && $checkinErrors['error_count'] === 0));
+    $validCheckout = $checkoutDate !== false && $checkoutDate->format('Y-m-d') === $checkout
+        && ($checkoutErrors === false || ($checkoutErrors['warning_count'] === 0 && $checkoutErrors['error_count'] === 0));
+
+    if (!$validCheckin || !$validCheckout || $checkout <= $checkin) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'available' => false, 'error' => 'Choose a valid check-in date and a check-out date at least one day later.']);
+        exit;
+    }
+
+    $nowManila = new DateTimeImmutable('now', new DateTimeZone('Asia/Manila'));
+    $todayManila = $nowManila->format('Y-m-d');
+    $nowMinutes = ((int)$nowManila->format('H') * 60) + (int)$nowManila->format('i');
+    if ($checkin < $todayManila || ($checkin === $todayManila && $nowMinutes >= (9 * 60))) {
+        echo json_encode([
+            'success' => true,
+            'available' => false,
+            'capacity' => 6,
+            'remaining_rooms' => 0,
+            'nights' => (int)$checkinDate->diff($checkoutDate)->days,
+            'reason' => $checkin < $todayManila ? 'The check-in date has already passed.' : 'The 9:00 AM check-in time has already passed today.'
+        ], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+        exit;
+    }
+
+    try {
+        $active_status_sql = "LOWER(BTRIM(COALESCE(booking_status, ''))) NOT IN ('cancelled', 'canceled', 'no-show', 'no show', 'noshow', 'for rescheduling')";
+        $rangeStmt = $pdo->prepare("
+            SELECT appointment_date::text AS appointment_date,
+                   checkout_date::text AS checkout_date,
+                   service
+            FROM appointments
+            WHERE {$active_status_sql}
+              AND appointment_date < CAST(:checkout_date AS date)
+              AND COALESCE(checkout_date, appointment_date + 1) > CAST(:checkin_date AS date)
+            ORDER BY appointment_date
+        ");
+        $rangeStmt->execute([':checkout_date' => $checkout, ':checkin_date' => $checkin]);
+        $overlappingBookings = $rangeStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+        $roomCapacity = 6;
+        $globalDailyCapacity = 20;
+        $remainingMinimum = $roomCapacity;
+        $tightestDate = null;
+        $nightlyAvailability = [];
+        $unavailableReason = '';
+
+        for ($day = $checkinDate; $day < $checkoutDate; $day = $day->modify('+1 day')) {
+            $dayString = $day->format('Y-m-d');
+            $dailyTotal = 0;
+            $hotelCount = 0;
+
+            foreach ($overlappingBookings as $booking) {
+                $existingDate = substr((string)($booking['appointment_date'] ?? ''), 0, 10);
+                if ($existingDate === '') continue;
+                $serviceName = (string)($booking['service'] ?? '');
+                $isHotel = stripos($serviceName, 'Pet Hotel -') === 0;
+                $isBoarding = $isHotel && stripos($serviceName, 'boarding') !== false;
+                $existingCheckout = substr((string)($booking['checkout_date'] ?? ''), 0, 10);
+                if ($existingCheckout === '') {
+                    $existingCheckout = (new DateTimeImmutable($existingDate, new DateTimeZone('Asia/Manila')))->modify('+1 day')->format('Y-m-d');
+                }
+
+                $activeOnDay = $isBoarding
+                    ? ($existingDate <= $dayString && $existingCheckout > $dayString)
+                    : ($existingDate === $dayString);
+                if (!$activeOnDay) continue;
+
+                $dailyTotal++;
+                if ($isHotel) $hotelCount++;
+            }
+
+            $roomsForNight = max(0, min($roomCapacity - $hotelCount, $globalDailyCapacity - $dailyTotal));
+            $nightlyAvailability[] = [
+                'date' => $dayString,
+                'remaining_rooms' => $roomsForNight,
+                'pet_hotel_bookings' => $hotelCount,
+                'total_active_bookings' => $dailyTotal
+            ];
+
+            if ($roomsForNight < $remainingMinimum) {
+                $remainingMinimum = $roomsForNight;
+                $tightestDate = $dayString;
+            }
+            if ($hotelCount >= $roomCapacity) {
+                $unavailableReason = 'Pet Hotel has reached its six-room capacity on ' . $dayString . '.';
+            } elseif ($dailyTotal >= $globalDailyCapacity) {
+                $unavailableReason = 'The overall daily capacity of 20 pets has been reached on ' . $dayString . '.';
+            }
+        }
+
+        $isAvailable = $remainingMinimum > 0;
+        if (!$isAvailable && $unavailableReason === '') {
+            $unavailableReason = 'No room is available for the entire stay. Please choose different dates.';
+        }
+
+        echo json_encode([
+            'success' => true,
+            'available' => $isAvailable,
+            'capacity' => $roomCapacity,
+            'remaining_rooms' => $isAvailable ? $remainingMinimum : 0,
+            'nights' => (int)$checkinDate->diff($checkoutDate)->days,
+            'checkin_date' => $checkin,
+            'checkout_date' => $checkout,
+            'tightest_date' => $tightestDate,
+            'nightly' => $nightlyAvailability,
+            'reason' => $isAvailable ? '' : $unavailableReason
+        ], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    } catch (Throwable $e) {
+        error_log('Walk-in boarding capacity check failed: ' . $e->getMessage());
+        http_response_code(500);
+        echo json_encode(['success' => false, 'available' => false, 'error' => 'Unable to check room availability right now. Please try again.']);
+    }
+    exit;
+}
+
+$is_admin = $admin_session_valid;
+$portal_mode = $is_admin ? 'admin' : 'staff';
 
 if (empty($_SESSION['csrf_token'])) {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
@@ -81,6 +397,8 @@ function renderBookingActionForm(
     echo '<form method="POST" action="managebooking.php" class="booking-action-form" style="display:inline;margin:0;">';
     echo '<input type="hidden" name="booking_action" value="1">';
     echo '<input type="hidden" name="csrf_token" value="' . htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') . '">';
+    $portalForForm = (($_SESSION['admin_logged_in'] ?? false) === true && strtolower(trim((string)($_SESSION['role'] ?? ''))) === 'admin') ? 'admin' : 'staff';
+    echo '<input type="hidden" name="login_portal" value="' . $portalForForm . '">';
     echo '<input type="hidden" name="id" value="' . $bookingId . '">';
     echo '<input type="hidden" name="action" value="' . htmlspecialchars($action, ENT_QUOTES, 'UTF-8') . '">';
     echo '<button type="submit" class="' . htmlspecialchars($buttonClass, ENT_QUOTES, 'UTF-8') . '" title="' . htmlspecialchars($title, ENT_QUOTES, 'UTF-8') . '" onclick="' . htmlspecialchars($confirmJs, ENT_QUOTES, 'UTF-8') . '">';
@@ -194,12 +512,48 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['booking_action'])) {
                 header('Location: managebooking.php');
                 exit();
             }
-            $message = 'GCash verification requested for Booking #' . $id
-                . ' | Customer: ' . (string)($bookingForAccess['customer_name'] ?? 'Unknown')
-                . ' | Service: ' . $accessService
-                . ' | Pet: ' . (string)($bookingForAccess['pet_real_name'] ?? 'Unknown Pet')
-                . ' | Ref: ' . (string)($bookingForAccess['gcash_ref'] ?? 'Not provided')
-                . '. Please verify the actual GCash transaction before marking Paid.';
+            // admin_notifications.message is VARCHAR(255) in Supabase.
+            // Keep each user-controlled field short so Notify Admin never fails
+            // because the combined message exceeds the database column limit.
+            $shortNotificationText = static function ($value, int $maxChars): string {
+                $text = trim((string)$value);
+                $collapsed = preg_replace('/\s+/u', ' ', $text);
+                if (is_string($collapsed)) {
+                    $text = $collapsed;
+                }
+                if (function_exists('mb_substr')) {
+                    return mb_substr($text, 0, $maxChars, 'UTF-8');
+                }
+                if (function_exists('iconv_substr')) {
+                    $short = @iconv_substr($text, 0, $maxChars, 'UTF-8');
+                    if ($short !== false) {
+                        return $short;
+                    }
+                }
+                // The fallback is bounded by bytes, which also remains below the
+                // VARCHAR character limit and works without mbstring/iconv.
+                return substr($text, 0, $maxChars);
+            };
+
+            $customerForNotification = $shortNotificationText($bookingForAccess['customer_name'] ?? 'Unknown', 30);
+            $serviceForNotification = $shortNotificationText($accessService, 60);
+            $petForNotification = $shortNotificationText($bookingForAccess['pet_real_name'] ?? 'Unknown Pet', 25);
+            $referenceForNotification = $shortNotificationText($bookingForAccess['gcash_ref'] ?? 'Not provided', 30);
+
+            $message = 'GCash review | Booking #' . $id
+                . ' | Customer: ' . ($customerForNotification !== '' ? $customerForNotification : 'Unknown')
+                . ' | Service: ' . ($serviceForNotification !== '' ? $serviceForNotification : 'Unknown')
+                . ' | Pet: ' . ($petForNotification !== '' ? $petForNotification : 'Unknown')
+                . ' | Ref: ' . ($referenceForNotification !== '' ? $referenceForNotification : 'None')
+                . ' | Verify before Paid.';
+
+            // Final safety cap for the VARCHAR(255) notification column.
+            if (function_exists('mb_substr')) {
+                $message = mb_substr($message, 0, 250, 'UTF-8');
+            } else {
+                $message = substr($message, 0, 250);
+            }
+
             $notifyStmt = $pdo->prepare('INSERT INTO admin_notifications (message) VALUES (:message)');
             $notifyStmt->execute([':message' => $message]);
             $_SESSION['alert_msg'] = 'Admin notified. Payment remains unverified until the actual GCash transaction is checked.';
@@ -839,6 +1193,8 @@ $total_rows_showing = count($bookings);
 
         .admin-tag { background: var(--brand-blue); color: var(--brand-yellow); padding: 6px 16px; border-radius: 50px; font-size: 10px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; }
         .admin-tag.staff { background: var(--staff-blue); color: white;}
+        /* Match the role badge styling used in managepet.php. */
+        .admin-tag.staff.pet-hotel-staff { background: var(--navy-dark); color: var(--brand-yellow); border: 1px solid var(--brand-yellow); }
 
         .container { padding: 40px; flex-grow: 1; }
 
@@ -1310,7 +1666,7 @@ $total_rows_showing = count($bookings);
                 <?php endif; ?>
                 
                 <div class="profile-wrapper" onclick="toggleProfile(event)">
-                    <span class="admin-tag <?php echo !$is_admin ? 'staff' : ''; ?>">
+                    <span class="admin-tag <?php echo !$is_admin ? 'staff' : ''; ?> <?php echo $current_role === 'pet_hotel_staff' ? 'pet-hotel-staff' : ''; ?>">
                         <?php echo strtoupper($_SESSION['role'] ?? 'ADMIN'); ?>
                     </span>
                     <?php if (!empty($profile_img_path) && file_exists($profile_img_path)): ?>
@@ -1337,11 +1693,15 @@ $total_rows_showing = count($bookings);
 
         <div class="container">
             <?php if (isset($_SESSION['alert_msg'])): ?>
-                <div style="background-color: #dcfce7; color: #166534; padding: 15px; border-radius: 8px; margin-bottom: 20px; font-weight: 600; border-left: 5px solid #16a34a; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
-                    <i class="fas fa-check-circle" style="margin-right: 8px;"></i>
-                    <?php 
-                        echo htmlspecialchars((string)$_SESSION['alert_msg'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); 
-                        unset($_SESSION['alert_msg']); 
+                <?php
+                    $alertText = (string)$_SESSION['alert_msg'];
+                    $alertIsError = (bool)preg_match('/\b(unable|failed|error|invalid|cannot|could not|not changed|not found|access denied)\b/i', $alertText);
+                ?>
+                <div style="background-color: <?php echo $alertIsError ? '#fee2e2' : '#dcfce7'; ?>; color: <?php echo $alertIsError ? '#991b1b' : '#166534'; ?>; padding: 15px; border-radius: 8px; margin-bottom: 20px; font-weight: 600; border-left: 5px solid <?php echo $alertIsError ? '#dc2626' : '#16a34a'; ?>; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                    <i class="fas <?php echo $alertIsError ? 'fa-exclamation-circle' : 'fa-check-circle'; ?>" style="margin-right: 8px;"></i>
+                    <?php
+                        echo htmlspecialchars($alertText, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+                        unset($_SESSION['alert_msg']);
                     ?>
                 </div>
             <?php endif; ?>
@@ -1455,6 +1815,9 @@ $total_rows_showing = count($bookings);
                                         <td>
                                             <span style="font-weight: 600; color: var(--navy-dark);"><?php echo isset($row['appointment_date']) ? date('M d, Y', strtotime($row['appointment_date'])) : 'N/A'; ?></span><br>
                                             <small style="color: #64748b; font-weight: 600;"><i class="far fa-clock"></i> <?php echo htmlspecialchars($row['appointment_time'] ?? ''); ?></small>
+                                            <?php if (stripos((string)($row['service'] ?? ''), 'daycare') !== false && !empty($row['pickup_time'])): ?>
+                                                <br><small style="color: #b77900; font-weight: 700;"><i class="fas fa-clock"></i> Expected pickup: <?php echo htmlspecialchars(date('g:i A', strtotime((string)$row['pickup_time']))); ?></small>
+                                            <?php endif; ?>
                                         </td>
                                         <td style="font-size: 13px; font-weight: 500;"><?php echo htmlspecialchars($row['vet_doctor'] ?? 'Any Available'); ?></td>
                                         
@@ -1562,6 +1925,7 @@ $total_rows_showing = count($bookings);
 
             <form action="../cancel_booking.php" method="POST">
                 <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token, ENT_QUOTES, 'UTF-8'); ?>">
+                <input type="hidden" name="login_portal" value="<?php echo htmlspecialchars($portal_mode, ENT_QUOTES, 'UTF-8'); ?>">
                 <input type="hidden" name="appointment_id" id="cancelAppointmentId">
                 <div class="modal-form-group">
                     <label>Reason for Cancellation *</label>
@@ -1596,6 +1960,7 @@ $total_rows_showing = count($bookings);
             </div>
 
             <form method="POST" action="process_walkin.php" id="walkinForm">
+                <input type="hidden" name="login_portal" value="<?php echo htmlspecialchars($portal_mode, ENT_QUOTES, 'UTF-8'); ?>">
                 <input type="hidden" name="add_walkin" value="1">
                 <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token, ENT_QUOTES, 'UTF-8'); ?>">
 
@@ -1692,8 +2057,29 @@ $total_rows_showing = count($bookings);
                     </div>
                     <div class="modal-form-group">
                         <label>Time *</label>
-                        <input type="time" name="appointment_time" id="walkinTime" required>
+                        <input type="time" name="appointment_time" id="walkinTime" required step="60" min="09:00" max="17:59" value="<?php echo date('H:i'); ?>">
+                        <small style="display:block;margin-top:6px;color:#64748b;font-size:11px;">Enter the actual walk-in time. Grooming and Vet accept any minute during operating hours; availability is checked using the service duration and existing bookings. Pet Boarding uses the standard 9:00 AM check-in.</small>
                     </div>
+                </div>
+
+                <div class="modal-form-group" id="walkinPickupGroup" style="display:none;">
+                    <label>Expected Pickup Time *</label>
+                    <select name="pickup_time" id="walkinPickupTime" onchange="checkWalkinAvailability(); updateWalkinPrice();">
+                        <option value="">Choose expected pickup time</option>
+                    </select>
+                    <small style="display:block;margin-top:6px;color:#64748b;font-size:11px;">Pet Daycare includes the first-hour rate. After the first hour, the additional fee is ₱30 per hour, billed in ₱15 half-hour blocks. Pickup must be by 6:00 PM.</small>
+                </div>
+
+                <div class="modal-form-group" id="walkinCheckoutGroup" style="display:none;">
+                    <label>Check-out Date *</label>
+                    <input type="date" name="checkout_date" id="walkinCheckoutDate">
+                    <small style="display:block;margin-top:6px;color:#64748b;font-size:11px;">Required for Pet Boarding. The check-out date must be at least one day after check-in. Room capacity is checked for every night.</small>
+                </div>
+
+                <div id="walkinCapacityBox" style="display:none;margin:0 0 15px;padding:12px 14px;border:1px solid #cbd5e1;border-radius:10px;background:#f8fafc;" role="status" aria-live="polite">
+                    <div id="walkinCapacityTitle" style="font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.35px;color:#334155;">Service Availability</div>
+                    <div id="walkinCapacityText" style="font-size:18px;font-weight:800;color:#0f172a;margin-top:3px;">Choose a service, date, and time to check availability.</div>
+                    <div id="walkinCapacityNote" style="font-size:11px;color:#64748b;margin-top:4px;"></div>
                 </div>
 
                 <div class="modal-form-group">
@@ -1740,7 +2126,7 @@ $total_rows_showing = count($bookings);
                     "Vaccination - 8 in 1": { "default": 750 }
                 },
                 "Pet Hotel": {
-                    "Pet Daycare (1st Hour - Succeeding fees apply)": { "Small (1-5kg)": 100, "Medium (6-10kg)": 100, "Large (11-15kg)": 150, "Extra Large (16-20kg)": 150, "XXL Large (21-25kg)": 200 },
+                    "Pet Daycare (1st Hour - Succeeding fees apply)": { "Small (1-10kg)": 100, "Medium (11-20kg)": 150, "Large (21-50kg)": 200 },
                     "Pet Boarding (Overnight)": { "Small (1-5kg)": 500, "Medium (6-10kg)": 500, "Large (11-15kg)": 600, "Extra Large (16-20kg)": 600, "XXL Large (21-25kg)": 800 }
                 }
             },
@@ -1761,15 +2147,59 @@ $total_rows_showing = count($bookings);
             }
         };
 
-        function getWalkinSizeFromWeight(weight) {
+        function getWalkinSizeFromWeight(weight, petType = '', category = '', service = '') {
             const kg = Number(weight);
             if (!Number.isFinite(kg) || kg <= 0) return '';
+            const isDaycare = category === 'Pet Hotel' && service.toLowerCase().includes('daycare');
+            if (isDaycare) {
+                if (petType === 'Cat') return 'Cat (All Sizes)';
+                if (kg <= 10) return 'Small (1-10kg)';
+                if (kg <= 20) return 'Medium (11-20kg)';
+                if (kg <= 50) return 'Large (21-50kg)';
+                return '';
+            }
             if (kg <= 5) return 'Small (1-5kg)';
             if (kg <= 10) return 'Medium (6-10kg)';
             if (kg <= 15) return 'Large (11-15kg)';
             if (kg <= 20) return 'Extra Large (16-20kg)';
             if (kg <= 25) return 'XXL Large (21-25kg)';
             return '';
+        }
+
+        function isWalkinDaycareSelected() {
+            return document.getElementById('walkinCategory').value === 'Pet Hotel' &&
+                document.getElementById('walkinService').value.toLowerCase().includes('daycare');
+        }
+
+        function walkinTimeToMinutes(value) {
+            const match = String(value || '').match(/^(\d{1,2}):(\d{2})$/);
+            if (!match) return null;
+            const hour = Number(match[1]);
+            const minute = Number(match[2]);
+            if (hour > 23 || minute > 59) return null;
+            return hour * 60 + minute;
+        }
+
+        function populateWalkinDaycarePickupTimes() {
+            const select = document.getElementById('walkinPickupTime');
+            const startInput = document.getElementById('walkinTime');
+            if (!select || !startInput) return;
+            const previous = select.value;
+            const start = walkinTimeToMinutes(startInput.value);
+            select.innerHTML = '';
+            const placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.textContent = start === null ? 'Choose drop-off time first' : 'Choose expected pickup time';
+            select.appendChild(placeholder);
+            if (start !== null && start % 30 === 0 && start >= 9 * 60 && start < 18 * 60 && !(start >= 12 * 60 && start < 13 * 60)) {
+                for (let value = start + 30; value <= 18 * 60; value += 30) {
+                    const option = document.createElement('option');
+                    option.value = String(Math.floor(value / 60)).padStart(2, '0') + ':' + String(value % 60).padStart(2, '0');
+                    option.textContent = new Date(2000, 0, 1, Math.floor(value / 60), value % 60).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+                    select.appendChild(option);
+                }
+            }
+            if (Array.from(select.options).some(option => option.value === previous)) select.value = previous;
         }
 
         function updateWalkinServices() {
@@ -1809,7 +2239,325 @@ $total_rows_showing = count($bookings);
                 haircutSelect.value = '';
             }
 
+            const checkoutGroup = document.getElementById('walkinCheckoutGroup');
+            const checkoutInput = document.getElementById('walkinCheckoutDate');
+            const isBoarding = document.getElementById('walkinCategory').value === 'Pet Hotel'
+                && service.toLowerCase().includes('boarding');
+            const isDaycare = document.getElementById('walkinCategory').value === 'Pet Hotel'
+                && service.toLowerCase().includes('daycare');
+            const pickupGroup = document.getElementById('walkinPickupGroup');
+            const pickupInput = document.getElementById('walkinPickupTime');
+            const weightInput = document.getElementById('walkinWeight');
+            if (pickupGroup && pickupInput) {
+                pickupGroup.style.display = isDaycare ? 'block' : 'none';
+                pickupInput.required = isDaycare;
+                if (!isDaycare) pickupInput.value = '';
+            }
+            if (weightInput) {
+                weightInput.max = isDaycare ? '50' : '25';
+                weightInput.placeholder = isDaycare ? 'e.g. 18.5 (up to 50 kg for dogs)' : 'e.g. 7.5';
+            }
+            if (isDaycare) populateWalkinDaycarePickupTimes();
+            checkoutGroup.style.display = isBoarding ? 'block' : 'none';
+            checkoutInput.required = isBoarding;
+            if (!isBoarding) checkoutInput.value = '';
+
+            checkWalkinAvailability();
             updateWalkinPrice();
+        }
+
+        function getWalkinNights(checkInDate, checkOutDate) {
+            if (!checkInDate || !checkOutDate) return 0;
+
+            const checkInParts = checkInDate.split('-').map(Number);
+            const checkOutParts = checkOutDate.split('-').map(Number);
+            if (checkInParts.length !== 3 || checkOutParts.length !== 3 ||
+                checkInParts.some(Number.isNaN) || checkOutParts.some(Number.isNaN)) {
+                return 0;
+            }
+
+            // UTC date arithmetic avoids daylight-saving/timezone shifts.
+            const checkInUtc = Date.UTC(checkInParts[0], checkInParts[1] - 1, checkInParts[2]);
+            const checkOutUtc = Date.UTC(checkOutParts[0], checkOutParts[1] - 1, checkOutParts[2]);
+            const difference = Math.round((checkOutUtc - checkInUtc) / 86400000);
+            return difference > 0 ? difference : 0;
+        }
+
+        function formatWalkinDate(dateValue) {
+            if (!dateValue) return '';
+            const parts = dateValue.split('-').map(Number);
+            if (parts.length !== 3 || parts.some(Number.isNaN)) return dateValue;
+            return new Date(parts[0], parts[1] - 1, parts[2]).toLocaleDateString('en-PH', {
+                month: 'short', day: 'numeric', year: 'numeric'
+            });
+        }
+
+        let walkinAvailabilityRequestId = 0;
+        let walkinAvailabilityState = 'idle';
+
+        function setWalkinCapacityMessage(state, title, message, note) {
+            const box = document.getElementById('walkinCapacityBox');
+            const titleEl = document.getElementById('walkinCapacityTitle');
+            const messageEl = document.getElementById('walkinCapacityText');
+            const noteEl = document.getElementById('walkinCapacityNote');
+            if (!box || !titleEl || !messageEl || !noteEl) return;
+
+            box.style.display = 'block';
+            titleEl.textContent = title;
+            messageEl.textContent = message;
+            noteEl.textContent = note || '';
+
+            if (state === 'available') {
+                box.style.background = '#f0fdf4';
+                box.style.borderColor = '#86efac';
+                titleEl.style.color = '#166534';
+                messageEl.style.color = '#166534';
+            } else if (state === 'full' || state === 'error') {
+                box.style.background = '#fef2f2';
+                box.style.borderColor = '#fca5a5';
+                titleEl.style.color = '#991b1b';
+                messageEl.style.color = '#991b1b';
+            } else {
+                box.style.background = '#f8fafc';
+                box.style.borderColor = '#cbd5e1';
+                titleEl.style.color = '#334155';
+                messageEl.style.color = '#0f172a';
+            }
+        }
+
+        function checkWalkinAvailability() {
+            const category = document.getElementById('walkinCategory').value;
+            const service = document.getElementById('walkinService').value;
+            const appointmentDate = document.getElementById('walkinDate').value;
+            const appointmentTime = document.getElementById('walkinTime').value;
+            const checkOutDate = document.getElementById('walkinCheckoutDate').value;
+            const isBoarding = category === 'Pet Hotel' && service.toLowerCase().includes('boarding');
+            const box = document.getElementById('walkinCapacityBox');
+            const saveBtn = document.getElementById('walkinSaveBtn');
+            const requestId = ++walkinAvailabilityRequestId;
+
+            const disableSaveWhileChecking = () => {
+                if (!saveBtn) return;
+                saveBtn.disabled = true;
+                saveBtn.style.opacity = '.55';
+                saveBtn.style.cursor = 'not-allowed';
+            };
+
+            if (!category || !service || !appointmentDate) {
+                walkinAvailabilityState = 'idle';
+                if (box) box.style.display = 'none';
+                disableSaveWhileChecking();
+                return;
+            }
+
+            if (isBoarding) {
+                if (!checkOutDate || checkOutDate <= appointmentDate) {
+                    walkinAvailabilityState = 'invalid';
+                    setWalkinCapacityMessage('checking', 'Room Availability', 'Choose a valid check-in and check-out date.', 'Room capacity is checked for every night from check-in up to, but not including, check-out.');
+                    disableSaveWhileChecking();
+                    updateWalkinPrice();
+                    return;
+                }
+
+                walkinAvailabilityState = 'checking';
+                setWalkinCapacityMessage('checking', 'Room Availability', 'Checking available rooms…', 'Please wait while the system checks each night of the stay.');
+                disableSaveWhileChecking();
+
+                const query = new URLSearchParams({
+                    ajax: 'walkin_boarding_capacity',
+                    date: appointmentDate,
+                    checkout_date: checkOutDate,
+                    portal: new URLSearchParams(window.location.search).get('portal') || 'admin'
+                });
+
+                fetch(window.location.pathname + '?' + query.toString(), { cache: 'no-store', credentials: 'same-origin' })
+                    .then(response => response.json().then(data => ({ ok: response.ok, data })))
+                    .then(result => {
+                        if (requestId !== walkinAvailabilityRequestId) return;
+                        const data = result.data || {};
+                        if (!result.ok || data.success !== true) {
+                            walkinAvailabilityState = 'error';
+                            setWalkinCapacityMessage('error', 'Room Availability', 'Could not check available rooms.', data.error || 'Refresh the page and try again.');
+                        } else if (data.available === true && Number(data.remaining_rooms) > 0) {
+                            walkinAvailabilityState = 'available';
+                            const remaining = Number(data.remaining_rooms);
+                            const capacity = Number(data.capacity) || 6;
+                            const dateNote = data.tightest_date ? 'Lowest availability is on ' + formatWalkinDate(data.tightest_date) + '. ' : '';
+                            setWalkinCapacityMessage('available', 'Room Availability', remaining + ' of ' + capacity + ' rooms available for the full stay', dateNote + 'Capacity checked for all ' + Number(data.nights || getWalkinNights(appointmentDate, checkOutDate)) + ' night(s).');
+                        } else {
+                            walkinAvailabilityState = 'full';
+                            setWalkinCapacityMessage('full', 'Room Availability', 'No room available for the full stay.', data.reason || 'Choose different check-in or check-out dates.');
+                        }
+                        updateWalkinPrice();
+                    })
+                    .catch(() => {
+                        if (requestId !== walkinAvailabilityRequestId) return;
+                        walkinAvailabilityState = 'error';
+                        setWalkinCapacityMessage('error', 'Room Availability', 'Could not check available rooms.', 'Check your connection and try again.');
+                        updateWalkinPrice();
+                    });
+                return;
+            }
+
+            if (category === 'Pet Hotel' && service.toLowerCase().includes('daycare')) {
+                const pickupTime = document.getElementById('walkinPickupTime').value;
+                const title = 'Pet Daycare Room Availability';
+                if (!appointmentTime || !pickupTime) {
+                    walkinAvailabilityState = 'invalid';
+                    setWalkinCapacityMessage('checking', title, 'Choose drop-off and expected pickup times.', 'Pet Daycare is billed from the first hour, then ₱15 for each succeeding half-hour block.');
+                    disableSaveWhileChecking();
+                    updateWalkinPrice();
+                    return;
+                }
+                walkinAvailabilityState = 'checking';
+                setWalkinCapacityMessage('checking', title, 'Checking room capacity for the complete stay…', 'The system checks the entire drop-off to pickup interval.');
+                disableSaveWhileChecking();
+                const query = new URLSearchParams({
+                    date: appointmentDate,
+                    category: category,
+                    specific_service: service,
+                    dropoff_time: appointmentTime,
+                    pickup_time: pickupTime
+                });
+                fetch('../check_slots.php?' + query.toString(), { cache: 'no-store', credentials: 'same-origin' })
+                    .then(response => response.json().then(data => ({ ok: response.ok, data })))
+                    .then(result => {
+                        if (requestId !== walkinAvailabilityRequestId) return;
+                        const data = result.data || {};
+                        if (!result.ok || data.error) {
+                            walkinAvailabilityState = 'error';
+                            setWalkinCapacityMessage('error', title, 'Could not check Pet Daycare room availability.', data.error || 'Refresh the page and try again.');
+                        } else if (data.available === true && Number(data.remaining_slots) > 0) {
+                            walkinAvailabilityState = 'available';
+                            const remaining = Number(data.remaining_slots);
+                            setWalkinCapacityMessage('available', title, remaining + ' room(s) available during the full interval.', 'Stay duration: ' + (data.duration_display || 'selected interval') + '.');
+                        } else {
+                            walkinAvailabilityState = 'full';
+                            setWalkinCapacityMessage('full', title, 'No Pet Daycare room is available for the full interval.', data.reason || 'Choose another drop-off or pickup time.');
+                        }
+                        updateWalkinPrice();
+                    })
+                    .catch(() => {
+                        if (requestId !== walkinAvailabilityRequestId) return;
+                        walkinAvailabilityState = 'error';
+                        setWalkinCapacityMessage('error', title, 'Could not check Pet Daycare room availability.', 'Check your connection and try again.');
+                        updateWalkinPrice();
+                    });
+                return;
+            }
+
+            // Grooming and Vet walk-ins may use any actual minute, not only the
+            // half-hour start times offered for online reservations. Check the exact
+            // entered time and service duration while retaining capacity safeguards.
+            if (category === 'Grooming' || category === 'Vet Services') {
+                const title = category + ' Availability';
+                if (!appointmentTime) {
+                    walkinAvailabilityState = 'invalid';
+                    setWalkinCapacityMessage('checking', title, 'Enter the actual walk-in time.', 'Any minute is accepted during operating hours, subject to service duration and capacity.');
+                    disableSaveWhileChecking();
+                    updateWalkinPrice();
+                    return;
+                }
+
+                walkinAvailabilityState = 'checking';
+                setWalkinCapacityMessage('checking', title, 'Checking availability at ' + appointmentTime + '…', 'Checking the exact walk-in time, service duration, daily limits, and existing bookings.');
+                disableSaveWhileChecking();
+                const query = new URLSearchParams({
+                    ajax: 'walkin_service_capacity',
+                    date: appointmentDate,
+                    time: appointmentTime,
+                    category: category,
+                    specific_service: service
+                });
+                fetch(window.location.pathname + '?' + query.toString(), { cache: 'no-store', credentials: 'same-origin' })
+                    .then(response => response.json().then(data => ({ ok: response.ok, data })))
+                    .then(result => {
+                        if (requestId !== walkinAvailabilityRequestId) return;
+                        const data = result.data || {};
+                        if (!result.ok || data.success !== true) {
+                            walkinAvailabilityState = 'error';
+                            setWalkinCapacityMessage('error', title, 'Could not check service availability.', data.error || 'Refresh the page and try again.');
+                        } else if (data.available === true && Number(data.remaining_slots) > 0) {
+                            walkinAvailabilityState = 'available';
+                            const remaining = Number(data.remaining_slots);
+                            const capacity = Number(data.capacity) || (category === 'Grooming' ? 2 : 1);
+                            const resource = category === 'Grooming' ? 'groomer slot(s)' : 'vet slot(s)';
+                            setWalkinCapacityMessage('available', title, remaining + ' of ' + capacity + ' ' + resource + ' available at ' + (data.label || appointmentTime),
+                                'Actual walk-in time will be recorded. Estimated service duration: ' + Number(data.duration_minutes || 0) + ' minutes.');
+                        } else {
+                            walkinAvailabilityState = 'full';
+                            setWalkinCapacityMessage('full', title, 'Walk-in unavailable at ' + (data.label || appointmentTime) + '.', data.reason || 'Choose another time or date.');
+                        }
+                        updateWalkinPrice();
+                    })
+                    .catch(() => {
+                        if (requestId !== walkinAvailabilityRequestId) return;
+                        walkinAvailabilityState = 'error';
+                        setWalkinCapacityMessage('error', title, 'Could not check service availability.', 'Check your connection and try again.');
+                        updateWalkinPrice();
+                    });
+                return;
+            }
+
+            // Other non-boarding services keep the existing scheduled-slot check.
+            walkinAvailabilityState = 'checking';
+            const title = category + ' Availability';
+            setWalkinCapacityMessage('checking', title, 'Checking available appointment times…', 'Checking existing bookings, service duration, staff capacity, and daily limits.');
+            disableSaveWhileChecking();
+
+            const query = new URLSearchParams({
+                date: appointmentDate,
+                category: category,
+                specific_service: service
+            });
+
+            fetch('../check_slots.php?' + query.toString(), { cache: 'no-store', credentials: 'same-origin' })
+                .then(response => response.json().then(data => ({ ok: response.ok, data })))
+                .then(result => {
+                    if (requestId !== walkinAvailabilityRequestId) return;
+                    const data = result.data || {};
+                    if (!result.ok || !Array.isArray(data.slots)) {
+                        walkinAvailabilityState = 'error';
+                        setWalkinCapacityMessage('error', title, 'Could not check service availability.', data.error || 'Refresh the page and try again.');
+                        updateWalkinPrice();
+                        return;
+                    }
+
+                    const availableTimes = Number(data.available_slots) || 0;
+                    if (!appointmentTime) {
+                        if (availableTimes > 0) {
+                            walkinAvailabilityState = 'available';
+                            setWalkinCapacityMessage('available', title, availableTimes + ' appointment start times available', 'Choose a time to check the exact capacity for that appointment.');
+                        } else {
+                            walkinAvailabilityState = 'full';
+                            setWalkinCapacityMessage('full', title, 'No appointment times available for this date.', data.full_reason || 'Choose another date.');
+                        }
+                        updateWalkinPrice();
+                        return;
+                    }
+
+                    const selectedSlot = data.slots.find(slot => String(slot.time || '').slice(0, 5) === appointmentTime.slice(0, 5));
+                    if (!selectedSlot) {
+                        walkinAvailabilityState = 'invalid';
+                        setWalkinCapacityMessage('checking', title, 'Choose a valid 30-minute start time.', 'Available start times are on the half-hour (for example, 9:00 AM or 9:30 AM).');
+                    } else if (selectedSlot.available !== true) {
+                        walkinAvailabilityState = 'full';
+                        setWalkinCapacityMessage('full', title, 'No capacity at ' + selectedSlot.label + '.', selectedSlot.reason || data.full_reason || (availableTimes + ' other start time(s) may be available on this date.'));
+                    } else {
+                        walkinAvailabilityState = 'available';
+                        const remaining = Number(selectedSlot.remaining_slots) || 0;
+                        const capacity = Number(selectedSlot.capacity) || Number(data.simultaneous_capacity) || 1;
+                        const resource = category === 'Grooming' ? 'groomer slot(s)' : (category === 'Vet Services' ? 'vet slot(s)' : 'Pet Hotel slot(s)');
+                        setWalkinCapacityMessage('available', title, remaining + ' of ' + capacity + ' ' + resource + ' available at ' + selectedSlot.label, availableTimes + ' appointment start time(s) available on this date. Service duration: ' + Number(selectedSlot.duration_minutes || data.duration_minutes || 0) + ' minutes.');
+                    }
+                    updateWalkinPrice();
+                })
+                .catch(() => {
+                    if (requestId !== walkinAvailabilityRequestId) return;
+                    walkinAvailabilityState = 'error';
+                    setWalkinCapacityMessage('error', title, 'Could not check service availability.', 'Check your connection and try again.');
+                    updateWalkinPrice();
+                });
         }
 
         function updateWalkinPrice() {
@@ -1817,46 +2565,96 @@ $total_rows_showing = count($bookings);
             const category = document.getElementById('walkinCategory').value;
             const service = document.getElementById('walkinService').value;
             const weight = document.getElementById('walkinWeight').value;
-            const size = getWalkinSizeFromWeight(weight);
+            const checkInDate = document.getElementById('walkinDate').value;
+            const checkOutDate = document.getElementById('walkinCheckoutDate').value;
+            const pickupTime = document.getElementById('walkinPickupTime').value;
+            const isDaycare = category === 'Pet Hotel' && service.toLowerCase().includes('daycare');
+            const size = getWalkinSizeFromWeight(weight, petType, category, service);
             const priceBox = document.getElementById('walkinPriceBox');
             const priceText = document.getElementById('walkinPriceText');
             const priceNote = document.getElementById('walkinPriceNote');
             const amountInput = document.getElementById('walkinAmount');
             const saveBtn = document.getElementById('walkinSaveBtn');
             const serviceData = walkinPricingData[petType]?.[category]?.[service];
+            const isBoarding = category === 'Pet Hotel' && service.toLowerCase().includes('boarding');
 
-            let price = 0;
-            priceNote.textContent = '';
+            let pricePerService = 0;
+            let priceNoteText = '';
 
             if (serviceData) {
                 if (serviceData.default !== undefined) {
-                    price = Number(serviceData.default);
-                    priceNote.textContent = 'Fixed service price.';
+                    pricePerService = Number(serviceData.default);
+                    priceNoteText = 'Fixed service price.';
                 } else if (size && serviceData[size] !== undefined) {
-                    price = Number(serviceData[size]);
-                    priceNote.textContent = 'Based on ' + Number(weight).toFixed(1).replace('.0','') + ' kg (' + size + ').';
+                    pricePerService = Number(serviceData[size]);
+                    priceNoteText = 'Based on ' + Number(weight).toFixed(1).replace('.0','') + ' kg (' + size + ').';
                 }
 
                 if (service === 'Pet Daycare (1st Hour - Succeeding fees apply)') {
-                    priceNote.textContent = 'Price shown is for the first hour; succeeding-hour fees apply based on clinic pricing.';
+                    priceNoteText = 'Price shown is for the first hour; succeeding-hour fees apply based on clinic pricing.';
                 }
             }
 
-            const valid = price > 0 && petType && category && service && Number(weight) > 0;
-            if (valid) {
-                priceText.textContent = '₱' + price.toFixed(2);
-                priceBox.style.display = 'block';
-                amountInput.value = price.toFixed(2);
-                saveBtn.disabled = false;
-                saveBtn.style.opacity = '1';
-                saveBtn.style.cursor = 'pointer';
-            } else {
+            const baseValid = pricePerService > 0 && petType && category && service && Number(weight) > 0;
+            if (!baseValid) {
                 priceBox.style.display = 'none';
                 amountInput.value = '';
                 saveBtn.disabled = true;
                 saveBtn.style.opacity = '.55';
                 saveBtn.style.cursor = 'not-allowed';
+                return;
             }
+
+            let totalPrice = pricePerService;
+            if (isDaycare) {
+                const startMinutes = walkinTimeToMinutes(document.getElementById('walkinTime').value);
+                const endMinutes = walkinTimeToMinutes(pickupTime);
+                if (startMinutes === null || endMinutes === null || endMinutes <= startMinutes) {
+                    priceText.textContent = '₱' + pricePerService.toFixed(2) + ' first-hour rate';
+                    priceNote.textContent = 'Choose valid drop-off and expected pickup times to calculate the full daycare fee.';
+                    priceBox.style.display = 'block';
+                    amountInput.value = '';
+                    saveBtn.disabled = true;
+                    saveBtn.style.opacity = '.55';
+                    saveBtn.style.cursor = 'not-allowed';
+                    return;
+                }
+                const stayMinutes = endMinutes - startMinutes;
+                const extraHalfHourBlocks = Math.max(0, Math.ceil((stayMinutes - 60) / 30));
+                const extraFee = extraHalfHourBlocks * 15;
+                totalPrice = pricePerService + extraFee;
+                const hoursText = Math.floor(stayMinutes / 60) + 'h ' + (stayMinutes % 60) + 'm';
+                priceNoteText = 'Pet Daycare: first hour ₱' + pricePerService.toFixed(2) + ' + ₱' + extraFee.toFixed(2) +
+                    ' extra (' + extraHalfHourBlocks + ' half-hour block(s) at ₱15 each; stay ' + hoursText + ').';
+            }
+            if (isBoarding) {
+                const nights = getWalkinNights(checkInDate, checkOutDate);
+                if (nights < 1) {
+                    priceText.textContent = '₱' + pricePerService.toFixed(2) + ' / night';
+                    priceNote.textContent = 'Price per night. Select a check-out date after check-in to calculate the total.';
+                    priceBox.style.display = 'block';
+                    amountInput.value = '';
+                    saveBtn.disabled = true;
+                    saveBtn.style.opacity = '.55';
+                    saveBtn.style.cursor = 'not-allowed';
+                    return;
+                }
+
+                totalPrice = pricePerService * nights;
+                priceNoteText = '₱' + pricePerService.toFixed(2) + ' per night × ' + nights +
+                    (nights === 1 ? ' night' : ' nights') + ' (' + formatWalkinDate(checkInDate) +
+                    ' to ' + formatWalkinDate(checkOutDate) + ').';
+            }
+
+            priceText.textContent = '₱' + totalPrice.toFixed(2);
+            priceNote.textContent = priceNoteText;
+            priceBox.style.display = 'block';
+            amountInput.value = totalPrice.toFixed(2);
+            const appointmentTime = document.getElementById('walkinTime').value;
+            const capacityAllowsSave = walkinAvailabilityState === 'available' && appointmentTime !== '' && (!isDaycare || pickupTime !== '');
+            saveBtn.disabled = !capacityAllowsSave;
+            saveBtn.style.opacity = capacityAllowsSave ? '1' : '.55';
+            saveBtn.style.cursor = capacityAllowsSave ? 'pointer' : 'not-allowed';
         }
 
         function resetWalkinForm() {
@@ -1870,14 +2668,59 @@ $total_rows_showing = count($bookings);
             document.getElementById('walkinSaveBtn').disabled = true;
             document.getElementById('walkinSaveBtn').style.opacity = '.55';
             document.getElementById('walkinSaveBtn').style.cursor = 'not-allowed';
-            document.getElementById('walkinDate').value = '<?php echo date('Y-m-d'); ?>';
+            const now = new Date();
+            document.getElementById('walkinDate').value = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+            document.getElementById('walkinTime').value = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
+            document.getElementById('walkinCheckoutGroup').style.display = 'none';
+            document.getElementById('walkinPickupGroup').style.display = 'none';
+            document.getElementById('walkinPickupTime').required = false;
+            document.getElementById('walkinPickupTime').innerHTML = '<option value="">Choose expected pickup time</option>';
+            document.getElementById('walkinCheckoutDate').required = false;
+            document.getElementById('walkinCheckoutDate').value = '';
+            walkinAvailabilityRequestId++;
+            walkinAvailabilityState = 'idle';
+            document.getElementById('walkinCapacityBox').style.display = 'none';
+            const checkInParts = document.getElementById('walkinDate').value.split('-').map(Number);
+            const firstAllowedCheckout = new Date(checkInParts[0], checkInParts[1] - 1, checkInParts[2] + 1);
+            document.getElementById('walkinCheckoutDate').min = firstAllowedCheckout.getFullYear() + '-' + String(firstAllowedCheckout.getMonth() + 1).padStart(2, '0') + '-' + String(firstAllowedCheckout.getDate()).padStart(2, '0');
         }
+
+        document.getElementById('walkinDate').addEventListener('change', function () {
+            const checkout = document.getElementById('walkinCheckoutDate');
+            if (this.value) {
+                const parts = this.value.split('-').map(Number);
+                const minDate = new Date(parts[0], parts[1] - 1, parts[2] + 1);
+                checkout.min = minDate.getFullYear() + '-' + String(minDate.getMonth() + 1).padStart(2, '0') + '-' + String(minDate.getDate()).padStart(2, '0');
+            } else {
+                checkout.min = '';
+            }
+            if (checkout.value && checkout.value <= this.value) checkout.value = '';
+            checkWalkinAvailability();
+            updateWalkinPrice();
+        });
+
+        document.getElementById('walkinCheckoutDate').addEventListener('change', function () {
+            checkWalkinAvailability();
+            updateWalkinPrice();
+        });
+
+        document.getElementById('walkinTime').addEventListener('change', function () {
+            if (isWalkinDaycareSelected()) populateWalkinDaycarePickupTimes();
+            checkWalkinAvailability();
+            updateWalkinPrice();
+        });
+
+        document.getElementById('walkinPickupTime').addEventListener('change', function () {
+            checkWalkinAvailability();
+            updateWalkinPrice();
+        });
 
         function openWalkinModal() {
             resetWalkinForm();
             document.getElementById('walkinModal').style.display = 'flex';
         }
         function closeWalkinModal() {
+            walkinAvailabilityRequestId++;
             document.getElementById('walkinModal').style.display = 'none';
         }
 
