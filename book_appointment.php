@@ -5,6 +5,27 @@ include 'db_supabase.php';
 // Set timezone to Philippines
 date_default_timezone_set('Asia/Manila');
 
+/**
+ * Format notification timestamps consistently with the Customer Dashboard.
+ * Supabase values without an explicit timezone are treated as UTC.
+ */
+function formatCustomerNotificationTimestamp($value, string $format): string
+{
+    if ($value === null || trim((string)$value) === '') {
+        return '';
+    }
+
+    try {
+        $notificationDate = new DateTimeImmutable((string)$value, new DateTimeZone('UTC'));
+        return $notificationDate
+            ->setTimezone(new DateTimeZone('Asia/Manila'))
+            ->format($format);
+    } catch (Throwable $e) {
+        error_log('Customer notification timestamp formatting failed: ' . $e->getMessage());
+        return '';
+    }
+}
+
 
 /**
  * Convert a stored pet weight to the size bracket used by booking prices.
@@ -253,6 +274,95 @@ function bookingWouldExceedCapacity(int $candidateStart, int $candidateEnd, arra
     return false;
 }
 
+
+/** Parse admin-entered availability-adjustment times (not limited to online start slots). */
+function bookingAdjustmentTimeToMinutes($time): ?int
+{
+    $value = trim((string)($time ?? ''));
+    if (!preg_match('/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/', $value, $matches)) return null;
+    $hour = (int)$matches[1];
+    $minute = (int)$matches[2];
+    if ($hour > 23 || $minute > 59) return null;
+    return ($hour * 60) + $minute;
+}
+
+/** Load active Admin-created manual adjustments intersecting [startDate, endDateExclusive). */
+function bookingLoadManualAvailabilityAdjustments(PDO $pdo, string $startDate, string $endDateExclusive): array
+{
+    static $tableExists = null;
+    if ($tableExists === null) {
+        $tableExists = (bool)$pdo->query("SELECT to_regclass('public.availability_adjustments')")->fetchColumn();
+    }
+    if (!$tableExists) return [];
+
+    $stmt = $pdo->prepare("\n        SELECT id, service_category, COALESCE(specific_service, '') AS specific_service,\n               start_date::text AS start_date, end_date::text AS end_date,\n               start_time::text AS start_time, end_time::text AS end_time,\n               LOWER(BTRIM(adjustment_type)) AS adjustment_type, quantity, reason\n        FROM public.availability_adjustments\n        WHERE is_active = TRUE\n          AND start_date < CAST(:range_end AS date)\n          AND end_date > CAST(:range_start AS date)\n        ORDER BY start_date, start_time NULLS FIRST, id\n    ");
+    $stmt->execute([':range_start' => $startDate, ':range_end' => $endDateExclusive]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+}
+
+/** Count manual occupied pets/rooms towards the global and category daily limits. */
+function bookingManualOccupiedUnitsForDate(array $adjustments, string $date, ?string $category = null): int
+{
+    $total = 0;
+    foreach ($adjustments as $adjustment) {
+        $startDate = substr((string)($adjustment['start_date'] ?? ''), 0, 10);
+        $endDate = substr((string)($adjustment['end_date'] ?? ''), 0, 10);
+        if ($startDate === '' || $endDate === '' || $startDate > $date || $endDate <= $date) continue;
+        if (strtolower(trim((string)($adjustment['adjustment_type'] ?? ''))) !== 'occupied') continue;
+        if ($category !== null && (string)($adjustment['service_category'] ?? '') !== $category) continue;
+        $total += max(1, (int)($adjustment['quantity'] ?? 1));
+    }
+    return $total;
+}
+
+/**
+ * Turn manual occupied/block adjustments into capacity intervals for the requested service.
+ * Occupied units consume shared capacity within their category; service-specific blocks
+ * block only the selected service. A block without times closes the full day.
+ */
+function bookingManualCapacityIntervals(
+    array $adjustments,
+    string $date,
+    string $category,
+    string $requestedService,
+    int $normalCapacity
+): array {
+    $intervals = [];
+    foreach ($adjustments as $adjustment) {
+        $startDate = substr((string)($adjustment['start_date'] ?? ''), 0, 10);
+        $endDate = substr((string)($adjustment['end_date'] ?? ''), 0, 10);
+        if ($startDate === '' || $endDate === '' || $startDate > $date || $endDate <= $date) continue;
+        if ((string)($adjustment['service_category'] ?? '') !== $category) continue;
+
+        $type = strtolower(trim((string)($adjustment['adjustment_type'] ?? '')));
+        if (!in_array($type, ['occupied', 'blocked'], true)) continue;
+        $adjustmentService = trim((string)($adjustment['specific_service'] ?? ''));
+        if ($type === 'blocked' && $adjustmentService !== '' && $requestedService !== ''
+            && strcasecmp($adjustmentService, $requestedService) !== 0) {
+            continue;
+        }
+
+        $rawStart = trim((string)($adjustment['start_time'] ?? ''));
+        $rawEnd = trim((string)($adjustment['end_time'] ?? ''));
+        if ($rawStart === '' && $rawEnd === '') {
+            $start = 0;
+            $end = 1440;
+        } else {
+            $start = bookingAdjustmentTimeToMinutes($rawStart);
+            $end = bookingAdjustmentTimeToMinutes($rawEnd);
+            if ($start === null || $end === null || $end <= $start) continue;
+        }
+
+        $units = ($type === 'blocked')
+            ? max(1, $normalCapacity)
+            : max(1, (int)($adjustment['quantity'] ?? 1));
+        for ($i = 0; $i < $units; $i++) {
+            $intervals[] = ['start' => $start, 'end' => $end, 'manual_adjustment' => true, 'adjustment_type' => $type];
+        }
+    }
+    return $intervals;
+}
+
 // Access Control
 if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
     header("Location: login.php");
@@ -267,9 +377,73 @@ if ($user_id <= 0) {
     exit();
 }
 
-// One CSRF token is used by the booking form.
+// One CSRF token is used by the booking form and the View All Notifications action.
 if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+
+// AJAX endpoint: refresh only the signed-in customer's recent notifications and unread count.
+// Cast is_read to text so PostgreSQL BOOLEAN, numeric, and common text representations work.
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET' && ($_GET['ajax_notifications'] ?? '') === '1') {
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Cache-Control: no-store, private, max-age=0, must-revalidate');
+    header('Pragma: no-cache');
+
+    try {
+        $ajax_count_stmt = $pdo->prepare("
+            SELECT COUNT(*)
+            FROM notifications
+            WHERE user_id = :user_id
+              AND (
+                    is_read IS NULL
+                    OR LOWER(CAST(is_read AS TEXT)) IN ('0', 'false', 'f')
+                  )
+        ");
+        $ajax_count_stmt->execute([':user_id' => $user_id]);
+        $ajax_unread_count = (int)($ajax_count_stmt->fetchColumn() ?? 0);
+
+        $ajax_list_stmt = $pdo->prepare("
+            SELECT
+                id,
+                message,
+                created_at,
+                CASE
+                    WHEN is_read IS NULL
+                      OR LOWER(CAST(is_read AS TEXT)) IN ('0', 'false', 'f')
+                    THEN 'false'
+                    ELSE 'true'
+                END AS is_read_normalized
+            FROM notifications
+            WHERE user_id = :user_id
+            ORDER BY created_at DESC, id DESC
+            LIMIT 5
+        ");
+        $ajax_list_stmt->execute([':user_id' => $user_id]);
+
+        $ajax_notifications = [];
+        while ($row = $ajax_list_stmt->fetch(PDO::FETCH_ASSOC)) {
+            $ajax_notifications[] = [
+                'id' => (string)($row['id'] ?? ''),
+                'message' => (string)($row['message'] ?? ''),
+                'is_read' => strtolower(trim((string)($row['is_read_normalized'] ?? 'false'))) === 'true',
+                'created_at' => formatCustomerNotificationTimestamp($row['created_at'] ?? null, 'M d, Y h:i A'),
+            ];
+        }
+
+        echo json_encode([
+            'success' => true,
+            'unread_count' => $ajax_unread_count,
+            'notifications' => $ajax_notifications,
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    } catch (Throwable $e) {
+        error_log('Book appointment notification refresh failed for user #' . $user_id . ': ' . $e->getMessage());
+        http_response_code(500);
+        echo json_encode([
+            'success' => false,
+            'message' => 'Unable to refresh notifications right now.',
+        ], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    }
+    exit();
 }
 
 $success_msg = '';
@@ -292,7 +466,15 @@ try {
 $unread_count = 0;
 $notifications = [];
 try {
-    $stmt_notif = $pdo->prepare("SELECT COUNT(*) AS unread_count FROM notifications WHERE user_id = :user_id AND is_read = 0");
+    $stmt_notif = $pdo->prepare("
+        SELECT COUNT(*) AS unread_count
+        FROM notifications
+        WHERE user_id = :user_id
+          AND (
+                is_read IS NULL
+                OR LOWER(CAST(is_read AS TEXT)) IN ('0', 'false', 'f')
+              )
+    ");
     $stmt_notif->execute([':user_id' => $user_id]);
     $row = $stmt_notif->fetch();
     if ($row) {
@@ -304,9 +486,29 @@ try {
 
 // Fetch latest 5 notifications for dropdown
 try {
-    $stmt_notif_list = $pdo->prepare("SELECT id, message, created_at, is_read FROM notifications WHERE user_id = :user_id ORDER BY created_at DESC LIMIT 5");
+    $stmt_notif_list = $pdo->prepare("
+        SELECT
+            id,
+            message,
+            created_at,
+            CASE
+                WHEN is_read IS NULL
+                  OR LOWER(CAST(is_read AS TEXT)) IN ('0', 'false', 'f')
+                THEN 'false'
+                ELSE 'true'
+            END AS is_read_normalized
+        FROM notifications
+        WHERE user_id = :user_id
+        ORDER BY created_at DESC, id DESC
+        LIMIT 5
+    ");
     $stmt_notif_list->execute([':user_id' => $user_id]);
-    $notifications = $stmt_notif_list->fetchAll() ?: [];
+    $notifications = $stmt_notif_list->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    foreach ($notifications as &$notification_row) {
+        $notification_row['is_read'] = strtolower(trim((string)($notification_row['is_read_normalized'] ?? 'false'))) === 'true';
+        unset($notification_row['is_read_normalized']);
+    }
+    unset($notification_row);
 } catch (PDOException $e) {
     $notifications = [];
 }
@@ -691,6 +893,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         ':checkin_date' => $appointment_date,
                     ]);
                     $range_rows = $stmt_existing->fetchAll(PDO::FETCH_ASSOC) ?: [];
+                    // Include Admin-entered occupied rooms and blocked periods for every night.
+                    $manual_adjustments = bookingLoadManualAvailabilityAdjustments($pdo, $appointment_date, $checkout_date);
 
                     for ($stay_day = $stay_start; $stay_day < $stay_end; $stay_day = $stay_day->modify('+1 day')) {
                         $day_string = $stay_day->format('Y-m-d');
@@ -738,6 +942,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             }
                         }
 
+                        // Manual occupied units count as pets/rooms for daily limits;
+                        // blocked intervals reserve capacity but are not actual bookings.
+                        $day_total += bookingManualOccupiedUnitsForDate($manual_adjustments, $day_string);
+                        $day_hotel_count += bookingManualOccupiedUnitsForDate($manual_adjustments, $day_string, 'Pet Hotel');
+                        foreach (bookingManualCapacityIntervals(
+                            $manual_adjustments,
+                            $day_string,
+                            'Pet Hotel',
+                            $specific_service,
+                            $simultaneous_limits['Pet Hotel']
+                        ) as $manual_interval) {
+                            $day_hotel_intervals[] = $manual_interval;
+                        }
+
                         if ($day_total >= 20) {
                             $error_msg = 'The overall daily capacity of 20 pets has been reached on ' . $day_string . '. Please choose a shorter stay or different dates.';
                             break;
@@ -780,8 +998,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         ':appointment_date_active' => $appointment_date,
                     ]);
                     $existing_rows = $stmt_existing->fetchAll(PDO::FETCH_ASSOC) ?: [];
+                    $next_date_exclusive = (new DateTimeImmutable($appointment_date, new DateTimeZone('Asia/Manila')))
+                        ->modify('+1 day')->format('Y-m-d');
+                    $manual_adjustments = bookingLoadManualAvailabilityAdjustments($pdo, $appointment_date, $next_date_exclusive);
 
-                    $total_daily_bookings = count($existing_rows);
+                    $total_daily_bookings = count($existing_rows)
+                        + bookingManualOccupiedUnitsForDate($manual_adjustments, $appointment_date);
                     $category_daily_counts = ['Grooming' => 0, 'Vet Services' => 0, 'Pet Hotel' => 0];
                     $existing_intervals = ['Grooming' => [], 'Vet Services' => [], 'Pet Hotel' => []];
 
@@ -817,6 +1039,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             'start' => $existing_start,
                             'end' => $existing_end,
                         ];
+                    }
+
+                    // Add per-category manual occupancy to daily quotas and selected-service
+                    // intervals to the exact same capacity check used for appointments.
+                    foreach (array_keys($category_daily_counts) as $manual_category) {
+                        $category_daily_counts[$manual_category] += bookingManualOccupiedUnitsForDate(
+                            $manual_adjustments,
+                            $appointment_date,
+                            $manual_category
+                        );
+                    }
+                    foreach (bookingManualCapacityIntervals(
+                        $manual_adjustments,
+                        $appointment_date,
+                        $service_category,
+                        $specific_service,
+                        $simultaneous_limits[$service_category]
+                    ) as $manual_interval) {
+                        $existing_intervals[$service_category][] = $manual_interval;
                     }
 
                     if ($total_daily_bookings >= 20) {
@@ -1312,6 +1553,14 @@ if ($error_msg !== '') {
 
         .dropdown-item:last-child { border-bottom: 0; }
         .view-all-link { text-align: center; color: var(--brand-blue); font-weight: 800; }
+        .notif-view-all-button {
+            width: 100%;
+            border: 0;
+            border-radius: 0;
+            background: transparent;
+            font: inherit;
+            cursor: pointer;
+        }
 
         /* ===== BOOKING PAGE ===== */
         main {
@@ -2483,35 +2732,36 @@ if ($error_msg !== '') {
 
             <div class="user-controls">
                 <div class="notification-wrapper">
-                    <div class="notification-bell" onclick="toggleDropdown('notifDropdown')" aria-label="Notifications">
+                    <div class="notification-bell" onclick="toggleDropdown('notifDropdown')" aria-label="Notifications" role="button" tabindex="0" aria-expanded="false">
                         <i class="fa-solid fa-bell"></i>
-                        <?php if($unread_count > 0): ?>
-                            <span class="notification-badge"><?php echo $unread_count; ?></span>
-                        <?php endif; ?>
+                        <span id="notif-badge" class="notification-badge" style="<?php echo $unread_count > 0 ? '' : 'display:none;'; ?>"><?php echo (int)$unread_count; ?></span>
                     </div>
 
                     <div class="dropdown-menu" id="notifDropdown">
                         <div class="dropdown-header">Notifications</div>
 
-                        <?php if(count($notifications) > 0): ?>
-                            <?php foreach($notifications as $notif): ?>
-                                <a href="notifications.php" class="dropdown-item <?php echo $notif['is_read'] ? '' : 'unread'; ?>">
-                                    <?php echo htmlspecialchars($notif['message']); ?>
-                                    <br>
-                                    <small style="color:#888;font-size:10px;">
-                                        <?php echo date('M d, Y h:i A', strtotime($notif['created_at'])); ?>
-                                    </small>
-                                </a>
-                            <?php endforeach; ?>
+                        <div id="notif-items-container">
+                            <?php if (count($notifications) > 0): ?>
+                                <?php foreach ($notifications as $notif): ?>
+                                    <a href="notifications.php" class="dropdown-item <?php echo !empty($notif['is_read']) ? '' : 'unread'; ?>">
+                                        <?php echo htmlspecialchars((string)($notif['message'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
+                                        <br>
+                                        <small style="color:#888;font-size:10px;">
+                                            <?php echo htmlspecialchars(formatCustomerNotificationTimestamp($notif['created_at'] ?? null, 'M d, Y h:i A'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
+                                        </small>
+                                    </a>
+                                <?php endforeach; ?>
+                            <?php else: ?>
+                                <div class="dropdown-item" style="text-align:center;color:#888;">
+                                    No new notifications.
+                                </div>
+                            <?php endif; ?>
+                        </div>
 
-                            <a href="notifications.php" class="dropdown-item view-all-link">
-                                View All Notifications
-                            </a>
-                        <?php else: ?>
-                            <div class="dropdown-item" style="text-align:center;color:#888;">
-                                No new notifications.
-                            </div>
-                        <?php endif; ?>
+                        <form id="notif-view-all-form" action="mark_all_read.php" method="post" class="view-all-form" style="display: <?php echo count($notifications) > 0 ? 'block' : 'none'; ?>; margin:0;">
+                            <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
+                            <button type="submit" class="dropdown-item view-all-link notif-view-all-button">View All Notifications</button>
+                        </form>
                     </div>
                 </div>
 
@@ -2906,6 +3156,115 @@ if ($error_msg !== '') {
                 });
             }
         });
+
+        // ===== AUTOMATIC CUSTOMER NOTIFICATIONS =====
+        const notificationBell = document.querySelector('.notification-bell');
+        const notificationBadge = document.getElementById('notif-badge');
+        const notificationItemsContainer = document.getElementById('notif-items-container');
+        const notificationViewAllForm = document.getElementById('notif-view-all-form');
+        const notificationSound = new Audio('notification.mp3');
+        let previousUnreadCount = <?php echo (int)$unread_count; ?>;
+        let previousLatestNotificationId = <?php echo json_encode((string)($notifications[0]['id'] ?? ''), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
+        let notificationRefreshInProgress = false;
+
+        function renderAppointmentNotifications(items) {
+            if (!notificationItemsContainer) return;
+            notificationItemsContainer.replaceChildren();
+
+            if (!Array.isArray(items) || items.length === 0) {
+                const emptyMessage = document.createElement('div');
+                emptyMessage.className = 'dropdown-item';
+                emptyMessage.style.textAlign = 'center';
+                emptyMessage.style.color = '#888';
+                emptyMessage.textContent = 'No new notifications.';
+                notificationItemsContainer.appendChild(emptyMessage);
+                if (notificationViewAllForm) notificationViewAllForm.style.display = 'none';
+                return;
+            }
+
+            items.forEach(notification => {
+                const link = document.createElement('a');
+                link.href = 'notifications.php';
+                link.className = 'dropdown-item' + (notification.is_read === true ? '' : ' unread');
+                link.appendChild(document.createTextNode(String(notification.message || '')));
+                link.appendChild(document.createElement('br'));
+
+                const timestamp = document.createElement('small');
+                timestamp.style.color = '#888';
+                timestamp.style.fontSize = '10px';
+                timestamp.textContent = String(notification.created_at || '');
+                link.appendChild(timestamp);
+                notificationItemsContainer.appendChild(link);
+            });
+
+            if (notificationViewAllForm) notificationViewAllForm.style.display = 'block';
+        }
+
+        async function updateAppointmentNotifications() {
+            if (notificationRefreshInProgress) return;
+            notificationRefreshInProgress = true;
+
+            try {
+                const response = await fetch('book_appointment.php?ajax_notifications=1', {
+                    method: 'GET',
+                    credentials: 'same-origin',
+                    cache: 'no-store',
+                    headers: { 'Accept': 'application/json' }
+                });
+
+                if (!response.ok) throw new Error('Notification request failed (' + response.status + ')');
+                const data = await response.json();
+                const unreadCount = Number(data && data.unread_count);
+                if (data.success !== true || !Number.isInteger(unreadCount) || unreadCount < 0 || !Array.isArray(data.notifications)) {
+                    throw new Error('Invalid notification response');
+                }
+
+                const latestId = data.notifications.length ? String(data.notifications[0].id || '') : '';
+                const latestIsUnread = data.notifications.length > 0 && data.notifications[0].is_read !== true;
+                const newUnreadNotification = latestId !== '' && latestId !== previousLatestNotificationId && latestIsUnread;
+
+                if (unreadCount > previousUnreadCount || newUnreadNotification) {
+                    notificationSound.play().catch(() => {});
+                }
+
+                previousUnreadCount = unreadCount;
+                previousLatestNotificationId = latestId;
+
+                if (notificationBadge) {
+                    notificationBadge.textContent = String(unreadCount);
+                    notificationBadge.style.display = unreadCount > 0 ? 'inline-flex' : 'none';
+                }
+
+                renderAppointmentNotifications(data.notifications);
+            } catch (error) {
+                console.warn('Could not refresh appointment-page notifications:', error);
+            } finally {
+                notificationRefreshInProgress = false;
+            }
+        }
+
+        updateAppointmentNotifications();
+        setInterval(() => {
+            if (!document.hidden) updateAppointmentNotifications();
+        }, 3000);
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden) updateAppointmentNotifications();
+        });
+
+        if (notificationBell) {
+            notificationBell.addEventListener('keydown', event => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    toggleDropdown('notifDropdown');
+                    notificationBell.setAttribute('aria-expanded', String(document.getElementById('notifDropdown')?.classList.contains('active') === true));
+                }
+            });
+            notificationBell.addEventListener('click', () => {
+                window.setTimeout(() => {
+                    notificationBell.setAttribute('aria-expanded', String(document.getElementById('notifDropdown')?.classList.contains('active') === true));
+                }, 0);
+            });
+        }
 
         const userPetsArray = <?php echo json_encode($user_pets); ?>;
 
@@ -3321,17 +3680,25 @@ if ($error_msg !== '') {
         }
         if (document.getElementById('appointment_time')) {
             document.getElementById('appointment_time').addEventListener('change', () => {
-                if (isDaycareSelected()) updateDaycarePickupTimes();
-                calculatePrice();
+                const daycareSelected = isDaycareSelected();
 
-                // Pet Boarding uses a fixed 9:00 AM check-in. Availability is already
-                // checked when the check-in/check-out dates change, so fetching again
-                // when the user selects 9:00 AM would clear the selected option.
-                // Keep the selected boarding time in place; continue refreshing slots
-                // normally for Daycare, Grooming, and Vet appointments.
-                if (!isOvernightBoardingSelected()) {
+                if (daycareSelected) {
+                    // Daycare availability depends on the full drop-off-to-pickup interval.
+                    // Refresh after the selected drop-off changes, while keeping the
+                    // selected time available for the interval-capacity check.
+                    updateDaycarePickupTimes();
+                    calculatePrice();
                     checkRealTimeAvailability();
+                    return;
                 }
+
+                // For Grooming and Vet appointments, the available start-time options
+                // have already been checked when date/category/service changed. Fetching
+                // the same list again after selecting one of those options resets the
+                // dropdown and can send it back to "Choose an available time".
+                // Pet Boarding also uses its pre-checked fixed check-in option.
+                // Recalculate only; do not rebuild the selected time dropdown here.
+                calculatePrice();
             });
         }
         if (document.getElementById('pickup_time')) {
@@ -3593,3 +3960,4 @@ if ($error_msg !== '') {
     </script>
 </body>
 </html>
+        

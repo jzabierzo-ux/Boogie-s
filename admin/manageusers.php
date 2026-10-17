@@ -165,46 +165,63 @@ if (isset($_SESSION['user_id'])) {
 
 }
 
-// --- ADMIN-ONLY NOTIFICATIONS ---
-
+// --- NOTIFICATIONS: ADMIN ALERTS OR SERVICE-STAFF PERSONAL ALERTS ---
 $admin_notifications = [];
-
 $unread_count = 0;
+$show_notifications = ($is_admin || in_array($current_role, ['groomer', 'pet_hotel_staff'], true));
+$admin_notif_csrf_token = '';
 
-if ($is_admin) {
+if ($show_notifications) {
+    if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
+        $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+    }
+    $admin_notif_csrf_token = (string)$_SESSION['csrf_token'];
+
+    // Table names are selected from fixed role-based values, never from request input.
+    $notification_table = $is_admin ? 'admin_notifications' : 'notifications';
+    $notification_owner_sql = $is_admin ? '' : ' AND user_id = :user_id';
+    $notification_params = $is_admin ? [] : [':user_id' => (int)$_SESSION['user_id']];
 
     try {
+        // Detect the existing PostgreSQL type instead of assuming is_read is numeric.
+        $read_type_stmt = $pdo->prepare("SELECT data_type
+            FROM information_schema.columns
+            WHERE table_schema = current_schema()
+              AND table_name = :table_name
+              AND column_name = 'is_read'
+            LIMIT 1");
+        $read_type_stmt->execute([':table_name' => $notification_table]);
+        $read_type = strtolower(trim((string)$read_type_stmt->fetchColumn()));
 
-        $admin_notif_stmt = $pdo->prepare("
+        if ($read_type === 'boolean') {
+            $unread_predicate = 'COALESCE(is_read, FALSE) = FALSE';
+        } elseif (in_array($read_type, ['smallint', 'integer', 'bigint', 'numeric', 'decimal', 'real', 'double precision'], true)) {
+            $unread_predicate = '(is_read = 0 OR is_read IS NULL)';
+        } elseif (in_array($read_type, ['text', 'character varying', 'character'], true)) {
+            $unread_predicate = "(is_read IS NULL OR LOWER(BTRIM(CAST(is_read AS TEXT))) IN ('0', 'false', 'f', 'no', 'unread', ''))";
+        } else {
+            throw new RuntimeException('Unsupported or unknown is_read column type for ' . $notification_table . '.');
+        }
 
-            SELECT id, message, created_at
+        $count_stmt = $pdo->prepare("SELECT COUNT(*) FROM {$notification_table} WHERE {$unread_predicate}{$notification_owner_sql}");
+        $count_stmt->execute($notification_params);
+        $unread_count = (int)$count_stmt->fetchColumn();
 
-            FROM admin_notifications
-
-            WHERE is_read = 0
-
-            ORDER BY created_at DESC
-
-            LIMIT 20
-
-        ");
-
-        $admin_notif_stmt->execute();
-
-        $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
-
-        $unread_count = count($admin_notifications);
-
-    } catch (PDOException $e) {
-
-        error_log('Manage users admin notification fetch failed: ' . $e->getMessage());
-
+        $notification_columns = $is_admin
+            ? 'id, message, created_at'
+            : 'id, title, message, type, created_at';
+        $notif_stmt = $pdo->prepare("SELECT {$notification_columns}
+            FROM {$notification_table}
+            WHERE {$unread_predicate}{$notification_owner_sql}
+            ORDER BY created_at DESC, id DESC
+            LIMIT 20");
+        $notif_stmt->execute($notification_params);
+        $admin_notifications = $notif_stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Throwable $e) {
+        error_log('Manage users notification fetch failed: ' . $e->getMessage());
         $admin_notifications = [];
-
         $unread_count = 0;
-
     }
-
 }
 
 // 3. FETCH USER STATISTICS
@@ -443,7 +460,7 @@ try {
 
         .notif-empty { padding: 20px; text-align: center; color: #94a3b8; font-size: 13px; }
 
-        .mark-read-btn { font-size: 11px; color: #3b82f6; text-decoration: none; font-weight: 600; }
+        .mark-read-btn { font-size: 11px; color: #3b82f6; text-decoration: none; font-weight: 600; border: 0; background: transparent; padding: 0; cursor: pointer; font-family: inherit; }
 
         .mark-read-btn:hover { text-decoration: underline; }
 
@@ -1151,7 +1168,7 @@ try {
 
             <div class="top-right-actions">
 
-                <?php if ($is_admin): ?>
+                <?php if ($show_notifications): ?>
 
                 <div class="notif-wrapper" onclick="toggleNotif(event)">
 
@@ -1159,7 +1176,7 @@ try {
 
                     <span id="admin-notif-badge" class="notif-badge" style="display: <?php echo ($unread_count > 0) ? 'inline-block' : 'none'; ?>;">
 
-                        <?php echo $unread_count; ?>
+                        <?php echo (int)$unread_count; ?>
 
                     </span>
 
@@ -1169,23 +1186,36 @@ try {
 
                             Alerts
 
-                            <a href="mark_notifications_read.php" id="mark-read-link" class="mark-read-btn" style="display: <?php echo ($unread_count > 0) ? 'inline-block' : 'none'; ?>;">Mark all read</a>
+                            <form action="mark_notifications_read.php" method="post" id="mark-read-form" style="margin: 0;">
+                                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($admin_notif_csrf_token, ENT_QUOTES, 'UTF-8'); ?>">
+                                <button type="submit" id="mark-read-link" class="mark-read-btn" style="display: <?php echo ($unread_count > 0) ? 'inline-block' : 'none'; ?>;">Mark all read</button>
+                            </form>
 
                         </div>
 
                         <div class="notif-body" id="admin-notif-list">
 
-                            <?php if($unread_count > 0): ?>
+                            <?php if ($unread_count > 0): ?>
 
-                                <?php foreach($admin_notifications as $notif): ?>
+                                <?php foreach ($admin_notifications as $notif): ?>
 
                                     <div class="notif-item">
 
                                         <i class="fa-solid fa-circle-exclamation" style="color: #e11d48; margin-right: 5px;"></i>
 
-                                        <?php echo htmlspecialchars($notif['message']); ?>
+                                        <?php if (!$is_admin && trim((string)($notif['title'] ?? '')) !== ''): ?>
+                                            <strong style="display:block;margin-bottom:3px;"><?php echo htmlspecialchars((string)$notif['title'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></strong>
+                                        <?php endif; ?>
 
-                                        <br><small style="color: #94a3b8; font-size: 11px;"><?php echo date('M d, g:i A', strtotime($notif['created_at'])); ?></small>
+                                        <?php if (trim((string)($notif['message'] ?? '')) !== ''): ?>
+                                            <?php echo htmlspecialchars((string)$notif['message'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
+                                        <?php elseif (trim((string)($notif['title'] ?? '')) !== ''): ?>
+                                            <?php echo htmlspecialchars((string)$notif['title'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
+                                        <?php else: ?>
+                                            New notification
+                                        <?php endif; ?>
+
+                                        <br><small style="color: #94a3b8; font-size: 11px;"><?php echo htmlspecialchars(date('M d, g:i A', strtotime((string)($notif['created_at'] ?? 'now'))), ENT_QUOTES, 'UTF-8'); ?></small>
 
                                     </div>
 
@@ -1193,7 +1223,7 @@ try {
 
                             <?php else: ?>
 
-                                <div class="notif-empty">No new notifications.</div>
+                                <div class="notif-empty"><?php echo $is_admin ? 'No new notifications.' : 'No new service notifications.'; ?></div>
 
                             <?php endif; ?>
 
@@ -1613,11 +1643,41 @@ try {
 
         }
 
-        <?php if ($is_admin): ?>
+        <?php if ($show_notifications): ?>
 
         fetchAdminNotifs();
-
         setInterval(fetchAdminNotifs, 3000);
+
+        const markReadForm = document.getElementById('mark-read-form');
+        if (markReadForm) {
+            markReadForm.addEventListener('submit', function(event) {
+                event.preventDefault();
+                const submitButton = markReadForm.querySelector('button[type="submit"]');
+                if (submitButton) submitButton.disabled = true;
+
+                fetch(markReadForm.action, {
+                    method: 'POST',
+                    body: new FormData(markReadForm),
+                    credentials: 'same-origin',
+                    cache: 'no-store'
+                })
+                .then(function(response) {
+                    if (!response.ok) {
+                        throw new Error('Unable to mark notifications as read (HTTP ' + response.status + ').');
+                    }
+                    return response.text();
+                })
+                .then(function() {
+                    fetchAdminNotifs();
+                })
+                .catch(function(error) {
+                    console.error('Mark notifications read failed:', error);
+                })
+                .finally(function() {
+                    if (submitButton) submitButton.disabled = false;
+                });
+            });
+        }
 
         <?php endif; ?>
 

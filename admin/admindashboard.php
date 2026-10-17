@@ -119,6 +119,18 @@ if (!in_array($current_role, $allowed_dashboard_roles, true)) {
 }
 
 $is_admin = ($current_role === 'admin');
+$is_service_staff = in_array($current_role, ['groomer', 'pet_hotel_staff'], true);
+$show_notifications = ($is_admin || $is_service_staff);
+
+// Create/reuse a session CSRF token for the notification action for all roles
+// that can see the notification bell (Admin, Grooming Staff, Pet Hotel Staff).
+$admin_notif_csrf_token = '';
+if ($show_notifications) {
+    if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
+        $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+    }
+    $admin_notif_csrf_token = $_SESSION['csrf_token'];
+}
 
 // Grooming Staff and Pet Hotel Staff can use Dashboard, Bookings, Users and Pets.
 
@@ -217,23 +229,32 @@ try {
     // --- FETCH ADMIN NOTIFICATIONS (ADMIN ONLY) ---
 
     if ($is_admin) {
+        // Inspect the real column type so the initial render matches the
+        // shared AJAX endpoint for BOOLEAN, numeric, or text is_read columns.
+        $read_type_stmt = $pdo->prepare("SELECT data_type
+            FROM information_schema.columns
+            WHERE table_schema = current_schema()
+              AND table_name = 'admin_notifications'
+              AND column_name = 'is_read'
+            LIMIT 1");
+        $read_type_stmt->execute();
+        $admin_is_read_type = strtolower(trim((string)$read_type_stmt->fetchColumn()));
 
-        $stmt = $pdo->query("
+        if ($admin_is_read_type === 'boolean') {
+            $admin_unread_predicate = 'COALESCE(is_read, FALSE) = FALSE';
+        } elseif (in_array($admin_is_read_type, ['smallint', 'integer', 'bigint', 'numeric', 'decimal', 'real', 'double precision'], true)) {
+            $admin_unread_predicate = '(is_read = 0 OR is_read IS NULL)';
+        } elseif (in_array($admin_is_read_type, ['text', 'character varying', 'character'], true)) {
+            $admin_unread_predicate = "(is_read IS NULL OR LOWER(BTRIM(CAST(is_read AS TEXT))) IN ('0', 'false', 'f', 'no', 'unread', ''))";
+        } else {
+            throw new RuntimeException('Unsupported or unknown admin_notifications.is_read column type.');
+        }
 
-            SELECT *
-
-            FROM admin_notifications
-
-            WHERE is_read = 0
-
-            ORDER BY created_at DESC
-
-        ");
-
+        $stmt = $pdo->query("SELECT * FROM admin_notifications
+            WHERE {$admin_unread_predicate}
+            ORDER BY created_at DESC, id DESC");
         $admin_notif_query = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
         $unread_count = count($admin_notif_query);
-
     }
 
     // --- FETCH REAL-TIME DATA ---
@@ -664,7 +685,7 @@ try {
 
         .notif-empty { padding: 20px; text-align: center; color: #94a3b8; font-size: 13px; }
 
-        .mark-read-btn { font-size: 11px; color: #3b82f6; text-decoration: none; font-weight: 600; }
+        .mark-read-btn { font-size: 11px; color: #3b82f6; text-decoration: none; font-weight: 600; border: 0; background: transparent; padding: 0; cursor: pointer; font-family: inherit; }
 
         .mark-read-btn:hover { text-decoration: underline; }
 
@@ -1042,7 +1063,7 @@ try {
 
             <div class="top-right-actions">
 
-<?php if ($is_admin): ?>
+<?php if ($show_notifications): ?>
 
                 <div class="notif-wrapper" onclick="toggleNotif(event)">
 
@@ -1060,23 +1081,26 @@ try {
 
                             Alerts
 
-                            <a href="mark_notifications_read.php" id="mark-read-link" class="mark-read-btn" style="display: <?php echo ($unread_count > 0) ? 'inline-block' : 'none'; ?>;">Mark all read</a>
+                            <form action="mark_notifications_read.php" method="post" style="margin: 0;">
+                                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($admin_notif_csrf_token, ENT_QUOTES, 'UTF-8'); ?>">
+                                <button type="submit" id="mark-read-link" class="mark-read-btn" style="display: <?php echo ($unread_count > 0) ? 'inline-block' : 'none'; ?>;">Mark all read</button>
+                            </form>
 
                         </div>
 
                         <div class="notif-body" id="admin-notif-list">
 
-                            <?php if($unread_count > 0): ?>
+                            <?php if ($is_admin && $unread_count > 0): ?>
 
-                                <?php foreach($admin_notif_query as $notif): ?>
+                                <?php foreach ($admin_notif_query as $notif): ?>
 
                                     <div class="notif-item">
 
                                         <i class="fa-solid fa-circle-exclamation" style="color: #e11d48; margin-right: 5px;"></i>
 
-                                        <?php echo htmlspecialchars($notif['message']); ?>
+                                        <?php echo htmlspecialchars((string)($notif['message'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
 
-                                        <br><small style="color: #94a3b8; font-size: 11px;"><?php echo date('M d, g:i A', strtotime($notif['created_at'])); ?></small>
+                                        <br><small style="color: #94a3b8; font-size: 11px;"><?php echo htmlspecialchars(date('M d, g:i A', strtotime((string)($notif['created_at'] ?? 'now'))), ENT_QUOTES, 'UTF-8'); ?></small>
 
                                     </div>
 
@@ -1084,7 +1108,7 @@ try {
 
                             <?php else: ?>
 
-                                <div class="notif-empty">No new notifications.</div>
+                                <div class="notif-empty"><?php echo $is_admin ? 'No new notifications.' : 'Loading notifications...'; ?></div>
 
                             <?php endif; ?>
 
@@ -1590,23 +1614,31 @@ try {
 
         function fetchAdminNotifs() {
 
-            fetch('get_admin_notifs.php')
+            fetch('get_admin_notifs.php', { cache: 'no-store', credentials: 'same-origin' })
 
-                .then(response => response.json())
+                .then(response => response.json().then(data => ({ ok: response.ok, data })))
 
-                .then(data => {
+                .then(result => {
+
+                    const data = result.data;
+                    // Preserve the current display if the endpoint fails; do not
+                    // replace a valid unread count with a misleading zero.
+                    if (!result.ok || !data || data.success !== true || !Number.isFinite(Number(data.unread))) {
+                        return;
+                    }
 
                     const badge = document.getElementById('admin-notif-badge');
 
                     const notifList = document.getElementById('admin-notif-list');
 
                     const markReadBtn = document.getElementById('mark-read-link');
+                    if (!badge || !notifList) return;
 
-                    if (data.unread > 0) {
+                    if (Number(data.unread) > 0) {
 
                         badge.style.display = 'inline-block';
 
-                        badge.innerText = data.unread;
+                        badge.innerText = String(Number(data.unread));
 
                         if(markReadBtn) markReadBtn.style.display = 'inline-block';
 
@@ -1618,7 +1650,7 @@ try {
 
                     }
 
-                    if (data.html !== "") {
+                    if (typeof data.html === 'string' && data.html !== '') {
 
                         notifList.innerHTML = data.html;
 
@@ -1634,7 +1666,7 @@ try {
 
         }
 
-        <?php if ($is_admin): ?>
+        <?php if ($show_notifications): ?>
 
         fetchAdminNotifs();
 

@@ -73,6 +73,15 @@ if ($current_role !== '') {
 }
 
 $is_admin = ($current_role === 'admin');
+$is_service_staff = in_array($current_role, ['groomer', 'pet_hotel_staff'], true);
+$show_notifications = ($is_admin || $is_service_staff);
+
+// Shared CSRF token for the notification mark-all-read endpoint. Keep the
+// separate managepet_csrf_token below for the Add Pet form.
+if ($show_notifications && (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token']))) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+$notification_csrf_token = $show_notifications ? (string)$_SESSION['csrf_token'] : '';
 
 if (($_SESSION['logged_in'] ?? false) !== true) {
 
@@ -475,46 +484,63 @@ try {
 
 }
 
-// --- FETCH ADMIN NOTIFICATIONS: ADMIN ONLY ---
-
+// --- FETCH NOTIFICATIONS FOR THE SIGNED-IN ADMIN OR SERVICE STAFF ---
 $admin_notifications = [];
-
 $unread_count = 0;
-
-if ($is_admin) {
-
+if ($show_notifications) {
+    // Determine the real PostgreSQL type so the initial page render agrees with
+    // get_admin_notifs.php and works with BOOLEAN, numeric, or text is_read columns.
+    $notification_table = $is_admin ? 'admin_notifications' : 'notifications';
     try {
+        $read_type_stmt = $pdo->prepare("SELECT data_type
+            FROM information_schema.columns
+            WHERE table_schema = current_schema()
+              AND table_name = :table_name
+              AND column_name = 'is_read'
+            LIMIT 1");
+        $read_type_stmt->execute([':table_name' => $notification_table]);
+        $notification_is_read_type = strtolower(trim((string)$read_type_stmt->fetchColumn()));
 
-        $admin_notif_stmt = $pdo->prepare("
+        if ($notification_is_read_type === 'boolean') {
+            $notification_unread_predicate = 'COALESCE(is_read, FALSE) = FALSE';
+        } elseif (in_array($notification_is_read_type, ['smallint', 'integer', 'bigint', 'numeric', 'decimal', 'real', 'double precision'], true)) {
+            $notification_unread_predicate = '(is_read = 0 OR is_read IS NULL)';
+        } elseif (in_array($notification_is_read_type, ['text', 'character varying', 'character'], true)) {
+            $notification_unread_predicate = "(is_read IS NULL OR LOWER(BTRIM(CAST(is_read AS TEXT))) IN ('0', 'false', 'f', 'no', 'unread', ''))";
+        } else {
+            throw new RuntimeException('Unsupported or unknown is_read column type for ' . $notification_table . '.');
+        }
 
-            SELECT *
+        if ($is_admin) {
+            $count_stmt = $pdo->query("SELECT COUNT(*) FROM admin_notifications WHERE {$notification_unread_predicate}");
+            $unread_count = (int)$count_stmt->fetchColumn();
 
-            FROM admin_notifications
+            $admin_notif_stmt = $pdo->query("SELECT id, message, created_at
+                FROM admin_notifications
+                WHERE {$notification_unread_predicate}
+                ORDER BY created_at DESC, id DESC
+                LIMIT 20");
+            $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
+        } else {
+            $count_stmt = $pdo->prepare("SELECT COUNT(*) FROM notifications
+                WHERE user_id = :user_id AND {$notification_unread_predicate}");
+            $count_stmt->execute([':user_id' => (int)$_SESSION['user_id']]);
+            $unread_count = (int)$count_stmt->fetchColumn();
 
-            WHERE is_read = 0
-
-            ORDER BY created_at DESC
-
-        ");
-
-        $admin_notif_stmt->execute();
-
-        $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
-
-        $unread_count = count($admin_notifications);
-
-    } catch (PDOException $e) {
-
-        error_log('Manage Pet admin notification error: ' . $e->getMessage());
-
+            $staff_notif_stmt = $pdo->prepare("SELECT id, title, message, type, created_at
+                FROM notifications
+                WHERE user_id = :user_id AND {$notification_unread_predicate}
+                ORDER BY created_at DESC, id DESC
+                LIMIT 20");
+            $staff_notif_stmt->execute([':user_id' => (int)$_SESSION['user_id']]);
+            $admin_notifications = $staff_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
+        }
+    } catch (Throwable $e) {
+        error_log('Manage Pet notification fetch failed: ' . $e->getMessage());
         $admin_notifications = [];
-
         $unread_count = 0;
-
     }
-
 }
-
 ?>
 
 <!DOCTYPE html>
@@ -633,7 +659,7 @@ if ($is_admin) {
 
         .notif-empty { padding: 20px; text-align: center; color: #94a3b8; font-size: 13px; }
 
-        .mark-read-btn { font-size: 11px; color: #3b82f6; text-decoration: none; font-weight: 600; }
+        .mark-read-btn { font-size: 11px; color: #3b82f6; text-decoration: none; font-weight: 600; border: 0; background: transparent; padding: 0; cursor: pointer; font-family: inherit; }
 
         .mark-read-btn:hover { text-decoration: underline; }
 
@@ -1369,7 +1395,7 @@ if ($is_admin) {
 
             <div class="top-right-actions">
 
-<?php if ($is_admin): ?>
+<?php if ($show_notifications): ?>
 
                 <div class="notif-wrapper" onclick="toggleNotif(event)">
 
@@ -1387,7 +1413,10 @@ if ($is_admin) {
 
                             Alerts
 
-                            <a href="mark_notifications_read.php" id="mark-read-link" class="mark-read-btn" style="display: <?php echo ($unread_count > 0) ? 'inline-block' : 'none'; ?>;">Mark all read</a>
+                            <form action="mark_notifications_read.php" method="post" style="margin:0;">
+                                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($notification_csrf_token, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
+                                <button type="submit" id="mark-read-link" class="mark-read-btn" style="display: <?php echo ($unread_count > 0) ? 'inline-block' : 'none'; ?>;">Mark all read</button>
+                            </form>
 
                         </div>
 
@@ -1395,15 +1424,25 @@ if ($is_admin) {
 
                             <?php if($unread_count > 0): ?>
 
-                                <?php foreach($admin_notifications as $notif): ?>
+                                <?php foreach ($admin_notifications as $notif):
+                                    $notif_title = trim((string)($notif['title'] ?? ''));
+                                    $notif_message = trim((string)($notif['message'] ?? ''));
+                                    $notif_timestamp = !empty($notif['created_at']) ? strtotime((string)$notif['created_at']) : false;
+                                ?>
 
                                     <div class="notif-item">
 
                                         <i class="fa-solid fa-circle-exclamation" style="color: #e11d48; margin-right: 5px;"></i>
 
-                                        <?php echo htmlspecialchars((string)($notif['message'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
+                                        <?php if (!$is_admin && $notif_title !== ''): ?>
+                                            <strong style="display:block;margin-bottom:3px;"><?php echo htmlspecialchars($notif_title, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></strong>
+                                        <?php endif; ?>
 
-                                        <br><small style="color: #94a3b8; font-size: 11px;"><?php echo date('M d, g:i A', strtotime($notif['created_at'])); ?></small>
+                                        <?php echo htmlspecialchars($notif_message !== '' ? $notif_message : ($notif_title !== '' ? $notif_title : 'New notification'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
+
+                                        <?php if ($notif_timestamp !== false): ?>
+                                            <br><small style="color: #94a3b8; font-size: 11px;"><?php echo date('M d, g:i A', $notif_timestamp); ?></small>
+                                        <?php endif; ?>
 
                                     </div>
 
@@ -1411,7 +1450,7 @@ if ($is_admin) {
 
                             <?php else: ?>
 
-                                <div class="notif-empty">No new alerts.</div>
+                                <div class="notif-empty"><?php echo $is_admin ? 'No new alerts.' : 'No new service notifications.'; ?></div>
 
                             <?php endif; ?>
 
@@ -2011,7 +2050,12 @@ if ($is_admin) {
 
         })
 
-        .then(renderAdminNotifications)
+        .then(function(data) {
+            if (!data || data.success !== true) {
+                throw new Error('Notification endpoint returned an unsuccessful response.');
+            }
+            renderAdminNotifications(data);
+        })
 
         .catch(function(error) {
 
@@ -2023,7 +2067,7 @@ if ($is_admin) {
 
     window.fetchAdminNotifs = fetchAdminNotifs;
 
-    const canFetchAdminNotifications = <?php echo $is_admin ? 'true' : 'false'; ?>;
+    const canFetchAdminNotifications = <?php echo $show_notifications ? 'true' : 'false'; ?>;
 
     document.addEventListener('DOMContentLoaded', function() {
 

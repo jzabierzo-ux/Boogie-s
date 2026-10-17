@@ -1,6 +1,24 @@
 <?php
 require_once __DIR__ . '/shared_session_bootstrap.php';
 require_once __DIR__ . '/db_supabase.php';
+
+// Format notification timestamps consistently in Philippine time.
+// Timestamps with an explicit timezone keep that timezone; timezone-less
+// database timestamps are interpreted as UTC, matching the customer dashboard.
+function formatEditProfileNotificationTimestamp($value, string $format = 'M d, Y h:i A'): string
+{
+    if ($value === null || trim((string)$value) === '') {
+        return '';
+    }
+
+    try {
+        $date = new DateTimeImmutable((string)$value, new DateTimeZone('UTC'));
+        return $date->setTimezone(new DateTimeZone('Asia/Manila'))->format($format);
+    } catch (Throwable $e) {
+        error_log('Edit profile notification timestamp formatting failed: ' . $e->getMessage());
+        return '';
+    }
+}
 // Check if user is logged in
 if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
     header("Location: login.php");
@@ -168,6 +186,24 @@ try {
     error_log("Edit profile notification count failed: " . $e->getMessage());
     $unread_count = 0;
 }
+
+// Fetch the latest notifications for the header dropdown.
+$notifications = [];
+try {
+    $notification_list_stmt = $pdo->prepare("
+        SELECT id, title, message, created_at, is_read
+        FROM notifications
+        WHERE user_id = :user_id
+        ORDER BY created_at DESC, id DESC
+        LIMIT 5
+    ");
+    $notification_list_stmt->execute([':user_id' => $user_id]);
+    $notifications = $notification_list_stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    error_log('Edit profile notification list failed: ' . $e->getMessage());
+    $notifications = [];
+}
+
 // Set default avatar if user has no profile image in DB
 $has_profile_pic = !empty($user_data['profile_image']);
 $current_profile_pic = $has_profile_pic
@@ -267,6 +303,9 @@ header{
     align-items:center;
     gap:12px;
 }
+.notification-wrapper{
+    position:relative;
+}
 .notification-btn{
     position:relative;
     width:42px;
@@ -278,9 +317,67 @@ header{
     display:flex;
     align-items:center;
     justify-content:center;
-    text-decoration:none;
+    cursor:pointer;
+    font:inherit;
 }
 .notification-btn:hover{background:#f8fafc}
+.notification-dropdown{
+    position:absolute;
+    top:calc(100% + 10px);
+    right:0;
+    width:300px;
+    max-width:calc(100vw - 28px);
+    background:#fff;
+    border:1px solid var(--line);
+    border-radius:14px;
+    box-shadow:var(--shadow-lg);
+    display:none;
+    flex-direction:column;
+    overflow:hidden;
+    z-index:1200;
+}
+.notification-dropdown.active{display:flex}
+.notification-dropdown-header{
+    padding:13px 15px;
+    background:#f8fafc;
+    border-bottom:1px solid var(--line);
+    color:var(--muted);
+    font-size:11px;
+    font-weight:800;
+    letter-spacing:.6px;
+    text-transform:uppercase;
+}
+.notification-dropdown-item{
+    display:block;
+    padding:11px 14px;
+    border-bottom:1px solid #eef2f5;
+    color:var(--text);
+    text-decoration:none;
+    font-size:11px;
+    line-height:1.5;
+    overflow-wrap:anywhere;
+}
+.notification-dropdown-item:hover{background:#f8fafc;color:var(--brand-blue)}
+.notification-dropdown-item.unread{background:#eef6ff;font-weight:700}
+.notification-dropdown-item small{
+    display:block;
+    margin-top:4px;
+    color:#8896a5;
+    font-size:9px;
+    font-weight:500;
+}
+.notification-dropdown-empty{
+    padding:18px 14px;
+    color:#8b99a9;
+    font-size:11px;
+    text-align:center;
+}
+.notification-dropdown-view-all{
+    text-align:center;
+    color:var(--brand-blue);
+    font-weight:800;
+    border-bottom:0;
+}
 .notification-badge{
     position:absolute;
     top:-5px;
@@ -852,6 +949,11 @@ footer{
     .notification-btn{
         padding:0;
     }
+    .notification-dropdown{
+        top:calc(100% + 8px);
+        right:0;
+        width:min(300px, calc(100vw - 24px));
+    }
     .profile-link{
         padding:3px;
         justify-content:center;
@@ -1099,14 +1201,50 @@ footer{
                 </div>
             </a>
             <div class="user-controls">
-                <a href="notifications.php" class="notification-btn" aria-label="Notifications">
-                    <i class="fa-solid fa-bell"></i>
-                    <?php if ($unread_count > 0): ?>
-                        <span class="notification-badge">
-                            <?php echo $unread_count; ?>
-                        </span>
-                    <?php endif; ?>
-                </a>
+                <div class="notification-wrapper">
+                    <button type="button"
+                            class="notification-btn"
+                            id="notificationBell"
+                            aria-label="Open notifications"
+                            aria-controls="notificationDropdown"
+                            aria-expanded="false"
+                            onclick="toggleNotificationDropdown(event)">
+                        <i class="fa-solid fa-bell" aria-hidden="true"></i>
+                        <?php if ($unread_count > 0): ?>
+                            <span class="notification-badge"><?php echo $unread_count; ?></span>
+                        <?php endif; ?>
+                    </button>
+                    <div class="notification-dropdown" id="notificationDropdown" role="menu" aria-label="Latest notifications">
+                        <div class="notification-dropdown-header">Notifications</div>
+                        <?php if (!empty($notifications)): ?>
+                            <?php foreach ($notifications as $notification): ?>
+                                <?php
+                                    $notificationIsRead = in_array(
+                                        strtolower(trim((string)($notification['is_read'] ?? '0'))),
+                                        ['1', 'true', 't', 'yes'],
+                                        true
+                                    );
+                                    $notificationTime = formatEditProfileNotificationTimestamp($notification['created_at'] ?? null);
+                                ?>
+                                <a href="notifications.php"
+                                   class="notification-dropdown-item <?php echo $notificationIsRead ? '' : 'unread'; ?>"
+                                   role="menuitem">
+                                    <?php if (!empty($notification['title'])): ?>
+                                        <strong><?php echo htmlspecialchars((string)$notification['title'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></strong><br>
+                                    <?php endif; ?>
+                                    <?php echo htmlspecialchars((string)($notification['message'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
+                                    <?php if ($notificationTime !== ''): ?>
+                                        <small><?php echo htmlspecialchars($notificationTime, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></small>
+                                    <?php endif; ?>
+                                </a>
+                            <?php endforeach; ?>
+                            <a href="notifications.php" class="notification-dropdown-item notification-dropdown-view-all" role="menuitem">View All Notifications</a>
+                        <?php else: ?>
+                            <div class="notification-dropdown-empty">No notifications yet.</div>
+                            <a href="notifications.php" class="notification-dropdown-item notification-dropdown-view-all" role="menuitem">View All Notifications</a>
+                        <?php endif; ?>
+                    </div>
+                </div>
                 <a href="edit_profile.php" class="profile-link" title="Edit Profile">
                     <?php if ($has_profile_pic): ?>
                         <img
@@ -1336,6 +1474,36 @@ footer{
         </div>
     </footer>
     <script>
+        function toggleNotificationDropdown(event) {
+            if (event) event.stopPropagation();
+            const bell = document.getElementById('notificationBell');
+            const dropdown = document.getElementById('notificationDropdown');
+            if (!bell || !dropdown) return;
+
+            const shouldOpen = !dropdown.classList.contains('active');
+            dropdown.classList.toggle('active', shouldOpen);
+            bell.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
+        }
+
+        document.addEventListener('click', function(event) {
+            const wrapper = document.querySelector('.notification-wrapper');
+            const dropdown = document.getElementById('notificationDropdown');
+            const bell = document.getElementById('notificationBell');
+            if (wrapper && dropdown && !wrapper.contains(event.target)) {
+                dropdown.classList.remove('active');
+                if (bell) bell.setAttribute('aria-expanded', 'false');
+            }
+        });
+
+        document.addEventListener('keydown', function(event) {
+            if (event.key === 'Escape') {
+                const dropdown = document.getElementById('notificationDropdown');
+                const bell = document.getElementById('notificationBell');
+                if (dropdown) dropdown.classList.remove('active');
+                if (bell) bell.setAttribute('aria-expanded', 'false');
+            }
+        });
+
         function openGmailCompose(event) {
             event.preventDefault();
             const desktopUrl =

@@ -205,6 +205,122 @@ function slotIsHotelBoarding(string $serviceName): bool
     return strpos($name, 'boarding') !== false || strpos($name, 'overnight') !== false;
 }
 
+/**
+ * Load Admin-created manual availability adjustments for a date range.
+ * The table is introduced by availability_adjustments.sql. Until the migration
+ * is applied, this endpoint keeps its current appointment-only behavior.
+ *
+ * endDateExclusive follows the same convention as checkout_date for boarding.
+ */
+function slotLoadManualAdjustments(PDO $pdo, string $startDate, string $endDateExclusive): array
+{
+    static $tableExists = null;
+    if ($tableExists === null) {
+        $tableExists = (bool)$pdo->query("SELECT to_regclass('public.availability_adjustments')")->fetchColumn();
+    }
+    if (!$tableExists) return [];
+
+    $stmt = $pdo->prepare("
+        SELECT id, service_category, COALESCE(specific_service, '') AS specific_service,
+               start_date::text AS start_date, end_date::text AS end_date,
+               start_time::text AS start_time, end_time::text AS end_time,
+               LOWER(BTRIM(adjustment_type)) AS adjustment_type, quantity, reason
+        FROM public.availability_adjustments
+        WHERE is_active = TRUE
+          AND start_date < CAST(:range_end AS date)
+          AND end_date > CAST(:range_start AS date)
+        ORDER BY start_date, start_time NULLS FIRST, id
+    ");
+    $stmt->execute([
+        ':range_start' => $startDate,
+        ':range_end' => $endDateExclusive,
+    ]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+}
+
+/** True when the adjustment occupies the requested calendar date. */
+function slotManualAdjustmentActiveOnDate(array $adjustment, string $date): bool
+{
+    $startDate = substr((string)($adjustment['start_date'] ?? ''), 0, 10);
+    $endDate = substr((string)($adjustment['end_date'] ?? ''), 0, 10);
+    return $startDate !== '' && $endDate !== '' && $startDate <= $date && $endDate > $date;
+}
+
+/** Count real/occupied manual units; blocked slots do not consume the daily pet quota. */
+function slotManualOccupiedUnitsForDate(array $adjustments, string $date, ?string $category = null): int
+{
+    $total = 0;
+    foreach ($adjustments as $adjustment) {
+        if (!slotManualAdjustmentActiveOnDate($adjustment, $date)) continue;
+        if (strtolower(trim((string)($adjustment['adjustment_type'] ?? ''))) !== 'occupied') continue;
+        if ($category !== null && (string)($adjustment['service_category'] ?? '') !== $category) continue;
+        $total += max(1, (int)($adjustment['quantity'] ?? 1));
+    }
+    return $total;
+}
+
+/**
+ * Convert manual occupied/block adjustments into capacity intervals.
+ * Each occupied quantity represents a real unrecorded walk-in/unit. A blocked
+ * interval reserves the entire configured simultaneous capacity for that period.
+ */
+function slotManualIntervalsForDate(
+    array $adjustments,
+    string $date,
+    string $category,
+    string $requestedService,
+    int $normalCapacity
+): array {
+    $intervals = [];
+    foreach ($adjustments as $adjustment) {
+        if (!slotManualAdjustmentActiveOnDate($adjustment, $date)) continue;
+        if ((string)($adjustment['service_category'] ?? '') !== $category) continue;
+
+        $type = strtolower(trim((string)($adjustment['adjustment_type'] ?? '')));
+        if (!in_array($type, ['occupied', 'blocked'], true)) continue;
+
+        $adjustmentService = trim((string)($adjustment['specific_service'] ?? ''));
+        // A service-specific BLOCK closes that service only. OCCUPIED units still
+        // consume shared staff/room capacity for other services in the same category.
+        if ($type === 'blocked' && $adjustmentService !== '' && $requestedService !== ''
+            && strcasecmp($adjustmentService, $requestedService) !== 0) {
+            continue;
+        }
+
+        $rawStart = trim((string)($adjustment['start_time'] ?? ''));
+        $rawEnd = trim((string)($adjustment['end_time'] ?? ''));
+        $start = ($rawStart !== '') ? slotTimeToMinutes($rawStart) : null;
+        $end = ($rawEnd !== '') ? slotTimeToMinutes($rawEnd) : null;
+
+        if ($start === null && $end === null) {
+            // Both times blank means a full-day/room-stay adjustment.
+            $start = 0;
+            $end = 1440;
+        } elseif ($start === null) {
+            $start = 0;
+        } elseif ($end === null || $end <= $start) {
+            $serviceForDuration = ($adjustmentService !== '') ? $adjustmentService : $requestedService;
+            $end = min(1440, $start + slotDurationMinutes($category, $serviceForDuration));
+        }
+
+        if ($start === null || $end === null || $end <= $start) continue;
+        $units = ($type === 'blocked')
+            ? max(1, $normalCapacity)
+            : max(1, (int)($adjustment['quantity'] ?? 1));
+        $serviceLabel = $adjustmentService !== '' ? $adjustmentService : $requestedService;
+        for ($i = 0; $i < $units; $i++) {
+            $intervals[] = [
+                'start' => $start,
+                'end' => $end,
+                'service' => $category . ' - ' . $serviceLabel,
+                'manual_adjustment' => true,
+                'adjustment_type' => $type,
+            ];
+        }
+    }
+    return $intervals;
+}
+
 function slotIntervalsOverlap(int $startA, int $endA, int $startB, int $endB): bool
 {
     return $startA < $endB && $startB < $endA;
@@ -279,8 +395,12 @@ try {
             ':service_prefix' => $service_prefix,
         ]);
         $row_count = $stmt_count->fetch(PDO::FETCH_ASSOC) ?: [];
+        $next_day = $date_object->modify('+1 day')->format('Y-m-d');
+        $manual_adjustments = slotLoadManualAdjustments($pdo, $date, $next_day);
+        $manual_occupied_count = slotManualOccupiedUnitsForDate($manual_adjustments, $date, $category);
+        $legacy_total_bookings = (int)($row_count['total_bookings'] ?? 0) + $manual_occupied_count;
 
-        if ((int)($row_count['total_bookings'] ?? 0) >= $legacy_daily_limit) {
+        if ($legacy_total_bookings >= $legacy_daily_limit) {
             $response['is_full'] = true;
         } else {
             $stmt_slots = $pdo->prepare("\n                SELECT appointment_time::text AS appointment_time, COUNT(*) AS slot_count\n                FROM appointments\n                WHERE appointment_date = :appointment_date\n                  AND service ILIKE :service_prefix\n                  AND {$active_status_sql}\n                GROUP BY appointment_time\n                ORDER BY appointment_time\n            ");
@@ -296,6 +416,23 @@ try {
                 }
             }
         }
+
+        foreach ($manual_adjustments as $adjustment) {
+            if (!slotManualAdjustmentActiveOnDate($adjustment, $date)
+                || (string)($adjustment['service_category'] ?? '') !== $category) {
+                continue;
+            }
+            $rawTime = trim((string)($adjustment['start_time'] ?? ''));
+            if ($rawTime === '') {
+                foreach ($legacy_times as $legacyTime) $response['booked_times'][] = $legacyTime;
+            } else {
+                $minutes = slotTimeToMinutes($rawTime);
+                if ($minutes !== null) {
+                    $response['booked_times'][] = sprintf('%02d:%02d:00', intdiv($minutes, 60), $minutes % 60);
+                }
+            }
+        }
+        $response['booked_times'] = array_values(array_unique($response['booked_times']));
 
         echo json_encode($response, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
         exit;
@@ -370,8 +507,10 @@ try {
                 ':appointment_date_active' => $date,
             ]);
             $day_rows = $stmt_daycare->fetchAll(PDO::FETCH_ASSOC) ?: [];
-            $total_bookings = count($day_rows);
-            $hotel_bookings = 0;
+            $next_day = (new DateTimeImmutable($date))->modify('+1 day')->format('Y-m-d');
+            $manual_adjustments = slotLoadManualAdjustments($pdo, $date, $next_day);
+            $total_bookings = count($day_rows) + slotManualOccupiedUnitsForDate($manual_adjustments, $date);
+            $hotel_bookings = slotManualOccupiedUnitsForDate($manual_adjustments, $date, 'Pet Hotel');
             $hotel_intervals = [];
 
             foreach ($day_rows as $row) {
@@ -407,6 +546,10 @@ try {
                     }
                 }
             }
+            $hotel_intervals = array_merge(
+                $hotel_intervals,
+                slotManualIntervalsForDate($manual_adjustments, $date, 'Pet Hotel', $specific_service, $rules['Pet Hotel']['simultaneous_limit'])
+            );
 
             if ($total_bookings >= $global_daily_limit) {
                 $available = false;
@@ -527,11 +670,12 @@ try {
                 ':checkin_date' => $date,
             ]);
             $range_rows = $stmt_range->fetchAll(PDO::FETCH_ASSOC) ?: [];
+            $manual_adjustments_range = slotLoadManualAdjustments($pdo, $date, $checkout_date);
 
             for ($stay_day = $date_object; $stay_day < $checkout_object; $stay_day = $stay_day->modify('+1 day')) {
                 $day_string = $stay_day->format('Y-m-d');
-                $day_total = 0;
-                $day_hotel_count = 0;
+                $day_total = slotManualOccupiedUnitsForDate($manual_adjustments_range, $day_string);
+                $day_hotel_count = slotManualOccupiedUnitsForDate($manual_adjustments_range, $day_string, 'Pet Hotel');
                 $hotel_intervals = [];
 
                 foreach ($range_rows as $row) {
@@ -569,6 +713,10 @@ try {
                         }
                     }
                 }
+                $hotel_intervals = array_merge(
+                    $hotel_intervals,
+                    slotManualIntervalsForDate($manual_adjustments_range, $day_string, 'Pet Hotel', $specific_service, $room_capacity)
+                );
 
                 if ($day_total >= $global_limit) {
                     $available = false;
@@ -644,14 +792,17 @@ try {
         ':appointment_date_active' => $date,
     ]);
     $all_rows = $stmt_existing->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    $next_day = (new DateTimeImmutable($date))->modify('+1 day')->format('Y-m-d');
+    $manual_adjustments = slotLoadManualAdjustments($pdo, $date, $next_day);
 
-    $total_daily_bookings = count($all_rows);
+    $total_daily_bookings = count($all_rows) + slotManualOccupiedUnitsForDate($manual_adjustments, $date);
     $category_rows = [];
     foreach ($all_rows as $row) {
         $row_category = slotCategoryForService((string)($row['service'] ?? ''));
         if ($row_category === $category) $category_rows[] = $row;
     }
-    $category_daily_bookings = count($category_rows);
+    $category_daily_bookings = count($category_rows)
+        + slotManualOccupiedUnitsForDate($manual_adjustments, $date, $category);
 
     $response['mode'] = 'capacity_aware';
     $response['date'] = $date;
@@ -702,6 +853,10 @@ try {
             : ($start + slotDurationMinutes($category, $stored_service));
         $existing_intervals[] = ['start' => $interval_start, 'end' => $interval_end, 'service' => $stored_service];
     }
+    $existing_intervals = array_merge(
+        $existing_intervals,
+        slotManualIntervalsForDate($manual_adjustments, $date, $category, $specific_service, $simultaneous_limit)
+    );
 
     // Generate online start times based on service duration, not a universal
     // 30-minute grid. Vet remains 30 minutes; Grooming/Daycare align to their duration.

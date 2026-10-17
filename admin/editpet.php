@@ -83,6 +83,62 @@ if ($pet_id === false || $pet_id === null) {
 }
 $pet_id = (int)$pet_id;
 
+// Same-page JSON endpoint for the Admin notification bell.
+// This is admin-only even though operational staff can access the edit form.
+if (isset($_GET['ajax']) && $_GET['ajax'] === 'admin_notifications') {
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+    header('Pragma: no-cache');
+    header('X-Content-Type-Options: nosniff');
+
+    if (!$is_admin) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Access denied.']);
+        exit();
+    }
+
+    try {
+        $count_stmt = $pdo->query('SELECT COUNT(*) FROM admin_notifications WHERE is_read = 0');
+        $current_unread_count = (int)$count_stmt->fetchColumn();
+
+        $list_stmt = $pdo->query(
+            'SELECT message, created_at
+             FROM admin_notifications
+             WHERE is_read = 0
+             ORDER BY created_at DESC
+             LIMIT 20'
+        );
+        $rows = $list_stmt->fetchAll(PDO::FETCH_ASSOC);
+        $items = [];
+
+        foreach ($rows as $notification) {
+            $created_at = '';
+            if (!empty($notification['created_at'])) {
+                $timestamp = strtotime((string)$notification['created_at']);
+                if ($timestamp !== false) {
+                    $created_at = date('M d, g:i A', $timestamp);
+                }
+            }
+
+            $items[] = [
+                'message' => (string)($notification['message'] ?? ''),
+                'created_at' => $created_at,
+            ];
+        }
+
+        echo json_encode([
+            'success' => true,
+            'count' => $current_unread_count,
+            'notifications' => $items,
+        ], JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+    } catch (PDOException $e) {
+        error_log('Edit pet admin notification refresh failed: ' . $e->getMessage());
+        http_response_code(500);
+        echo json_encode(['success' => false, 'message' => 'Unable to refresh notifications.']);
+    }
+    exit();
+}
+
 $success_msg = '';
 $error_msg = '';
 $admin_full_name = 'User';
@@ -301,10 +357,12 @@ $admin_notifications = [];
 $unread_count = 0;
 if ($is_admin) {
     try {
+        $admin_count_stmt = $pdo->query("SELECT COUNT(*) FROM admin_notifications WHERE is_read = 0");
+        $unread_count = (int)$admin_count_stmt->fetchColumn();
+
         $admin_notif_stmt = $pdo->prepare("SELECT id, message, created_at FROM admin_notifications WHERE is_read = 0 ORDER BY created_at DESC LIMIT 20");
         $admin_notif_stmt->execute();
         $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
-        $unread_count = count($admin_notifications);
     } catch (PDOException $e) {
         error_log('Edit pet admin notification fetch failed: ' . $e->getMessage());
         $admin_notifications = [];
@@ -631,8 +689,80 @@ if ($is_admin) {
             if (button) button.setAttribute('aria-expanded', 'false');
         }
 
+        let adminNotifRefreshInProgress = false;
+
+        async function refreshAdminNotifications() {
+            const badge = document.getElementById('admin-notif-badge');
+            const list = document.getElementById('admin-notif-list');
+            const markAllLink = document.getElementById('mark-read-link');
+
+            // The bell exists only for Admin accounts on this page.
+            if (!badge || !list || adminNotifRefreshInProgress) return;
+
+            adminNotifRefreshInProgress = true;
+            try {
+                const endpoint = new URL(window.location.href);
+                endpoint.searchParams.set('ajax', 'admin_notifications');
+
+                const response = await fetch(endpoint.toString(), {
+                    method: 'GET',
+                    credentials: 'same-origin',
+                    cache: 'no-store',
+                    headers: { 'X-Requested-With': 'XMLHttpRequest' }
+                });
+
+                if (!response.ok) return;
+
+                const data = await response.json();
+                if (!data || data.success !== true || !Array.isArray(data.notifications)) return;
+
+                const count = Number.isFinite(Number(data.count)) ? Math.max(0, Number(data.count)) : 0;
+                badge.textContent = String(count);
+                badge.style.display = count > 0 ? 'inline-flex' : 'none';
+                if (markAllLink) {
+                    markAllLink.style.display = count > 0 ? 'inline-block' : 'none';
+                }
+
+                const fragment = document.createDocumentFragment();
+                if (data.notifications.length === 0) {
+                    const empty = document.createElement('div');
+                    empty.className = 'notif-empty';
+                    empty.textContent = 'No new notifications.';
+                    fragment.appendChild(empty);
+                } else {
+                    data.notifications.forEach(function(notification) {
+                        const item = document.createElement('div');
+                        item.className = 'notif-item';
+
+                        const icon = document.createElement('i');
+                        icon.className = 'fa-solid fa-circle-exclamation';
+                        icon.style.color = '#e11d48';
+                        icon.style.marginRight = '5px';
+                        item.appendChild(icon);
+                        item.appendChild(document.createTextNode(String(notification.message ?? '')));
+
+                        item.appendChild(document.createElement('br'));
+                        const timestamp = document.createElement('small');
+                        timestamp.style.color = '#94a3b8';
+                        timestamp.style.fontSize = '11px';
+                        timestamp.textContent = String(notification.created_at ?? '');
+                        item.appendChild(timestamp);
+
+                        fragment.appendChild(item);
+                    });
+                }
+                list.replaceChildren(fragment);
+            } catch (error) {
+                // Keep the last known good badge/list if the request temporarily fails.
+                console.error('Admin notifications refresh failed:', error);
+            } finally {
+                adminNotifRefreshInProgress = false;
+            }
+        }
+
         function toggleNotif(event) {
             event.stopPropagation();
+            refreshAdminNotifications();
             const notifBox = document.getElementById('notifBox');
             const profileBox = document.getElementById('profileBox');
             if (notifBox) notifBox.classList.toggle('show');
@@ -673,6 +803,12 @@ if ($is_admin) {
                 if (window.innerWidth <= 900) closeMobileSidebar();
             });
         });
+
+        // Refresh the Admin-only notification bell without reloading the whole page.
+        if (document.getElementById('admin-notif-badge')) {
+            refreshAdminNotifications();
+            window.setInterval(refreshAdminNotifications, 3000);
+        }
     </script>
 </body>
 </html>

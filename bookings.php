@@ -6,6 +6,34 @@ require_once 'includes/iprog_sms.php';
 
 date_default_timezone_set('Asia/Manila');
 
+/**
+ * Format notification timestamps consistently in Philippine time.
+ * Supabase/PostgreSQL timestamp strings may include an explicit offset (e.g. +00).
+ * If no offset is present, treat created_at as UTC, then convert to Asia/Manila.
+ */
+function formatMyScheduleNotificationTime($value): string
+{
+    if ($value === null || trim((string)$value) === '') {
+        return '';
+    }
+
+    $rawTimestamp = trim((string)$value);
+
+    try {
+        $hasExplicitTimezone = preg_match('/(?:Z|[+-]\\d{2}(?::?\\d{2})?|UTC|GMT)$/i', $rawTimestamp) === 1;
+        $timestamp = $hasExplicitTimezone
+            ? new DateTimeImmutable($rawTimestamp)
+            : new DateTimeImmutable($rawTimestamp, new DateTimeZone('UTC'));
+
+        return $timestamp
+            ->setTimezone(new DateTimeZone('Asia/Manila'))
+            ->format('M d, Y h:i A');
+    } catch (Throwable $e) {
+        error_log('Unable to format notification timestamp: ' . $e->getMessage());
+        return '';
+    }
+}
+
 // ============================================================
 // ACCESS CONTROL
 // ============================================================
@@ -24,6 +52,67 @@ $user_id = (int)($_SESSION['user_id'] ?? 0);
 // Shared CSRF token used by cancellation and rescheduling forms.
 if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+
+// Same-file AJAX endpoint: refresh the customer's unread count and recent list.
+// The user_id condition is applied to both queries so customers only receive their own data.
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET' && ($_GET['ajax'] ?? '') === 'notifications') {
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Cache-Control: no-store, private, max-age=0, must-revalidate');
+    header('Pragma: no-cache');
+
+    if ($user_id <= 0) {
+        http_response_code(401);
+        echo json_encode(['unread' => null, 'notifications' => [], 'error' => 'Authentication required']);
+        exit();
+    }
+
+    try {
+        // Cast is_read to text to support PostgreSQL BOOLEAN and numeric/text columns.
+        $ajax_count_stmt = $pdo->prepare("
+            SELECT COUNT(*)
+            FROM notifications
+            WHERE user_id = :user_id
+              AND (LOWER(CAST(is_read AS TEXT)) IN ('0', 'false', 'f') OR is_read IS NULL)
+        ");
+        $ajax_count_stmt->execute([':user_id' => $user_id]);
+        $ajax_unread_count = (int)($ajax_count_stmt->fetchColumn() ?? 0);
+
+        $ajax_list_stmt = $pdo->prepare("
+            SELECT
+                id,
+                message,
+                created_at,
+                CASE
+                    WHEN is_read IS NULL OR LOWER(CAST(is_read AS TEXT)) IN ('0', 'false', 'f') THEN 'false'
+                    ELSE 'true'
+                END AS is_read_normalized
+            FROM notifications
+            WHERE user_id = :user_id
+            ORDER BY created_at DESC, id DESC
+            LIMIT 5
+        ");
+        $ajax_list_stmt->execute([':user_id' => $user_id]);
+        $ajax_notifications = $ajax_list_stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        foreach ($ajax_notifications as &$ajax_notification) {
+            $ajax_notification['is_read'] = strtolower(trim((string)($ajax_notification['is_read_normalized'] ?? 'false'))) === 'true';
+            unset($ajax_notification['is_read_normalized']);
+            $ajax_notification['time'] = formatMyScheduleNotificationTime($ajax_notification['created_at'] ?? null);
+            $ajax_notification['message'] = (string)($ajax_notification['message'] ?? '');
+        }
+        unset($ajax_notification);
+
+        echo json_encode([
+            'unread' => $ajax_unread_count,
+            'notifications' => $ajax_notifications,
+        ], JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+    } catch (Throwable $e) {
+        error_log('Bookings notification refresh failed: ' . $e->getMessage());
+        http_response_code(500);
+        echo json_encode(['unread' => null, 'notifications' => [], 'error' => 'Unable to refresh notifications']);
+    }
+    exit();
 }
 
 // ============================================================
@@ -405,7 +494,7 @@ try {
         SELECT COUNT(*) AS unread
         FROM notifications
         WHERE user_id = :user_id
-          AND is_read = 0
+          AND (LOWER(CAST(is_read AS TEXT)) IN ('0', 'false', 'f') OR is_read IS NULL)
     ");
 
     $stmt_notif->execute([
@@ -417,10 +506,17 @@ try {
     $unread_count = (int)($notif_row['unread'] ?? 0);
 
     $stmt_notif_list = $pdo->prepare("
-        SELECT id, message, created_at, is_read
+        SELECT
+            id,
+            message,
+            created_at,
+            CASE
+                WHEN is_read IS NULL OR LOWER(CAST(is_read AS TEXT)) IN ('0', 'false', 'f') THEN 'false'
+                ELSE 'true'
+            END AS is_read_normalized
         FROM notifications
         WHERE user_id = :user_id
-        ORDER BY created_at DESC
+        ORDER BY created_at DESC, id DESC
         LIMIT 5
     ");
 
@@ -750,6 +846,20 @@ try {
 
         .dropdown-item:last-child { border-bottom: 0; }
         .view-all-link { text-align: center; color: var(--brand-blue); font-weight: 800; }
+        .view-all-form { margin: 0; }
+        .dropdown-item.view-all-button {
+            box-sizing: border-box;
+            width: 100%;
+            border: 0;
+            border-radius: 0;
+            background: transparent;
+            font-family: inherit;
+            cursor: pointer;
+        }
+        .dropdown-item.view-all-button:hover {
+            background: #f8fafc;
+            color: var(--brand-blue);
+        }
 
 
 
@@ -2070,33 +2180,31 @@ try {
                 <div class="notification-wrapper">
                     <div class="notification-bell" onclick="toggleDropdown('notifDropdown')" aria-label="Notifications">
                         <i class="fa-solid fa-bell"></i>
-                        <?php if($unread_count > 0): ?>
-                            <span id="notif-badge" class="notification-badge" style="<?php echo $unread_count > 0 ? '' : 'display:none;'; ?>"><?php echo $unread_count; ?></span>
-                        <?php endif; ?>
+                        <span id="notif-badge" class="notification-badge" style="<?php echo $unread_count > 0 ? '' : 'display:none;'; ?>"><?php echo $unread_count; ?></span>
                     </div>
 
                     <div class="dropdown-menu" id="notifDropdown">
                         <div class="dropdown-header">Notifications</div>
-
-                        <?php if(count($notifications) > 0): ?>
-                            <?php foreach($notifications as $notif): ?>
-                                <a href="notifications.php" class="dropdown-item <?php echo $notif['is_read'] ? '' : 'unread'; ?>">
-                                    <?php echo htmlspecialchars($notif['message']); ?>
-                                    <br>
-                                    <small style="color:#888;font-size:10px;">
-                                        <?php echo date('M d, Y h:i A', strtotime($notif['created_at'])); ?>
-                                    </small>
-                                </a>
-                            <?php endforeach; ?>
-
-                            <a href="notifications.php" class="dropdown-item view-all-link">
-                                View All Notifications
-                            </a>
-                        <?php else: ?>
-                            <div class="dropdown-item" style="text-align:center;color:#888;">
-                                No new notifications.
-                            </div>
-                        <?php endif; ?>
+                        <div id="notif-content">
+                            <?php if (count($notifications) > 0): ?>
+                                <?php foreach ($notifications as $notif): ?>
+                                    <?php $dropdown_is_read = strtolower(trim((string)($notif['is_read_normalized'] ?? 'false'))) === 'true'; ?>
+                                    <a href="notifications.php" class="dropdown-item <?php echo $dropdown_is_read ? '' : 'unread'; ?>">
+                                        <?php echo htmlspecialchars((string)($notif['message'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
+                                        <br>
+                                        <small style="color:#888;font-size:10px;">
+                                            <?php echo htmlspecialchars(formatMyScheduleNotificationTime($notif['created_at'] ?? null), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
+                                        </small>
+                                    </a>
+                                <?php endforeach; ?>
+                                <form method="POST" action="mark_all_read.php" class="view-all-form">
+                                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'], ENT_QUOTES, 'UTF-8'); ?>">
+                                    <button type="submit" class="dropdown-item view-all-link view-all-button">View All Notifications</button>
+                                </form>
+                            <?php else: ?>
+                                <div class="dropdown-item" style="text-align:center;color:#888;">No new notifications.</div>
+                            <?php endif; ?>
+                        </div>
                     </div>
                 </div>
 
@@ -2778,32 +2886,82 @@ try {
             }
         });
 
-        // --- REAL-TIME AJAX SCRIPT WITH SOUND ---
-        const notifSound = new Audio('notification.mp3'); 
+        // --- AUTOMATIC NOTIFICATION DROPDOWN + BADGE REFRESH ---
+        const notifSound = new Audio('notification.mp3');
         let previousUnreadCount = <?php echo $unread_count; ?>;
+        const notificationCsrfToken = <?php echo json_encode((string)($_SESSION['csrf_token'] ?? ''), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
 
-        function updateNotifications() {
-            fetch('get_unread_notifs.php')
-                .then(response => response.json())
-                .then(data => {
-                    const badge = document.getElementById('notif-badge');
-                    
-                    if (data.unread > previousUnreadCount) {
-                        notifSound.play().catch(err => console.log("User needs to interact with the page first to play sound."));
-                    }
-                    
-                    previousUnreadCount = data.unread;
-                    
-                    if (data.unread > 0) {
-                        badge.style.display = 'inline-block';
-                        badge.innerText = data.unread;
-                    } else {
-                        badge.style.display = 'none';
-                    }
-                })
-                .catch(error => console.error('Error fetching notifications:', error));
+        function escapeNotificationHtml(value) {
+            return String(value ?? '').replace(/[&<>"']/g, character => ({
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#39;'
+            }[character]));
         }
 
+        function renderNotificationDropdown(notifications) {
+            const content = document.getElementById('notif-content');
+            if (!content) return;
+
+            if (!Array.isArray(notifications) || notifications.length === 0) {
+                content.innerHTML = '<div class="dropdown-item" style="text-align:center;color:#888;">No new notifications.</div>';
+                return;
+            }
+
+            const recentItems = notifications.map(notification => {
+                const message = escapeNotificationHtml(notification.message);
+                const time = escapeNotificationHtml(notification.time);
+                const unreadClass = notification.is_read ? '' : ' unread';
+                return '<a href="notifications.php" class="dropdown-item' + unreadClass + '">' +
+                    message + '<br><small style="color:#888;font-size:10px;">' + time + '</small></a>';
+            }).join('');
+
+            const viewAllForm = '<form method="POST" action="mark_all_read.php" class="view-all-form">' +
+                '<input type="hidden" name="csrf_token" value="' + escapeNotificationHtml(notificationCsrfToken) + '">' +
+                '<button type="submit" class="dropdown-item view-all-link view-all-button">View All Notifications</button>' +
+                '</form>';
+
+            content.innerHTML = recentItems + viewAllForm;
+        }
+
+        function updateNotifications() {
+            fetch('bookings.php?ajax=notifications', {
+                method: 'GET',
+                headers: { 'Accept': 'application/json' },
+                cache: 'no-store',
+                credentials: 'same-origin'
+            })
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Notification refresh request failed.');
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    const badge = document.getElementById('notif-badge');
+                    const unread = Number(data && data.unread);
+
+                    // Do not overwrite valid UI state if the server response is incomplete.
+                    if (!badge || !Number.isInteger(unread) || unread < 0 || !Array.isArray(data.notifications)) {
+                        return;
+                    }
+
+                    if (unread > previousUnreadCount) {
+                        notifSound.play().catch(() => {});
+                    }
+
+                    previousUnreadCount = unread;
+                    badge.innerText = String(unread);
+                    badge.style.display = unread > 0 ? 'inline-flex' : 'none';
+                    renderNotificationDropdown(data.notifications);
+                })
+                .catch(error => console.warn('Could not refresh notifications:', error));
+        }
+
+        // Run once soon after load, then keep the open page current every 3 seconds.
+        updateNotifications();
         setInterval(updateNotifications, 3000);
     </script>
 </body>

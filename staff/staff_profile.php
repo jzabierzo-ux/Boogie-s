@@ -1,10 +1,33 @@
 <?php
 require_once __DIR__ . '/../shared_session_bootstrap.php';
-require_once '../db_supabase.php';
+require_once __DIR__ . '/../db_supabase.php';
 
-// 1. SECURITY: accept the canonical role names assigned by stafflogin.php
+// 1. SECURITY: normalize role names used by Admin and Staff accounts.
+// This page is shared by operational staff, so service-staff roles must be allowed too.
 $current_role_raw = strtolower(trim((string)($_SESSION['role'] ?? '')));
 $staff_role_aliases = [
+    'administrator' => 'admin',
+    'admin' => 'admin',
+    'shop manager' => 'manager',
+    'shop_manager' => 'manager',
+    'manager' => 'manager',
+    'front desk' => 'receptionist',
+    'front desk / receptionist' => 'receptionist',
+    'front_desk' => 'receptionist',
+    'front_desk_receptionist' => 'receptionist',
+    'receptionist' => 'receptionist',
+    'grooming staff' => 'groomer',
+    'grooming staff / groomer' => 'groomer',
+    'grooming_staff' => 'groomer',
+    'grooming_staff_groomer' => 'groomer',
+    'groomer' => 'groomer',
+    'staff' => 'groomer', // Legacy role used by older staff accounts.
+    'pet hotel staff' => 'pet_hotel_staff',
+    'pet hotel staff / attendant' => 'pet_hotel_staff',
+    'pet_hotel_attendant' => 'pet_hotel_staff',
+    'pet_hotel_staff_attendant' => 'pet_hotel_staff',
+    'pet_hotel_staff' => 'pet_hotel_staff',
+    'supervisor' => 'receptionist',
     'vet' => 'veterinarian',
     'veterinary' => 'veterinarian',
     'veterinarian' => 'veterinarian',
@@ -20,8 +43,11 @@ $staff_role_aliases = [
 $current_role = $staff_role_aliases[$current_role_raw] ?? $current_role_raw;
 $session_logged_in = in_array($_SESSION['logged_in'] ?? null, [true, 1, '1'], true)
     || in_array($_SESSION['staff_logged_in'] ?? null, [true, 1, '1'], true);
-$is_authorized = $session_logged_in
-    && in_array($current_role, ['admin', 'manager', 'veterinarian', 'vet_assistant', 'vet_nurse'], true);
+$allowed_profile_roles = [
+    'admin', 'manager', 'receptionist', 'groomer', 'pet_hotel_staff',
+    'veterinarian', 'vet_assistant', 'vet_nurse'
+];
+$is_authorized = $session_logged_in && in_array($current_role, $allowed_profile_roles, true);
 
 if (!$is_authorized) {
     header('Location: stafflogin.php');
@@ -2195,13 +2221,29 @@ input, select, textarea, button, img { max-width:100%; }
     <aside class="sidebar">
         <div class="sidebar-header">
             <img src="../bg.png" alt="Boogie's Logo" class="sidebar-logo-img">
-            <h2>Boogie's Clinic</h2>
+            <h2><?php echo in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true) ? "Boogie's Clinic" : "Boogie's Pet Care"; ?></h2>
         </div>
         <nav class="nav-links">
-            <a href="staffdashboard.php" class="nav-item"><i class="fas fa-th-large"></i> Dashboard</a>
-            <a href="appointments.php" class="nav-item"><i class="fas fa-calendar-alt"></i> Appointments</a>
-            <a href="pets.php" class="nav-item"><i class="fas fa-paw"></i> Patients</a>
-            <a href="tasks.php" class="nav-item"><i class="fas fa-tasks"></i> My Tasks</a>
+            <?php if (in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)): ?>
+                <!-- Veterinary staff use the veterinary dashboard and clinical modules. -->
+                <a href="staffdashboard.php" class="nav-item"><i class="fas fa-th-large"></i> Dashboard</a>
+                <a href="appointments.php" class="nav-item"><i class="fas fa-calendar-alt"></i> Appointments</a>
+                <a href="pets.php" class="nav-item"><i class="fas fa-paw"></i> Patients</a>
+                <a href="tasks.php" class="nav-item"><i class="fas fa-tasks"></i> My Tasks</a>
+            <?php else: ?>
+                <!-- Operational service staff use the grooming / pet-care portal, not veterinary pages. -->
+                <a href="../admin/admindashboard.php" class="nav-item"><i class="fas fa-chart-line"></i> Dashboard</a>
+                <a href="../admin/managebooking.php" class="nav-item"><i class="fas fa-calendar-alt"></i> Bookings</a>
+                <a href="../admin/manageusers.php" class="nav-item"><i class="fas fa-users"></i> Users</a>
+                <a href="../admin/managepet.php" class="nav-item"><i class="fas fa-dog"></i> Pets</a>
+                <?php if ($current_role === 'admin'): ?>
+                    <a href="../admin/managestaff.php" class="nav-item"><i class="fas fa-id-badge"></i> Personnel</a>
+                    <a href="../admin/managepromo.php" class="nav-item"><i class="fas fa-tags"></i> Promos</a>
+                    <a href="../admin/manage_services.php" class="nav-item"><i class="fas fa-list-ul"></i> Pricelist</a>
+                    <a href="../admin/sales_report.php" class="nav-item"><i class="fas fa-file-invoice-dollar"></i> Sales Report</a>
+                    <a href="../admin/admin_account_logs.php" class="nav-item"><i class="fas fa-clock-rotate-left"></i> Account Logs</a>
+                <?php endif; ?>
+            <?php endif; ?>
         </nav>
     </aside>
 
@@ -2214,7 +2256,24 @@ input, select, textarea, button, img { max-width:100%; }
             </button>
             <div class="breadcrumb">
                 <i class="fas fa-user-circle" style="color: var(--brand-blue);"></i> 
-                <?php echo in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true) ? 'Veterinary Portal' : (($current_role === 'admin') ? 'Admin Portal' : 'Manager Portal'); ?> / My Profile
+                <?php
+                    if (in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)) {
+                        $profile_portal_label = 'Veterinary Portal';
+                    } elseif ($current_role === 'pet_hotel_staff') {
+                        $profile_portal_label = 'Pet Hotel Portal';
+                    } elseif ($current_role === 'groomer') {
+                        $profile_portal_label = 'Grooming Portal';
+                    } elseif ($current_role === 'receptionist') {
+                        $profile_portal_label = 'Reception Portal';
+                    } elseif ($current_role === 'admin') {
+                        $profile_portal_label = 'Admin Portal';
+                    } elseif ($current_role === 'manager') {
+                        $profile_portal_label = 'Manager Portal';
+                    } else {
+                        $profile_portal_label = 'Staff Portal';
+                    }
+                    echo htmlspecialchars($profile_portal_label, ENT_QUOTES, 'UTF-8');
+                ?> / My Profile
             </div>
             
             <div class="top-right-actions">
@@ -2246,7 +2305,19 @@ input, select, textarea, button, img { max-width:100%; }
                 <div class="profile-wrapper" onclick="toggleProfile(event)">
                     <div class="role-label">
                         <i class="<?php echo in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true) ? 'fas fa-user-md' : 'fas fa-user-tie'; ?>"></i> 
-                        <?php echo strtoupper($current_role); ?>
+                        <?php
+                            $role_display_labels = [
+                                'admin' => 'Admin',
+                                'manager' => 'Manager',
+                                'receptionist' => 'Receptionist',
+                                'groomer' => 'Grooming Staff',
+                                'pet_hotel_staff' => 'Pet Hotel Staff',
+                                'veterinarian' => 'Veterinarian',
+                                'vet_assistant' => 'Vet Assistant',
+                                'vet_nurse' => 'Vet Nurse'
+                            ];
+                            echo htmlspecialchars(strtoupper($role_display_labels[$current_role] ?? $current_role), ENT_QUOTES, 'UTF-8');
+                        ?>
                     </div>
                     
                     <?php if ($profile_img_url !== ''): ?>

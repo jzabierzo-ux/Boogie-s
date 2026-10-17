@@ -25,7 +25,77 @@ function isFaqNotificationRead($value): bool
     return in_array(strtolower(trim((string)$value)), ['1', 'true', 't', 'yes'], true);
 }
 
+// Render timezone-less database timestamps as UTC, then display Philippine time.
+function formatFaqNotificationTimestamp($value, string $format = 'M d, Y h:i A'): string
+{
+    if ($value === null || trim((string)$value) === '') {
+        return '';
+    }
 
+    try {
+        $date = new DateTimeImmutable((string)$value, new DateTimeZone('UTC'));
+        return $date->setTimezone(new DateTimeZone('Asia/Manila'))->format($format);
+    } catch (Throwable $e) {
+        error_log('FAQ notification timestamp formatting failed: ' . $e->getMessage());
+        return '';
+    }
+}
+
+if ($is_logged_in && $user_id > 0 && (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token']))) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+
+// AJAX endpoint: refresh this authenticated customer's recent notifications and unread count.
+if ($is_logged_in && $user_id > 0 && isset($_GET['ajax_notifications']) && $_GET['ajax_notifications'] === '1') {
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Cache-Control: no-store, private, max-age=0, must-revalidate');
+    header('Pragma: no-cache');
+
+    try {
+        $ajax_count_stmt = $pdo->prepare("
+            SELECT COUNT(*)
+            FROM notifications
+            WHERE user_id = :user_id
+              AND (LOWER(CAST(is_read AS TEXT)) IN ('0', 'false', 'f', 'no') OR is_read IS NULL)
+        ");
+        $ajax_count_stmt->execute([':user_id' => $user_id]);
+        $ajax_unread_count = (int)($ajax_count_stmt->fetchColumn() ?? 0);
+
+        $ajax_list_stmt = $pdo->prepare("
+            SELECT id, message, created_at, is_read
+            FROM notifications
+            WHERE user_id = :user_id
+            ORDER BY created_at DESC, id DESC
+            LIMIT 5
+        ");
+        $ajax_list_stmt->execute([':user_id' => $user_id]);
+
+        $ajax_notifications = [];
+        while ($row = $ajax_list_stmt->fetch(PDO::FETCH_ASSOC)) {
+            $raw_is_read = strtolower(trim((string)($row['is_read'] ?? '')));
+            $ajax_notifications[] = [
+                'id' => (int)($row['id'] ?? 0),
+                'message' => (string)($row['message'] ?? ''),
+                'is_read' => in_array($raw_is_read, ['1', 'true', 't', 'yes'], true),
+                'created_at' => formatFaqNotificationTimestamp($row['created_at'] ?? null),
+            ];
+        }
+
+        echo json_encode([
+            'success' => true,
+            'unread_count' => $ajax_unread_count,
+            'notifications' => $ajax_notifications,
+        ], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    } catch (Throwable $e) {
+        error_log('FAQ notification refresh failed: ' . $e->getMessage());
+        http_response_code(500);
+        echo json_encode([
+            'success' => false,
+            'message' => 'Unable to refresh notifications right now.',
+        ], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    }
+    exit;
+}
 
 if ($is_logged_in && $user_id > 0) {
 
@@ -67,7 +137,7 @@ if ($is_logged_in && $user_id > 0) {
 
             WHERE user_id = :user_id
 
-              AND LOWER(CAST(is_read AS TEXT)) IN ('0', 'false', 'f')
+              AND (LOWER(CAST(is_read AS TEXT)) IN ('0', 'false', 'f', 'no') OR is_read IS NULL)
 
         ");
 
@@ -1013,41 +1083,30 @@ footer{
 
                     <div class="dropdown-header">Notifications</div>
 
+                    <div id="faq-notification-items">
                     <?php if (!empty($notifications)): ?>
-
                         <?php foreach ($notifications as $notif): ?>
-
                             <a href="notifications.php"
-
                                class="dropdown-item <?php echo isFaqNotificationRead($notif['is_read'] ?? null) ? '' : 'unread'; ?>">
-
                                 <?php echo htmlspecialchars((string)($notif['message'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?><br>
-
                                 <small style="color:#888;font-size:10px;">
-
-                                    <?php echo date('M d, Y h:i A', strtotime($notif['created_at'])); ?>
-
+                                    <?php echo htmlspecialchars(formatFaqNotificationTimestamp($notif['created_at'] ?? null), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
                                 </small>
-
                             </a>
-
                         <?php endforeach; ?>
-
-                        <a href="notifications.php" class="dropdown-item view-all-link">
-
-                            View All Notifications
-
-                        </a>
-
                     <?php else: ?>
-
-                        <div class="dropdown-item" style="text-align:center;color:#888;">
-
+                        <div class="dropdown-item faq-notification-empty" style="text-align:center;color:#888;">
                             No new notifications.
-
                         </div>
-
                     <?php endif; ?>
+                    </div>
+
+                    <form id="faq-notification-view-all-form" action="mark_all_read.php" method="post" style="margin:0;<?php echo empty($notifications) ? 'display:none;' : ''; ?>">
+                        <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars((string)($_SESSION['csrf_token'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
+                        <button type="submit" class="dropdown-item view-all-link" style="display:block;width:100%;border:0;background:#fff;cursor:pointer;font-family:inherit;font-size:12px;padding:12px 16px;">
+                            View All Notifications
+                        </button>
+                    </form>
 
                 </div>
 
@@ -1519,6 +1578,82 @@ function toggleDropdown(id){
 
 }
 
+// Refresh only the notification dropdown and unread badge; do not reload the FAQ page.
+(function initFaqNotificationRefresh() {
+    const badge = document.getElementById('notif-badge');
+    const itemsContainer = document.getElementById('faq-notification-items');
+    const viewAllForm = document.getElementById('faq-notification-view-all-form');
+    if (!badge || !itemsContainer || !viewAllForm) return;
+
+    let requestInProgress = false;
+
+    function renderFaqNotifications(items) {
+        itemsContainer.replaceChildren();
+
+        if (!Array.isArray(items) || items.length === 0) {
+            const emptyMessage = document.createElement('div');
+            emptyMessage.className = 'dropdown-item faq-notification-empty';
+            emptyMessage.style.textAlign = 'center';
+            emptyMessage.style.color = '#888';
+            emptyMessage.textContent = 'No new notifications.';
+            itemsContainer.appendChild(emptyMessage);
+            viewAllForm.style.display = 'none';
+            return;
+        }
+
+        items.forEach(function(notification) {
+            const link = document.createElement('a');
+            link.href = 'notifications.php';
+            link.className = 'dropdown-item' + (notification.is_read === true ? '' : ' unread');
+            link.appendChild(document.createTextNode(String(notification.message || '')));
+            link.appendChild(document.createElement('br'));
+
+            const timestamp = document.createElement('small');
+            timestamp.style.color = '#888';
+            timestamp.style.fontSize = '10px';
+            timestamp.textContent = String(notification.created_at || '');
+            link.appendChild(timestamp);
+            itemsContainer.appendChild(link);
+        });
+
+        viewAllForm.style.display = 'block';
+    }
+
+    async function refreshFaqNotifications() {
+        if (requestInProgress || document.hidden) return;
+        requestInProgress = true;
+
+        try {
+            const response = await fetch('faqs.php?ajax_notifications=1', {
+                method: 'GET',
+                credentials: 'same-origin',
+                cache: 'no-store',
+                headers: { 'Accept': 'application/json' }
+            });
+            if (!response.ok) throw new Error('Notification request failed (' + response.status + ')');
+
+            const data = await response.json();
+            if (data.success !== true || !Number.isFinite(Number(data.unread_count))) {
+                throw new Error('Invalid notification response');
+            }
+
+            const unreadCount = Number(data.unread_count);
+            badge.style.display = unreadCount > 0 ? 'inline-flex' : 'none';
+            badge.textContent = String(unreadCount);
+            renderFaqNotifications(data.notifications);
+        } catch (error) {
+            console.error('Error refreshing FAQ notifications:', error);
+        } finally {
+            requestInProgress = false;
+        }
+    }
+
+    refreshFaqNotifications();
+    window.setInterval(refreshFaqNotifications, 3000);
+    document.addEventListener('visibilitychange', function() {
+        if (!document.hidden) refreshFaqNotifications();
+    });
+})();
 
 
 document.addEventListener('click', function(e){

@@ -115,6 +115,90 @@ if ($requested_id === '' || !ctype_digit($requested_id) || (int)$requested_id < 
     exit();
 }
 $customer_id = (int)$requested_id;
+
+/**
+ * Return a type-compatible unread predicate for the Admin notification table.
+ * Only the fixed table is queried; the returned SQL fragments are code-defined.
+ */
+function viewCustomerAdminUnreadPredicate(PDO $pdo): string
+{
+    $typeStmt = $pdo->prepare("SELECT data_type
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'admin_notifications'
+          AND column_name = 'is_read'
+        LIMIT 1");
+    $typeStmt->execute();
+    $dataType = strtolower(trim((string)$typeStmt->fetchColumn()));
+
+    if ($dataType === 'boolean') {
+        return 'COALESCE(is_read, FALSE) = FALSE';
+    }
+    if (in_array($dataType, ['smallint', 'integer', 'bigint', 'numeric', 'decimal', 'real', 'double precision'], true)) {
+        return '(is_read = 0 OR is_read IS NULL)';
+    }
+    if (in_array($dataType, ['text', 'character varying', 'character'], true)) {
+        return "(is_read IS NULL OR LOWER(BTRIM(CAST(is_read AS TEXT))) IN ('0', 'false', 'f', 'no', 'unread', ''))";
+    }
+
+    throw new RuntimeException('Unsupported or unknown admin_notifications.is_read column type.');
+}
+
+// Same-page JSON endpoint for the Admin notification bell.
+if (isset($_GET['ajax']) && $_GET['ajax'] === 'admin_notifications') {
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+    header('Pragma: no-cache');
+    header('X-Content-Type-Options: nosniff');
+
+    if (!$is_admin) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Access denied.']);
+        exit();
+    }
+
+    try {
+        $unreadPredicate = viewCustomerAdminUnreadPredicate($pdo);
+        $count_stmt = $pdo->query("SELECT COUNT(*) FROM admin_notifications WHERE {$unreadPredicate}");
+        $current_unread_count = (int)$count_stmt->fetchColumn();
+
+        $list_stmt = $pdo->query(
+            "SELECT message, created_at
+             FROM admin_notifications
+             WHERE {$unreadPredicate}
+             ORDER BY created_at DESC
+             LIMIT 20"
+        );
+        $rows = $list_stmt->fetchAll(PDO::FETCH_ASSOC);
+        $items = [];
+
+        foreach ($rows as $notification) {
+            $created_at = '';
+            if (!empty($notification['created_at'])) {
+                $timestamp = strtotime((string)$notification['created_at']);
+                if ($timestamp !== false) {
+                    $created_at = date('M d, g:i A', $timestamp);
+                }
+            }
+
+            $items[] = [
+                'message' => (string)($notification['message'] ?? ''),
+                'created_at' => $created_at,
+            ];
+        }
+
+        echo json_encode([
+            'success' => true,
+            'count' => $current_unread_count,
+            'notifications' => $items,
+        ], JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+    } catch (Throwable $e) {
+        error_log('view_customer admin notification refresh failed: ' . $e->getMessage());
+        http_response_code(500);
+        echo json_encode(['success' => false, 'message' => 'Unable to refresh notifications.']);
+    }
+    exit();
+}
 $page_message = '';
 $page_message_type = 'error';
 
@@ -259,11 +343,13 @@ $admin_notifications = [];
 $unread_count = 0;
 if ($is_admin) {
     try {
-        $admin_notif_stmt = $pdo->prepare('SELECT id, message, created_at FROM admin_notifications WHERE is_read = 0 ORDER BY created_at DESC LIMIT 20');
-        $admin_notif_stmt->execute();
+        $admin_unread_predicate = viewCustomerAdminUnreadPredicate($pdo);
+        $admin_count_stmt = $pdo->query("SELECT COUNT(*) FROM admin_notifications WHERE {$admin_unread_predicate}");
+        $unread_count = (int)$admin_count_stmt->fetchColumn();
+
+        $admin_notif_stmt = $pdo->query("SELECT id, message, created_at FROM admin_notifications WHERE {$admin_unread_predicate} ORDER BY created_at DESC LIMIT 20");
         $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
-        $unread_count = count($admin_notifications);
-    } catch (PDOException $e) {
+    } catch (Throwable $e) {
         error_log('view_customer admin notifications lookup failed: ' . $e->getMessage());
         $admin_notifications = [];
         $unread_count = 0;
@@ -944,7 +1030,7 @@ aside{width:var(--sidebar-width);background:var(--navy-dark);color:#fff;display:
 .sidebar-header{padding:30px 20px;text-align:center;border-bottom:1px solid rgba(255,255,255,.05)}
 .sidebar-logo{width:80px;height:auto;object-fit:contain;margin-bottom:10px}.sidebar-header h2{font-size:16px;color:var(--brand-yellow);text-transform:uppercase;letter-spacing:1px;font-weight:800}
 .nav-links{flex-grow:1;padding:20px 15px;display:flex;flex-direction:column;gap:5px}.nav-item{display:flex;align-items:center;padding:14px 20px;color:#94a3b8;text-decoration:none;font-size:14px;font-weight:500;border-radius:10px;position:relative;transition:all .3s}.nav-item i{width:32px;font-size:18px}.nav-item:hover{color:#fff;background:rgba(255,255,255,.05);transform:translateX(4px)}.nav-item.active{color:var(--brand-yellow);background:rgba(255,204,0,.08);font-weight:700}.nav-item.active:before{content:'';position:absolute;left:-15px;top:15%;height:70%;width:5px;background:var(--brand-yellow);border-radius:0 5px 5px 0}
-main{margin-left:var(--sidebar-width);flex:1;min-width:0;min-height:100vh}.top-bar{height:70px;padding:0 40px;background:#fff;display:flex;justify-content:space-between;align-items:center;box-shadow:0 1px 10px rgba(0,0,0,.08);position:sticky;top:0;z-index:1200}.topbar-left{display:flex;align-items:center;gap:12px;min-width:0}.mobile-menu-toggle{display:none;border:0;background:var(--navy-dark);color:var(--brand-yellow);width:40px;height:40px;border-radius:10px;cursor:pointer;font-size:18px;align-items:center;justify-content:center;flex:0 0 auto}.breadcrumb{font-weight:700;color:var(--navy-dark);font-size:15px;display:flex;align-items:center;gap:8px;white-space:nowrap}.top-right-actions{display:flex;align-items:center;gap:20px}.notif-wrapper,.profile-wrapper{position:relative;display:flex;align-items:center;cursor:pointer}.notif-wrapper{gap:0}.notif-badge{position:absolute;top:-9px;right:-9px;min-width:18px;height:18px;padding:0 5px;background:#e11d48;color:#fff;border-radius:999px;font-size:10px;font-weight:800;display:inline-flex;align-items:center;justify-content:center}.notif-dropdown,.profile-dropdown{display:none;position:absolute;background:#fff;border:1px solid #e2e8f0;box-shadow:0 10px 20px rgba(15,23,42,.12);border-radius:10px;z-index:3000;overflow:hidden}.notif-dropdown.show,.profile-dropdown.show{display:block}.notif-dropdown{right:-6px;top:32px;width:320px;text-align:left}.notif-header{padding:12px 15px;border-bottom:1px solid #e2e8f0;font-weight:800;font-size:14px;display:flex;justify-content:space-between;align-items:center;color:#0f172a}.notif-body{max-height:300px;overflow-y:auto}.notif-item{padding:12px 15px;border-bottom:1px solid #f1f5f9;font-size:13px;color:#334155;line-height:1.4}.notif-empty{padding:20px;text-align:center;color:#94a3b8;font-size:13px}.mark-read-btn{font-size:11px;color:#3b82f6;text-decoration:none;font-weight:700}.profile-wrapper{gap:8px;padding-left:10px;border-left:1px solid #e2e8f0}.admin-tag{background:var(--navy-dark);color:var(--brand-yellow);padding:5px 10px;border-radius:6px;font-size:9px;font-weight:800;letter-spacing:.5px}.top-avatar,.top-avatar-fallback{width:32px;height:32px;border-radius:50%}.top-avatar{object-fit:cover}.top-avatar-fallback{display:flex;align-items:center;justify-content:center;background:#e2e8f0;color:var(--navy-dark);font-weight:800}.profile-dropdown{right:0;top:44px;width:200px}.profile-item{padding:12px 15px;display:flex;align-items:center;gap:10px;font-size:13px;color:var(--text-main);text-decoration:none}.profile-item:hover{background:#f1f5f9}.profile-item.logout-text{color:#e11d48;border-top:1px solid #f1f5f9}.content-shell{padding:30px}.sidebar-backdrop{display:none}
+main{margin-left:var(--sidebar-width);flex:1;min-width:0;min-height:100vh}.top-bar{height:70px;padding:0 40px;background:#fff;display:flex;justify-content:space-between;align-items:center;box-shadow:0 1px 10px rgba(0,0,0,.08);position:sticky;top:0;z-index:1200}.topbar-left{display:flex;align-items:center;gap:12px;min-width:0}.mobile-menu-toggle{display:none;border:0;background:var(--navy-dark);color:var(--brand-yellow);width:40px;height:40px;border-radius:10px;cursor:pointer;font-size:18px;align-items:center;justify-content:center;flex:0 0 auto}.breadcrumb{font-weight:700;color:var(--navy-dark);font-size:15px;display:flex;align-items:center;gap:8px;white-space:nowrap}.top-right-actions{display:flex;align-items:center;gap:20px}.notif-wrapper,.profile-wrapper{position:relative;display:flex;align-items:center;cursor:pointer}.notif-wrapper{gap:0}.notif-badge{position:absolute;top:-9px;right:-9px;min-width:18px;height:18px;padding:0 5px;background:#e11d48;color:#fff;border-radius:999px;font-size:10px;font-weight:800;display:inline-flex;align-items:center;justify-content:center}.notif-dropdown,.profile-dropdown{display:none;position:absolute;background:#fff;border:1px solid #e2e8f0;box-shadow:0 10px 20px rgba(15,23,42,.12);border-radius:10px;z-index:3000;overflow:hidden}.notif-dropdown.show,.profile-dropdown.show{display:block}.notif-dropdown{right:-6px;top:32px;width:320px;text-align:left}.notif-header{padding:12px 15px;border-bottom:1px solid #e2e8f0;font-weight:800;font-size:14px;display:flex;justify-content:space-between;align-items:center;color:#0f172a}.notif-body{max-height:300px;overflow-y:auto}.notif-item{padding:12px 15px;border-bottom:1px solid #f1f5f9;font-size:13px;color:#334155;line-height:1.4}.notif-empty{padding:20px;text-align:center;color:#94a3b8;font-size:13px}.mark-read-btn{font-size:11px;color:#3b82f6;text-decoration:none;font-weight:700;border:0;background:transparent;padding:0;cursor:pointer;font-family:inherit}.profile-wrapper{gap:8px;padding-left:10px;border-left:1px solid #e2e8f0}.admin-tag{background:var(--navy-dark);color:var(--brand-yellow);padding:5px 10px;border-radius:6px;font-size:9px;font-weight:800;letter-spacing:.5px}.top-avatar,.top-avatar-fallback{width:32px;height:32px;border-radius:50%}.top-avatar{object-fit:cover}.top-avatar-fallback{display:flex;align-items:center;justify-content:center;background:#e2e8f0;color:var(--navy-dark);font-weight:800}.profile-dropdown{right:0;top:44px;width:200px}.profile-item{padding:12px 15px;display:flex;align-items:center;gap:10px;font-size:13px;color:var(--text-main);text-decoration:none}.profile-item:hover{background:#f1f5f9}.profile-item.logout-text{color:#e11d48;border-top:1px solid #f1f5f9}.content-shell{padding:30px}.sidebar-backdrop{display:none}
 @media(max-width:900px){body{overflow-x:hidden}aside{transform:translateX(-100%);transition:transform .25s ease;box-shadow:12px 0 30px rgba(0,0,0,.18)}aside.mobile-open{transform:translateX(0)}.sidebar-backdrop{position:fixed;inset:0;background:rgba(0,31,63,.48);z-index:1900}.sidebar-backdrop.show{display:block}main{margin-left:0;width:100%;min-width:0}.top-bar{height:64px;padding:0 14px;gap:10px}.mobile-menu-toggle{display:inline-flex}.topbar-left{flex:1 1 auto;min-width:0}.breadcrumb{font-size:13px;gap:6px;overflow:hidden;text-overflow:ellipsis;min-width:0}.top-right-actions{gap:10px;margin-left:auto;min-width:0;flex:0 0 auto}.profile-wrapper{gap:8px;padding-left:10px;flex:0 0 auto}.profile-wrapper>span:last-of-type{max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px!important}.admin-tag{padding:5px 10px;font-size:9px}.top-avatar,.top-avatar-fallback{width:32px;height:32px}.notif-dropdown{width:min(320px,calc(100vw - 28px));right:-6px}.content-shell{padding:22px 16px}.back-btn{width:100%;justify-content:center}.profile-grid{grid-template-columns:1fr}.main-col table{min-width:620px}.main-col .card>div[style*="overflow-x"]{overflow-x:auto;-webkit-overflow-scrolling:touch}.edit-input{width:100%;min-width:0}.#contactForm>div{flex-direction:column;gap:8px}.btn-save{width:100%;min-height:44px}.pet-item{align-items:flex-start}}
 @media(max-width:560px){.top-bar{height:58px;padding:0 8px}.topbar-left{gap:7px}.mobile-menu-toggle{width:36px;height:36px;border-radius:9px;font-size:16px}.breadcrumb{font-size:11px}.top-right-actions{gap:5px}.profile-wrapper{gap:5px;padding-left:6px}.profile-wrapper>span:last-of-type{display:none!important}.admin-tag{padding:4px 7px;font-size:7px}.top-avatar,.top-avatar-fallback{width:29px;height:29px}.content-shell{padding:16px 12px 22px}}
 
@@ -1025,7 +1111,7 @@ main{margin-left:var(--sidebar-width);flex:1;min-width:0;min-height:100vh}.top-b
   <div class="top-right-actions">
     <?php if ($is_admin): ?>
     <div class="notif-wrapper" onclick="toggleNotif(event)"><i class="fa-solid fa-bell" style="font-size:22px;color:#64748b"></i><span id="admin-notif-badge" class="notif-badge" style="display:<?php echo $unread_count>0?'inline-flex':'none'; ?>"><?php echo $unread_count; ?></span>
-      <div class="notif-dropdown" id="notifBox" onclick="event.stopPropagation()"><div class="notif-header">Alerts <a href="mark_notifications_read.php" id="mark-read-link" class="mark-read-btn" style="display:<?php echo $unread_count>0?'inline-block':'none'; ?>">Mark all read</a></div><div class="notif-body" id="admin-notif-list"><?php if($unread_count>0): foreach($admin_notifications as $notif): ?><div class="notif-item"><i class="fa-solid fa-circle-exclamation" style="color:#e11d48;margin-right:5px"></i><?php echo htmlspecialchars((string)($notif['message']??''),ENT_QUOTES,'UTF-8'); ?><br><small style="color:#94a3b8;font-size:11px"><?php echo !empty($notif['created_at'])?date('M d, g:i A',strtotime((string)$notif['created_at'])):''; ?></small></div><?php endforeach; else: ?><div class="notif-empty">No new notifications.</div><?php endif; ?></div></div>
+      <div class="notif-dropdown" id="notifBox" onclick="event.stopPropagation()"><div class="notif-header">Alerts <form action="mark_notifications_read.php" method="post" style="margin:0"><input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token,ENT_QUOTES,'UTF-8'); ?>"><button type="submit" id="mark-read-link" class="mark-read-btn" style="display:<?php echo $unread_count>0?'inline-block':'none'; ?>">Mark all read</button></form></div><div class="notif-body" id="admin-notif-list"><?php if($unread_count>0): foreach($admin_notifications as $notif): ?><div class="notif-item"><i class="fa-solid fa-circle-exclamation" style="color:#e11d48;margin-right:5px"></i><?php echo htmlspecialchars((string)($notif['message']??''),ENT_QUOTES,'UTF-8'); ?><br><small style="color:#94a3b8;font-size:11px"><?php echo !empty($notif['created_at'])?date('M d, g:i A',strtotime((string)$notif['created_at'])):''; ?></small></div><?php endforeach; else: ?><div class="notif-empty">No new notifications.</div><?php endif; ?></div></div>
     </div>
     <?php endif; ?>
     <div class="profile-wrapper" onclick="toggleProfile(event)"><span class="admin-tag"><?php echo strtoupper($current_role?:'ADMIN'); ?></span><?php if($profile_img_url !== ''): ?><img src="<?php echo htmlspecialchars($profile_img_url,ENT_QUOTES,'UTF-8'); ?>" class="top-avatar" alt="Profile Picture"><?php else: ?><div class="top-avatar-fallback"><?php echo htmlspecialchars(strtoupper(substr($first_name,0,1)), ENT_QUOTES, 'UTF-8'); ?></div><?php endif; ?><span style="font-size:14px;font-weight:600;color:#4a5568;display:flex;align-items:center;gap:6px"><?php echo htmlspecialchars($admin_full_name,ENT_QUOTES,'UTF-8'); ?><i class="fas fa-chevron-down" style="font-size:10px;color:#94a3b8"></i></span><div class="profile-dropdown" id="profileBox" onclick="event.stopPropagation()"><a href="<?php echo $is_admin ? 'admin_profile.php' : '../staff/staff_profile.php'; ?>" class="profile-item"><i class="fas fa-user-circle"></i> My Profile</a><a href="../logout.php" class="profile-item logout-text"><i class="fas fa-sign-out-alt"></i> Logout</a></div></div>
@@ -1373,8 +1459,80 @@ main{margin-left:var(--sidebar-width);flex:1;min-width:0;min-height:100vh}.top-b
             if (button) button.setAttribute('aria-expanded', 'false');
         }
 
+        let adminNotifRefreshInProgress = false;
+
+        async function refreshAdminNotifications() {
+            const badge = document.getElementById('admin-notif-badge');
+            const list = document.getElementById('admin-notif-list');
+            const markAllLink = document.getElementById('mark-read-link');
+
+            // This notification bell is rendered for Admin accounts only.
+            if (!badge || !list || adminNotifRefreshInProgress) return;
+
+            adminNotifRefreshInProgress = true;
+            try {
+                const endpoint = new URL(window.location.href);
+                endpoint.searchParams.set('ajax', 'admin_notifications');
+
+                const response = await fetch(endpoint.toString(), {
+                    method: 'GET',
+                    credentials: 'same-origin',
+                    cache: 'no-store',
+                    headers: { 'X-Requested-With': 'XMLHttpRequest' }
+                });
+
+                if (!response.ok) return;
+
+                const data = await response.json();
+                if (!data || data.success !== true || !Array.isArray(data.notifications)) return;
+
+                const count = Number.isFinite(Number(data.count)) ? Math.max(0, Number(data.count)) : 0;
+                badge.textContent = String(count);
+                badge.style.display = count > 0 ? 'inline-flex' : 'none';
+                if (markAllLink) {
+                    markAllLink.style.display = count > 0 ? 'inline-block' : 'none';
+                }
+
+                const fragment = document.createDocumentFragment();
+                if (data.notifications.length === 0) {
+                    const empty = document.createElement('div');
+                    empty.className = 'notif-empty';
+                    empty.textContent = 'No new notifications.';
+                    fragment.appendChild(empty);
+                } else {
+                    data.notifications.forEach(function(notification) {
+                        const item = document.createElement('div');
+                        item.className = 'notif-item';
+
+                        const icon = document.createElement('i');
+                        icon.className = 'fa-solid fa-circle-exclamation';
+                        icon.style.color = '#e11d48';
+                        icon.style.marginRight = '5px';
+                        item.appendChild(icon);
+                        item.appendChild(document.createTextNode(String(notification.message ?? '')));
+
+                        item.appendChild(document.createElement('br'));
+                        const timestamp = document.createElement('small');
+                        timestamp.style.color = '#94a3b8';
+                        timestamp.style.fontSize = '11px';
+                        timestamp.textContent = String(notification.created_at ?? '');
+                        item.appendChild(timestamp);
+
+                        fragment.appendChild(item);
+                    });
+                }
+                list.replaceChildren(fragment);
+            } catch (error) {
+                // Keep the last known good UI if a polling request temporarily fails.
+                console.error('Admin notifications refresh failed:', error);
+            } finally {
+                adminNotifRefreshInProgress = false;
+            }
+        }
+
         function toggleNotif(event) {
             event.stopPropagation();
+            refreshAdminNotifications();
             const notifBox = document.getElementById('notifBox');
             const profileBox = document.getElementById('profileBox');
             if (profileBox) profileBox.classList.remove('show');
@@ -1426,6 +1584,12 @@ main{margin-left:var(--sidebar-width);flex:1;min-width:0;min-height:100vh}.top-b
 
             }
 
+        }
+
+        // Refresh the Admin-only notification bell without reloading the page.
+        if (document.getElementById('admin-notif-badge')) {
+            refreshAdminNotifications();
+            window.setInterval(refreshAdminNotifications, 3000);
         }
 
     </script>

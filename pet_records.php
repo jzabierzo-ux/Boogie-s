@@ -4,6 +4,29 @@ require_once __DIR__ . '/shared_session_bootstrap.php';
 
 require_once 'db_supabase.php';
 
+/**
+ * Format Supabase notification timestamps in Philippine time.
+ * Explicit timezone offsets in the value are respected; values without an
+ * offset are treated as UTC, matching the customer dashboard display.
+ */
+function formatCustomerNotificationTimestamp($value, string $format = 'M d, Y h:i A'): string
+{
+    if ($value === null || trim((string)$value) === '') {
+        return '';
+    }
+
+    try {
+        $notificationDate = new DateTimeImmutable((string)$value, new DateTimeZone('UTC'));
+        return $notificationDate
+            ->setTimezone(new DateTimeZone('Asia/Manila'))
+            ->format($format);
+    } catch (Throwable $e) {
+        error_log('Customer notification timestamp formatting failed: ' . $e->getMessage());
+        return '';
+    }
+}
+
+
 
 
 // Check if user is logged in
@@ -21,6 +44,59 @@ if (!isset($_SESSION['user_id'])) {
 $user_id = (int)$_SESSION['user_id'];
 
 $full_name = $_SESSION['user_name'] ?? ($_SESSION['full_name'] ?? 'User');
+
+// Shared CSRF token used by mark_all_read.php when the customer selects View All Notifications.
+if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+
+// AJAX endpoint for refreshing this page's latest notifications and unread count.
+// Both queries are limited to the authenticated customer's user_id.
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET' && (($_GET['ajax_notifications'] ?? '') === '1')) {
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Cache-Control: no-store, private, max-age=0, must-revalidate');
+    header('Pragma: no-cache');
+
+    if (($_SESSION['logged_in'] ?? false) !== true || $user_id < 1) {
+        http_response_code(401);
+        echo json_encode(['success' => false, 'message' => 'Authentication required']);
+        exit();
+    }
+
+    try {
+        $ajax_count_stmt = $pdo->prepare("\n            SELECT COUNT(*)\n            FROM notifications\n            WHERE user_id = :user_id\n              AND (LOWER(CAST(is_read AS TEXT)) IN ('0', 'false', 'f') OR is_read IS NULL)\n        ");
+        $ajax_count_stmt->execute([':user_id' => $user_id]);
+        $ajax_unread_count = (int)($ajax_count_stmt->fetchColumn() ?? 0);
+
+        $ajax_list_stmt = $pdo->prepare("\n            SELECT id, message, created_at, is_read\n            FROM notifications\n            WHERE user_id = :user_id\n            ORDER BY created_at DESC, id DESC\n            LIMIT 5\n        ");
+        $ajax_list_stmt->execute([':user_id' => $user_id]);
+
+        $ajax_notifications = [];
+        while ($row = $ajax_list_stmt->fetch(PDO::FETCH_ASSOC)) {
+            $raw_is_read = strtolower(trim((string)($row['is_read'] ?? '')));
+            $ajax_notifications[] = [
+                'id' => (string)($row['id'] ?? ''),
+                'message' => (string)($row['message'] ?? ''),
+                'is_read' => in_array($raw_is_read, ['1', 'true', 't', 'yes'], true),
+                'time' => formatCustomerNotificationTimestamp($row['created_at'] ?? null, 'M d, Y h:i A'),
+            ];
+        }
+
+        echo json_encode([
+            'success' => true,
+            'unread_count' => $ajax_unread_count,
+            'notifications' => $ajax_notifications,
+        ], JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+    } catch (Throwable $e) {
+        error_log('Pet records notification refresh failed: ' . $e->getMessage());
+        http_response_code(500);
+        echo json_encode([
+            'success' => false,
+            'message' => 'Unable to refresh notifications right now.',
+        ], JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+    }
+    exit();
+}
 
 
 
@@ -40,7 +116,7 @@ try {
 
         WHERE user_id = :user_id
 
-          AND is_read = 0
+          AND (LOWER(CAST(is_read AS TEXT)) IN ('0', 'false', 'f') OR is_read IS NULL)
 
     ");
 
@@ -97,6 +173,12 @@ try {
 
 
     $notifications = $stmt_notif_list->fetchAll(PDO::FETCH_ASSOC);
+
+    foreach ($notifications as &$notificationRow) {
+        $rawReadValue = strtolower(trim((string)($notificationRow['is_read'] ?? '')));
+        $notificationRow['is_read'] = in_array($rawReadValue, ['1', 'true', 't', 'yes'], true);
+    }
+    unset($notificationRow);
 
 } catch (PDOException $e) {
 
@@ -1702,7 +1784,7 @@ footer{
 
                         <div class="dropdown-header">Notifications</div>
 
-
+                        <div id="notif-content">
 
                         <?php if(count($notifications) > 0): ?>
 
@@ -1722,7 +1804,7 @@ footer{
 
                                     <small style="color:#888;font-size:10px;">
 
-                                        <?php echo date('M d, Y h:i A', strtotime($notif['created_at'])); ?>
+                                        <?php echo htmlspecialchars(formatCustomerNotificationTimestamp($notif['created_at'] ?? null, 'M d, Y h:i A'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
 
                                     </small>
 
@@ -1732,11 +1814,12 @@ footer{
 
 
 
-                            <a href="notifications.php" class="dropdown-item view-all-link">
-
-                                View All Notifications
-
-                            </a>
+                            <form action="mark_all_read.php" method="post" class="view-all-form" style="margin:0;">
+                                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars((string)($_SESSION['csrf_token'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>">
+                                <button type="submit" class="dropdown-item view-all-link" style="width:100%;border:0;background:#fff;cursor:pointer;font-family:inherit;">
+                                    View All Notifications
+                                </button>
+                            </form>
 
                         <?php else: ?>
 
@@ -1748,6 +1831,7 @@ footer{
 
                         <?php endif; ?>
 
+                        </div>
                     </div>
 
                 </div>
@@ -2436,7 +2520,7 @@ footer{
 
                 <div class="socials">
 
-                    <a href="https://www\.facebook.com/boogiespetsupplies" aria-label="Facebook">
+                    <a href="https://www.facebook.com/boogiespetsupplies" aria-label="Facebook">
 
                         <i class="fa-brands fa-facebook-f"></i>
 
@@ -2534,7 +2618,7 @@ footer{
 
 
 
-            if (window\.innerWidth <= 680) {
+            if (window.innerWidth <= 680) {
 
                 window.location.href = mobileUrl;
 
@@ -2544,7 +2628,7 @@ footer{
 
 
 
-            const popup = window\.open(
+            const popup = window.open(
 
                 desktopUrl,
 
@@ -2600,7 +2684,7 @@ footer{
 
 
 
-        window\.addEventListener('click', function(e) {
+        window.addEventListener('click', function(e) {
 
             const notif = document.querySelector('.notification-wrapper');
 
@@ -2630,67 +2714,116 @@ footer{
 
 
 
+        // ===== AUTOMATIC NOTIFICATION DROPDOWN + UNREAD BADGE REFRESH =====
         const notifSound = new Audio('notification.mp3');
+        let previousUnreadCount = <?php echo (int)$unread_count; ?>;
+        let previousLatestNotificationId = <?php echo json_encode(isset($notifications[0]['id']) ? (string)$notifications[0]['id'] : '', JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
+        let notificationRefreshInProgress = false;
+        const notificationCsrfToken = <?php echo json_encode((string)($_SESSION['csrf_token'] ?? ''), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
 
-        let previousUnreadCount = <?php echo $unread_count; ?>;
+        function renderNotificationDropdown(items) {
+            const content = document.getElementById('notif-content');
+            if (!content) return;
+            content.replaceChildren();
 
+            if (!Array.isArray(items) || items.length === 0) {
+                const emptyMessage = document.createElement('div');
+                emptyMessage.className = 'dropdown-item';
+                emptyMessage.style.textAlign = 'center';
+                emptyMessage.style.color = '#888';
+                emptyMessage.textContent = 'No new notifications.';
+                content.appendChild(emptyMessage);
+                return;
+            }
 
+            items.forEach(notification => {
+                const link = document.createElement('a');
+                link.href = 'notifications.php';
+                link.className = 'dropdown-item' + (notification.is_read ? '' : ' unread');
+                link.appendChild(document.createTextNode(String(notification.message || '')));
+                link.appendChild(document.createElement('br'));
 
-        function updateNotifications() {
+                const timestamp = document.createElement('small');
+                timestamp.style.color = '#888';
+                timestamp.style.fontSize = '10px';
+                timestamp.textContent = String(notification.time || '');
+                link.appendChild(timestamp);
+                content.appendChild(link);
+            });
 
-            fetch('get_unread_notifs.php')
+            const form = document.createElement('form');
+            form.method = 'POST';
+            form.action = 'mark_all_read.php';
+            form.className = 'view-all-form';
+            form.style.margin = '0';
 
-                .then(response => {
+            const csrfInput = document.createElement('input');
+            csrfInput.type = 'hidden';
+            csrfInput.name = 'csrf_token';
+            csrfInput.value = notificationCsrfToken;
+            form.appendChild(csrfInput);
 
-                    if (!response.ok) {
-
-                        throw new Error('Notification request failed');
-
-                    }
-
-                    return response.json();
-
-                })
-
-                .then(data => {
-
-                    const badge = document.getElementById('notif-badge');
-
-
-
-                    if (data.unread > previousUnreadCount) {
-
-                        notifSound.play().catch(() => {});
-
-                    }
-
-
-
-                    previousUnreadCount = data.unread;
-
-
-
-                    if (data.unread > 0) {
-
-                        badge.style.display = 'inline-flex';
-
-                        badge.innerText = data.unread;
-
-                    } else {
-
-                        badge.style.display = 'none';
-
-                    }
-
-                })
-
-                .catch(error => console.error('Error fetching notifications:', error));
-
+            const viewAllButton = document.createElement('button');
+            viewAllButton.type = 'submit';
+            viewAllButton.className = 'dropdown-item view-all-link';
+            viewAllButton.style.width = '100%';
+            viewAllButton.style.border = '0';
+            viewAllButton.style.background = '#fff';
+            viewAllButton.style.cursor = 'pointer';
+            viewAllButton.style.fontFamily = 'inherit';
+            viewAllButton.textContent = 'View All Notifications';
+            form.appendChild(viewAllButton);
+            content.appendChild(form);
         }
 
+        async function updateNotifications() {
+            if (notificationRefreshInProgress) return;
+            notificationRefreshInProgress = true;
 
+            try {
+                const response = await fetch('pet_records.php?ajax_notifications=1', {
+                    method: 'GET',
+                    credentials: 'same-origin',
+                    cache: 'no-store',
+                    headers: { 'Accept': 'application/json' }
+                });
+                if (!response.ok) throw new Error('Notification request failed (' + response.status + ')');
 
+                const data = await response.json();
+                if (data.success !== true || !Number.isFinite(Number(data.unread_count)) || !Array.isArray(data.notifications)) {
+                    throw new Error('Invalid notification response');
+                }
+
+                const unreadCount = Number(data.unread_count);
+                const notifications = data.notifications;
+                const latestId = notifications.length ? String(notifications[0].id || '') : '';
+                const latestIsUnread = notifications.length > 0 && notifications[0].is_read !== true;
+                const isNewUnreadNotification = latestId !== '' && latestId !== previousLatestNotificationId && latestIsUnread;
+
+                if (unreadCount > previousUnreadCount || isNewUnreadNotification) {
+                    notifSound.play().catch(() => {});
+                }
+                previousUnreadCount = unreadCount;
+                if (latestId !== '') previousLatestNotificationId = latestId;
+
+                const badge = document.getElementById('notif-badge');
+                if (badge) {
+                    badge.textContent = String(unreadCount);
+                    badge.style.display = unreadCount > 0 ? 'inline-flex' : 'none';
+                }
+                renderNotificationDropdown(notifications);
+            } catch (error) {
+                console.warn('Could not refresh pet-record notifications:', error);
+            } finally {
+                notificationRefreshInProgress = false;
+            }
+        }
+
+        updateNotifications();
         setInterval(updateNotifications, 3000);
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden) updateNotifications();
+        });
 
     </script>
 

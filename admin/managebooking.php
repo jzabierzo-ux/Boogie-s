@@ -76,6 +76,89 @@ if (!in_array($current_role, $booking_page_roles, true)) {
     exit('Access denied. This role cannot access booking management.');
 }
 
+/** Load active Admin availability adjustments intersecting [startDate, endDateExclusive). */
+function bookingAdminLoadAvailabilityAdjustments(PDO $pdo, string $startDate, string $endDateExclusive): array
+{
+    $tableExists = (bool)$pdo->query("SELECT to_regclass('public.availability_adjustments')")->fetchColumn();
+    if (!$tableExists) {
+        // Keep legacy booking behavior if the optional migration has not been installed.
+        return [];
+    }
+
+    $stmt = $pdo->prepare("SELECT id, service_category, COALESCE(specific_service, '') AS specific_service,
+                                  start_date::text AS start_date, end_date::text AS end_date,
+                                  start_time::text AS start_time, end_time::text AS end_time,
+                                  LOWER(BTRIM(adjustment_type)) AS adjustment_type, quantity, reason
+                           FROM public.availability_adjustments
+                           WHERE is_active = TRUE
+                             AND start_date < CAST(:range_end AS date)
+                             AND end_date > CAST(:range_start AS date)
+                           ORDER BY start_date, start_time NULLS FIRST, id");
+    $stmt->execute([':range_start' => $startDate, ':range_end' => $endDateExclusive]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+}
+
+/** Count manual Occupied entries as real pets/rooms against daily limits. */
+function bookingAdminManualOccupiedUnits(array $adjustments, string $date, ?string $category = null): int
+{
+    $total = 0;
+    foreach ($adjustments as $adjustment) {
+        $startDate = substr((string)($adjustment['start_date'] ?? ''), 0, 10);
+        $endDate = substr((string)($adjustment['end_date'] ?? ''), 0, 10);
+        if ($startDate === '' || $endDate === '' || $startDate > $date || $endDate <= $date) continue;
+        if (strtolower(trim((string)($adjustment['adjustment_type'] ?? ''))) !== 'occupied') continue;
+        if ($category !== null && (string)($adjustment['service_category'] ?? '') !== $category) continue;
+        $total += max(1, (int)($adjustment['quantity'] ?? 1));
+    }
+    return $total;
+}
+
+/** Expand matching manual entries into capacity intervals for the requested category/service. */
+function bookingAdminManualCapacityIntervals(array $adjustments, string $date, string $category, string $service, int $capacity): array
+{
+    $intervals = [];
+    foreach ($adjustments as $adjustment) {
+        $startDate = substr((string)($adjustment['start_date'] ?? ''), 0, 10);
+        $endDate = substr((string)($adjustment['end_date'] ?? ''), 0, 10);
+        if ($startDate === '' || $endDate === '' || $startDate > $date || $endDate <= $date) continue;
+        if ((string)($adjustment['service_category'] ?? '') !== $category) continue;
+
+        $type = strtolower(trim((string)($adjustment['adjustment_type'] ?? '')));
+        if (!in_array($type, ['occupied', 'blocked'], true)) continue;
+        $adjustmentService = trim((string)($adjustment['specific_service'] ?? ''));
+        if ($type === 'blocked' && $adjustmentService !== '' && strcasecmp($adjustmentService, $service) !== 0) continue;
+
+        $rawStart = trim((string)($adjustment['start_time'] ?? ''));
+        $rawEnd = trim((string)($adjustment['end_time'] ?? ''));
+        if ($rawStart === '' && $rawEnd === '') {
+            $start = 0;
+            $end = 1440;
+        } else {
+            $parseTime = static function (string $value): ?int {
+                if (!preg_match('/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/', trim($value), $matches)) return null;
+                $hour = (int)$matches[1];
+                $minute = (int)$matches[2];
+                if ($hour > 23 || $minute > 59) return null;
+                return ($hour * 60) + $minute;
+            };
+            $start = $parseTime($rawStart);
+            $end = $parseTime($rawEnd);
+            if ($start === null || $end === null || $end <= $start) continue;
+        }
+
+        $units = $type === 'blocked' ? max(1, $capacity) : max(1, (int)($adjustment['quantity'] ?? 1));
+        for ($unit = 0; $unit < $units; $unit++) {
+            $intervals[] = ['start' => $start, 'end' => $end, 'type' => $type, 'service' => $adjustmentService];
+        }
+    }
+    return $intervals;
+}
+
+function bookingAdminIntervalsOverlap(int $startA, int $endA, int $startB, int $endB): bool
+{
+    return $startA < $endB && $startB < $endA;
+}
+
 // AJAX endpoint for flexible-time Grooming and Vet walk-ins.
 // Walk-ins may be recorded at any minute during operating hours; they do not
 // have to match the half-hour online appointment start times. Capacity is still
@@ -201,12 +284,25 @@ if (($_GET['ajax'] ?? '') === 'walkin_service_capacity') {
         }
 
         $globalDailyLimit = 20;
+        $nextDateExclusive = (new DateTimeImmutable($selectedDate, new DateTimeZone('Asia/Manila')))->modify('+1 day')->format('Y-m-d');
+        $manualAdjustments = bookingAdminLoadAvailabilityAdjustments($pdo, $selectedDate, $nextDateExclusive);
+        $dailyTotal += bookingAdminManualOccupiedUnits($manualAdjustments, $selectedDate);
+        $categoryCount += bookingAdminManualOccupiedUnits($manualAdjustments, $selectedDate, $category);
+        $manualBlockedOverlap = false;
+        foreach (bookingAdminManualCapacityIntervals($manualAdjustments, $selectedDate, $category, $specificService, $simultaneousLimit) as $manualInterval) {
+            if (bookingAdminIntervalsOverlap($startMinutes, $endMinutes, (int)$manualInterval['start'], (int)$manualInterval['end'])) {
+                $overlaps++;
+                if (($manualInterval['type'] ?? '') === 'blocked') $manualBlockedOverlap = true;
+            }
+        }
         $remaining = max(0, min($simultaneousLimit - $overlaps, $dailyLimit - $categoryCount, $globalDailyLimit - $dailyTotal));
         $reason = '';
         if ($dailyTotal >= $globalDailyLimit) {
             $reason = 'The overall daily capacity of 20 pets has been reached. Please choose another date.';
         } elseif ($categoryCount >= $dailyLimit) {
             $reason = $category . ' has reached its daily capacity. Please choose another date.';
+        } elseif ($manualBlockedOverlap) {
+            $reason = 'This service is blocked by an Admin availability adjustment during this time. Choose another time or ask the Admin to reopen it.';
         } elseif ($overlaps >= $simultaneousLimit) {
             $reason = $category === 'Grooming'
                 ? 'Both groomers are already busy during this time. Choose a different walk-in time.'
@@ -287,6 +383,7 @@ if (($_GET['ajax'] ?? '') === 'walkin_boarding_capacity') {
         ");
         $rangeStmt->execute([':checkout_date' => $checkout, ':checkin_date' => $checkin]);
         $overlappingBookings = $rangeStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        $manualAdjustments = bookingAdminLoadAvailabilityAdjustments($pdo, $checkin, $checkout);
 
         $roomCapacity = 6;
         $globalDailyCapacity = 20;
@@ -320,7 +417,21 @@ if (($_GET['ajax'] ?? '') === 'walkin_boarding_capacity') {
                 if ($isHotel) $hotelCount++;
             }
 
-            $roomsForNight = max(0, min($roomCapacity - $hotelCount, $globalDailyCapacity - $dailyTotal));
+            // Include Admin-marked unrecorded walk-ins in each night's room/daily totals.
+            $dailyTotal += bookingAdminManualOccupiedUnits($manualAdjustments, $dayString);
+            $hotelCount += bookingAdminManualOccupiedUnits($manualAdjustments, $dayString, 'Pet Hotel');
+            $manualBoardingBlocked = false;
+            foreach (bookingAdminManualCapacityIntervals($manualAdjustments, $dayString, 'Pet Hotel', 'Pet Boarding (Overnight)', $roomCapacity) as $manualInterval) {
+                if (($manualInterval['type'] ?? '') === 'blocked'
+                    && bookingAdminIntervalsOverlap(0, 1440, (int)$manualInterval['start'], (int)$manualInterval['end'])) {
+                    $manualBoardingBlocked = true;
+                    break;
+                }
+            }
+
+            $roomsForNight = $manualBoardingBlocked
+                ? 0
+                : max(0, min($roomCapacity - $hotelCount, $globalDailyCapacity - $dailyTotal));
             $nightlyAvailability[] = [
                 'date' => $dayString,
                 'remaining_rooms' => $roomsForNight,
@@ -332,7 +443,9 @@ if (($_GET['ajax'] ?? '') === 'walkin_boarding_capacity') {
                 $remainingMinimum = $roomsForNight;
                 $tightestDate = $dayString;
             }
-            if ($hotelCount >= $roomCapacity) {
+            if ($manualBoardingBlocked) {
+                $unavailableReason = 'Pet Hotel availability is blocked by an Admin adjustment on ' . $dayString . '. Choose different dates or ask the Admin to reopen the rooms.';
+            } elseif ($hotelCount >= $roomCapacity) {
                 $unavailableReason = 'Pet Hotel has reached its six-room capacity on ' . $dayString . '.';
             } elseif ($dailyTotal >= $globalDailyCapacity) {
                 $unavailableReason = 'The overall daily capacity of 20 pets has been reached on ' . $dayString . '.';
@@ -365,12 +478,173 @@ if (($_GET['ajax'] ?? '') === 'walkin_boarding_capacity') {
 }
 
 $is_admin = $admin_session_valid;
+$is_service_staff = in_array($current_role, ['groomer', 'pet_hotel_staff'], true);
+$show_notifications = $is_admin || $is_service_staff;
 $portal_mode = $is_admin ? 'admin' : 'staff';
 
-if (empty($_SESSION['csrf_token'])) {
+if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
 }
 $csrf_token = (string)$_SESSION['csrf_token'];
+
+
+// --- ADMIN-ONLY MANUAL SLOT / ROOM AVAILABILITY ADJUSTMENTS ---
+// Manual adjustments are stored separately from appointments so staff can account
+// for unrecorded walk-ins without fabricating customer/appointment records.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['availability_adjustment_action'])) {
+    if (!$is_admin) {
+        http_response_code(403);
+        exit('Access denied. Only Admin can change slot and room availability.');
+    }
+
+    $availabilityPostedToken = $_POST['csrf_token'] ?? '';
+    if (!is_string($availabilityPostedToken) || !hash_equals($csrf_token, $availabilityPostedToken)) {
+        $_SESSION['availability_flash'] = ['type' => 'error', 'message' => 'Invalid or expired security token. Refresh the page and try again.'];
+        header('Location: managebooking.php#availability-management');
+        exit();
+    }
+
+    $availabilityAction = trim((string)($_POST['availability_adjustment_action'] ?? ''));
+    try {
+        // Confirm the migration exists before accepting changes.
+        $availabilityTableExists = (bool)$pdo->query("SELECT to_regclass('public.availability_adjustments')")->fetchColumn();
+        if (!$availabilityTableExists) {
+            throw new RuntimeException('The availability_adjustments table is missing. Run the supplied SQL migration in Supabase first.');
+        }
+
+        if ($availabilityAction === 'create') {
+            $category = trim((string)($_POST['service_category'] ?? ''));
+            $specificService = trim((string)($_POST['specific_service'] ?? ''));
+            $startDateInput = trim((string)($_POST['start_date'] ?? ''));
+            $endDateInput = trim((string)($_POST['end_date'] ?? ''));
+            $startTimeInput = trim((string)($_POST['start_time'] ?? ''));
+            $endTimeInput = trim((string)($_POST['end_time'] ?? ''));
+            $adjustmentType = strtolower(trim((string)($_POST['adjustment_type'] ?? '')));
+            $quantityInput = trim((string)($_POST['quantity'] ?? '1'));
+            $reason = trim((string)($_POST['reason'] ?? ''));
+
+            $serviceCatalog = [
+                'Grooming' => ['Basic Pet Grooming', 'Full Grooming Package', 'Bath & Blow Dry', 'Cat Grooming (Basic)', 'Cat Bath & Blow Dry'],
+                'Vet Services' => ['Deworming', 'Vaccination - Anti Rabies', 'Vaccination - 5 in 1', 'Vaccination - 6 in 1', 'Vaccination - 8 in 1', 'Vaccination - 4 in 1 (Cats)'],
+                'Pet Hotel' => ['Pet Daycare (1st Hour - Succeeding fees apply)', 'Pet Boarding (Overnight)'],
+            ];
+
+            if (!isset($serviceCatalog[$category])) {
+                throw new InvalidArgumentException('Select a valid service category.');
+            }
+            if ($specificService !== '' && !in_array($specificService, $serviceCatalog[$category], true)) {
+                throw new InvalidArgumentException('The selected service does not belong to the selected category.');
+            }
+            if (!in_array($adjustmentType, ['occupied', 'blocked'], true)) {
+                throw new InvalidArgumentException('Select Occupied or Blocked.');
+            }
+            if ($quantityInput === '' || !ctype_digit($quantityInput) || (int)$quantityInput < 1 || (int)$quantityInput > 20) {
+                throw new InvalidArgumentException('Quantity must be a whole number from 1 to 20.');
+            }
+            if (strlen($reason) > 500) {
+                throw new InvalidArgumentException('Reason must be 500 characters or fewer.');
+            }
+
+            $manilaTz = new DateTimeZone('Asia/Manila');
+            $startDateObject = DateTimeImmutable::createFromFormat('!Y-m-d', $startDateInput, $manilaTz);
+            $startDateErrors = DateTimeImmutable::getLastErrors();
+            $endDateObject = DateTimeImmutable::createFromFormat('!Y-m-d', $endDateInput, $manilaTz);
+            $endDateErrors = DateTimeImmutable::getLastErrors();
+            $startDateValid = $startDateObject !== false && $startDateObject->format('Y-m-d') === $startDateInput
+                && ($startDateErrors === false || ($startDateErrors['warning_count'] === 0 && $startDateErrors['error_count'] === 0));
+            $endDateValid = $endDateObject !== false && $endDateObject->format('Y-m-d') === $endDateInput
+                && ($endDateErrors === false || ($endDateErrors['warning_count'] === 0 && $endDateErrors['error_count'] === 0));
+            $todayObject = new DateTimeImmutable('today', $manilaTz);
+
+            if (!$startDateValid || !$endDateValid) {
+                throw new InvalidArgumentException('Enter valid start and end dates.');
+            }
+            if ($startDateObject < $todayObject) {
+                throw new InvalidArgumentException('Manual availability adjustments cannot start on a past date.');
+            }
+            if ($endDateObject < $startDateObject) {
+                throw new InvalidArgumentException('The end date must be on or after the start date.');
+            }
+            if ((int)$startDateObject->diff($endDateObject)->days > 365) {
+                throw new InvalidArgumentException('An adjustment can cover up to 366 calendar days.');
+            }
+            if (($startTimeInput === '') !== ($endTimeInput === '')) {
+                throw new InvalidArgumentException('Enter both start and end times, or leave both blank for all-day/room occupancy.');
+            }
+
+            $dbStartTime = null;
+            $dbEndTime = null;
+            if ($startTimeInput !== '' && $endTimeInput !== '') {
+                $startTimeObject = DateTimeImmutable::createFromFormat('!H:i', $startTimeInput, $manilaTz);
+                $startTimeErrors = DateTimeImmutable::getLastErrors();
+                $endTimeObject = DateTimeImmutable::createFromFormat('!H:i', $endTimeInput, $manilaTz);
+                $endTimeErrors = DateTimeImmutable::getLastErrors();
+                $startTimeValid = $startTimeObject !== false && $startTimeObject->format('H:i') === $startTimeInput
+                    && ($startTimeErrors === false || ($startTimeErrors['warning_count'] === 0 && $startTimeErrors['error_count'] === 0));
+                $endTimeValid = $endTimeObject !== false && $endTimeObject->format('H:i') === $endTimeInput
+                    && ($endTimeErrors === false || ($endTimeErrors['warning_count'] === 0 && $endTimeErrors['error_count'] === 0));
+                if (!$startTimeValid || !$endTimeValid) {
+                    throw new InvalidArgumentException('Enter valid start and end times.');
+                }
+                $startMinuteValue = ((int)$startTimeObject->format('H') * 60) + (int)$startTimeObject->format('i');
+                $endMinuteValue = ((int)$endTimeObject->format('H') * 60) + (int)$endTimeObject->format('i');
+                if ($startMinuteValue < 9 * 60 || $endMinuteValue > 18 * 60 || $endMinuteValue <= $startMinuteValue) {
+                    throw new InvalidArgumentException('Timed adjustments must be within 9:00 AM–6:00 PM and the end must be later than the start. Leave times blank to apply all day.');
+                }
+                $dbStartTime = $startTimeInput;
+                $dbEndTime = $endTimeInput;
+            }
+
+            // The UI end date is inclusive; the database stores an exclusive end date.
+            $exclusiveEndDate = $endDateObject->modify('+1 day')->format('Y-m-d');
+            $insertAdjustment = $pdo->prepare("INSERT INTO public.availability_adjustments
+                (service_category, specific_service, start_date, end_date, start_time, end_time,
+                 adjustment_type, quantity, reason, is_active, created_by, created_at, updated_at)
+                VALUES
+                (:category, NULLIF(:specific_service, ''), CAST(:start_date AS date), CAST(:end_date AS date),
+                 CAST(NULLIF(:start_time, '') AS time), CAST(NULLIF(:end_time, '') AS time),
+                 :adjustment_type, :quantity, :reason, TRUE, :created_by, NOW(), NOW())");
+            $insertAdjustment->execute([
+                ':category' => $category,
+                ':specific_service' => $specificService,
+                ':start_date' => $startDateInput,
+                ':end_date' => $exclusiveEndDate,
+                ':start_time' => $dbStartTime ?? '',
+                ':end_time' => $dbEndTime ?? '',
+                ':adjustment_type' => $adjustmentType,
+                ':quantity' => (int)$quantityInput,
+                ':reason' => $reason,
+                ':created_by' => (int)$_SESSION['user_id'],
+            ]);
+
+            $typeText = $adjustmentType === 'occupied' ? 'occupied slot/room' : 'blocked availability';
+            $_SESSION['availability_flash'] = ['type' => 'success', 'message' => 'Manual ' . $typeText . ' saved. Customer slot availability will include this adjustment.'];
+        } elseif ($availabilityAction === 'deactivate') {
+            $adjustmentId = filter_var($_POST['adjustment_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            if (!$adjustmentId) {
+                throw new InvalidArgumentException('Invalid availability adjustment ID.');
+            }
+            $deactivateAdjustment = $pdo->prepare("UPDATE public.availability_adjustments
+                SET is_active = FALSE, updated_at = NOW()
+                WHERE id = :id AND is_active = TRUE");
+            $deactivateAdjustment->execute([':id' => (int)$adjustmentId]);
+            if ($deactivateAdjustment->rowCount() !== 1) {
+                throw new RuntimeException('The adjustment was not found or has already been removed.');
+            }
+            $_SESSION['availability_flash'] = ['type' => 'success', 'message' => 'Manual adjustment removed. The affected slot/room can be available again if other bookings do not fill its capacity.'];
+        } else {
+            throw new InvalidArgumentException('Unknown availability adjustment action.');
+        }
+    } catch (InvalidArgumentException $e) {
+        $_SESSION['availability_flash'] = ['type' => 'error', 'message' => $e->getMessage()];
+    } catch (Throwable $e) {
+        error_log('Manage booking availability adjustment failed: ' . $e->getMessage());
+        $_SESSION['availability_flash'] = ['type' => 'error', 'message' => 'Unable to save the availability change. Confirm the Supabase migration succeeded and check the server log.'];
+    }
+
+    header('Location: managebooking.php#availability-management');
+    exit();
+}
 
 function bookingServiceAllowedForRole(string $role, string $service): bool
 {
@@ -970,24 +1244,76 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['booking_action'])) {
     exit();
 }
 
-// --- ADMIN-ONLY NOTIFICATIONS ---
+// --- ADMIN AND SERVICE-STAFF NOTIFICATIONS ---
 $admin_notifications = [];
+$staff_notifications = [];
 $unread_count = 0;
-if ($is_admin) {
+
+/**
+ * Build an unread predicate compatible with the actual PostgreSQL is_read type.
+ * Only fixed, allow-listed notification table names may be used.
+ */
+function bookingNotificationUnreadPredicate(PDO $pdo, string $tableName): string
+{
+    if (!in_array($tableName, ['admin_notifications', 'notifications'], true)) {
+        throw new InvalidArgumentException('Unsupported notifications table.');
+    }
+
+    $typeStmt = $pdo->prepare("SELECT data_type
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = :table_name
+          AND column_name = 'is_read'
+        LIMIT 1");
+    $typeStmt->execute([':table_name' => $tableName]);
+    $dataType = strtolower(trim((string)$typeStmt->fetchColumn()));
+
+    if ($dataType === 'boolean') {
+        return 'COALESCE(is_read, FALSE) = FALSE';
+    }
+    if (in_array($dataType, ['smallint', 'integer', 'bigint', 'numeric', 'decimal', 'real', 'double precision'], true)) {
+        return '(is_read = 0 OR is_read IS NULL)';
+    }
+    if (in_array($dataType, ['text', 'character varying', 'character'], true)) {
+        return "(is_read IS NULL OR LOWER(BTRIM(CAST(is_read AS TEXT))) IN ('0', 'false', 'f', 'no', 'unread', ''))";
+    }
+
+    throw new RuntimeException('Unsupported or unknown is_read column type for ' . $tableName . '.');
+}
+
+if ($show_notifications) {
     try {
-        $admin_notif_stmt = $pdo->prepare("
-            SELECT id, message, created_at
-            FROM admin_notifications
-            WHERE is_read = 0
-            ORDER BY created_at DESC
-            LIMIT 20
-        ");
-        $admin_notif_stmt->execute();
-        $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
-        $unread_count = count($admin_notifications);
-    } catch (PDOException $e) {
-        error_log('Admin notification fetch failed: ' . $e->getMessage());
+        if ($is_admin) {
+            $unreadPredicate = bookingNotificationUnreadPredicate($pdo, 'admin_notifications');
+            $countStmt = $pdo->query("SELECT COUNT(*) FROM admin_notifications WHERE {$unreadPredicate}");
+            $unread_count = (int)$countStmt->fetchColumn();
+
+            $admin_notif_stmt = $pdo->query("SELECT id, message, created_at
+                FROM admin_notifications
+                WHERE {$unreadPredicate}
+                ORDER BY created_at DESC, id DESC
+                LIMIT 20");
+            $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
+        } else {
+            // Grooming and Pet Hotel Staff may only see notifications assigned to their own user ID.
+            $unreadPredicate = bookingNotificationUnreadPredicate($pdo, 'notifications');
+            $countStmt = $pdo->prepare("SELECT COUNT(*) FROM notifications
+                WHERE user_id = :user_id AND {$unreadPredicate}");
+            $countStmt->execute([':user_id' => (int)$_SESSION['user_id']]);
+            $unread_count = (int)$countStmt->fetchColumn();
+
+            $staffNotifStmt = $pdo->prepare("SELECT id, title, message, type, created_at
+                FROM notifications
+                WHERE user_id = :user_id AND {$unreadPredicate}
+                ORDER BY created_at DESC, id DESC
+                LIMIT 20");
+            $staffNotifStmt->execute([':user_id' => (int)$_SESSION['user_id']]);
+            $staff_notifications = $staffNotifStmt->fetchAll(PDO::FETCH_ASSOC);
+        }
+    } catch (Throwable $e) {
+        error_log('Manage booking notification fetch failed: ' . $e->getMessage());
         $admin_notifications = [];
+        $staff_notifications = [];
         $unread_count = 0;
     }
 }
@@ -1126,6 +1452,30 @@ try {
 
 $total_rows_showing = count($bookings);
 
+// Load current/upcoming manual adjustments for Admin's availability panel only.
+$availability_table_exists = false;
+$availability_list_error = false;
+$availability_adjustments = [];
+if ($is_admin) {
+    try {
+        $availability_table_exists = (bool)$pdo->query("SELECT to_regclass('public.availability_adjustments')")->fetchColumn();
+        if ($availability_table_exists) {
+            $availabilityStmt = $pdo->query("SELECT id, service_category, COALESCE(specific_service, '') AS specific_service,
+                    start_date::text AS start_date, (end_date - 1)::text AS display_end_date,
+                    start_time::text AS start_time, end_time::text AS end_time,
+                    adjustment_type, quantity, reason
+                FROM public.availability_adjustments
+                WHERE is_active = TRUE AND end_date > CURRENT_DATE
+                ORDER BY start_date ASC, start_time NULLS FIRST, id DESC
+                LIMIT 100");
+            $availability_adjustments = $availabilityStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        }
+    } catch (Throwable $e) {
+        error_log('Manage booking availability list failed: ' . $e->getMessage());
+        $availability_list_error = true;
+    }
+}
+
 ?>
 
 <!DOCTYPE html>
@@ -1180,7 +1530,7 @@ $total_rows_showing = count($bookings);
         .notif-item { padding: 12px 15px; border-bottom: 1px solid #f1f5f9; font-size: 13px; color: #334155; line-height: 1.4; }
         .notif-item:last-child { border-bottom: none; }
         .notif-empty { padding: 20px; text-align: center; color: #94a3b8; font-size: 13px; }
-        .mark-read-btn { font-size: 11px; color: #3b82f6; text-decoration: none; font-weight: 600; }
+        .mark-read-btn { font-size: 11px; color: #3b82f6; text-decoration: none; font-weight: 600; border: 0; background: transparent; padding: 0; cursor: pointer; font-family: inherit; }
         
         .profile-wrapper { position: relative; display: inline-flex; align-items: center; gap: 12px; border-left: 1px solid #e2e8f0; padding-left: 20px; cursor: pointer; user-select: none; }
         .top-avatar { width: 35px; height: 35px; border-radius: 50%; object-fit: cover; border: 2px solid var(--navy-dark); }
@@ -1201,6 +1551,44 @@ $total_rows_showing = count($bookings);
         .page-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 25px; }
         .page-header h1 { font-size: 26px; color: var(--navy-dark); font-weight: 800; }
         .page-header p { color: var(--text-muted); font-size: 14px; margin-top: 5px; font-weight: 500;}
+
+
+        /* --- ADMIN AVAILABILITY MANAGEMENT --- */
+        .availability-panel { background: var(--white); border-radius: 12px; padding: 24px; margin-bottom: 25px; box-shadow: 0 4px 10px rgba(0,0,0,.035); border-top: 4px solid var(--brand-yellow); scroll-margin-top: 90px; }
+        .availability-panel h2 { color: var(--navy-dark); font-size: 20px; font-weight: 800; margin-bottom: 6px; }
+        .availability-intro { color: var(--text-muted); font-size: 13px; line-height: 1.6; margin-bottom: 18px; }
+        .availability-form-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
+        .availability-field { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+        .availability-field label { color: var(--navy-dark); font-size: 12px; font-weight: 700; }
+        .availability-control { width: 100%; min-height: 42px; padding: 9px 11px; border: 1px solid #dbe3ec; border-radius: 8px; background: #fff; color: #1f2937; font: inherit; font-size: 13px; }
+        .availability-control:focus { outline: 2px solid rgba(59,130,246,.2); border-color: #3b82f6; }
+        .availability-help { color: #64748b; font-size: 11px; line-height: 1.5; }
+        .availability-field-wide { grid-column: span 2; }
+        .availability-form-actions { display: flex; justify-content: flex-end; align-items: center; gap: 10px; margin-top: 16px; }
+        .availability-submit { min-height: 42px; padding: 10px 18px; background: var(--navy-dark); color: var(--brand-yellow); border: 0; border-radius: 8px; font: inherit; font-size: 13px; font-weight: 800; cursor: pointer; }
+        .availability-submit:hover { filter: brightness(1.12); }
+        .availability-flash { padding: 11px 13px; border-radius: 8px; font-size: 12px; font-weight: 700; line-height: 1.5; margin: 12px 0 16px; }
+        .availability-flash.success { background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; }
+        .availability-flash.error { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
+        .availability-table-wrap { overflow-x: auto; margin-top: 20px; border: 1px solid #edf2f7; border-radius: 9px; }
+        .availability-table { width: 100%; min-width: 780px; border-collapse: collapse; }
+        .availability-table th { padding: 11px 12px; text-align: left; color: #64748b; background: #f8fafc; font-size: 10px; letter-spacing: .4px; text-transform: uppercase; border-bottom: 1px solid #e2e8f0; }
+        .availability-table td { padding: 12px; font-size: 12px; color: #334155; border-bottom: 1px solid #f1f5f9; vertical-align: top; }
+        .availability-type-pill { display: inline-block; padding: 4px 8px; border-radius: 5px; font-size: 10px; font-weight: 800; text-transform: uppercase; white-space: nowrap; }
+        .availability-type-pill.occupied { color: #92400e; background: #fef3c7; }
+        .availability-type-pill.blocked { color: #991b1b; background: #fee2e2; }
+        .availability-remove { min-height: 32px; padding: 7px 10px; background: #fff1f2; color: #be123c; border: 1px solid #fecdd3; border-radius: 6px; font: inherit; font-size: 11px; font-weight: 800; cursor: pointer; white-space: nowrap; }
+        .availability-remove:hover { background: #e11d48; color: #fff; }
+        .availability-empty { padding: 18px; text-align: center; color: #64748b; font-size: 12px; }
+        @media (max-width: 1050px) { .availability-form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+        @media (max-width: 560px) {
+            .availability-panel { padding: 17px 13px; }
+            .availability-panel h2 { font-size: 17px; }
+            .availability-form-grid { grid-template-columns: 1fr; gap: 11px; }
+            .availability-field-wide { grid-column: span 1; }
+            .availability-form-actions { justify-content: stretch; }
+            .availability-submit { width: 100%; }
+        }
 
         /* BAGO: Add Walk-in Button */
         .btn-add-walkin {
@@ -1602,6 +1990,7 @@ $total_rows_showing = count($bookings);
                 <a href="managestaff.php" class="nav-item"><i class="fas fa-id-badge"></i> Personnel</a>
                 <a href="managepromo.php" class="nav-item"><i class="fas fa-tags"></i> Promos</a>
                 <a href="manage_services.php" class="nav-item"><i class="fas fa-list-ul"></i> Pricelist</a>
+                <a href="managebooking.php#availability-management" class="nav-item"><i class="fas fa-sliders-h"></i> Slot Availability</a>
                 <a href="sales_report.php" class="nav-item">
                     <i class="fas fa-file-invoice-dollar"></i>
                     Sales Report
@@ -1635,30 +2024,39 @@ $total_rows_showing = count($bookings);
             </div>
 
             <div class="top-right-actions">
-                <?php if ($is_admin): ?>
+                <?php if ($show_notifications): ?>
                 <div class="notif-wrapper" onclick="toggleNotif(event)">
                     <i class="fa-solid fa-bell" style="font-size: 22px; color: #64748b;"></i>
-                    <?php if($unread_count > 0): ?>
-                        <span id="admin-notif-badge" class="notif-badge"><?php echo $unread_count; ?></span>
-                    <?php endif; ?>
+                    <span id="admin-notif-badge" class="notif-badge" style="display: <?php echo ($unread_count > 0) ? 'inline-block' : 'none'; ?>;"><?php echo $unread_count; ?></span>
                     <div class="notif-dropdown" id="notifBox" onclick="event.stopPropagation()">
                         <div class="notif-header">
                             Alerts
-                            <?php if($unread_count > 0): ?>
-                                <a href="mark_notifications_read.php" id="mark-read-link" class="mark-read-btn">Mark all read</a>
-                            <?php endif; ?>
+                            <form action="mark_notifications_read.php" method="post" style="margin:0;">
+                                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
+                                <input type="hidden" name="login_portal" value="<?php echo $is_admin ? 'admin' : 'staff'; ?>">
+                                <button type="submit" id="mark-read-link" class="mark-read-btn" style="display: <?php echo ($unread_count > 0) ? 'inline-block' : 'none'; ?>;">Mark all read</button>
+                            </form>
                         </div>
                         <div class="notif-body" id="admin-notif-list">
-                            <?php if ($unread_count > 0 && !empty($admin_notifications)):  ?>
+                            <?php if ($is_admin && !empty($admin_notifications)): ?>
                                 <?php foreach ($admin_notifications as $notif): ?>
                                     <div class="notif-item">
                                         <i class="fa-solid fa-circle-exclamation" style="color: #e11d48; margin-right: 5px;"></i>
-                                        <?php echo htmlspecialchars($notif['message']); ?>
-                                        <br><small style="color: #94a3b8; font-size: 11px;"><?php echo date('M d, g:i A', strtotime($notif['created_at'])); ?></small>
+                                        <?php echo htmlspecialchars((string)($notif['message'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
+                                        <br><small style="color: #94a3b8; font-size: 11px;"><?php echo !empty($notif['created_at']) ? date('M d, g:i A', strtotime((string)$notif['created_at'])) : ''; ?></small>
+                                    </div>
+                                <?php endforeach; ?>
+                            <?php elseif ($is_service_staff && !empty($staff_notifications)): ?>
+                                <?php foreach ($staff_notifications as $notif): ?>
+                                    <div class="notif-item">
+                                        <i class="fa-solid fa-circle-exclamation" style="color: #e11d48; margin-right: 5px;"></i>
+                                        <?php if (!empty($notif['title'])): ?><strong><?php echo htmlspecialchars((string)$notif['title'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></strong><br><?php endif; ?>
+                                        <?php echo htmlspecialchars((string)($notif['message'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
+                                        <br><small style="color: #94a3b8; font-size: 11px;"><?php echo !empty($notif['created_at']) ? date('M d, g:i A', strtotime((string)$notif['created_at'])) : ''; ?></small>
                                     </div>
                                 <?php endforeach; ?>
                             <?php else: ?>
-                                <div class="notif-empty">No new notifications.</div>
+                                <div class="notif-empty"><?php echo $is_service_staff ? 'No new service notifications.' : 'No new notifications.'; ?></div>
                             <?php endif; ?>
                         </div>
                     </div>
@@ -1715,6 +2113,134 @@ $total_rows_showing = count($bookings);
                     <i class="fas fa-plus-circle"></i> Add Walk-in
                 </button>
             </div>
+
+            <?php if ($is_admin): ?>
+            <section class="availability-panel" id="availability-management" aria-labelledby="availability-management-title">
+                <h2 id="availability-management-title"><i class="fas fa-sliders-h" style="margin-right:8px;color:#d6a900;"></i>Slot &amp; Room Availability</h2>
+                <p class="availability-intro">
+                    Record unlisted walk-ins as <strong>Occupied</strong>, or temporarily close capacity with <strong>Blocked</strong>.
+                    Use the same date/time window as the real walk-in. For Pet Boarding, leave times blank to occupy rooms for every selected date.
+                    Removing a manual adjustment releases only the capacity it reserved; confirmed appointments remain counted.
+                </p>
+                <?php if (!empty($_SESSION['availability_flash']) && is_array($_SESSION['availability_flash'])): ?>
+                    <?php $availabilityFlash = $_SESSION['availability_flash']; unset($_SESSION['availability_flash']); ?>
+                    <div class="availability-flash <?php echo (($availabilityFlash['type'] ?? '') === 'success') ? 'success' : 'error'; ?>" role="status">
+                        <?php echo htmlspecialchars((string)($availabilityFlash['message'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
+                    </div>
+                <?php endif; ?>
+
+                <?php if (!$availability_table_exists): ?>
+                    <div class="availability-flash error">The availability table could not be found. Run <strong>availability_adjustments.sql</strong> in Supabase before using these controls.</div>
+                <?php else: ?>
+                    <?php if ($availability_list_error): ?>
+                        <div class="availability-flash error">Could not load the active adjustments. Check the PHP error log and Supabase table permissions.</div>
+                    <?php endif; ?>
+                    <form method="POST" action="managebooking.php#availability-management" autocomplete="off">
+                        <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
+                        <input type="hidden" name="availability_adjustment_action" value="create">
+                        <div class="availability-form-grid">
+                            <div class="availability-field">
+                                <label for="availabilityCategory">Service Category *</label>
+                                <select class="availability-control" name="service_category" id="availabilityCategory" required>
+                                    <option value="Grooming">Grooming</option>
+                                    <option value="Vet Services">Vet Services</option>
+                                    <option value="Pet Hotel">Pet Hotel</option>
+                                </select>
+                            </div>
+                            <div class="availability-field">
+                                <label for="availabilityService">Specific Service</label>
+                                <select class="availability-control" name="specific_service" id="availabilityService">
+                                    <option value="">All services in category</option>
+                                    <option>Basic Pet Grooming</option>
+                                    <option>Full Grooming Package</option>
+                                    <option>Bath &amp; Blow Dry</option>
+                                    <option>Cat Grooming (Basic)</option>
+                                    <option>Cat Bath &amp; Blow Dry</option>
+                                </select>
+                                <small class="availability-help">For Blocked, choose a service to block only that service, or leave blank to block the whole category.</small>
+                            </div>
+                            <div class="availability-field">
+                                <label for="availabilityStartDate">Start Date *</label>
+                                <input class="availability-control" type="date" name="start_date" id="availabilityStartDate" min="<?php echo htmlspecialchars((new DateTimeImmutable('today', new DateTimeZone('Asia/Manila')))->format('Y-m-d'), ENT_QUOTES, 'UTF-8'); ?>" required>
+                            </div>
+                            <div class="availability-field">
+                                <label for="availabilityEndDate">End Date (inclusive) *</label>
+                                <input class="availability-control" type="date" name="end_date" id="availabilityEndDate" min="<?php echo htmlspecialchars((new DateTimeImmutable('today', new DateTimeZone('Asia/Manila')))->format('Y-m-d'), ENT_QUOTES, 'UTF-8'); ?>" required>
+                            </div>
+                            <div class="availability-field">
+                                <label for="availabilityStartTime">Start Time</label>
+                                <input class="availability-control" type="time" name="start_time" id="availabilityStartTime">
+                            </div>
+                            <div class="availability-field">
+                                <label for="availabilityEndTime">End Time</label>
+                                <input class="availability-control" type="time" name="end_time" id="availabilityEndTime">
+                                <small class="availability-help">Leave both times blank for all day / full-day room occupancy.</small>
+                            </div>
+                            <div class="availability-field">
+                                <label for="availabilityType">Adjustment *</label>
+                                <select class="availability-control" name="adjustment_type" id="availabilityType" required>
+                                    <option value="occupied">Occupied (walk-in not recorded)</option>
+                                    <option value="blocked">Blocked (temporarily unavailable)</option>
+                                </select>
+                            </div>
+                            <div class="availability-field">
+                                <label for="availabilityQuantity">Occupied Slots / Rooms</label>
+                                <input class="availability-control" type="number" name="quantity" id="availabilityQuantity" value="1" min="1" max="20" step="1" required>
+                                <small class="availability-help">Used for Occupied only. Blocked reserves all capacity in its selected period.</small>
+                            </div>
+                            <div class="availability-field availability-field-wide">
+                                <label for="availabilityReason">Reason / Note</label>
+                                <input class="availability-control" type="text" name="reason" id="availabilityReason" maxlength="500" placeholder="e.g. One walk-in grooming customer not recorded yet">
+                            </div>
+                        </div>
+                        <div class="availability-form-actions">
+                            <button type="submit" class="availability-submit"><i class="fas fa-save" style="margin-right:7px;"></i>Save Availability Adjustment</button>
+                        </div>
+                    </form>
+
+                    <div class="availability-table-wrap">
+                        <table class="availability-table">
+                            <thead><tr><th>Category / Service</th><th>Dates</th><th>Time</th><th>Type</th><th>Quantity</th><th>Reason</th><th>Action</th></tr></thead>
+                            <tbody>
+                            <?php if (!empty($availability_adjustments)): ?>
+                                <?php foreach ($availability_adjustments as $adjustment): ?>
+                                    <?php
+                                        $adjustmentCategory = (string)($adjustment['service_category'] ?? '');
+                                        $adjustmentService = trim((string)($adjustment['specific_service'] ?? ''));
+                                        $adjustmentType = strtolower((string)($adjustment['adjustment_type'] ?? ''));
+                                        $adjustmentStartTime = trim((string)($adjustment['start_time'] ?? ''));
+                                        $adjustmentEndTime = trim((string)($adjustment['end_time'] ?? ''));
+                                        $adjustmentTimeText = 'All day';
+                                        if ($adjustmentStartTime !== '' && $adjustmentEndTime !== '') {
+                                            $adjustmentTimeText = date('g:i A', strtotime($adjustmentStartTime)) . ' – ' . date('g:i A', strtotime($adjustmentEndTime));
+                                        }
+                                    ?>
+                                    <tr>
+                                        <td><strong><?php echo htmlspecialchars($adjustmentCategory, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></strong><br><span style="color:#64748b;"><?php echo htmlspecialchars($adjustmentService !== '' ? $adjustmentService : 'All services in category', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></span></td>
+                                        <td><?php echo htmlspecialchars(substr((string)$adjustment['start_date'], 0, 10), ENT_QUOTES, 'UTF-8'); ?><br>to <?php echo htmlspecialchars(substr((string)$adjustment['display_end_date'], 0, 10), ENT_QUOTES, 'UTF-8'); ?></td>
+                                        <td><?php echo htmlspecialchars($adjustmentTimeText, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></td>
+                                        <td><span class="availability-type-pill <?php echo $adjustmentType === 'blocked' ? 'blocked' : 'occupied'; ?>"><?php echo htmlspecialchars($adjustmentType, ENT_QUOTES, 'UTF-8'); ?></span></td>
+                                        <td><?php echo $adjustmentType === 'blocked' ? 'Full capacity' : ('× ' . (int)$adjustment['quantity']); ?></td>
+                                        <td><?php echo htmlspecialchars((string)($adjustment['reason'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></td>
+                                        <td>
+                                            <form method="POST" action="managebooking.php#availability-management" style="margin:0;" onsubmit="return confirm('Remove this manual adjustment? Availability may reopen if other bookings do not fill the capacity.');">
+                                                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
+                                                <input type="hidden" name="availability_adjustment_action" value="deactivate">
+                                                <input type="hidden" name="adjustment_id" value="<?php echo (int)$adjustment['id']; ?>">
+                                                <button type="submit" class="availability-remove"><i class="fas fa-unlock-alt" style="margin-right:4px;"></i>Remove / Reopen</button>
+                                            </form>
+                                        </td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            <?php else: ?>
+                                <tr><td colspan="7" class="availability-empty">No active upcoming manual adjustments.</td></tr>
+                            <?php endif; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                <?php endif; ?>
+            </section>
+            <?php endif; ?>
 
             <div class="status-grid">
                 <div class="status-card total" onclick="window.location.href='managebooking.php?status=All'">
@@ -2110,6 +2636,48 @@ $total_rows_showing = count($bookings);
         function closeCancelModal() {
             document.getElementById('cancelModal').style.display = 'none';
         }
+
+        // Keep the manual adjustment service list consistent with its selected category.
+        (function initializeAvailabilityServiceOptions() {
+            const categorySelect = document.getElementById('availabilityCategory');
+            const serviceSelect = document.getElementById('availabilityService');
+            if (!categorySelect || !serviceSelect) return;
+            const optionsByCategory = {
+                'Grooming': ['Basic Pet Grooming', 'Full Grooming Package', 'Bath & Blow Dry', 'Cat Grooming (Basic)', 'Cat Bath & Blow Dry'],
+                'Vet Services': ['Deworming', 'Vaccination - Anti Rabies', 'Vaccination - 5 in 1', 'Vaccination - 6 in 1', 'Vaccination - 8 in 1', 'Vaccination - 4 in 1 (Cats)'],
+                'Pet Hotel': ['Pet Daycare (1st Hour - Succeeding fees apply)', 'Pet Boarding (Overnight)']
+            };
+            function rebuildServiceOptions() {
+                const priorValue = serviceSelect.value;
+                serviceSelect.replaceChildren();
+                const allOption = document.createElement('option');
+                allOption.value = '';
+                allOption.textContent = 'All services in category';
+                serviceSelect.appendChild(allOption);
+                (optionsByCategory[categorySelect.value] || []).forEach(function(label) {
+                    const option = document.createElement('option');
+                    option.value = label;
+                    option.textContent = label;
+                    serviceSelect.appendChild(option);
+                });
+                if (Array.from(serviceSelect.options).some(function(option) { return option.value === priorValue; })) {
+                    serviceSelect.value = priorValue;
+                } else {
+                    serviceSelect.value = '';
+                }
+            }
+            categorySelect.addEventListener('change', rebuildServiceOptions);
+            const typeSelect = document.getElementById('availabilityType');
+            const quantityInput = document.getElementById('availabilityQuantity');
+            if (typeSelect && quantityInput) {
+                function updateQuantityAvailability() {
+                    quantityInput.readOnly = typeSelect.value === 'blocked';
+                    quantityInput.style.opacity = quantityInput.readOnly ? '.55' : '1';
+                }
+                typeSelect.addEventListener('change', updateQuantityAvailability);
+                updateQuantityAvailability();
+            }
+        })();
 
         const walkinPricingData = {
             "Dog": {
@@ -2906,7 +3474,7 @@ $total_rows_showing = count($bookings);
 
         window.fetchAdminNotifs = fetchAdminNotifs;
 
-        <?php if ($is_admin): ?>
+        <?php if ($show_notifications): ?>
         fetchAdminNotifs();
         setInterval(fetchAdminNotifs, 3000);
         <?php endif; ?>

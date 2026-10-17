@@ -142,7 +142,9 @@ $haircut_style = trim((string)($_POST['haircut_style'] ?? ''));
 $appointment_date = trim((string)($_POST['appointment_date'] ?? ''));
 
 $appointment_time = trim((string)($_POST['appointment_time'] ?? ''));
+$pickup_time = trim((string)($_POST['pickup_time'] ?? ''));
 $checkout_date = trim((string)($_POST['checkout_date'] ?? ''));
+$is_daycare = ($service_category === 'Pet Hotel' && stripos($specific_service, 'daycare') !== false);
 
 
 
@@ -426,23 +428,27 @@ if (!isset($pricing_data[$pet_type][$service_category][$specific_service])) {
 
 
 $service_prices = $pricing_data[$pet_type][$service_category][$specific_service];
-
 $size_key = walkinSizeFromWeight($pet_weight);
 
-
-
-if (isset($service_prices['default'])) {
-
+if ($is_daycare) {
+    // Pet Daycare uses its own client-confirmed weight tiers and additional-time rate.
+    if ($pet_type === 'Cat') {
+        $service_fee = 150.0;
+    } elseif ($pet_weight > 0 && $pet_weight <= 10) {
+        $service_fee = 100.0;
+    } elseif ($pet_weight > 10 && $pet_weight <= 20) {
+        $service_fee = 150.0;
+    } elseif ($pet_weight > 20 && $pet_weight <= 50) {
+        $service_fee = 200.0;
+    } else {
+        walkinRedirect('Pet Daycare supports dogs up to 50 kg. Please verify the pet weight.');
+    }
+} elseif (isset($service_prices['default'])) {
     $service_fee = (float)$service_prices['default'];
-
 } elseif ($size_key !== '' && isset($service_prices[$size_key])) {
-
     $service_fee = (float)$service_prices[$size_key];
-
 } else {
-
-    walkinRedirect('The selected service does not have a price for this weight. Please enter a weight from 0.1 to 25 kg.');
-
+    walkinRedirect('The selected service does not have a price for this weight. Please enter a supported weight for the selected service.');
 }
 
 
@@ -494,17 +500,44 @@ if (!$time_check || $time_check->format('H:i') !== $appointment_time) {
 }
 
 $is_overnight_boarding = ($service_category === 'Pet Hotel' && stripos($specific_service, 'boarding') !== false);
+$daycare_start_minutes = null;
+$daycare_end_minutes = null;
 if ($is_overnight_boarding) {
     $checkout_check = DateTime::createFromFormat('!Y-m-d', $checkout_date);
     if (!$checkout_check || $checkout_check->format('Y-m-d') !== $checkout_date || $checkout_date <= $appointment_date) {
         walkinRedirect('For Pet Boarding, select a valid check-out date at least one day after check-in.');
     }
     $appointment_time = '09:00';
+    $time_check = DateTime::createFromFormat('!H:i', $appointment_time);
+    $pickup_time = '';
     $stay_start_for_price = new DateTimeImmutable($appointment_date);
     $stay_end_for_price = new DateTimeImmutable($checkout_date);
     $service_fee *= max(1, (int)$stay_start_for_price->diff($stay_end_for_price)->days);
+} elseif ($is_daycare) {
+    $checkout_date = '';
+    $pickup_check = DateTime::createFromFormat('!H:i', $pickup_time);
+    $pickup_errors = DateTime::getLastErrors();
+    $pickup_valid = $pickup_check !== false && $pickup_check->format('H:i') === $pickup_time
+        && ($pickup_errors === false || ($pickup_errors['warning_count'] === 0 && $pickup_errors['error_count'] === 0));
+    if (!$pickup_valid) {
+        walkinRedirect('For Pet Daycare, select a valid expected pickup time.');
+    }
+
+    $daycare_start_minutes = ((int)$time_check->format('H') * 60) + (int)$time_check->format('i');
+    $daycare_end_minutes = ((int)$pickup_check->format('H') * 60) + (int)$pickup_check->format('i');
+    if (($daycare_start_minutes % 30) !== 0) {
+        walkinRedirect('Pet Daycare drop-off must be on a 30-minute time increment.');
+    }
+    if (($daycare_end_minutes % 30) !== 0 || $daycare_end_minutes <= $daycare_start_minutes || $daycare_end_minutes > 18 * 60) {
+        walkinRedirect('Pet Daycare pickup must be later than drop-off, use a half-hour time, and be no later than 6:00 PM.');
+    }
+
+    $daycare_duration_minutes = $daycare_end_minutes - $daycare_start_minutes;
+    $daycare_extra_blocks = (int)ceil(max(0, $daycare_duration_minutes - 60) / 30);
+    $service_fee += $daycare_extra_blocks * 15;
 } else {
     $checkout_date = '';
+    $pickup_time = '';
 }
 
 if ($appointment_date < date('Y-m-d')) {
@@ -513,9 +546,11 @@ if ($appointment_date < date('Y-m-d')) {
 
 if (!$is_overnight_boarding) {
     $start_minutes = ((int)$time_check->format('H') * 60) + (int)$time_check->format('i');
-    $duration_minutes = $service_category === 'Grooming'
-        ? (stripos($specific_service, 'Full Grooming Package') !== false ? 120 : 60)
-        : ($service_category === 'Vet Services' ? 30 : 60);
+    $duration_minutes = $is_daycare
+        ? ((int)$daycare_end_minutes - (int)$daycare_start_minutes)
+        : ($service_category === 'Grooming'
+            ? (stripos($specific_service, 'Full Grooming Package') !== false ? 120 : 60)
+            : ($service_category === 'Vet Services' ? 30 : 60));
     if ($start_minutes < 9 * 60 || $start_minutes >= 18 * 60 || ($start_minutes >= 12 * 60 && $start_minutes < 13 * 60)) {
         walkinRedirect('Choose a start time between 9:00 AM and 6:00 PM, excluding the 12:00 PM–1:00 PM lunch break.');
     }
@@ -525,6 +560,141 @@ if (!$is_overnight_boarding) {
     if ($service_category === 'Vet Services' && in_array((int)date('N', strtotime($appointment_date)), [3, 6], true)) {
         walkinRedirect('The veterinarian is not available on Wednesdays and Saturdays.');
     }
+}
+
+/** Convert a DB or form time (HH:MM[:SS]) to minutes after midnight. */
+function walkinAvailabilityTimeToMinutes($value): ?int
+{
+    $time = trim((string)($value ?? ''));
+    if (!preg_match('/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/', $time, $matches)) {
+        return null;
+    }
+    $hour = (int)$matches[1];
+    $minute = (int)$matches[2];
+    if ($hour > 23 || $minute > 59) {
+        return null;
+    }
+    return ($hour * 60) + $minute;
+}
+
+/** Read active Admin adjustments for [startDate, endDateExclusive). */
+function walkinLoadAvailabilityAdjustments(PDO $pdo, string $startDate, string $endDateExclusive): array
+{
+    $tableExists = (bool)$pdo->query("SELECT to_regclass('public.availability_adjustments')")->fetchColumn();
+    if (!$tableExists) {
+        // Preserve regular walk-ins if the optional migration has not yet been installed.
+        return [];
+    }
+
+    $stmt = $pdo->prepare("SELECT id, service_category,
+                                  COALESCE(specific_service, '') AS specific_service,
+                                  start_date::text AS start_date,
+                                  end_date::text AS end_date,
+                                  start_time::text AS start_time,
+                                  end_time::text AS end_time,
+                                  LOWER(BTRIM(adjustment_type)) AS adjustment_type,
+                                  quantity, reason
+                           FROM public.availability_adjustments
+                           WHERE is_active = TRUE
+                             AND start_date < CAST(:range_end AS date)
+                             AND end_date > CAST(:range_start AS date)
+                           ORDER BY start_date, start_time NULLS FIRST, id");
+    $stmt->execute([
+        ':range_start' => $startDate,
+        ':range_end' => $endDateExclusive,
+    ]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+}
+
+function walkinAdjustmentActiveOnDate(array $adjustment, string $date): bool
+{
+    $startDate = substr((string)($adjustment['start_date'] ?? ''), 0, 10);
+    $endDate = substr((string)($adjustment['end_date'] ?? ''), 0, 10);
+    return $startDate !== '' && $endDate !== '' && $startDate <= $date && $endDate > $date;
+}
+
+/** Count occupied manual units as real pets for daily capacity rules; blocked time is not a booking. */
+function walkinManualOccupiedUnitsForDate(array $adjustments, string $date, ?string $category = null): int
+{
+    $total = 0;
+    foreach ($adjustments as $adjustment) {
+        if (!walkinAdjustmentActiveOnDate($adjustment, $date)) {
+            continue;
+        }
+        if (strtolower(trim((string)($adjustment['adjustment_type'] ?? ''))) !== 'occupied') {
+            continue;
+        }
+        if ($category !== null && (string)($adjustment['service_category'] ?? '') !== $category) {
+            continue;
+        }
+        $total += max(1, (int)($adjustment['quantity'] ?? 1));
+    }
+    return $total;
+}
+
+/**
+ * Expand manual occupancy into capacity units for this category/date.
+ * An occupied adjustment uses its quantity. A matching blocked adjustment
+ * reserves the full simultaneous capacity for its time range.
+ */
+function walkinManualCapacityIntervals(
+    array $adjustments,
+    string $date,
+    string $category,
+    string $requestedService,
+    int $normalCapacity
+): array {
+    $intervals = [];
+    foreach ($adjustments as $adjustment) {
+        if (!walkinAdjustmentActiveOnDate($adjustment, $date)
+            || (string)($adjustment['service_category'] ?? '') !== $category) {
+            continue;
+        }
+
+        $type = strtolower(trim((string)($adjustment['adjustment_type'] ?? '')));
+        if (!in_array($type, ['occupied', 'blocked'], true)) {
+            continue;
+        }
+
+        $adjustmentService = trim((string)($adjustment['specific_service'] ?? ''));
+        // Service-specific blocks close only their selected service. Occupied
+        // units consume shared groomer/vet/room capacity across the category.
+        if ($type === 'blocked' && $adjustmentService !== ''
+            && strcasecmp($adjustmentService, $requestedService) !== 0) {
+            continue;
+        }
+
+        $rawStart = trim((string)($adjustment['start_time'] ?? ''));
+        $rawEnd = trim((string)($adjustment['end_time'] ?? ''));
+        $start = $rawStart !== '' ? walkinAvailabilityTimeToMinutes($rawStart) : null;
+        $end = $rawEnd !== '' ? walkinAvailabilityTimeToMinutes($rawEnd) : null;
+
+        if ($start === null && $end === null) {
+            $start = 0;
+            $end = 1440;
+        } elseif ($start === null || $end === null || $end <= $start) {
+            // The Admin form should prevent this; skip malformed legacy rows safely.
+            continue;
+        }
+
+        $units = $type === 'blocked'
+            ? max(1, $normalCapacity)
+            : max(1, (int)($adjustment['quantity'] ?? 1));
+        for ($unit = 0; $unit < $units; $unit++) {
+            $intervals[] = [
+                'start' => $start,
+                'end' => $end,
+                'type' => $type,
+                'service' => $adjustmentService,
+            ];
+        }
+    }
+    return $intervals;
+}
+
+function walkinIntervalsOverlap(int $candidateStart, int $candidateEnd, int $existingStart, int $existingEnd): bool
+{
+    return $candidateStart < $existingEnd && $existingStart < $candidateEnd;
 }
 
 try {
@@ -544,12 +714,15 @@ try {
 
     $active_status_sql = "LOWER(BTRIM(COALESCE(booking_status, ''))) NOT IN ('cancelled', 'canceled', 'no-show', 'no show', 'noshow', 'for rescheduling')";
     $capacity_error = '';
+    $manual_adjustments_end = $is_overnight_boarding ? $checkout_date : $lock_end->format('Y-m-d');
+    $manual_adjustments = walkinLoadAvailabilityAdjustments($pdo, $appointment_date, $manual_adjustments_end);
 
     if ($is_overnight_boarding) {
         $range_stmt = $pdo->prepare("
             SELECT appointment_date::text AS appointment_date,
                    appointment_time::text AS appointment_time,
                    checkout_date::text AS checkout_date,
+                   pickup_time::text AS pickup_time,
                    service
             FROM appointments
             WHERE {$active_status_sql}
@@ -577,6 +750,27 @@ try {
                 $total++;
                 if (stripos($service_name, 'Pet Hotel -') === 0) $hotel_count++;
             }
+
+            // Add Admin-marked, unrecorded walk-ins to each affected night.
+            $total += walkinManualOccupiedUnitsForDate($manual_adjustments, $day_string);
+            $hotel_count += walkinManualOccupiedUnitsForDate($manual_adjustments, $day_string, 'Pet Hotel');
+
+            // Boarding occupies the room for the entire stay, so any matching
+            // blocked Pet Hotel period during any night makes this stay unavailable.
+            $boarding_manual_intervals = walkinManualCapacityIntervals(
+                $manual_adjustments, $day_string, 'Pet Hotel', $specific_service, 6
+            );
+            foreach ($boarding_manual_intervals as $manual_interval) {
+                if (($manual_interval['type'] ?? '') === 'blocked'
+                    && walkinIntervalsOverlap(0, 1440, (int)$manual_interval['start'], (int)$manual_interval['end'])) {
+                    $capacity_error = 'Pet Hotel availability is blocked by an Admin adjustment on ' . $day_string . '. Please choose different dates or ask the Admin to reopen the rooms.';
+                    break;
+                }
+            }
+            if ($capacity_error !== '') {
+                break;
+            }
+
             if ($total >= 20) {
                 $capacity_error = 'The overall daily capacity of 20 pets has been reached on ' . $day_string . '.';
                 break;
@@ -591,6 +785,7 @@ try {
             SELECT appointment_date::text AS appointment_date,
                    appointment_time::text AS appointment_time,
                    checkout_date::text AS checkout_date,
+                   pickup_time::text AS pickup_time,
                    service
             FROM appointments
             WHERE {$active_status_sql}
@@ -611,11 +806,16 @@ try {
         $rows = $existing_stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
         $daily_limits = ['Grooming' => 10, 'Vet Services' => 30, 'Pet Hotel' => 6];
         $simultaneous_limits = ['Grooming' => 2, 'Vet Services' => 1, 'Pet Hotel' => 6];
-        $daily_total = count($rows);
-        $category_count = 0;
+        // Manual occupied adjustments represent real walk-ins not yet registered
+        // as appointments, so include them in both overall and category daily caps.
+        $daily_total = count($rows) + walkinManualOccupiedUnitsForDate($manual_adjustments, $appointment_date);
+        $category_count = walkinManualOccupiedUnitsForDate($manual_adjustments, $appointment_date, $service_category);
         $start_minutes = ((int)substr($appointment_time, 0, 2) * 60) + (int)substr($appointment_time, 3, 2);
-        $duration = $service_category === 'Grooming' ? (stripos($specific_service, 'Full Grooming') !== false ? 120 : 60)
-            : ($service_category === 'Vet Services' ? 30 : 60);
+        $duration = $is_daycare
+            ? ((int)$daycare_end_minutes - (int)$daycare_start_minutes)
+            : ($service_category === 'Grooming'
+                ? (stripos($specific_service, 'Full Grooming') !== false ? 120 : 60)
+                : ($service_category === 'Vet Services' ? 30 : 60));
         $end_minutes = $start_minutes + $duration;
         $overlaps = 0;
         foreach ($rows as $row) {
@@ -624,9 +824,15 @@ try {
             $category_count++;
             $stored_date = substr((string)($row['appointment_date'] ?? ''), 0, 10);
             $stored_boarding = $service_category === 'Pet Hotel' && stripos($stored, 'boarding') !== false;
-            if ($stored_boarding && $stored_date < $appointment_date) {
+            if ($stored_boarding) {
                 $stored_checkout = substr((string)($row['checkout_date'] ?? ''), 0, 10);
-                if ($stored_checkout === '' || $stored_checkout > $appointment_date) $overlaps++;
+                if ($stored_checkout === '') {
+                    $stored_checkout = (new DateTimeImmutable($stored_date))->modify('+1 day')->format('Y-m-d');
+                }
+                if ($stored_date <= $appointment_date && $stored_checkout > $appointment_date) {
+                    // An active boarding reservation occupies a room all day.
+                    $overlaps++;
+                }
                 continue;
             }
             if ($stored_date !== $appointment_date) continue;
@@ -634,8 +840,25 @@ try {
             if (!preg_match('/^\d{2}:\d{2}$/', $stored_time)) continue;
             $existing_start = ((int)substr($stored_time, 0, 2) * 60) + (int)substr($stored_time, 3, 2);
             $existing_duration = stripos($stored, 'Full Grooming Package') !== false ? 120 : ($service_category === 'Vet Services' ? 30 : 60);
-            if ($start_minutes < $existing_start + $existing_duration && $end_minutes > $existing_start) $overlaps++;
+            $existing_end = $existing_start + $existing_duration;
+            if ($service_category === 'Pet Hotel' && stripos($stored, 'daycare') !== false) {
+                $stored_pickup_minutes = walkinAvailabilityTimeToMinutes((string)($row['pickup_time'] ?? ''));
+                if ($stored_pickup_minutes !== null && $stored_pickup_minutes > $existing_start) {
+                    $existing_end = $stored_pickup_minutes;
+                }
+            }
+            if ($start_minutes < $existing_end && $end_minutes > $existing_start) $overlaps++;
         }
+
+        $manual_intervals = walkinManualCapacityIntervals(
+            $manual_adjustments, $appointment_date, $service_category, $specific_service, $simultaneous_limits[$service_category]
+        );
+        foreach ($manual_intervals as $manual_interval) {
+            if (walkinIntervalsOverlap($start_minutes, $end_minutes, (int)$manual_interval['start'], (int)$manual_interval['end'])) {
+                $overlaps++;
+            }
+        }
+
         if ($daily_total >= 20) $capacity_error = 'The overall daily capacity of 20 pets has been reached. Please select another date.';
         elseif ($category_count >= $daily_limits[$service_category]) $capacity_error = $service_category . ' has reached its daily capacity. Please select another date.';
         elseif ($overlaps >= $simultaneous_limits[$service_category]) {
@@ -758,7 +981,8 @@ try {
                 appointment_type,
 
                 vet_doctor,
-                checkout_date
+                checkout_date,
+                pickup_time
 
             )
 
@@ -789,7 +1013,8 @@ try {
                 'Walk-in',
 
                 :vet_doctor,
-                :checkout_date
+                :checkout_date,
+                :pickup_time
 
             )
 
@@ -815,6 +1040,7 @@ try {
 
         ':vet_doctor' => $service_category === 'Vet Services' ? 'Dr. Faith Casayuran' : null,
         ':checkout_date' => $is_overnight_boarding ? $checkout_date : null,
+        ':pickup_time' => $is_daycare ? $pickup_time : null,
 
     ]);
 
