@@ -1328,6 +1328,25 @@ try {
             white-space: nowrap;
         }
 
+        .cancellation-locked-note {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 5px;
+            max-width: 190px;
+            min-height: 34px;
+            padding: 7px 9px;
+            border: 1px solid #fecaca;
+            border-radius: 9px;
+            background: #fff1f2;
+            color: #b91c1c;
+            font-size: 9px;
+            font-weight: 800;
+            line-height: 1.4;
+            white-space: normal;
+            text-align: center;
+        }
+
         .schedule-empty {
             text-align: center;
             padding: 52px 18px;
@@ -2423,6 +2442,22 @@ try {
 
                             $display_datetime = date('Y-m-d', strtotime($row['appointment_date'])) .
                                 (!empty($row['appointment_time']) ? ' at ' . $time_str : '');
+
+                            // Customers must cancel at least 24 hours before the scheduled start time.
+                            // The server-side cancel_booking.php check remains the final enforcement.
+                            $canCustomerCancelByCutoff = false;
+                            try {
+                                $cancellationTimezone = new DateTimeZone('Asia/Manila');
+                                $cancelDate = substr((string)($row['appointment_date'] ?? ''), 0, 10);
+                                $cancelTime = trim((string)($row['appointment_time'] ?? '')) ?: '00:00:00';
+                                $scheduledDateTime = new DateTimeImmutable($cancelDate . ' ' . $cancelTime, $cancellationTimezone);
+                                $nowForCancellation = new DateTimeImmutable('now', $cancellationTimezone);
+                                $secondsUntilAppointment = $scheduledDateTime->getTimestamp() - $nowForCancellation->getTimestamp();
+                                $canCustomerCancelByCutoff = $secondsUntilAppointment >= 86400;
+                            } catch (Throwable $cancellationDateError) {
+                                // Fail closed: do not offer cancellation when the scheduled time cannot be verified.
+                                $canCustomerCancelByCutoff = false;
+                            }
                         ?>
 
                         <article class="schedule-item">
@@ -2497,18 +2532,24 @@ try {
                                             <i class="fa-solid fa-check"></i> One-time reschedule used
                                         </span>
                                     <?php elseif ($status_upper === 'PENDING' || $status_upper === 'CONFIRMED'): ?>
-                                        <button
-                                            type="button"
-                                            class="btn-cancel-schedule"
-                                            onclick="openCancelModal(
-                                                <?php echo $apt_id; ?>,
-                                                '<?php echo addslashes(htmlspecialchars($row['service'])); ?>',
-                                                '<?php echo addslashes(htmlspecialchars($display_pet)); ?>',
-                                                '<?php echo addslashes($display_datetime); ?>'
-                                            )"
-                                        >
-                                            <i class="fa-solid fa-xmark"></i> Cancel
-                                        </button>
+                                        <?php if ($canCustomerCancelByCutoff): ?>
+                                            <button
+                                                type="button"
+                                                class="btn-cancel-schedule"
+                                                onclick="openCancelModal(
+                                                    <?php echo $apt_id; ?>,
+                                                    '<?php echo addslashes(htmlspecialchars($row['service'])); ?>',
+                                                    '<?php echo addslashes(htmlspecialchars($display_pet)); ?>',
+                                                    '<?php echo addslashes($display_datetime); ?>'
+                                                )"
+                                            >
+                                                <i class="fa-solid fa-xmark"></i> Cancel
+                                            </button>
+                                        <?php else: ?>
+                                            <span class="cancellation-locked-note" role="status" title="Cancellations must be made at least 24 hours before the appointment.">
+                                                <i class="fa-solid fa-lock" aria-hidden="true"></i> Cannot cancel within 24 hours
+                                            </span>
+                                        <?php endif; ?>
                                     <?php endif; ?>
                                 </div>
                             </div>
@@ -2778,7 +2819,7 @@ try {
                 </div>
                 <div class="important-warning">
                     <i class="fa-solid fa-triangle-exclamation"></i>
-                    <div><strong>Important:</strong> Slot will be released for other customers. Cancellations made less than 24 hours before the appointment are strictly non-refundable.</div>
+                    <div><strong>Important:</strong> You must cancel at least 24 hours before the scheduled appointment. Customer cancellations are disabled during the final 24 hours. No-Show or forfeited payments are non-refundable under the Terms &amp; Conditions.</div>
                 </div>
                 <div class="modal-actions">
                     <button type="button" class="btn-keep" onclick="closeCancelModal()">Keep Booking</button>

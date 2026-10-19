@@ -637,6 +637,21 @@ function walkinManualOccupiedUnitsForDate(array $adjustments, string $date, ?str
  * An occupied adjustment uses its quantity. A matching blocked adjustment
  * reserves the full simultaneous capacity for its time range.
  */
+/** Count unavailable service/room units for a date without treating them as actual pets. */
+function walkinManualCapacityReducedUnitsForDate(array $adjustments, string $date, string $category, ?string $service = null): int
+{
+    $total = 0;
+    foreach ($adjustments as $adjustment) {
+        if (!walkinAdjustmentActiveOnDate($adjustment, $date)) continue;
+        if ((string)($adjustment['service_category'] ?? '') !== $category) continue;
+        if (strtolower(trim((string)($adjustment['adjustment_type'] ?? ''))) !== 'capacity_reduced') continue;
+        $adjustmentService = trim((string)($adjustment['specific_service'] ?? ''));
+        if ($adjustmentService !== '' && $service !== null && strcasecmp($adjustmentService, $service) !== 0) continue;
+        $total += max(1, (int)($adjustment['quantity'] ?? 1));
+    }
+    return $total;
+}
+
 function walkinManualCapacityIntervals(
     array $adjustments,
     string $date,
@@ -652,14 +667,14 @@ function walkinManualCapacityIntervals(
         }
 
         $type = strtolower(trim((string)($adjustment['adjustment_type'] ?? '')));
-        if (!in_array($type, ['occupied', 'blocked'], true)) {
+        if (!in_array($type, ['occupied', 'blocked', 'capacity_reduced'], true)) {
             continue;
         }
 
         $adjustmentService = trim((string)($adjustment['specific_service'] ?? ''));
         // Service-specific blocks close only their selected service. Occupied
         // units consume shared groomer/vet/room capacity across the category.
-        if ($type === 'blocked' && $adjustmentService !== ''
+        if (in_array($type, ['blocked', 'capacity_reduced'], true) && $adjustmentService !== ''
             && strcasecmp($adjustmentService, $requestedService) !== 0) {
             continue;
         }
@@ -754,6 +769,7 @@ try {
             // Add Admin-marked, unrecorded walk-ins to each affected night.
             $total += walkinManualOccupiedUnitsForDate($manual_adjustments, $day_string);
             $hotel_count += walkinManualOccupiedUnitsForDate($manual_adjustments, $day_string, 'Pet Hotel');
+            $hotel_count += walkinManualCapacityReducedUnitsForDate($manual_adjustments, $day_string, 'Pet Hotel', 'Pet Boarding (Overnight)');
 
             // Boarding occupies the room for the entire stay, so any matching
             // blocked Pet Hotel period during any night makes this stay unavailable.
@@ -805,7 +821,7 @@ try {
         ]);
         $rows = $existing_stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
         $daily_limits = ['Grooming' => 10, 'Vet Services' => 30, 'Pet Hotel' => 6];
-        $simultaneous_limits = ['Grooming' => 2, 'Vet Services' => 1, 'Pet Hotel' => 6];
+        $simultaneous_limits = ['Grooming' => 2, 'Vet Services' => 2, 'Pet Hotel' => 6];
         // Manual occupied adjustments represent real walk-ins not yet registered
         // as appointments, so include them in both overall and category daily caps.
         $daily_total = count($rows) + walkinManualOccupiedUnitsForDate($manual_adjustments, $appointment_date);
@@ -862,8 +878,8 @@ try {
         if ($daily_total >= 20) $capacity_error = 'The overall daily capacity of 20 pets has been reached. Please select another date.';
         elseif ($category_count >= $daily_limits[$service_category]) $capacity_error = $service_category . ' has reached its daily capacity. Please select another date.';
         elseif ($overlaps >= $simultaneous_limits[$service_category]) {
-            $capacity_error = $service_category === 'Grooming' ? 'Both groomers are already booked during this time. Please select another time.'
-                : ($service_category === 'Vet Services' ? 'The veterinarian is already booked during this time. Please select another time.' : 'No Pet Hotel room is available during this time.');
+            $capacity_error = $service_category === 'Grooming' ? 'Both groomers are already booked or unavailable during this time. Please select another time.'
+                : ($service_category === 'Vet Services' ? 'Both the doctor and reliever are already booked or unavailable during this time. Please select another time.' : 'No Pet Hotel room is available during this time.');
         }
     }
 

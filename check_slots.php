@@ -15,7 +15,7 @@
  *   Assume one groomer is on lunch, so grooming capacity drops to 1 during the break.
  * - Overall daily limit: 20 pets.
  * - Per-category daily limits: Grooming 10, Vet Services 30, Pet Hotel 6.
- * - Simultaneous capacity: Grooming 2, Vet Services 1, Pet Hotel 6.
+ * - Simultaneous capacity: Grooming 2, Vet Services 2 (doctor + reliever), Pet Hotel 6.
  * - Durations are defaults: Basic grooming 60 min, Full Grooming 120 min,
  *   Bath & Blow Dry 90 min, Vet 30 min, Pet Daycare 180 min.
  * - Overnight boarding uses checkout_date and checks room/global capacity for every occupied night.
@@ -84,7 +84,7 @@ $legacy_times = [
 $global_daily_limit = 20;
 $rules = [
     'Grooming' => ['daily_limit' => 10, 'simultaneous_limit' => 2],
-    'Vet Services' => ['daily_limit' => 30, 'simultaneous_limit' => 1],
+    'Vet Services' => ['daily_limit' => 30, 'simultaneous_limit' => 2],
     'Pet Hotel' => ['daily_limit' => 6, 'simultaneous_limit' => 6],
 ];
 
@@ -277,12 +277,12 @@ function slotManualIntervalsForDate(
         if ((string)($adjustment['service_category'] ?? '') !== $category) continue;
 
         $type = strtolower(trim((string)($adjustment['adjustment_type'] ?? '')));
-        if (!in_array($type, ['occupied', 'blocked'], true)) continue;
+        if (!in_array($type, ['occupied', 'blocked', 'capacity_reduced'], true)) continue;
 
         $adjustmentService = trim((string)($adjustment['specific_service'] ?? ''));
         // A service-specific BLOCK closes that service only. OCCUPIED units still
         // consume shared staff/room capacity for other services in the same category.
-        if ($type === 'blocked' && $adjustmentService !== '' && $requestedService !== ''
+        if (in_array($type, ['blocked', 'capacity_reduced'], true) && $adjustmentService !== '' && $requestedService !== ''
             && strcasecmp($adjustmentService, $requestedService) !== 0) {
             continue;
         }
@@ -914,7 +914,9 @@ try {
                 $available = false;
                 $reason = ($category === 'Pet Hotel')
                     ? 'No pet hotel room is available during this period'
-                    : 'Staff capacity reached during this time';
+                    : (($category === 'Vet Services')
+                        ? 'Both veterinary staff capacity units are occupied or unavailable during this time'
+                        : 'Staff capacity reached during this time');
             }
         }
 

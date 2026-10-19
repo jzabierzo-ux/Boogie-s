@@ -5,6 +5,9 @@ include 'db_supabase.php';
 // Set timezone to Philippines
 date_default_timezone_set('Asia/Manila');
 
+$bookingManilaTimezone = new DateTimeZone('Asia/Manila');
+$minimumOnlineBookingDate = (new DateTimeImmutable('tomorrow', $bookingManilaTimezone))->format('Y-m-d');
+
 /**
  * Format notification timestamps consistently with the Customer Dashboard.
  * Supabase values without an explicit timezone are treated as UTC.
@@ -335,9 +338,9 @@ function bookingManualCapacityIntervals(
         if ((string)($adjustment['service_category'] ?? '') !== $category) continue;
 
         $type = strtolower(trim((string)($adjustment['adjustment_type'] ?? '')));
-        if (!in_array($type, ['occupied', 'blocked'], true)) continue;
+        if (!in_array($type, ['occupied', 'blocked', 'capacity_reduced'], true)) continue;
         $adjustmentService = trim((string)($adjustment['specific_service'] ?? ''));
-        if ($type === 'blocked' && $adjustmentService !== '' && $requestedService !== ''
+        if (in_array($type, ['blocked', 'capacity_reduced'], true) && $adjustmentService !== '' && $requestedService !== ''
             && strcasecmp($adjustmentService, $requestedService) !== 0) {
             continue;
         }
@@ -836,15 +839,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $selected_end_minutes = $is_daycare
             ? (int)($selected_pickup_minutes ?? 0)
             : (($selected_start_minutes ?? 0) + $service_duration_minutes);
-        $current_date = date('Y-m-d');
-        $current_minutes = ((int)date('H') * 60) + (int)date('i');
-
-        if ($appointment_date < $current_date) {
-            $error_msg = 'Cannot book appointments on past dates.';
-        } elseif ($appointment_date === $current_date && $current_minutes >= $closing_minutes) {
-            $error_msg = 'Same-day bookings are closed after 6:00 PM. Please select another date.';
-        } elseif ($appointment_date === $current_date && $selected_start_minutes !== null && $selected_start_minutes <= $current_minutes) {
-            $error_msg = 'The selected appointment time has already passed. Please choose a later time.';
+        // Online bookings must be submitted at least one calendar day in advance.
+        // Enforce this on the server even if the browser date picker is bypassed.
+        if ($appointment_date < $minimumOnlineBookingDate) {
+            $error_msg = 'Online bookings must be made at least one calendar day in advance. Please select tomorrow or a later date.';
         } elseif ($selected_start_minutes === null) {
             $error_msg = 'Please select a valid appointment time.';
         } elseif ($is_daycare && ($selected_pickup_minutes === null || $selected_pickup_minutes <= $selected_start_minutes)) {
@@ -864,7 +862,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pdo->beginTransaction();
 
                 $daily_limits = ['Grooming' => 10, 'Vet Services' => 30, 'Pet Hotel' => 6];
-                $simultaneous_limits = ['Grooming' => 2, 'Vet Services' => 1, 'Pet Hotel' => 6];
+                $simultaneous_limits = ['Grooming' => 2, 'Vet Services' => 2, 'Pet Hotel' => 6];
 
                 // Boarding locks each occupied date in chronological order so a regular booking
                 // and another boarding request serialize against the same date-level capacity.
@@ -1076,7 +1074,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         if ($service_category === 'Grooming') {
                             $error_msg = 'Both groomers are already booked during part of this service. Please select another time.';
                         } elseif ($service_category === 'Vet Services') {
-                            $error_msg = 'The veterinarian is already booked during this time. Please select another time.';
+                            $error_msg = 'Both the doctor and reliever are already booked or unavailable during this time. Please select another time.';
                         } else {
                             $error_msg = 'No Pet Hotel room is available during this time. Please select another time.';
                         }
@@ -2023,38 +2021,84 @@ if ($error_msg !== '') {
             }
         }
 
+        .booking-card .booking-policy-notice {
+            background: #fffdf5;
+            border: 1px solid #f3d37a;
+            border-left: 5px solid #dc2626;
+            padding: 16px 17px;
+            border-radius: 11px;
+            margin: 18px 0 12px;
+            color: #243447;
+            font-size: 13px;
+            line-height: 1.65;
+        }
+
+        .booking-card .booking-policy-notice h4 {
+            margin: 0 0 10px;
+            color: #0b2545;
+            font-size: 15px;
+            font-weight: 850;
+            line-height: 1.4;
+        }
+
+        .booking-card .booking-policy-item { margin: 9px 0; }
+
+        .booking-card .booking-policy-alert {
+            background: #fff1f2;
+            border: 1px solid #fda4af;
+            border-radius: 8px;
+            padding: 11px 12px;
+            margin: 11px 0;
+            color: #881337;
+        }
+
+        .booking-card .booking-policy-alert strong,
+        .booking-card .policy-critical {
+            color: #b91c1c;
+            font-weight: 900;
+        }
+
+        .booking-card .booking-policy-emergency {
+            background: #eff6ff;
+            border: 1px solid #bfdbfe;
+            border-radius: 8px;
+            padding: 11px 12px;
+            margin-top: 11px;
+            color: #1e3a5f;
+        }
+
         .booking-card .terms-container {
             background: #f8fafc;
             border: 1px solid var(--line);
             padding: 14px;
             border-radius: 11px;
             margin-bottom: 18px;
-            font-size: 10px;
+            font-size: 13px;
         }
 
         .booking-card .terms-container label {
             display: flex;
             align-items: flex-start;
-            gap: 9px;
-            color: #556779;
-            font-weight: 600;
+            gap: 10px;
+            color: #334155;
+            font-weight: 650;
             line-height: 1.6;
             margin: 0;
             cursor: pointer;
         }
 
         .booking-card .terms-container input[type="checkbox"] {
-            width: 17px;
-            height: 17px;
-            margin-top: 1px;
+            width: 19px;
+            height: 19px;
+            margin-top: 2px;
             cursor: pointer;
             accent-color: var(--brand-blue);
-            flex: 0 0 17px;
+            flex: 0 0 19px;
         }
 
         .booking-card .terms-container span.highlight {
             color: var(--brand-blue);
-            font-weight: 800;
+            font-weight: 900;
         }
 
         .booking-card .btn-submit {
@@ -2546,22 +2590,23 @@ if ($error_msg !== '') {
                 line-height: 1.45;
             }
 
+            .booking-card .booking-policy-notice {
+                padding: 12px;
+                margin: 14px 0 10px;
+                font-size: 12px;
+                line-height: 1.6;
+            }
+
+            .booking-card .booking-policy-notice h4 { font-size: 14px; }
+
             .booking-card .terms-container {
                 padding: 11px;
                 margin-bottom: 15px;
-                font-size: 8px;
+                font-size: 12px;
                 line-height: 1.55;
             }
 
-            .booking-card .terms-container label {
-                gap: 8px;
-            }
-
-            .booking-card .terms-container input[type="checkbox"] {
-                width: 17px;
-                height: 17px;
-                flex-basis: 17px;
-            }
+            .booking-card .terms-container label { gap: 8px; }
 
             .booking-card .btn-submit {
                 min-height: 46px;
@@ -2701,9 +2746,8 @@ if ($error_msg !== '') {
                 font-size: 10px;
             }
 
-            .booking-card .terms-container {
-                font-size: 7.5px;
-            }
+            .booking-card .booking-policy-notice { font-size: 11.5px; }
+            .booking-card .terms-container { font-size: 11.5px; }
 
             .booking-card .btn-submit {
                 font-size: 9px;
@@ -2898,7 +2942,7 @@ if ($error_msg !== '') {
                 </div>
 
                 <div id="vetNameDisplay" class="vet-info-box hidden">
-                    <i class="fa-solid fa-user-doctor"></i> Attending Veterinarian: <strong>Dr. Faith Casayuran</strong>
+                    <i class="fa-solid fa-user-doctor"></i> Available Veterinary Staff: <strong>Doctor and Reliever</strong>
                 </div>
 
                 <div class="form-group hidden" id="haircutContainer">
@@ -2916,7 +2960,8 @@ if ($error_msg !== '') {
                 <div class="form-row">
                     <div class="form-group">
                         <label id="appointmentDateLabel" for="appointment_date">Select Date *</label>
-                        <input type="date" name="appointment_date" id="appointment_date" required>
+                        <input type="date" name="appointment_date" id="appointment_date" min="<?php echo htmlspecialchars($minimumOnlineBookingDate, ENT_QUOTES, 'UTF-8'); ?>" required>
+                        <p id="bookingDatePolicy" style="margin-top:8px;color:#6b7c8f;font-size:10px;line-height:1.5;">Online bookings must be made at least one calendar day in advance. Same-day bookings are not accepted.</p>
                     </div>
                     <div class="form-group">
                         <label id="appointmentTimeLabel" for="appointment_time">Select Time *</label>
@@ -3000,12 +3045,35 @@ if ($error_msg !== '') {
                     </div>
                 </div>
 
+                <section class="booking-policy-notice" id="bookingPolicies" aria-labelledby="bookingPoliciesTitle">
+                    <h4 id="bookingPoliciesTitle"><i class="fa-solid fa-circle-exclamation" aria-hidden="true"></i> Important Booking Policies — Please Read Before Confirming</h4>
+
+                    <div class="booking-policy-item">
+                        <strong>Late arrival and first missed appointment:</strong>
+                        A 30-minute grace period applies. If you miss your scheduled appointment beyond the grace period, you may request one reschedule within 3 days, subject to availability. The payment remains valid for the same service.
+                    </div>
+
+                    <div class="booking-policy-alert" role="note" aria-label="No-show and non-refundable policy">
+                        <strong><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> NO-SHOW &amp; NON-REFUNDABLE POLICY:</strong>
+                        If you also miss the rescheduled appointment, the booking will be marked <strong>NO-SHOW</strong> and the payment will be <strong>NON-REFUNDABLE</strong>. Please make sure you can attend the selected date and time.
+                    </div>
+
+                    <div class="booking-policy-emergency">
+                        <strong>Emergency leave or service personnel unavailability:</strong>
+                        If the assigned service personnel must take emergency leave or becomes unexpectedly unavailable, the Admin may reschedule your booking to an available date and time and notify you. An Admin-initiated reschedule due to staff unavailability will not be treated as a customer No-Show; your existing payment will remain valid for the same service on the agreed replacement schedule.
+                    </div>
+
+                    <div class="booking-policy-item">
+                        <strong>Payment confirmation:</strong> Online bookings remain pending until the Admin verifies the GCash payment and confirms the reservation.
+                    </div>
+                </section>
+
                 <div class="terms-container">
-                    <label>
-                        <input type="checkbox" name="agree_terms" id="agree_terms" required>
-                        <div>
-                            I agree to the <span class="highlight">Terms & Conditions</span>. I understand that my booking will only be confirmed after GCash payment verification. If I miss my appointment beyond the allowed 30-minute grace period, I may reschedule the appointment once within 3 days using the same payment for the same service. If I miss the rescheduled appointment, it will be marked as <strong>No-Show</strong> and the payment will be <strong>non-refundable</strong>.
-                        </div>
+                    <label for="agree_terms">
+                        <input type="checkbox" name="agree_terms" id="agree_terms" required aria-describedby="bookingPolicies">
+                        <span>
+                            I have read and agree to the <span class="highlight">Booking Policies</span> above, including the <span class="policy-critical">No-Show / Non-Refundable Policy</span> and the Admin's emergency-rescheduling policy.
+                        </span>
                     </label>
                 </div>
 
@@ -3272,34 +3340,17 @@ if ($error_msg !== '') {
             if (document.getElementById('appointment_date')) {
                 updateOptions();
                 
-                // BAGO: CUT-OFF TIME LOGIC
                 const dateInput = document.getElementById('appointment_date');
                 const now = new Date();
+                const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
                 const formatLocalDate = (date) => {
                     const year = date.getFullYear();
                     const month = String(date.getMonth() + 1).padStart(2, '0');
                     const day = String(date.getDate()).padStart(2, '0');
                     return `${year}-${month}-${day}`;
                 };
-                const todayStr = formatLocalDate(now);
-                
-                // Kung lampas na ng 6:00 PM (18:00), bukas na ang pwedeng i-book
-                if (now.getHours() >= 18) {
-                    const tomorrow = new Date(now);
-                    tomorrow.setDate(tomorrow.getDate() + 1);
-                    const tomorrowStr = formatLocalDate(tomorrow);
-                    dateInput.setAttribute('min', tomorrowStr);
-                    
-                    // Mag-alert sa user kung bakit bukas na siya pinapabook
-                    dateInput.addEventListener('click', function() {
-                        if(!this.dataset.alerted) {
-                            alert("Notice: It is past 6:00 PM. Same-day bookings are now closed. Please select a date starting tomorrow.");
-                            this.dataset.alerted = "true";
-                        }
-                    });
-                } else {
-                    dateInput.setAttribute('min', todayStr);
-                }
+                // Same-day online appointments are never allowed; tomorrow is the earliest date.
+                dateInput.setAttribute('min', formatLocalDate(tomorrow));
             }
         });
 
@@ -3960,4 +4011,3 @@ if ($error_msg !== '') {
     </script>
 </body>
 </html>
-        

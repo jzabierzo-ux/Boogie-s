@@ -113,7 +113,24 @@ function bookingAdminManualOccupiedUnits(array $adjustments, string $date, ?stri
     return $total;
 }
 
-/** Expand matching manual entries into capacity intervals for the requested category/service. */
+/** Count unavailable room/staff units without treating them as actual pet bookings. */
+function bookingAdminManualCapacityReducedUnits(array $adjustments, string $date, string $category, ?string $service = null): int
+{
+    $total = 0;
+    foreach ($adjustments as $adjustment) {
+        $startDate = substr((string)($adjustment['start_date'] ?? ''), 0, 10);
+        $endDate = substr((string)($adjustment['end_date'] ?? ''), 0, 10);
+        if ($startDate === '' || $endDate === '' || $startDate > $date || $endDate <= $date) continue;
+        if ((string)($adjustment['service_category'] ?? '') !== $category) continue;
+        if (strtolower(trim((string)($adjustment['adjustment_type'] ?? ''))) !== 'capacity_reduced') continue;
+        $adjustmentService = trim((string)($adjustment['specific_service'] ?? ''));
+        if ($adjustmentService !== '' && $service !== null && strcasecmp($adjustmentService, $service) !== 0) continue;
+        $total += max(1, (int)($adjustment['quantity'] ?? 1));
+    }
+    return $total;
+}
+
+/** Expand manual occupancy, capacity reductions, and blocks into intervals. */
 function bookingAdminManualCapacityIntervals(array $adjustments, string $date, string $category, string $service, int $capacity): array
 {
     $intervals = [];
@@ -124,9 +141,9 @@ function bookingAdminManualCapacityIntervals(array $adjustments, string $date, s
         if ((string)($adjustment['service_category'] ?? '') !== $category) continue;
 
         $type = strtolower(trim((string)($adjustment['adjustment_type'] ?? '')));
-        if (!in_array($type, ['occupied', 'blocked'], true)) continue;
+        if (!in_array($type, ['occupied', 'blocked', 'capacity_reduced'], true)) continue;
         $adjustmentService = trim((string)($adjustment['specific_service'] ?? ''));
-        if ($type === 'blocked' && $adjustmentService !== '' && strcasecmp($adjustmentService, $service) !== 0) continue;
+        if (in_array($type, ['blocked', 'capacity_reduced'], true) && $adjustmentService !== '' && strcasecmp($adjustmentService, $service) !== 0) continue;
 
         $rawStart = trim((string)($adjustment['start_time'] ?? ''));
         $rawEnd = trim((string)($adjustment['end_time'] ?? ''));
@@ -200,7 +217,7 @@ if (($_GET['ajax'] ?? '') === 'walkin_service_capacity') {
         : 30;
     $endMinutes = $startMinutes + $durationMinutes;
     $timeLabel = $timeObj->format('g:i A');
-    $simultaneousLimit = $category === 'Grooming' ? 2 : 1;
+    $simultaneousLimit = 2; // Both Grooming and Vet Services have two concurrent staff slots (vet: doctor + reliever).
     $dailyLimit = $category === 'Grooming' ? 10 : 30;
 
     if ($startMinutes < 9 * 60 || $startMinutes >= 18 * 60 || ($startMinutes >= 12 * 60 && $startMinutes < 13 * 60)) {
@@ -305,8 +322,8 @@ if (($_GET['ajax'] ?? '') === 'walkin_service_capacity') {
             $reason = 'This service is blocked by an Admin availability adjustment during this time. Choose another time or ask the Admin to reopen it.';
         } elseif ($overlaps >= $simultaneousLimit) {
             $reason = $category === 'Grooming'
-                ? 'Both groomers are already busy during this time. Choose a different walk-in time.'
-                : 'The veterinarian is already busy during this time. Choose a different walk-in time.';
+                ? 'Both groomers are already busy or unavailable during this time. Choose a different walk-in time.'
+                : 'Both the doctor and reliever are already busy or unavailable during this time. Choose a different walk-in time.';
         }
 
         $isAvailable = $remaining > 0;
@@ -420,6 +437,7 @@ if (($_GET['ajax'] ?? '') === 'walkin_boarding_capacity') {
             // Include Admin-marked unrecorded walk-ins in each night's room/daily totals.
             $dailyTotal += bookingAdminManualOccupiedUnits($manualAdjustments, $dayString);
             $hotelCount += bookingAdminManualOccupiedUnits($manualAdjustments, $dayString, 'Pet Hotel');
+            $hotelCount += bookingAdminManualCapacityReducedUnits($manualAdjustments, $dayString, 'Pet Hotel', 'Pet Boarding (Overnight)');
             $manualBoardingBlocked = false;
             foreach (bookingAdminManualCapacityIntervals($manualAdjustments, $dayString, 'Pet Hotel', 'Pet Boarding (Overnight)', $roomCapacity) as $manualInterval) {
                 if (($manualInterval['type'] ?? '') === 'blocked'
@@ -535,8 +553,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['availability_adjustme
             if ($specificService !== '' && !in_array($specificService, $serviceCatalog[$category], true)) {
                 throw new InvalidArgumentException('The selected service does not belong to the selected category.');
             }
-            if (!in_array($adjustmentType, ['occupied', 'blocked'], true)) {
-                throw new InvalidArgumentException('Select Occupied or Blocked.');
+            if (!in_array($adjustmentType, ['occupied', 'blocked', 'capacity_reduced'], true)) {
+                throw new InvalidArgumentException('Select Occupied, Capacity Reduced, or Blocked.');
             }
             if ($quantityInput === '' || !ctype_digit($quantityInput) || (int)$quantityInput < 1 || (int)$quantityInput > 20) {
                 throw new InvalidArgumentException('Quantity must be a whole number from 1 to 20.');
@@ -617,7 +635,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['availability_adjustme
                 ':created_by' => (int)$_SESSION['user_id'],
             ]);
 
-            $typeText = $adjustmentType === 'occupied' ? 'occupied slot/room' : 'blocked availability';
+            $typeText = match ($adjustmentType) {
+                'occupied' => 'occupied slot/room',
+                'capacity_reduced' => 'capacity reduction for unavailable staff/room',
+                default => 'blocked availability',
+            };
             $_SESSION['availability_flash'] = ['type' => 'success', 'message' => 'Manual ' . $typeText . ' saved. Customer slot availability will include this adjustment.'];
         } elseif ($availabilityAction === 'deactivate') {
             $adjustmentId = filter_var($_POST['adjustment_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
@@ -1577,6 +1599,7 @@ if ($is_admin) {
         .availability-type-pill { display: inline-block; padding: 4px 8px; border-radius: 5px; font-size: 10px; font-weight: 800; text-transform: uppercase; white-space: nowrap; }
         .availability-type-pill.occupied { color: #92400e; background: #fef3c7; }
         .availability-type-pill.blocked { color: #991b1b; background: #fee2e2; }
+        .availability-type-pill.capacity-reduced { color: #9a3412; background: #ffedd5; }
         .availability-remove { min-height: 32px; padding: 7px 10px; background: #fff1f2; color: #be123c; border: 1px solid #fecdd3; border-radius: 6px; font: inherit; font-size: 11px; font-weight: 800; cursor: pointer; white-space: nowrap; }
         .availability-remove:hover { background: #e11d48; color: #fff; }
         .availability-empty { padding: 18px; text-align: center; color: #64748b; font-size: 12px; }
@@ -1990,7 +2013,6 @@ if ($is_admin) {
                 <a href="managestaff.php" class="nav-item"><i class="fas fa-id-badge"></i> Personnel</a>
                 <a href="managepromo.php" class="nav-item"><i class="fas fa-tags"></i> Promos</a>
                 <a href="manage_services.php" class="nav-item"><i class="fas fa-list-ul"></i> Pricelist</a>
-                <a href="managebooking.php#availability-management" class="nav-item"><i class="fas fa-sliders-h"></i> Slot Availability</a>
                 <a href="sales_report.php" class="nav-item">
                     <i class="fas fa-file-invoice-dollar"></i>
                     Sales Report
@@ -2118,9 +2140,8 @@ if ($is_admin) {
             <section class="availability-panel" id="availability-management" aria-labelledby="availability-management-title">
                 <h2 id="availability-management-title"><i class="fas fa-sliders-h" style="margin-right:8px;color:#d6a900;"></i>Slot &amp; Room Availability</h2>
                 <p class="availability-intro">
-                    Record unlisted walk-ins as <strong>Occupied</strong>, or temporarily close capacity with <strong>Blocked</strong>.
-                    Use the same date/time window as the real walk-in. For Pet Boarding, leave times blank to occupy rooms for every selected date.
-                    Removing a manual adjustment releases only the capacity it reserved; confirmed appointments remain counted.
+                    Record walk-ins not yet entered in the system as <strong>Occupied</strong>. Use <strong>Capacity Reduced</strong> when a staff member takes emergency leave or a room is temporarily unavailable, and <strong>Blocked</strong> when no capacity should be offered.
+                    For Vet Services, two staff are normally available (doctor + reliever): select Vet Services, choose <strong>All services in category</strong>, enter the date/time, then set Capacity Reduced × 1 if one staff member is away. Use Blocked if both are unavailable. For Pet Boarding, leave times blank to apply a room adjustment to each full day. Removing an adjustment releases only the capacity it reserved; appointments remain counted.
                 </p>
                 <?php if (!empty($_SESSION['availability_flash']) && is_array($_SESSION['availability_flash'])): ?>
                     <?php $availabilityFlash = $_SESSION['availability_flash']; unset($_SESSION['availability_flash']); ?>
@@ -2157,7 +2178,7 @@ if ($is_admin) {
                                     <option>Cat Grooming (Basic)</option>
                                     <option>Cat Bath &amp; Blow Dry</option>
                                 </select>
-                                <small class="availability-help">For Blocked, choose a service to block only that service, or leave blank to block the whole category.</small>
+                                <small class="availability-help">Choose a specific service to limit a Blocked/Capacity Reduced adjustment to it, or leave blank to apply to all services in the category.</small>
                             </div>
                             <div class="availability-field">
                                 <label for="availabilityStartDate">Start Date *</label>
@@ -2180,17 +2201,18 @@ if ($is_admin) {
                                 <label for="availabilityType">Adjustment *</label>
                                 <select class="availability-control" name="adjustment_type" id="availabilityType" required>
                                     <option value="occupied">Occupied (walk-in not recorded)</option>
-                                    <option value="blocked">Blocked (temporarily unavailable)</option>
+                                    <option value="capacity_reduced">Capacity Reduced (staff/room unavailable)</option>
+                                    <option value="blocked">Blocked (no capacity available)</option>
                                 </select>
                             </div>
                             <div class="availability-field">
-                                <label for="availabilityQuantity">Occupied Slots / Rooms</label>
+                                <label for="availabilityQuantity">Occupied / Reduced Slots or Rooms</label>
                                 <input class="availability-control" type="number" name="quantity" id="availabilityQuantity" value="1" min="1" max="20" step="1" required>
-                                <small class="availability-help">Used for Occupied only. Blocked reserves all capacity in its selected period.</small>
+                                <small class="availability-help">Occupied counts unrecorded pets; Capacity Reduced counts unavailable staff/rooms without counting a pet. Blocked reserves all capacity in its selected period.</small>
                             </div>
                             <div class="availability-field availability-field-wide">
                                 <label for="availabilityReason">Reason / Note</label>
-                                <input class="availability-control" type="text" name="reason" id="availabilityReason" maxlength="500" placeholder="e.g. One walk-in grooming customer not recorded yet">
+                                <input class="availability-control" type="text" name="reason" id="availabilityReason" maxlength="500" placeholder="e.g. Doctor emergency leave — one reliever remains">
                             </div>
                         </div>
                         <div class="availability-form-actions">
@@ -2219,7 +2241,15 @@ if ($is_admin) {
                                         <td><strong><?php echo htmlspecialchars($adjustmentCategory, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></strong><br><span style="color:#64748b;"><?php echo htmlspecialchars($adjustmentService !== '' ? $adjustmentService : 'All services in category', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></span></td>
                                         <td><?php echo htmlspecialchars(substr((string)$adjustment['start_date'], 0, 10), ENT_QUOTES, 'UTF-8'); ?><br>to <?php echo htmlspecialchars(substr((string)$adjustment['display_end_date'], 0, 10), ENT_QUOTES, 'UTF-8'); ?></td>
                                         <td><?php echo htmlspecialchars($adjustmentTimeText, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></td>
-                                        <td><span class="availability-type-pill <?php echo $adjustmentType === 'blocked' ? 'blocked' : 'occupied'; ?>"><?php echo htmlspecialchars($adjustmentType, ENT_QUOTES, 'UTF-8'); ?></span></td>
+                                        <?php
+                                            $adjustmentTypeLabel = match ($adjustmentType) {
+                                                'blocked' => 'Blocked',
+                                                'capacity_reduced' => 'Capacity Reduced',
+                                                default => 'Occupied',
+                                            };
+                                            $adjustmentTypeClass = $adjustmentType === 'blocked' ? 'blocked' : ($adjustmentType === 'capacity_reduced' ? 'capacity-reduced' : 'occupied');
+                                        ?>
+                                        <td><span class="availability-type-pill <?php echo $adjustmentTypeClass; ?>"><?php echo htmlspecialchars($adjustmentTypeLabel, ENT_QUOTES, 'UTF-8'); ?></span></td>
                                         <td><?php echo $adjustmentType === 'blocked' ? 'Full capacity' : ('× ' . (int)$adjustment['quantity']); ?></td>
                                         <td><?php echo htmlspecialchars((string)($adjustment['reason'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></td>
                                         <td>
