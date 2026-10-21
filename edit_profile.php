@@ -1471,6 +1471,7 @@ footer{
         </div>
         <div class="footer-bottom">
             © 2026 Boogie's Pet Care & Services - Dasmariñas Branch. All rights reserved.
+            <?php include __DIR__ . '/customer_footer.php'; ?>
         </div>
     </footer>
     <script>

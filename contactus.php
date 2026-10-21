@@ -3762,7 +3762,7 @@ $parent_text = ($total_reviews == 1) ? "happy fur-parent" : "happy fur-parents";
 
             <div style="margin-top:15px;">
 
-
+            <?php include __DIR__ . '/customer_footer.php'; ?>
 
             </div>
 

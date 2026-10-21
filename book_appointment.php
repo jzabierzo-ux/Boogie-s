@@ -3170,6 +3170,7 @@ if ($error_msg !== '') {
 
         <div class="footer-bottom">
             © <?php echo date("Y"); ?> Boogie's Pet Care & Services - Dasmariñas Branch. All rights reserved.
+            <?php include __DIR__ . '/customer_footer.php'; ?>
         </div>
     </footer>
 
