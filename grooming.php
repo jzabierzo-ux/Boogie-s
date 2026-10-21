@@ -2858,7 +2858,7 @@ try {
             <p>© 2026 Boogie's Pet Care & Services - Dasmariñas Branch. All rights reserved.</p>
 
             <div style="margin-top:10px;">
-
+             <?php include __DIR__ . '/customer_footer.php'; ?>
             </div>
 
         </div>

@@ -1143,6 +1143,7 @@ $book_hotel    = $is_logged_in ? 'book_appointment.php?category=Pet Hotel' : 'lo
         <div class="footer-bottom">
             <p>© 2026 Boogie's Pet Care & Services - Dasmariñas Branch. All rights reserved.</p>
             <div style="margin-top:10px;">
+                <?php include __DIR__ . '/customer_footer.php'; ?>
             </div>
         </div>
     </footer>

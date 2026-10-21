@@ -5901,7 +5901,7 @@ try {
 
 
 
-
+              <?php include __DIR__ . '/customer_footer.php'; ?>
 
 
 

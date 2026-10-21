@@ -7620,9 +7620,9 @@ main{
 
             <p>© 2026 Boogie's Pet Care & Services - Dasmariñas Branch. All rights reserved.</p>
 
+           <?php include __DIR__ . '/customer_footer.php'; ?>
 
-
-        </div>
+        </div> 
 
 
 

@@ -3229,7 +3229,7 @@ try {
 
             <div style="margin-top:10px;">
 
-
+           <?php include __DIR__ . '/customer_footer.php'; ?>
 
             </div>
 

@@ -2452,9 +2452,7 @@ try {
         <div class="footer-bottom">
             © 2026 Boogie's Pet Care & Services - Dasmariñas Branch. All rights reserved.
             <div style="margin-top:10px;">
-                <a href="staff/stafflogin.php" style="color:#cbd5e1;text-decoration:none;font-weight:700;">
-                    <i class="fa-solid fa-briefcase"></i> Personal Portal
-                </a>
+                <?php include __DIR__ . '/customer_footer.php'; ?>
             </div>
         </div>
     </footer>
@@ -2666,6 +2664,6 @@ try {
             });
         });
     </script>
-
+ 
 </body>
 </html>
