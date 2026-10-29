@@ -1,5 +1,5 @@
 <?php
-require_once __DIR__ . '/shared_session_bootstrap.php';
+require_once __DIR__ . '/../shared_session_bootstrap.php';
 
 header('Content-Type: application/json; charset=UTF-8');
 header('Cache-Control: no-store, private, max-age=0, must-revalidate');
@@ -13,7 +13,7 @@ if (($_SESSION['logged_in'] ?? false) !== true || !$user_id || $user_id < 1) {
 }
 
 try {
-    require_once __DIR__ . '/db_supabase.php';
+    require_once __DIR__ . '/../db_supabase.php';
 
     // Cast to text to work with both PostgreSQL BOOLEAN and numeric is_read columns.
     $stmt = $pdo->prepare("

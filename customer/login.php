@@ -1,6 +1,6 @@
 <?php
 
-require_once __DIR__ . '/shared_session_bootstrap.php';
+require_once __DIR__ . '/../shared_session_bootstrap.php';
 
 if (empty($_SESSION['csrf_token'])) {
 
@@ -8,7 +8,7 @@ if (empty($_SESSION['csrf_token'])) {
 
 }
 
-require_once __DIR__ . '/db_supabase.php';
+require_once __DIR__ . '/../db_supabase.php';
 
 // ============================================================
 
@@ -30,11 +30,11 @@ use PHPMailer\PHPMailer\PHPMailer;
 
 use PHPMailer\PHPMailer\Exception;
 
-require __DIR__ . '/PHPMailer/src/Exception.php';
+require __DIR__ . '/../PHPMailer/src/Exception.php';
 
-require __DIR__ . '/PHPMailer/src/PHPMailer.php';
+require __DIR__ . '/../PHPMailer/src/PHPMailer.php';
 
-require __DIR__ . '/PHPMailer/src/SMTP.php';
+require __DIR__ . '/../PHPMailer/src/SMTP.php';
 
 // Validate CSRF on login and OTP submissions.
 
@@ -1769,12 +1769,6 @@ if (isset($_POST['login_btn'])) {
             </div>
 
             <div class="footer-links">
-
-                <a href="staff/stafflogin.php">
-
-                    <i class="fas fa-user-shield"></i> Personal Portal
-
-                </a>
 
                 <a href="#">
 

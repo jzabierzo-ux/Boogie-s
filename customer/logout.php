@@ -1,7 +1,7 @@
 <?php
 // Log out the current user even if the database or audit logging is unavailable.
 if (session_status() !== PHP_SESSION_ACTIVE) {
-    require_once __DIR__ . '/shared_session_bootstrap.php';
+    require_once __DIR__ . '/../shared_session_bootstrap.php';
 }
 
 // Preserve only the values needed for routing and the admin audit log.
@@ -90,7 +90,7 @@ header('Location: ' . $redirectPage, true, 303);
 // Admin logout audit entry is best-effort; it must never block logout.
 if ($role === 'admin') {
     try {
-        require_once __DIR__ . '/db_supabase.php';
+        require_once __DIR__ . '/../db_supabase.php';
 
         if (isset($pdo) && $pdo instanceof PDO) {
             if ($userId !== null) {

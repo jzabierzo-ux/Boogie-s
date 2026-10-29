@@ -1,12 +1,12 @@
 <?php
 
-require_once __DIR__ . '/shared_session_bootstrap.php';
+require_once __DIR__ . '/../shared_session_bootstrap.php';
 
 
 
 // Include Supabase/PostgreSQL database connection
 
-require_once 'db_supabase.php';
+require_once __DIR__ . '/../db_supabase.php';
 
 
 

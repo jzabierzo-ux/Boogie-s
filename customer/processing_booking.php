@@ -1,8 +1,8 @@
 <?php
 
-require_once __DIR__ . '/shared_session_bootstrap.php';
+require_once __DIR__ . '/../shared_session_bootstrap.php';
 
-require_once 'db_supabase.php';
+require_once __DIR__ . '/../db_supabase.php';
 
 
 
@@ -639,7 +639,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if (preg_match('/^09[0-9]{9}$/', (string)$contact_number)) {
 
-            $iprog_helper = __DIR__ . '/includes/iprog_sms.php';
+            $iprog_helper = __DIR__ . '/../includes/iprog_sms.php';
 
 
 

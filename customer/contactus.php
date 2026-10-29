@@ -1,8 +1,8 @@
 <?php
 
-require_once __DIR__ . '/shared_session_bootstrap.php';
+require_once __DIR__ . '/../shared_session_bootstrap.php';
 
-require_once 'db_supabase.php';
+require_once __DIR__ . '/../db_supabase.php';
 
 
 
@@ -24,11 +24,11 @@ use PHPMailer\PHPMailer\Exception;
 
 
 
-require_once __DIR__ . '/PHPMailer/src/Exception.php';
+require_once __DIR__ . '/../PHPMailer/src/Exception.php';
 
-require_once __DIR__ . '/PHPMailer/src/PHPMailer.php';
+require_once __DIR__ . '/../PHPMailer/src/PHPMailer.php';
 
-require_once __DIR__ . '/PHPMailer/src/SMTP.php';
+require_once __DIR__ . '/../PHPMailer/src/SMTP.php';
 
 
 

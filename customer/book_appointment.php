@@ -1,5 +1,5 @@
 <?php
-require_once __DIR__ . '/shared_session_bootstrap.php';
+require_once __DIR__ . '/../shared_session_bootstrap.php';
 include 'db_supabase.php';
 
 // Set timezone to Philippines
@@ -1116,7 +1116,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } elseif (!isset($allowed_mimes[$extension]) || $detected_mime !== $allowed_mimes[$extension] || $image_info === false) {
                 $error_msg = 'Invalid receipt image. Only genuine JPG and PNG images are allowed.';
             } else {
-                $upload_dir = __DIR__ . '/uploads';
+                $upload_dir = __DIR__ . '/../uploads';
                 if (!is_dir($upload_dir) && !@mkdir($upload_dir, 0755, true) && !is_dir($upload_dir)) {
                     $error_msg = 'Receipt storage is unavailable. Please try again later.';
                 } else {
@@ -1296,7 +1296,7 @@ if ($error_msg !== '') {
         $pdo->rollBack();
     }
     if (!empty($receipt_filename)) {
-        $orphan_path = __DIR__ . '/uploads/' . basename($receipt_filename);
+        $orphan_path = __DIR__ . '/../uploads/' . basename($receipt_filename);
         if (is_file($orphan_path)) {
             @unlink($orphan_path);
         }

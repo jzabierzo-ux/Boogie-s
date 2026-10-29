@@ -21,7 +21,7 @@
  * - Overnight boarding uses checkout_date and checks room/global capacity for every occupied night.
  */
 
-require_once __DIR__ . '/db_supabase.php';
+require_once __DIR__ . '/../db_supabase.php';
 date_default_timezone_set('Asia/Manila');
 
 header('Content-Type: application/json; charset=UTF-8');

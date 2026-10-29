@@ -1,8 +1,8 @@
 <?php
 
-require_once __DIR__ . '/shared_session_bootstrap.php';
+require_once __DIR__ . '/../shared_session_bootstrap.php';
 
-require_once __DIR__ . '/db_supabase.php';
+require_once __DIR__ . '/../db_supabase.php';
 
 $error_msg = '';
 
@@ -533,7 +533,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <section class="brand-panel" aria-label="Boogie's Pet Care and Services">
             <a href="home.php" class="back-home"><i class="fa-solid fa-arrow-left"></i> Back to website</a>
             <div class="brand-content">
-                <img class="brand-logo" src="admin/bg.png" alt="Boogie's Pet Care &amp; Services logo">
+                <img class="brand-logo" src="bg.png" alt="Boogie's Pet Care &amp; Services logo">
                 <p class="brand-kicker">Boogie's Pet Care &amp; Services</p>
                 <h1 class="brand-title">Manage with confidence. Care with purpose.</h1>
                 <p class="brand-description">Sign in to manage appointments, customer information, pet profiles, and daily operations securely.</p>

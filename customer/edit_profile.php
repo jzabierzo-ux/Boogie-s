@@ -1,6 +1,6 @@
 <?php
-require_once __DIR__ . '/shared_session_bootstrap.php';
-require_once __DIR__ . '/db_supabase.php';
+require_once __DIR__ . '/../shared_session_bootstrap.php';
+require_once __DIR__ . '/../db_supabase.php';
 
 // Format notification timestamps consistently in Philippine time.
 // Timestamps with an explicit timezone keep that timezone; timezone-less
@@ -82,7 +82,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         if ($detected_mime !== $allowed_mime_by_extension[$file_ext]) {
                             $error_msg = 'The image type does not match the selected file extension.';
                         } else {
-                            $upload_dir = __DIR__ . '/uploads';
+                            $upload_dir = __DIR__ . '/../uploads';
                             if (!is_dir($upload_dir) && !mkdir($upload_dir, 0755, true) && !is_dir($upload_dir)) {
                                 $error_msg = 'Unable to prepare the profile picture folder.';
                             } else {

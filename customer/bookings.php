@@ -1,8 +1,8 @@
 <?php
-require_once __DIR__ . '/shared_session_bootstrap.php';
+require_once __DIR__ . '/../shared_session_bootstrap.php';
 
 include 'db_supabase.php';
-require_once 'includes/iprog_sms.php';
+require_once __DIR__ . '/../includes/iprog_sms.php';
 
 date_default_timezone_set('Asia/Manila');
 

@@ -1,14 +1,14 @@
 <?php
-require_once __DIR__ . '/shared_session_bootstrap.php';
+require_once __DIR__ . '/../shared_session_bootstrap.php';
 
 header('Content-Type: application/json; charset=UTF-8');
 
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
 
-require __DIR__ . '/PHPMailer/src/Exception.php';
-require __DIR__ . '/PHPMailer/src/PHPMailer.php';
-require __DIR__ . '/PHPMailer/src/SMTP.php';
+require __DIR__ . '/../PHPMailer/src/Exception.php';
+require __DIR__ . '/../PHPMailer/src/PHPMailer.php';
+require __DIR__ . '/../PHPMailer/src/SMTP.php';
 
 $mail = null;
 $created_user_id = 0;
@@ -27,7 +27,7 @@ function jsonResponse(bool $success, string $message, ?string $redirect = null, 
 }
 
 try {
-    require_once __DIR__ . '/db_supabase.php';
+    require_once __DIR__ . '/../db_supabase.php';
 
     if (!defined('SMTP_EMAIL')) {
         define('SMTP_EMAIL', getenv('SMTP_EMAIL') ?: 'prototyp6712@gmail.com');

@@ -1,6 +1,6 @@
 <?php
 
-require_once __DIR__ . '/shared_session_bootstrap.php';
+require_once __DIR__ . '/../shared_session_bootstrap.php';
 
 
 
@@ -18,7 +18,7 @@ if (!isset($_SESSION['user_id'])) {
 
 // 2. DATABASE CONNECTION
 
-require_once __DIR__ . '/db_supabase.php';
+require_once __DIR__ . '/../db_supabase.php';
 
 
 // Format database notification timestamps explicitly as UTC, then display Philippine time.

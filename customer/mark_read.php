@@ -1,7 +1,8 @@
 <?php
-require_once __DIR__ . '/shared_session_bootstrap.php';
-require_once __DIR__ . '/db_supabase.php';
+require_once __DIR__ . '/../shared_session_bootstrap.php';
+require_once __DIR__ . '/../db_supabase.php';
 
+// Only an authenticated user can mark their own notifications as read.
 if (($_SESSION['logged_in'] ?? false) !== true) {
     header('Location: login.php');
     exit();
@@ -18,15 +19,22 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     exit();
 }
 
+$submitted_token = (string)($_POST['csrf_token'] ?? '');
 $session_token = (string)($_SESSION['csrf_token'] ?? '');
-$posted_token = (string)($_POST['csrf_token'] ?? '');
-if ($session_token === '' || $posted_token === '' || !hash_equals($session_token, $posted_token)) {
+if ($submitted_token === '' || $session_token === '' || !hash_equals($session_token, $submitted_token)) {
     http_response_code(403);
-    exit('Invalid request. Please refresh the notifications page and try again.');
+    exit('Invalid security token. Please return to notifications and try again.');
+}
+
+$notif_id = filter_var($_POST['notification_id'] ?? null, FILTER_VALIDATE_INT);
+if ($notif_id === false || $notif_id === null || $notif_id < 1) {
+    header('Location: notifications.php');
+    exit();
 }
 
 try {
-    // Detect BOOLEAN vs numeric/text storage for the actual Supabase column.
+    // Supabase/PostgreSQL projects may define is_read as BOOLEAN or SMALLINT/INTEGER.
+    // Detect the column type so the update writes a value valid for the actual schema.
     $type_stmt = $pdo->prepare("
         SELECT data_type
         FROM information_schema.columns
@@ -48,17 +56,20 @@ try {
         throw new RuntimeException('Unable to determine a supported notifications.is_read data type.');
     }
 
+    // Enforce ownership inside the UPDATE itself; repeating this request is harmless.
     $stmt = $pdo->prepare("
         UPDATE notifications
         SET is_read = {$read_value}
-        WHERE user_id = :user_id
-          AND (LOWER(CAST(is_read AS TEXT)) IN ('0', 'false', 'f') OR is_read IS NULL)
+        WHERE id = :notif_id
+          AND user_id = :user_id
     ");
-    $stmt->execute([':user_id' => (int)$user_id]);
-    unset($_SESSION['notification_update_error']);
+    $stmt->execute([
+        ':notif_id' => (int)$notif_id,
+        ':user_id' => (int)$user_id,
+    ]);
 } catch (Throwable $e) {
-    error_log('Mark all notifications as read failed: ' . $e->getMessage());
-    $_SESSION['notification_update_error'] = 'Unable to update notifications right now. Please try again.';
+    error_log('Mark notification as read failed: ' . $e->getMessage());
+    $_SESSION['notification_update_error'] = 'Unable to update the notification right now. Please try again.';
 }
 
 header('Location: notifications.php');
