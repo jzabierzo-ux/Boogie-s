@@ -22,90 +22,40 @@ require_once __DIR__ . '/../db_supabase.php';
 
 
 
-// Check if user is logged in
+// Only treat a valid customer session as signed in on this public customer page.
+$session_login_value = $_SESSION['logged_in'] ?? null;
+$session_is_active = in_array($session_login_value, [true, 1, '1', 'true'], true);
+$session_role_value = $_SESSION['role'] ?? '';
+$session_role = is_scalar($session_role_value)
+    ? strtolower(trim((string)$session_role_value))
+    : '';
+$session_user_id = (int)($_SESSION['user_id'] ?? 0);
+$is_logged_in = $session_is_active && $session_role === 'customer' && $session_user_id > 0;
 
-
-
-$is_logged_in = isset($_SESSION['logged_in']) && $_SESSION['logged_in'] === true;
-
-
-
-$user_name = $is_logged_in ? ($_SESSION['user_name'] ?? 'Customer') : 'Guest';
-
-
-
-
-
-
-
-// Fetch ONLY pet hotel services from your services_pricelist table
-
-
-
-$result = [];
-
-
-
-
-
-
-
-try {
-
-
-
-    // PostgreSQL/Supabase boolean column
-
-
-
-    $stmt = $pdo->query("
-
-
-
-        SELECT *
-
-
-
-        FROM services_pricelist
-
-
-
-        WHERE category IN ('Pet Daycare', 'Pet Boarding')
-
-
-
-          AND CAST(is_available AS TEXT) IN ('true', '1')
-
-
-
-        ORDER BY category DESC, price ASC, id ASC
-
-
-
-    ");
-
-
-
-    $result = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-
-
-} catch (PDOException $e) {
-
-
-
-    error_log("Pet hotel service query failed: " . $e->getMessage());
-
-
-
-    $result = [];
-
-
-
+$user_name_value = $_SESSION['user_name'] ?? 'Customer';
+$user_name = $is_logged_in && is_scalar($user_name_value)
+    ? trim((string)$user_name_value)
+    : 'Guest';
+if ($user_name === '') {
+    $user_name = 'Customer';
 }
 
+// Fetch only the columns displayed on the Pet Hotel cards.
+$result = [];
 
-
+try {
+    $stmt = $pdo->query("
+        SELECT id, category, service_name, price
+        FROM services_pricelist
+        WHERE category IN ('Pet Daycare', 'Pet Boarding')
+          AND CAST(is_available AS TEXT) IN ('true', '1')
+        ORDER BY category DESC, price ASC, id ASC
+    ");
+    $result = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    error_log('Pet hotel service query failed: ' . $e->getMessage());
+    $result = [];
+}
 ?>
 
 
@@ -5031,7 +4981,7 @@ try {
                 type="search"
 
                 id="siteSearchInput"
-
+                maxlength="100"
                 placeholder="Search for grooming, hotel, or vet services..."
 
                 aria-label="Search services"
@@ -5060,7 +5010,7 @@ try {
 
 
 
-                    <span style="color: var(--brand-blue); font-weight: 600; font-size: 14px;"><i class="fa-regular fa-user"></i> Hi, <?php echo htmlspecialchars($user_name); ?></span>
+                    <span style="color: var(--brand-blue); font-weight: 600; font-size: 14px;"><i class="fa-regular fa-user"></i> Hi, <?php echo htmlspecialchars($user_name, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></span>
 
 
 
@@ -5345,8 +5295,10 @@ try {
                         $category = (string)($row['category'] ?? 'Pet Hotel');
                         $category_lower = strtolower(trim($category));
                         $service_name_text = trim((string)($row['service_name'] ?? ''));
-                        $service_name_lower = strtolower($service_name_text);
-                        $service_price = (float)($row['price'] ?? 0);
+                        $service_price = is_numeric($row['price'] ?? null) ? (float)$row['price'] : 0.0;
+                        if (!is_finite($service_price)) {
+                            $service_price = 0.0;
+                        }
                         // Client-confirmed hourly daycare rate is ₱30/hour after the first hour,
                         // regardless of dog/cat type. Normalize stale labels stored in the pricelist.
                         $display_service_name = $service_name_text;
@@ -5359,7 +5311,7 @@ try {
                         }
 
                         // Track positions only for a safe fallback when a service name has no pet type/size.
-                        $category_key = strtolower(trim($category));
+                        $category_key = $category_lower;
                         if (!isset($hotel_card_positions[$category_key])) {
                             $hotel_card_positions[$category_key] = 0;
                         }
@@ -5460,10 +5412,11 @@ try {
                             $tag_text = 'Pet hotel';
                             $description = 'This pet hotel option is listed for ' . $pet_description . ' at the displayed rate of ₱' . number_format($service_price, 2) . '.';
                         }
+                    $service_id = (int)($row['id'] ?? 0);
+                        $booking_url = ($is_logged_in && $service_id > 0)
+                            ? 'book_appointment.php?service_id=' . $service_id . '&category=Hotel'
+                            : 'login.php';
                     ?>
-
-
-
 
                     <article class="service-card">
 
@@ -5501,7 +5454,7 @@ try {
 
 
 
-                                <?php echo htmlspecialchars($tag_text); ?>
+                                <?php echo htmlspecialchars($tag_text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
 
 
 
@@ -5513,7 +5466,7 @@ try {
 
 
 
-                            <h3><?php echo htmlspecialchars($category); ?></h3>
+                            <h3><?php echo htmlspecialchars($category, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></h3>
 
 
 
@@ -5525,7 +5478,7 @@ try {
 
 
 
-                                <?php echo htmlspecialchars($display_service_name); ?>
+                                <?php echo htmlspecialchars($display_service_name, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
 
 
 
@@ -5541,7 +5494,7 @@ try {
 
 
 
-                                <?php echo htmlspecialchars($description); ?>
+                                <?php echo htmlspecialchars($description, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
 
 
 
@@ -5565,7 +5518,7 @@ try {
 
 
 
-                                    <span class="price">₱<?php echo number_format($row['price'], 2); ?></span>
+                                    <span class="price">₱<?php echo number_format($service_price, 2); ?></span>
 
 
 
@@ -5577,7 +5530,7 @@ try {
 
 
 
-                                <a href="<?php echo $is_logged_in ? 'book_appointment.php?service_id=' . (int)$row['id'] . '&category=Hotel' : 'login.php'; ?>" class="btn-book">
+                                <a href="<?php echo htmlspecialchars($booking_url, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>" class="btn-book">
 
 
 
@@ -5777,7 +5730,7 @@ try {
 
 
 
-                    <a href="https://www\.facebook.com/boogiespetsupplies"><i class="fa-brands fa-facebook-f"></i></a>
+                    <a href="https://www.facebook.com/boogiespetsupplies"><i class="fa-brands fa-facebook-f"></i></a>
 
 
 
@@ -5921,27 +5874,16 @@ try {
 
 
 
-</body>
-
-
-
-
-
-
-
-    <script>
+<script>
 
 
 
         // ===== SHARED SMART / RELATED SEARCH =====
-
         const searchForm = document.getElementById('siteSearchForm');
-
         const searchInput = document.getElementById('siteSearchInput');
-
         const searchStatus = document.getElementById('searchStatus');
-
-
+        const MAX_SEARCH_LENGTH = 100;
+        let searchStatusTimer = null;
 
         const searchRoutes = [
 
@@ -6052,229 +5994,126 @@ try {
 
 
         function normalizeSearchText(value) {
-
-            return String(value || '')
-
+            return String(value ?? '')
+                .slice(0, MAX_SEARCH_LENGTH)
                 .toLowerCase()
-
                 .replace(/[^a-z0-9+\s-]/g, ' ')
-
                 .replace(/\s+/g, ' ')
-
                 .trim();
-
         }
 
-
+        // Normalize static route keywords once instead of on every search.
+        const normalizedSearchRoutes = searchRoutes.map(route => ({
+            label: route.label,
+            url: route.url,
+            keywords: route.keywords.map(normalizeSearchText)
+        }));
 
         function levenshteinDistance(a, b) {
-
-            a = String(a);
-
-            b = String(b);
-
             if (a === b) return 0;
-
             if (!a.length) return b.length;
-
             if (!b.length) return a.length;
+            if (Math.abs(a.length - b.length) > 2) return 3;
 
+            // One row is enough because typo matching is limited to short words.
+            if (a.length > b.length) [a, b] = [b, a];
+            const previous = Array.from({ length: a.length + 1 }, (_, index) => index);
 
-
-            const previous = Array.from({ length: b.length + 1 }, (_, i) => i);
-
-            for (let i = 1; i <= a.length; i++) {
-
-                const current = [i];
-
-                for (let j = 1; j <= b.length; j++) {
-
-                    current[j] = Math.min(
-
-                        current[j - 1] + 1,
-
-                        previous[j] + 1,
-
-                        previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)
-
+            for (let row = 1; row <= b.length; row++) {
+                let diagonal = previous[0];
+                previous[0] = row;
+                for (let column = 1; column <= a.length; column++) {
+                    const above = previous[column];
+                    previous[column] = Math.min(
+                        previous[column] + 1,
+                        previous[column - 1] + 1,
+                        diagonal + (a[column - 1] === b[row - 1] ? 0 : 1)
                     );
-
+                    diagonal = above;
                 }
-
-                for (let j = 0; j < current.length; j++) {
-
-                    previous[j] = current[j];
-
-                }
-
             }
-
-            return previous[b.length];
-
+            return previous[a.length];
         }
-
-
 
         function searchKeywordMatches(query, keyword) {
-
             if (!query || !keyword) return false;
-
             if (query.includes(keyword) || keyword.includes(query)) return true;
 
-
-
             const queryWords = query.split(' ').filter(Boolean);
-
             const keywordWords = keyword.split(' ').filter(Boolean);
-
-            for (const qWord of queryWords) {
-
-                for (const kWord of keywordWords) {
-
-                    if (qWord.length >= 4 && kWord.length >= 4) {
-
+            for (const queryWord of queryWords) {
+                for (const keywordWord of keywordWords) {
+                    if (
+                        queryWord.length >= 4 && queryWord.length <= 24 &&
+                        keywordWord.length >= 4 && keywordWord.length <= 24
+                    ) {
                         const maxDistance = Math.min(
-
                             2,
-
-                            Math.floor(Math.max(qWord.length, kWord.length) / 4)
-
+                            Math.floor(Math.max(queryWord.length, keywordWord.length) / 4)
                         );
-
-                        if (levenshteinDistance(qWord, kWord) <= maxDistance) {
-
+                        if (levenshteinDistance(queryWord, keywordWord) <= maxDistance) {
                             return true;
-
                         }
-
                     }
-
                 }
-
             }
-
             return false;
-
         }
-
-
 
         function findSearchRoute(query) {
-
             const normalized = normalizeSearchText(query);
-
             if (!normalized) return null;
 
-
-
-            for (const route of searchRoutes) {
-
-                if (route.keywords.some(keyword =>
-
-                    normalized.includes(normalizeSearchText(keyword))
-
-                )) {
-
+            for (const route of normalizedSearchRoutes) {
+                if (route.keywords.some(keyword => normalized.includes(keyword))) {
                     return route;
-
                 }
-
             }
 
-
-
-            for (const route of searchRoutes) {
-
-                if (route.keywords.some(keyword =>
-
-                    searchKeywordMatches(normalized, normalizeSearchText(keyword))
-
-                )) {
-
+            for (const route of normalizedSearchRoutes) {
+                if (route.keywords.some(keyword => searchKeywordMatches(normalized, keyword))) {
                     return route;
-
                 }
-
             }
-
             return null;
-
         }
-
-
 
         function showSearchStatus(message) {
-
             if (!searchStatus) return;
-
-            searchStatus.innerHTML = message;
-
+            searchStatus.textContent = message;
             searchStatus.classList.add('show');
-
-            clearTimeout(window\.searchStatusTimer);
-
-            window\.searchStatusTimer = setTimeout(() => {
-
+            if (searchStatusTimer !== null) {
+                clearTimeout(searchStatusTimer);
+            }
+            searchStatusTimer = setTimeout(() => {
                 searchStatus.classList.remove('show');
-
+                searchStatusTimer = null;
             }, 2600);
-
         }
-
-
 
         if (searchForm && searchInput) {
-
+            searchInput.maxLength = MAX_SEARCH_LENGTH;
             searchForm.addEventListener('submit', function (event) {
-
                 event.preventDefault();
-
-                const query = searchInput.value.trim();
-
-
+                const query = searchInput.value.slice(0, MAX_SEARCH_LENGTH).trim();
 
                 if (!query) {
-
                     searchInput.focus();
-
-                    showSearchStatus(
-
-                        'Type something to search, like <strong>bath</strong>, <strong>vaccine</strong>, <strong>boarding</strong>, or <strong>price</strong>.'
-
-                    );
-
+                    showSearchStatus('Type something to search, like bath, vaccine, boarding, or price.');
                     return;
-
                 }
-
-
 
                 const route = findSearchRoute(query);
-
                 if (route) {
-
-                    showSearchStatus(\`Opening <strong>${route.label}</strong>...\`);
-
+                    showSearchStatus(`Opening ${route.label}...`);
                     setTimeout(() => {
-
                         window.location.href = route.url;
-
                     }, 180);
-
                 } else {
-
-                    showSearchStatus(
-
-                        'No related service found. Try grooming, vet, boarding, price, or contact.'
-
-                    );
-
+                    showSearchStatus('No related service found. Try grooming, vet, boarding, price, or contact.');
                 }
-
             });
-
         }
-
 
 
         // ===== GMAIL COMPOSE =====
@@ -6301,11 +6140,11 @@ try {
 
 
 
-            const left = Math.max(0, Math.round((window\.screen.width - width) / 2));
+            const left = Math.max(0, Math.round((window.screen.width - width) / 2));
 
 
 
-            const top = Math.max(0, Math.round((window\.screen.height - height) / 2));
+            const top = Math.max(0, Math.round((window.screen.height - height) / 2));
 
 
 
@@ -6313,7 +6152,7 @@ try {
 
 
 
-            const popup = window\.open(
+            const popup = window.open(
 
 
 
@@ -6325,7 +6164,7 @@ try {
 
 
 
-                \`width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes\`
+                `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`
 
 
 

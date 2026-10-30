@@ -4,10 +4,6 @@
 
 require_once __DIR__ . '/../shared_session_bootstrap.php';
 
-require_once '../db_supabase.php';
-
-
-
 date_default_timezone_set('Asia/Manila');
 
 
@@ -59,6 +55,9 @@ $role_aliases = [
 ];
 
 $current_role = $role_aliases[$raw_role] ?? $raw_role;
+if ($current_role !== '') {
+    $_SESSION['role'] = $current_role;
+}
 $requested_portal = strtolower(trim((string)($_POST['login_portal'] ?? $_GET['portal'] ?? 'admin')));
 $allowed_roles = ['admin', 'manager', 'receptionist', 'groomer', 'pet_hotel_staff'];
 
@@ -546,15 +545,30 @@ if ($appointment_date < date('Y-m-d')) {
 
 if (!$is_overnight_boarding) {
     $start_minutes = ((int)$time_check->format('H') * 60) + (int)$time_check->format('i');
+    if (($start_minutes % 30) !== 0) {
+        walkinRedirect('Please choose an appointment start time on a 30-minute interval.');
+    }
+
     $duration_minutes = $is_daycare
         ? ((int)$daycare_end_minutes - (int)$daycare_start_minutes)
         : ($service_category === 'Grooming'
             ? (stripos($specific_service, 'Full Grooming Package') !== false ? 120 : 60)
             : ($service_category === 'Vet Services' ? 30 : 60));
-    if ($start_minutes < 9 * 60 || $start_minutes >= 18 * 60 || ($start_minutes >= 12 * 60 && $start_minutes < 13 * 60)) {
-        walkinRedirect('Choose a start time between 9:00 AM and 6:00 PM, excluding the 12:00 PM–1:00 PM lunch break.');
+    if ($start_minutes < 9 * 60 || $start_minutes >= 18 * 60) {
+        walkinRedirect('Choose a start time between 9:00 AM and 6:00 PM.');
     }
-    if ($start_minutes + $duration_minutes > 18 * 60) {
+    $end_minutes = $start_minutes + $duration_minutes;
+    $lunch_start_minutes = 12 * 60;
+    $lunch_end_minutes = 13 * 60;
+    if ($start_minutes >= $lunch_start_minutes && $start_minutes < $lunch_end_minutes) {
+        walkinRedirect('Walk-in drop-off/start times are unavailable during the 12:00 PM–1:00 PM lunch break. Please choose another time.');
+    }
+    // Grooming and Vet appointments cannot run into the staff lunch break.
+    // Daycare is a continuous stay, so a pet may remain in care during lunch.
+    if (!$is_daycare && $start_minutes < $lunch_end_minutes && $end_minutes > $lunch_start_minutes) {
+        walkinRedirect('This appointment overlaps the 12:00 PM–1:00 PM lunch break. Please choose another time.');
+    }
+    if ($end_minutes > 18 * 60) {
         walkinRedirect('This service would finish after closing time. Please choose an earlier start time.');
     }
     if ($service_category === 'Vet Services' && in_array((int)date('N', strtotime($appointment_date)), [3, 6], true)) {
@@ -712,6 +726,9 @@ function walkinIntervalsOverlap(int $candidateStart, int $candidateEnd, int $exi
     return $candidateStart < $existingEnd && $existingStart < $candidateEnd;
 }
 
+// Connect only after authorization, CSRF, and walk-in input validation succeed.
+require_once __DIR__ . '/../db_supabase.php';
+
 try {
 
     $pdo->beginTransaction();
@@ -821,7 +838,7 @@ try {
         ]);
         $rows = $existing_stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
         $daily_limits = ['Grooming' => 10, 'Vet Services' => 30, 'Pet Hotel' => 6];
-        $simultaneous_limits = ['Grooming' => 2, 'Vet Services' => 2, 'Pet Hotel' => 6];
+        $simultaneous_limits = ['Grooming' => 2, 'Vet Services' => 1, 'Pet Hotel' => 6];
         // Manual occupied adjustments represent real walk-ins not yet registered
         // as appointments, so include them in both overall and category daily caps.
         $daily_total = count($rows) + walkinManualOccupiedUnitsForDate($manual_adjustments, $appointment_date);
@@ -879,7 +896,7 @@ try {
         elseif ($category_count >= $daily_limits[$service_category]) $capacity_error = $service_category . ' has reached its daily capacity. Please select another date.';
         elseif ($overlaps >= $simultaneous_limits[$service_category]) {
             $capacity_error = $service_category === 'Grooming' ? 'Both groomers are already booked or unavailable during this time. Please select another time.'
-                : ($service_category === 'Vet Services' ? 'Both the doctor and reliever are already booked or unavailable during this time. Please select another time.' : 'No Pet Hotel room is available during this time.');
+                : ($service_category === 'Vet Services' ? 'The veterinarian is already booked or unavailable during this time. Please select another time.' : 'No Pet Hotel room is available during this time.');
         }
     }
 

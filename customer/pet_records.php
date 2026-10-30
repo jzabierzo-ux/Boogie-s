@@ -230,6 +230,24 @@ try {
 
 
 
+// Normalize the saved profile image path for pages inside /customer.
+// Existing photos are stored in the root /uploads directory.
+$profile_image_src = '';
+$stored_profile_image = trim((string)($profile_image ?? ''));
+
+if (
+    $stored_profile_image !== '' &&
+    basename($stored_profile_image) !== 'default-avatar.png'
+) {
+    if (preg_match('~^(?:https?://|data:)~i', $stored_profile_image)) {
+        $profile_image_src = $stored_profile_image;
+    } else {
+        $image_path = ltrim($stored_profile_image, '/');
+        $image_path = preg_replace('~^(?:customer/)?uploads/~i', '', $image_path);
+        $profile_image_src = '/uploads/' . ltrim($image_path, '/');
+    }
+}
+
 // 2. CHECK PET ID
 $pet_id = filter_var($_GET['id'] ?? null, FILTER_VALIDATE_INT);
 if ($pet_id === false || $pet_id === null || $pet_id < 1) {
@@ -1842,17 +1860,17 @@ footer{
 
                     <div class="profile-trigger" onclick="toggleDropdown('profileDropdown')">
 
-                        <?php if (!empty($profile_image)): ?>
+                        <?php if (!empty($profile_image_src)): ?>
 
                             <img
 
-                                src="<?php echo htmlspecialchars($profile_image); ?>"
+                                src="<?php echo htmlspecialchars($profile_image_src, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>"
 
                                 alt="Profile"
 
                                 class="profile-avatar"
 
-                                onerror="this.style.display='none';this.nextElementSibling.style.display='inline-block';"
+                                onerror="this.onerror=null;this.style.display='none';this.nextElementSibling.style.display='inline-block';"
 
                             >
 
@@ -2819,8 +2837,12 @@ footer{
             }
         }
 
-        updateNotifications();
-        setInterval(updateNotifications, 3000);
+        // Reduce background traffic: poll every 15 seconds only while this tab is visible.
+        setInterval(() => {
+            if (!document.hidden) updateNotifications();
+        }, 15000);
+
+        // Refresh promptly when the user returns to this tab.
         document.addEventListener('visibilitychange', () => {
             if (!document.hidden) updateNotifications();
         });

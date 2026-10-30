@@ -357,16 +357,24 @@ try {
 
 
     $profile_image = null;
-
-
-
 }
 
-
-
-
-
-
+// Normalize customer profile image paths after the Customer Side moved into /customer.
+// Stored paths such as uploads/photo.jpg or customer/uploads/photo.jpg resolve to /uploads.
+$profile_image_src = '';
+$stored_profile_image = trim((string)($profile_image ?? ''));
+if ($stored_profile_image !== '' && basename($stored_profile_image) !== 'default-avatar.png') {
+    if (preg_match('~^(?:https?://|data:)~i', $stored_profile_image)) {
+        $profile_image_src = $stored_profile_image;
+    } else {
+        $image_path = ltrim($stored_profile_image, '/');
+        $image_path = preg_replace('~^(?:customer/)?uploads/~i', '', $image_path);
+        $profile_filename = basename($image_path);
+        if ($profile_filename !== '' && $profile_filename !== '.' && $profile_filename !== '..') {
+            $profile_image_src = '/uploads/' . rawurlencode($profile_filename);
+        }
+    }
+}
 
 // Check how many pets the user currently has
 
@@ -6253,7 +6261,7 @@ main{
 
 
 
-                                src="<?php echo htmlspecialchars($profile_image); ?>"
+                                src="<?php echo htmlspecialchars($profile_image_src, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>"
 
 
 
@@ -8127,8 +8135,11 @@ main{
             }
         }
 
-        updateNotifications();
-        setInterval(updateNotifications, 3000);
+        // The page already renders the initial notification state in PHP.
+        // Poll every 15 seconds instead of every 3 seconds to reduce DB requests.
+        setInterval(() => {
+            if (!document.hidden) updateNotifications();
+        }, 15000);
         document.addEventListener('visibilitychange', () => {
             if (!document.hidden) updateNotifications();
         });

@@ -232,6 +232,25 @@ try {
 
 }
 
+// Normalize the saved profile photo path for pages inside the customer/ folder.
+// Uploaded images are stored in the project-root uploads/ directory.
+$profile_image_src = '';
+$stored_profile_image = trim((string)($profile_image ?? ''));
+
+if ($stored_profile_image !== '') {
+    if (preg_match('~^(?:https?://|data:)~i', $stored_profile_image)) {
+        $profile_image_src = $stored_profile_image;
+    } else {
+        $stored_profile_image = ltrim($stored_profile_image, '/\\');
+        $stored_profile_image = preg_replace('~^(?:customer/)?uploads/~i', '', $stored_profile_image);
+        $stored_profile_image = ltrim((string)$stored_profile_image, '/\\');
+
+        if ($stored_profile_image !== '' && $stored_profile_image !== '.' && strpos($stored_profile_image, '..') === false) {
+            $profile_image_src = '/uploads/' . $stored_profile_image;
+        }
+    }
+}
+
 
 
 // 3. KUNIN ANG PET DATA PARA SA FORM (DISPLAY)
@@ -2207,11 +2226,11 @@ img, input, select, button{
 
                     <div class="profile-trigger" onclick="toggleDropdown('profileDropdown')">
 
-                        <?php if (!empty($profile_image)): ?>
+                        <?php if ($profile_image_src !== ''): ?>
 
                             <img
 
-                                src="<?php echo htmlspecialchars($profile_image); ?>"
+                                src="<?php echo htmlspecialchars($profile_image_src, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>"
 
                                 alt="Profile"
 
@@ -3004,7 +3023,7 @@ img, input, select, button{
         }
 
         async function updateNotifications() {
-            if (notificationRefreshInProgress) return;
+            if (notificationRefreshInProgress || document.hidden) return;
             notificationRefreshInProgress = true;
 
             try {
@@ -3046,8 +3065,12 @@ img, input, select, button{
             }
         }
 
-        updateNotifications();
-        setInterval(updateNotifications, 3000);
+        // Server-rendered counts populate the page initially; poll less often to reduce database load.
+        setInterval(() => {
+            if (!document.hidden) updateNotifications();
+        }, 15000);
+
+        // Refresh promptly when the user returns to this tab.
         document.addEventListener('visibilitychange', () => {
             if (!document.hidden) updateNotifications();
         });

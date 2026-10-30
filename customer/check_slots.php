@@ -21,17 +21,35 @@
  * - Overnight boarding uses checkout_date and checks room/global capacity for every occupied night.
  */
 
-require_once __DIR__ . '/../db_supabase.php';
 date_default_timezone_set('Asia/Manila');
 
 header('Content-Type: application/json; charset=UTF-8');
 header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
 header('Pragma: no-cache');
+header('X-Content-Type-Options: nosniff');
+
+// Availability checks are read-only and are requested by the booking form via GET.
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'GET') {
+    http_response_code(405);
+    header('Allow: GET');
+    echo json_encode(['is_full' => false, 'booked_times' => [], 'error' => 'Method not allowed']);
+    exit;
+}
 
 $response = [
     'is_full' => false,
     'booked_times' => [],
 ];
+
+// Reject array/object-shaped query values instead of silently treating them as
+// missing parameters (especially specific_service, which selects the scheduler mode).
+foreach (['date', 'category', 'specific_service', 'service', 'checkout_date', 'dropoff_time', 'pickup_time'] as $parameter) {
+    if (array_key_exists($parameter, $_GET) && !is_string($_GET[$parameter])) {
+        http_response_code(400);
+        echo json_encode(['is_full' => false, 'booked_times' => [], 'error' => 'Invalid parameter format']);
+        exit;
+    }
+}
 
 $date_input = $_GET['date'] ?? '';
 $category_input = $_GET['category'] ?? '';
@@ -107,14 +125,23 @@ function slotTimeToMinutes($time): ?int
     }
     $hour = (int)$m[1];
     $minute = (int)$m[2];
-    if ($hour > 23 || $minute > 59) return null;
+    $second = isset($m[3]) ? (int)$m[3] : 0;
+    if ($hour > 23 || $minute > 59 || $second > 59) return null;
     return ($hour * 60) + $minute;
+}
+
+/** Parse a customer-selected time; only whole minutes (HH:MM or HH:MM:00) are valid. */
+function slotRequestedTimeToMinutes($time): ?int
+{
+    $value = trim((string)($time ?? ''));
+    if (!preg_match('/^\d{1,2}:\d{2}(?::00)?$/', $value)) return null;
+    return slotTimeToMinutes($value);
 }
 
 /** Pickup can be at 6:00 PM, the closing boundary; starts are separately restricted. */
 function slotPickupTimeToMinutes($time): ?int
 {
-    $minutes = slotTimeToMinutes($time);
+    $minutes = slotRequestedTimeToMinutes($time);
     if ($minutes === null || $minutes < 9 * 60 || $minutes > 18 * 60) return null;
     if (($minutes % 30) !== 0) return null;
     return $minutes;
@@ -386,6 +413,9 @@ function slotMinimumRemaining(int $candidateStart, int $candidateEnd, array $app
 }
 
 try {
+    // Connect only after validating the request; connection failures stay JSON responses.
+    require_once __DIR__ . '/../db_supabase.php';
+
     // Legacy mode deliberately preserves old UI behavior until the form is updated.
     if (!$advanced_mode) {
         $legacy_daily_limit = 8;
@@ -449,9 +479,25 @@ try {
         exit;
     }
 
+    // Both interval values may be omitted while the form is first loading daycare times.
+    // Once either is supplied, require both so a partial request cannot bypass interval checks.
+    if (
+        $category === 'Pet Hotel' &&
+        slotIsHotelDaycare($specific_service) &&
+        (($dropoff_time === '') !== ($pickup_time === ''))
+    ) {
+        http_response_code(400);
+        echo json_encode([
+            'is_full' => false,
+            'booked_times' => [],
+            'error' => 'Both drop-off and expected pickup times are required.'
+        ]);
+        exit;
+    }
+
     // Daycare availability is checked against the customer's actual drop-off/pickup interval.
     if ($category === 'Pet Hotel' && slotIsHotelDaycare($specific_service) && $dropoff_time !== '' && $pickup_time !== '') {
-        $start = slotTimeToMinutes($dropoff_time);
+        $start = slotRequestedTimeToMinutes($dropoff_time);
         $end = slotPickupTimeToMinutes($pickup_time);
         $now = new DateTimeImmutable('now', new DateTimeZone('Asia/Manila'));
         $today = $now->format('Y-m-d');

@@ -1,75 +1,164 @@
 <?php
 require_once __DIR__ . '/../shared_session_bootstrap.php';
-require_once '../db_supabase.php';
 
-// --- SECURITY CHECK ---
-$current_role = strtolower(trim($_SESSION['role'] ?? ''));
+/*
+ * shared_session_bootstrap.php already loads db_supabase.php because the
+ * session store itself uses the PostgreSQL connection. Do not include it again.
+ */
+
+// --- VETERINARIAN PORTAL ACCESS ---
+$rawRole = strtolower(trim((string)($_SESSION['role'] ?? '')));
+$roleAliases = [
+    'vet' => 'veterinarian',
+    'veterinary' => 'veterinarian',
+];
+$currentRole = $roleAliases[$rawRole] ?? $rawRole;
+
+$loggedIn = ($_SESSION['logged_in'] ?? false) === true;
+$staffLoggedIn = ($_SESSION['staff_logged_in'] ?? false) === true;
+$staffUserIdRaw = $_SESSION['user_id'] ?? $_SESSION['staff_id'] ?? null;
+$staffUserId = filter_var(
+    $staffUserIdRaw,
+    FILTER_VALIDATE_INT,
+    ['options' => ['min_range' => 1]]
+);
 
 if (
-    !isset($_SESSION['logged_in']) ||
-    $_SESSION['logged_in'] !== true ||
-    !in_array($current_role, ['vet', 'veterinarian'], true)
+    !$loggedIn ||
+    !$staffLoggedIn ||
+    !in_array($currentRole, ['vet', 'veterinarian', 'veterinary'], true) ||
+    $staffUserId === false ||
+    $staffUserId === null
 ) {
-    header("Location: stafflogin.php");
+    header('Location: stafflogin.php');
     exit();
 }
 
-// SET CORRECT TIMEZONE FOR PHILIPPINES
+// Keep the normalized role in the session for consistency with staff pages.
+$_SESSION['role'] = 'veterinarian';
+
+if (!isset($pdo) || !($pdo instanceof PDO)) {
+    error_log('Edit medical records: shared database connection unavailable.');
+    http_response_code(503);
+    exit('Medical records are temporarily unavailable. Please try again.');
+}
+
 date_default_timezone_set('Asia/Manila');
 
 // --- CSRF TOKEN ---
-if (empty($_SESSION['csrf_token'])) {
+if (!isset($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token']) || $_SESSION['csrf_token'] === '') {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
 }
-$csrf_token = $_SESSION['csrf_token'];
+$csrf_token = (string)$_SESSION['csrf_token'];
 
-$staff_name = $_SESSION['staff_name'] ?? 'Doctor';
-
-// --- FETCH STAFF PROFILE IMAGE & FULL NAME ---
-$profile_img_path = "";
-$full_display_name = $staff_name;
-
-if (isset($_SESSION['user_id']) || isset($_SESSION['staff_id'])) {
-    $uid = $_SESSION['user_id'] ?? $_SESSION['staff_id'];
-
-    $get_staff = $pdo->prepare("SELECT full_name, profile_image FROM users WHERE id = :id LIMIT 1");
-    $get_staff->execute([':id' => $uid]);
-    $staff_data = $get_staff->fetch(PDO::FETCH_ASSOC);
-
-    if ($staff_data) {
-        $profile_img_path = $staff_data['profile_image'] ?? '';
-        if (!empty($staff_data['full_name'])) {
-            $full_display_name = $staff_data['full_name'];
-        }
+/** Resolve only supported local upload paths or validated HTTP(S) image URLs. */
+function editMedicalResolveProfileImageUrl(?string $storedPath): string
+{
+    $path = trim((string)$storedPath);
+    if ($path === '') {
+        return '';
     }
+
+    if (preg_match('#^https?://#i', $path)) {
+        return filter_var($path, FILTER_VALIDATE_URL) ? $path : '';
+    }
+
+    $path = str_replace('\\', '/', $path);
+    $webPrefix = '../';
+
+    if (str_starts_with($path, '../')) {
+        $relativePath = substr($path, 3);
+        $webPrefix = '../';
+    } elseif (str_starts_with($path, '/')) {
+        $relativePath = ltrim($path, '/');
+        $webPrefix = '/';
+    } else {
+        $relativePath = $path;
+    }
+
+    // Disallow traversal and limit local paths to the application's upload folders.
+    if (
+        preg_match('#(^|/)\.\.?(/|$)#', $relativePath) ||
+        !preg_match('#^(?:uploads|admin/uploads|staff/uploads)/[A-Za-z0-9._/-]+$#', $relativePath)
+    ) {
+        return '';
+    }
+
+    $projectRoot = realpath(dirname(__DIR__));
+    if ($projectRoot === false) {
+        return '';
+    }
+
+    $realImagePath = realpath($projectRoot . DIRECTORY_SEPARATOR . $relativePath);
+    if (
+        $realImagePath === false ||
+        !is_file($realImagePath) ||
+        !str_starts_with($realImagePath, $projectRoot . DIRECTORY_SEPARATOR)
+    ) {
+        return '';
+    }
+
+    return $webPrefix . $relativePath;
 }
 
-// Linisin ang pangalan para sa Initial
-$clean_name = trim(str_replace('Dr. ', '', $full_display_name), " ,");
-$first_letter = strtoupper(substr($clean_name, 0, 1));
+$staff_name = (string)($_SESSION['staff_name'] ?? 'Doctor');
+$profile_img_path = '';
+$profile_img_url = '';
+$full_display_name = $staff_name;
 
-// Display with title
-$display_with_title = (stripos($full_display_name, 'Dr.') === false)
-    ? 'Dr. ' . $full_display_name
-    : $full_display_name;
+try {
+    $get_staff_stmt = $pdo->prepare(
+        'SELECT full_name, profile_image FROM users WHERE id = :id LIMIT 1'
+    );
+    $get_staff_stmt->execute([':id' => (int)$staffUserId]);
+    $staff_data = $get_staff_stmt->fetch(PDO::FETCH_ASSOC);
 
-// Mobile top bar: show first name only to prevent crowding.
-$mobile_name_source = trim(preg_replace('/^\s*(?:Dr\.?|Dra\.?|Doc\.?)\s+/i', '', (string)$display_with_title));
+    if ($staff_data) {
+        $profile_img_path = (string)($staff_data['profile_image'] ?? '');
+        if (!empty($staff_data['full_name'])) {
+            $full_display_name = (string)$staff_data['full_name'];
+            $_SESSION['staff_name'] = $full_display_name;
+            $_SESSION['user_name'] = $full_display_name;
+        }
+    }
+} catch (PDOException $e) {
+    error_log('Edit medical records staff profile lookup failed: ' . $e->getMessage());
+}
+
+$profile_img_url = editMedicalResolveProfileImageUrl($profile_img_path);
+
+// Prepare the veterinarian name and avatar fallback.
+$clean_name = trim(preg_replace('/^\s*(?:Dr\.?|Dra\.?|Doc\.?)\s+/i', '', $full_display_name) ?? $full_display_name, " ,");
+$first_letter = strtoupper((string)(function_exists('mb_substr') ? mb_substr($clean_name, 0, 1, 'UTF-8') : substr($clean_name, 0, 1)));
+if ($first_letter === '') {
+    $first_letter = 'D';
+}
+
+$display_with_title = preg_match('/^\s*(?:Dr\.?|Dra\.?|Doc\.?)\s+/i', $full_display_name)
+    ? $full_display_name
+    : 'Dr. ' . $full_display_name;
+$mobile_name_source = trim(preg_replace('/^\s*(?:Dr\.?|Dra\.?|Doc\.?)\s+/i', '', $display_with_title) ?? $display_with_title);
 $first_name_only = trim((string)(preg_split('/\s+/', $mobile_name_source)[0] ?? ''));
-
 
 // Admin-only notifications are intentionally not queried from the veterinarian portal.
 
-// Validate the patient ID as a positive integer.
-$pet_id = filter_var($_GET['id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+// Validate the patient ID before running the patient query.
+$pet_id = filter_var(
+    $_GET['id'] ?? null,
+    FILTER_VALIDATE_INT,
+    ['options' => ['min_range' => 1]]
+);
 if ($pet_id === false || $pet_id === null) {
     http_response_code(400);
     exit('Invalid Patient ID.');
 }
+$pet_id = (int)$pet_id;
 
-// Fetch the patient first so POST updates can only target an existing record.
+// Load only the fields displayed or edited on this page.
 try {
-    $stmt = $pdo->prepare('SELECT * FROM pets WHERE id = :id LIMIT 1');
+    $stmt = $pdo->prepare(
+        'SELECT id, name, medical_history, special_needs FROM pets WHERE id = :id LIMIT 1'
+    );
     $stmt->execute([':id' => $pet_id]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
@@ -83,12 +172,34 @@ if (!$row) {
     exit('Patient not found.');
 }
 
-// --- UPDATE LOGIC ---
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_medical'])) {
-    $submitted_token = $_POST['csrf_token'] ?? '';
-    $session_token = $_SESSION['csrf_token'] ?? '';
+$error_msg = '';
+$success_msg = '';
 
-    if (!is_string($submitted_token) || !is_string($session_token) || $submitted_token === '' || !hash_equals($session_token, $submitted_token)) {
+// Show a one-time success message after the POST/redirect/GET cycle.
+if (isset($_SESSION['medical_record_flash']) && is_string($_SESSION['medical_record_flash'])) {
+    $success_msg = $_SESSION['medical_record_flash'];
+    unset($_SESSION['medical_record_flash']);
+}
+
+$method = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'));
+if (!in_array($method, ['GET', 'POST'], true)) {
+    http_response_code(405);
+    header('Allow: GET, POST');
+    exit('Method not allowed.');
+}
+
+if ($method === 'POST') {
+    if (!isset($_POST['update_medical'])) {
+        http_response_code(400);
+        exit('Invalid medical record action.');
+    }
+
+    $submitted_token = $_POST['csrf_token'] ?? '';
+    if (
+        !is_string($submitted_token) ||
+        $submitted_token === '' ||
+        !hash_equals($csrf_token, $submitted_token)
+    ) {
         http_response_code(403);
         exit('Invalid security token. Please refresh the page and try again.');
     }
@@ -103,31 +214,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_medical'])) {
     $updated_history = trim($history_input);
     $updated_needs = trim($needs_input);
 
-    try {
-        $update_stmt = $pdo->prepare("
-            UPDATE pets
-            SET medical_history = :medical_history,
-                special_needs = :special_needs
-            WHERE id = :id
-        ");
+    // Retain entered text if the database update fails so the user can retry.
+    $med_history = $updated_history;
+    $special_needs = $updated_needs;
 
+    try {
+        $update_stmt = $pdo->prepare(
+            'UPDATE pets
+             SET medical_history = :medical_history,
+                 special_needs = :special_needs
+             WHERE id = :id
+             RETURNING id'
+        );
         $update_stmt->execute([
             ':medical_history' => $updated_history,
             ':special_needs' => $updated_needs,
-            ':id' => $pet_id
+            ':id' => $pet_id,
         ]);
 
-        header('Location: view_records.php?id=' . $pet_id);
-        exit;
+        $updated_pet_id = $update_stmt->fetchColumn();
+        if ($updated_pet_id === false) {
+            http_response_code(404);
+            exit('Patient not found. The medical record was not updated.');
+        }
+
+        $_SESSION['medical_record_flash'] = 'Medical records updated successfully.';
+        header('Location: view_records.php?id=' . $pet_id, true, 303);
+        exit();
     } catch (PDOException $e) {
         error_log('Medical record update failed: ' . $e->getMessage());
         $error_msg = 'Unable to save medical records right now. Please try again.';
     }
 }
 
-$p_name = $row['name'] ?? 'Unknown';
-$med_history = $row['medical_history'] ?? '';
-$special_needs = $row['special_needs'] ?? '';
+$p_name = (string)($row['name'] ?? 'Unknown');
+$med_history = $med_history ?? (string)($row['medical_history'] ?? '');
+$special_needs = $special_needs ?? (string)($row['special_needs'] ?? '');
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -1956,8 +2078,8 @@ input, select, textarea, button, img { max-width:100%; }
             <div class="top-right-actions">
                 <div class="profile-wrapper" onclick="toggleProfile(event)">
                     <div class="role-label"><i class="fas fa-user-md"></i> VET</div>
-                    <?php if (!empty($profile_img_path) && file_exists($profile_img_path)): ?>
-                        <img src="<?php echo htmlspecialchars($profile_img_path, ENT_QUOTES, 'UTF-8'); ?>" class="top-avatar">
+                    <?php if ($profile_img_url !== ''): ?>
+                        <img src="<?php echo htmlspecialchars($profile_img_url, ENT_QUOTES, 'UTF-8'); ?>" class="top-avatar" alt="Staff profile" loading="lazy">
                     <?php else: ?>
                         <div class="top-avatar-fallback"><?php echo $first_letter; ?></div>
                     <?php endif; ?>
@@ -1984,9 +2106,14 @@ input, select, textarea, button, img { max-width:100%; }
                     Edit Medical Profile: <?php echo htmlspecialchars($p_name, ENT_QUOTES, 'UTF-8'); ?>
                 </div>
 
-                <?php if (!empty($error_msg)): ?>
-                    <div style="background:#fee2e2;color:#991b1b;border:1px solid #fecaca;padding:12px 15px;border-radius:10px;margin-bottom:20px;font-size:13px;font-weight:600;">
-                        <?php echo htmlspecialchars($error_msg); ?>
+                <?php if ($success_msg !== ''): ?>
+                    <div role="status" style="background:#dcfce7;color:#166534;border:1px solid #bbf7d0;padding:12px 15px;border-radius:10px;margin-bottom:20px;font-size:13px;font-weight:600;">
+                        <?php echo htmlspecialchars($success_msg, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
+                    </div>
+                <?php endif; ?>
+                <?php if ($error_msg !== ''): ?>
+                    <div role="alert" style="background:#fee2e2;color:#991b1b;border:1px solid #fecaca;padding:12px 15px;border-radius:10px;margin-bottom:20px;font-size:13px;font-weight:600;">
+                        <?php echo htmlspecialchars($error_msg, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
                     </div>
                 <?php endif; ?>
 

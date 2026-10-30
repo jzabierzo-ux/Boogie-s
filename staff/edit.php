@@ -1,14 +1,12 @@
 <?php
-
 require_once __DIR__ . '/../shared_session_bootstrap.php';
 
-require_once '../db_supabase.php';
-
-
-
-// Check veterinary staff access using the same role normalization as stafflogin.php.
-$current_role_raw = strtolower(trim((string)($_SESSION['role'] ?? '')));
-$staff_role_aliases = [
+/* -------------------------------------------------------------------------
+ * Veterinary Team authentication and role normalization.
+ * This page is not available to Admin or non-veterinary personnel roles.
+ * ---------------------------------------------------------------------- */
+$rawRole = strtolower(trim((string)($_SESSION['role'] ?? '')));
+$roleAliases = [
     'vet' => 'veterinarian',
     'veterinary' => 'veterinarian',
     'veterinarian' => 'veterinarian',
@@ -19,279 +17,238 @@ $staff_role_aliases = [
     'vet nurse' => 'vet_nurse',
     'veterinary nurse' => 'vet_nurse',
     'veterinary_nurse' => 'vet_nurse',
-    'vet_nurse' => 'vet_nurse'
+    'vet_nurse' => 'vet_nurse',
 ];
-$current_role = $staff_role_aliases[$current_role_raw] ?? $current_role_raw;
-$session_logged_in = in_array($_SESSION['logged_in'] ?? null, [true, 1, '1'], true)
-    || in_array($_SESSION['staff_logged_in'] ?? null, [true, 1, '1'], true);
+$currentRole = $roleAliases[$rawRole] ?? $rawRole;
+$loggedIn = ($_SESSION['logged_in'] ?? false) === true;
+$staffLoggedIn = ($_SESSION['staff_logged_in'] ?? false) === true;
+$userId = filter_var(
+    $_SESSION['user_id'] ?? null,
+    FILTER_VALIDATE_INT,
+    ['options' => ['min_range' => 1]]
+);
+$allowedVeterinaryRoles = ['veterinarian', 'vet_assistant', 'vet_nurse'];
 
-if (!$session_logged_in || !in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)) {
+if (
+    !$loggedIn ||
+    !$staffLoggedIn ||
+    !in_array($currentRole, $allowedVeterinaryRoles, true) ||
+    $userId === false ||
+    $userId === null
+) {
     header('Location: stafflogin.php');
-    exit;
+    exit();
 }
 
-// CSRF protection for pet updates
+// Keep the normalized role in the session for consistency across Staff pages.
+$_SESSION['role'] = $currentRole;
+date_default_timezone_set('Asia/Manila');
 
-if (empty($_SESSION['csrf_token'])) {
-
+if (!isset($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token']) || $_SESSION['csrf_token'] === '') {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+$csrfToken = $_SESSION['csrf_token'];
 
+$petData = null;
+$errorMessage = '';
+$customers = [];
+
+/** Read a POST field only when it is a string, preventing array-to-string errors. */
+function staffEditPetPostString(string $key): ?string
+{
+    $value = $_POST[$key] ?? '';
+    return is_string($value) ? trim($value) : null;
 }
 
-$csrf_token = $_SESSION['csrf_token'];
-
-
-
-$pet_data = null;
-
-$error_message = '';
-
-$success_message = '';
-
-
-
-// Get the pet ID from GET when opening the edit page, or POST when submitting the form.
-
-$pet_id = filter_input(INPUT_GET, 'id', FILTER_VALIDATE_INT);
-
-if (!$pet_id && isset($_POST['pet_id'])) {
-
-    $pet_id = filter_var($_POST['pet_id'], FILTER_VALIDATE_INT);
-
+/** Show a safe alert and return to the Staff pet directory. */
+function staffEditPetAlertRedirect(string $message, int $statusCode = 200): void
+{
+    http_response_code($statusCode);
+    $safeMessage = json_encode(
+        $message,
+        JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_INVALID_UTF8_SUBSTITUTE
+    );
+    echo '<script>alert(' . $safeMessage . '); window.location.href="pets.php";</script>';
+    exit();
 }
 
-
-
-if (!$pet_id) {
-
-    echo "<script>alert('Invalid pet ID.'); window.location.href='pets.php';</script>";
-
-    exit;
-
+$method = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'));
+if (!in_array($method, ['GET', 'POST'], true)) {
+    http_response_code(405);
+    header('Allow: GET, POST');
+    exit('Method not allowed.');
 }
 
+// On submit, trust the hidden POST ID; on initial load, use the query string.
+$rawPetId = $method === 'POST' ? ($_POST['pet_id'] ?? null) : ($_GET['id'] ?? null);
+$petId = filter_var($rawPetId, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+if ($petId === false || $petId === null) {
+    staffEditPetAlertRedirect('Invalid pet ID.', 400);
+}
+$petId = (int)$petId;
 
+// Load the database only after the session and request checks have passed.
+require_once __DIR__ . '/../db_supabase.php';
 
-// Load the current pet record so the form has its existing values.
-
+// Load only the pet fields used by this page and its update form.
 try {
-
-    $pet_stmt = $pdo->prepare("SELECT * FROM pets WHERE id = :id LIMIT 1");
-
-    $pet_stmt->execute([':id' => $pet_id]);
-
-    $pet_data = $pet_stmt->fetch(PDO::FETCH_ASSOC);
-
+    $petStmt = $pdo->prepare(
+        'SELECT id, owner_id, name, pet_type, breed, age, weight, gender, medical_history, status
+         FROM pets
+         WHERE id = :id
+         LIMIT 1'
+    );
+    $petStmt->execute([':id' => $petId]);
+    $petData = $petStmt->fetch(PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
-
     error_log('Staff pet lookup failed: ' . $e->getMessage());
-    $error_message = 'Unable to load the pet record.';
-
+    http_response_code(500);
+    exit('Unable to load the pet record. Please try again.');
 }
 
-
-
-if (!$pet_data) {
-
-    echo "<script>alert('Pet record not found.'); window.location.href='pets.php';</script>";
-
-    exit;
-
+if (!$petData) {
+    staffEditPetAlertRedirect('Pet record not found.', 404);
 }
 
-
-
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-
-    // CSRF validation
-
-    $submitted_csrf = $_POST['csrf_token'] ?? '';
-
-
-
-    if (!hash_equals($_SESSION['csrf_token'] ?? '', $submitted_csrf)) {
-
-        $error_message = 'Invalid form request. Please refresh the page and try again.';
-
+if ($method === 'POST') {
+    $submittedCsrf = $_POST['csrf_token'] ?? '';
+    if (
+        !is_string($submittedCsrf) ||
+        $submittedCsrf === '' ||
+        !hash_equals($csrfToken, $submittedCsrf)
+    ) {
+        $errorMessage = 'Invalid form request. Please refresh the page and try again.';
     } else {
+        $rawOwnerId = $_POST['customer_id'] ?? '';
+        $ownerId = is_string($rawOwnerId) || is_int($rawOwnerId)
+            ? filter_var($rawOwnerId, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]])
+            : false;
 
-        // 1. Grab and clean all form data.
+        $petName = staffEditPetPostString('pet_name');
+        $petType = staffEditPetPostString('pet_type');
+        $breed = staffEditPetPostString('breed');
+        $age = staffEditPetPostString('age');
+        $weight = staffEditPetPostString('weight');
+        $gender = staffEditPetPostString('gender');
+        $medicalHistory = staffEditPetPostString('medical_history');
 
-        $owner_id = filter_var($_POST['customer_id'] ?? '', FILTER_VALIDATE_INT);
-
-        $pet_name = trim($_POST['pet_name'] ?? '');
-
-        $pet_type = trim($_POST['pet_type'] ?? '');
-
-        $breed = trim($_POST['breed'] ?? '');
-
-        $age = trim($_POST['age'] ?? '');
-
-        $weight = trim($_POST['weight'] ?? '');
-
-        $gender = trim($_POST['gender'] ?? '');
-
-        $medical_history = trim($_POST['medical_history'] ?? '');
-
-
-
-        // Preserve the existing workflow: edited staff records become Approved.
-
-        $status = 'Approved';
-
-
-
-        if (!$owner_id || $pet_name === '' || $pet_type === '' || $breed === '' || $age === '' || $weight === '' || $gender === '') {
-
-            $error_message = 'Please complete all required fields.';
-
-        } elseif (!in_array($pet_type, ['Dog', 'Cat', 'Other'], true)) {
-
-            $error_message = 'Invalid pet type selected.';
-
+        if (
+            $ownerId === false || $ownerId === null ||
+            $petName === null || $petType === null || $breed === null ||
+            $age === null || $weight === null || $gender === null ||
+            $medicalHistory === null
+        ) {
+            $errorMessage = 'Invalid pet record data. Please review the form and try again.';
+        } elseif (
+            $petName === '' || $petType === '' || $breed === '' ||
+            $age === '' || $weight === '' || $gender === ''
+        ) {
+            $errorMessage = 'Please complete all required fields.';
+        } elseif (!in_array($petType, ['Dog', 'Cat', 'Other'], true)) {
+            $errorMessage = 'Invalid pet type selected.';
         } elseif (!in_array($gender, ['Male', 'Female'], true)) {
-
-            $error_message = 'Invalid gender selected.';
-
+            $errorMessage = 'Invalid gender selected.';
         } else {
+            // Preserve the existing workflow: edited Staff pet records become Approved.
+            $status = 'Approved';
 
             try {
+                $pdo->beginTransaction();
 
-                // Confirm the selected owner is an actual customer account.
-
-                $owner_stmt = $pdo->prepare("SELECT id FROM users WHERE id = :owner_id AND role = 'customer' LIMIT 1");
-
-                $owner_stmt->execute([':owner_id' => $owner_id]);
-
-
-
-                if (!$owner_stmt->fetchColumn()) {
-
-                    $error_message = 'Invalid customer selected.';
-
-                } else {
-
-                    // 2. Update the database using owner_id.
-
-                    $update_stmt = $pdo->prepare("UPDATE pets SET
-
-                        owner_id = :owner_id,
-
-                        name = :pet_name,
-
-                        pet_type = :pet_type,
-
-                        breed = :breed,
-
-                        age = :age,
-
-                        weight = :weight,
-
-                        gender = :gender,
-
-                        medical_history = :medical_history,
-
-                        status = :status
-
-                        WHERE id = :pet_id");
-
-
-
-                    $update_stmt->execute([
-
-                        ':owner_id' => $owner_id,
-
-                        ':pet_name' => $pet_name,
-
-                        ':pet_type' => $pet_type,
-
-                        ':breed' => $breed,
-
-                        ':age' => $age,
-
-                        ':weight' => $weight,
-
-                        ':gender' => $gender,
-
-                        ':medical_history' => $medical_history,
-
-                        ':status' => $status,
-
-                        ':pet_id' => $pet_id
-
-                    ]);
-
-
-
-                    echo "<script>
-
-                            alert('Pet details successfully updated and approved!');
-
-                            window.location.href='pets.php';
-
-                          </script>";
-
-                    exit;
-
+                // Lock the target pet to avoid updating a record deleted or changed concurrently.
+                $lockPetStmt = $pdo->prepare(
+                    'SELECT id FROM pets WHERE id = :pet_id LIMIT 1 FOR UPDATE'
+                );
+                $lockPetStmt->execute([':pet_id' => $petId]);
+                if (!$lockPetStmt->fetchColumn()) {
+                    throw new RuntimeException('Pet record no longer exists. Please return to the pet directory.');
                 }
 
-            } catch (PDOException $e) {
+                // Confirm and lock the selected owner as an actual customer account.
+                $ownerStmt = $pdo->prepare(
+                    "SELECT id FROM users WHERE id = :owner_id AND role = 'customer' LIMIT 1 FOR KEY SHARE"
+                );
+                $ownerStmt->execute([':owner_id' => (int)$ownerId]);
+                if (!$ownerStmt->fetchColumn()) {
+                    $pdo->rollBack();
+                    $errorMessage = 'Invalid customer selected.';
+                } else {
+                    $updateStmt = $pdo->prepare(
+                        'UPDATE pets
+                         SET owner_id = :owner_id,
+                             name = :pet_name,
+                             pet_type = :pet_type,
+                             breed = :breed,
+                             age = :age,
+                             weight = :weight,
+                             gender = :gender,
+                             medical_history = :medical_history,
+                             status = :status
+                         WHERE id = :pet_id
+                         RETURNING id'
+                    );
+                    $updateStmt->execute([
+                        ':owner_id' => (int)$ownerId,
+                        ':pet_name' => $petName,
+                        ':pet_type' => $petType,
+                        ':breed' => $breed,
+                        ':age' => $age,
+                        ':weight' => $weight,
+                        ':gender' => $gender,
+                        ':medical_history' => $medicalHistory,
+                        ':status' => $status,
+                        ':pet_id' => $petId,
+                    ]);
 
+                    $updatedPetId = $updateStmt->fetchColumn();
+                    if ($updatedPetId === false) {
+                        throw new RuntimeException('Pet record was not updated. Please try again.');
+                    }
+
+                    $pdo->commit();
+                    staffEditPetAlertRedirect('Pet details successfully updated and approved!');
+                }
+            } catch (Throwable $e) {
+                if ($pdo->inTransaction()) {
+                    $pdo->rollBack();
+                }
                 error_log('Staff pet update failed: ' . $e->getMessage());
-
-                $error_message = 'Unable to update the pet record. Please try again.';
-
+                $errorMessage = 'Unable to update the pet record. Please try again.';
             }
-
         }
 
-
-
-        // Keep the edited values on screen if validation/update fails.
-
-        $pet_data['owner_id'] = $owner_id ?: $pet_data['owner_id'];
-
-        $pet_data['name'] = $pet_name;
-
-        $pet_data['pet_type'] = $pet_type;
-
-        $pet_data['breed'] = $breed;
-
-        $pet_data['age'] = $age;
-
-        $pet_data['weight'] = $weight;
-
-        $pet_data['gender'] = $gender;
-
-        $pet_data['medical_history'] = $medical_history;
-
+        // Keep submitted values visible when validation or database update fails.
+        if ($ownerId !== false && $ownerId !== null) {
+            $petData['owner_id'] = (int)$ownerId;
+        }
+        if ($petName !== null) $petData['name'] = $petName;
+        if ($petType !== null) $petData['pet_type'] = $petType;
+        if ($breed !== null) $petData['breed'] = $breed;
+        if ($age !== null) $petData['age'] = $age;
+        if ($weight !== null) $petData['weight'] = $weight;
+        if ($gender !== null) $petData['gender'] = $gender;
+        if ($medicalHistory !== null) $petData['medical_history'] = $medicalHistory;
     }
-
 }
 
-
-
-// Customer list for the dropdown.
-
+// Customer list for the dropdown; only the fields rendered by the form are fetched.
 try {
-
-    $cust_stmt = $pdo->prepare("SELECT id, full_name FROM users WHERE role = 'customer' ORDER BY full_name ASC");
-
-    $cust_stmt->execute();
-
-    $customers = $cust_stmt->fetchAll(PDO::FETCH_ASSOC);
-
+    $custStmt = $pdo->query(
+        "SELECT id, full_name FROM users WHERE role = 'customer' ORDER BY full_name ASC, id ASC"
+    );
+    $customers = $custStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 } catch (PDOException $e) {
-
+    error_log('Staff pet customer list lookup failed: ' . $e->getMessage());
     $customers = [];
-
-    $error_message = 'Unable to load the customer list.';
-
+    $errorMessage = 'Unable to load the customer list. Please try again.';
 }
 
+// Maintain the variable names used by the existing HTML form.
+$pet_data = $petData;
+$error_message = $errorMessage;
+$csrf_token = $csrfToken;
+$pet_id = $petId;
 ?>
-
-
 
 <!DOCTYPE html>
 

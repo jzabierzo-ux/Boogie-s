@@ -28,7 +28,7 @@ if (
 
 ) {
 
-    header('Location: ./admin/admindashboard.php?portal=admin');
+    header('Location: ./admindashboard.php?portal=admin');
 
     exit();
 
@@ -174,7 +174,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                         logAdminAccount($pdo, $adminId, 'LOGIN', 'SUCCESS');
 
-                        header('Location: ./admin/admindashboard.php?portal=admin');
+                        header('Location: admindashboard.php?portal=admin');
 
                         exit();
 
@@ -218,7 +218,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-    <meta name="robots" content="noindex, nofollow">
+    <meta name="robots" content="noindex, nofollow, noarchive">
 
     <title>Admin Portal - Boogie's</title>
 
@@ -531,7 +531,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <body>
     <main class="admin-shell">
         <section class="brand-panel" aria-label="Boogie's Pet Care and Services">
-            <a href="home.php" class="back-home"><i class="fa-solid fa-arrow-left"></i> Back to website</a>
+            <a href="../index.php" class="back-home"><i class="fa-solid fa-arrow-left"></i> Back to website</a>
             <div class="brand-content">
                 <img class="brand-logo" src="bg.png" alt="Boogie's Pet Care &amp; Services logo">
                 <p class="brand-kicker">Boogie's Pet Care &amp; Services</p>
@@ -551,7 +551,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <h2>Welcome back</h2>
             <p class="subtitle">Enter your administrator username and password to continue.</p>
 
-            <div class="admin-only-note"><i class="fa-solid fa-circle-info"></i><div><strong>Admin access only.</strong> Staff accounts must use the separate Personnel Portal.</div></div>
+            <div class="admin-only-note"><i class="fa-solid fa-circle-info"></i><div><strong>Admin access only.</strong> This page is restricted to authorized administrators.</div></div>
 
             <?php if (!empty($error_msg)): ?>
                 <div class="error" role="alert">

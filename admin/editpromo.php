@@ -12,13 +12,78 @@ if (
     exit();
 }
 
-require_once '../db_supabase.php';
+// Connect only after the Admin session has been verified.
+require_once __DIR__ . '/../db_supabase.php';
+date_default_timezone_set('Asia/Manila');
 
 // CSRF token for promo edits.
 if (empty($_SESSION['edit_promo_csrf']) || !is_string($_SESSION['edit_promo_csrf'])) {
     $_SESSION['edit_promo_csrf'] = bin2hex(random_bytes(32));
 }
 $csrf_token = $_SESSION['edit_promo_csrf'];
+
+/**
+ * Resolve only known local profile upload paths, while allowing valid HTTPS
+ * storage URLs for installations that move profile images to object storage.
+ */
+function editPromoResolveProfileImageUrl($storedPath): string
+{
+    if (!is_string($storedPath) || trim($storedPath) === '') {
+        return '';
+    }
+
+    $path = trim(str_replace('\\', '/', $storedPath));
+    if (preg_match('#^https?://#i', $path)) {
+        return filter_var($path, FILTER_VALIDATE_URL) ? $path : '';
+    }
+
+    $filename = basename(ltrim($path, '/'));
+    if ($filename === '' || $filename === '.' || $filename === '..') {
+        return '';
+    }
+
+    $adminFile = __DIR__ . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . $filename;
+    $sharedFile = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . $filename;
+
+    if (strpos($path, 'uploads/') === 0 && is_file($adminFile)) {
+        return 'uploads/' . rawurlencode($filename);
+    }
+
+    if ((strpos($path, '../uploads/') === 0 || strpos($path, 'uploads/') === 0) && is_file($sharedFile)) {
+        return '../uploads/' . rawurlencode($filename);
+    }
+
+    return '';
+}
+
+/** Delete a promo image only when its stored path points inside uploads/promos. */
+function editPromoDeleteLocalImage($storedUrl): void
+{
+    if (!is_string($storedUrl) || trim($storedUrl) === '') {
+        return;
+    }
+
+    $relative = ltrim(str_replace('\\', '/', trim($storedUrl)), '/');
+    if (strpos($relative, 'uploads/promos/') !== 0) {
+        return;
+    }
+
+    $filename = substr($relative, strlen('uploads/promos/'));
+    if ($filename === '' || basename($filename) !== $filename || !preg_match('/^[A-Za-z0-9._-]+$/', $filename)) {
+        return;
+    }
+
+    $promoDir = realpath(dirname(__DIR__) . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'promos');
+    if ($promoDir === false) {
+        return;
+    }
+
+    $candidate = realpath($promoDir . DIRECTORY_SEPARATOR . $filename);
+    $rootPrefix = rtrim($promoDir, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+    if ($candidate !== false && is_file($candidate) && strpos($candidate, $rootPrefix) === 0) {
+        @unlink($candidate);
+    }
+}
 
 // Shared Admin header data.
 $admin_full_name = $_SESSION['user_name'] ?? 'Admin';
@@ -48,15 +113,17 @@ $first_name = trim(explode(' ', (string)$admin_full_name)[0] ?? 'Admin', ',');
 
 try {
     $admin_notif_stmt = $pdo->prepare(
-        'SELECT id, message, created_at
+        'SELECT id, message, created_at, COUNT(*) OVER() AS total_unread
          FROM admin_notifications
          WHERE is_read = 0
-         ORDER BY created_at DESC
+         ORDER BY created_at DESC, id DESC
          LIMIT 20'
     );
     $admin_notif_stmt->execute();
     $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
-    $unread_count = count($admin_notifications);
+    $unread_count = !empty($admin_notifications)
+        ? (int)($admin_notifications[0]['total_unread'] ?? 0)
+        : 0;
 } catch (PDOException $e) {
     $admin_notifications = [];
     $unread_count = 0;
@@ -110,7 +177,7 @@ $presets = [
 // Fetch the selected promo.
 try {
     $fetch_stmt = $pdo->prepare(
-        'SELECT * FROM promos WHERE id = :id LIMIT 1'
+        'SELECT id, tag, title, description, theme_color, expiry_date, status, image_url FROM promos WHERE id = :id LIMIT 1'
     );
     $fetch_stmt->execute([':id' => $promo_id]);
     $promo = $fetch_stmt->fetch(PDO::FETCH_ASSOC);
@@ -213,22 +280,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 !is_uploaded_file((string)$upload['tmp_name'])
             ) {
                 $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Image upload failed. Please choose the image again.</div>";
-            } elseif ((int)($upload['size'] ?? 0) > $max_size) {
-                $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Image must be 5 MB or smaller.</div>";
+            } elseif ((int)($upload['size'] ?? 0) <= 0 || (int)$upload['size'] > $max_size) {
+                $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Image must be greater than 0 bytes and 5 MB or smaller.</div>";
             } else {
-                $finfo = finfo_open(FILEINFO_MIME_TYPE);
-                $mime = $finfo ? finfo_file($finfo, $upload['tmp_name']) : '';
+                $finfo = function_exists('finfo_open') ? finfo_open(FILEINFO_MIME_TYPE) : false;
+                $mime = $finfo ? finfo_file($finfo, (string)$upload['tmp_name']) : false;
                 if ($finfo) {
                     finfo_close($finfo);
                 }
 
-                $image_info = @getimagesize($upload['tmp_name']);
-                if (!isset($allowed_mimes[$mime]) || $image_info === false) {
+                $image_info = @getimagesize((string)$upload['tmp_name']);
+                $image_mime = is_array($image_info) ? (string)($image_info['mime'] ?? '') : '';
+                if (!is_string($mime) || !isset($allowed_mimes[$mime]) || $image_mime !== $mime) {
                     $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Please upload a valid JPG, PNG, or WEBP image.</div>";
                 } else {
                     $upload_dir = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'promos' . DIRECTORY_SEPARATOR;
 
-                    if (!is_dir($upload_dir) && !mkdir($upload_dir, 0755, true) && !is_dir($upload_dir)) {
+                    if (!is_dir($upload_dir) && !@mkdir($upload_dir, 0755, true) && !is_dir($upload_dir)) {
                         $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Unable to prepare the promo image folder.</div>";
                     } elseif (!is_writable($upload_dir)) {
                         $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Promo upload folder is not writable. Check permissions for <strong>uploads/promos</strong>.</div>";
@@ -280,21 +348,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ':id' => $promo_id
                 ]);
 
-                // Delete the old local promo image only after the DB update succeeds.
-                if (($new_image_url !== $old_image_url || $remove_image) && !empty($old_image_url)) {
-                    $promo_dir = realpath(dirname(__DIR__) . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'promos');
-                    $old_name = basename((string)parse_url((string)$old_image_url, PHP_URL_PATH));
-                    if ($promo_dir !== false && $old_name !== '') {
-                        $old_path = $promo_dir . DIRECTORY_SEPARATOR . $old_name;
-                        $resolved_old_path = realpath($old_path);
-                        if (
-                            $resolved_old_path !== false &&
-                            is_file($resolved_old_path) &&
-                            str_starts_with($resolved_old_path, $promo_dir . DIRECTORY_SEPARATOR)
-                        ) {
-                            @unlink($resolved_old_path);
-                        }
-                    }
+                // Delete the old local image only after the database update succeeds.
+                // External URLs and paths outside uploads/promos are never removed.
+                if ($new_image_url !== $old_image_url && !empty($old_image_url)) {
+                    editPromoDeleteLocalImage($old_image_url);
                 }
 
                 $form['image_url'] = $new_image_url;
@@ -314,6 +371,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 $today = date('Y-m-d');
 $current_image = $form['image_url'] ?? null;
+$current_image_src = '';
+if (is_string($current_image) && trim($current_image) !== '') {
+    $current_image_value = trim($current_image);
+    if (preg_match('#^https?://#i', $current_image_value)) {
+        $current_image_src = filter_var($current_image_value, FILTER_VALIDATE_URL) ? $current_image_value : '';
+    } else {
+        $current_relative = ltrim(str_replace('\\', '/', $current_image_value), '/');
+        if (strpos($current_relative, 'uploads/promos/') === 0) {
+            $current_filename = substr($current_relative, strlen('uploads/promos/'));
+            $promo_dir = realpath(dirname(__DIR__) . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'promos');
+            if ($promo_dir !== false && $current_filename !== '' && basename($current_filename) === $current_filename && preg_match('/^[A-Za-z0-9._-]+$/', $current_filename)) {
+                $candidate = realpath($promo_dir . DIRECTORY_SEPARATOR . $current_filename);
+                $root_prefix = rtrim($promo_dir, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+                if ($candidate !== false && is_file($candidate) && strpos($candidate, $root_prefix) === 0) {
+                    $current_image_src = '../uploads/promos/' . rawurlencode($current_filename);
+                }
+            }
+        }
+    }
+}
+$profile_img_src = editPromoResolveProfileImageUrl($profile_img_path);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -1703,9 +1781,9 @@ $current_image = $form['image_url'] ?? null;
         </div>
         <div class="profile-wrapper" onclick="toggleProfile(event)">
             <span class="admin-tag"><?php echo strtoupper($current_role ?: 'ADMIN'); ?></span>
-            <?php if (!empty($profile_img_path) && file_exists($profile_img_path)): ?>
-                <img src="<?php echo htmlspecialchars($profile_img_path, ENT_QUOTES, 'UTF-8'); ?>" class="top-avatar" alt="Profile Picture">
-            <?php else: ?><div class="top-avatar-fallback"><?php echo strtoupper(substr($first_name ?: 'A', 0, 1)); ?></div><?php endif; ?>
+            <?php if ($profile_img_src !== ''): ?>
+                <img src="<?php echo htmlspecialchars($profile_img_src, ENT_QUOTES, 'UTF-8'); ?>" class="top-avatar" alt="Profile Picture">
+            <?php else: ?><div class="top-avatar-fallback"><?php echo htmlspecialchars(strtoupper(substr($first_name ?: 'A', 0, 1)), ENT_QUOTES, 'UTF-8'); ?></div><?php endif; ?>
             <span class="name-label"><?php echo htmlspecialchars($admin_full_name, ENT_QUOTES, 'UTF-8'); ?><i class="fas fa-chevron-down"></i></span>
             <div class="profile-dropdown" id="profileBox" onclick="event.stopPropagation()"><a href="admin_profile.php" class="profile-item"><i class="fas fa-user-circle"></i> My Profile</a><a href="../logout.php" class="profile-item logout-text"><i class="fas fa-sign-out-alt"></i> Logout</a></div>
         </div>
@@ -1759,10 +1837,10 @@ $current_image = $form['image_url'] ?? null;
                     <input type="file" id="promo_image" name="promo_image" accept=".jpg,.jpeg,.png,.webp">
                     <div class="upload-help">Leave empty to keep the current image. <strong>Recommended:</strong> 4:5 poster (e.g. 1080×1350). JPG, PNG, or WEBP only. Maximum 5 MB. Other image sizes are supported.</div>
 
-                    <?php if (!empty($current_image)): ?>
+                    <?php if ($current_image_src !== ''): ?>
                         <div class="current-image-wrap" id="currentImageWrap">
                             <div class="current-image-label">Current promo image</div>
-                            <img class="current-image" src="../<?php echo htmlspecialchars(ltrim($current_image, '/')); ?>" alt="Current promotion image">
+                            <img class="current-image" src="<?php echo htmlspecialchars($current_image_src, ENT_QUOTES, 'UTF-8'); ?>" alt="Current promotion image">
                             <label class="remove-row">
                                 <input type="checkbox" name="remove_image" value="1" id="remove_image">
                                 Remove current image
@@ -1854,6 +1932,7 @@ const previewImage = document.getElementById('previewImage');
 const imagePreview = document.getElementById('imagePreview');
 const imagePreviewImg = document.getElementById('imagePreviewImg');
 const visibilityText = document.getElementById('visibilityText');
+const currentImageSrc = <?php echo json_encode($current_image_src, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
 
 function updatePreview() {
     previewTag.textContent = tagInput.value || 'PROMO';
@@ -1894,35 +1973,59 @@ document.querySelectorAll('.preset').forEach((button) => {
     el.addEventListener('change', updatePreview);
 });
 
-if (removeImage) {
-    removeImage.addEventListener('change', () => {
-        if (removeImage.checked) {
-            previewImage.style.display = 'none';
-            previewImage.removeAttribute('src');
-        }
-    });
+let promoObjectUrl = null;
+let promoPreviewFile = null;
+
+function releasePromoObjectUrl() {
+    if (promoObjectUrl) {
+        URL.revokeObjectURL(promoObjectUrl);
+        promoObjectUrl = null;
+    }
 }
 
-imageInput.addEventListener('change', () => {
-    const file = imageInput.files && imageInput.files[0];
-    if (!file) {
-        imagePreview.style.display = 'none';
-        imagePreviewImg.removeAttribute('src');
+function syncPromoImagePreview() {
+    const selectedFile = imageInput.files && imageInput.files[0];
+
+    if (selectedFile) {
+        if (selectedFile !== promoPreviewFile) {
+            releasePromoObjectUrl();
+            promoPreviewFile = selectedFile;
+            promoObjectUrl = URL.createObjectURL(selectedFile);
+        }
+        if (removeImage) removeImage.checked = false;
+        imagePreview.style.display = 'block';
+        imagePreviewImg.src = promoObjectUrl;
+        previewImage.style.display = 'block';
+        previewImage.src = promoObjectUrl;
         return;
     }
 
-    if (removeImage) removeImage.checked = false;
-    const url = URL.createObjectURL(file);
-    imagePreview.style.display = 'block';
-    imagePreviewImg.src = url;
-    previewImage.style.display = 'block';
-    previewImage.src = url;
-});
+    imagePreview.style.display = 'none';
+    imagePreviewImg.removeAttribute('src');
+    releasePromoObjectUrl();
+    promoPreviewFile = null;
 
-const currentImageSrc = <?php echo json_encode(!empty($current_image) ? '../' . ltrim($current_image, '/') : ''); ?>;
-if (currentImageSrc) {
+    if (removeImage && removeImage.checked) {
+        previewImage.style.display = 'none';
+        previewImage.removeAttribute('src');
+    } else if (currentImageSrc) {
+        previewImage.style.display = 'block';
+        previewImage.src = currentImageSrc;
+    } else {
+        previewImage.style.display = 'none';
+        previewImage.removeAttribute('src');
+    }
+}
+
+if (removeImage) removeImage.addEventListener('change', syncPromoImagePreview);
+imageInput.addEventListener('change', syncPromoImagePreview);
+window.addEventListener('pagehide', releasePromoObjectUrl);
+
+if (currentImageSrc && !(removeImage && removeImage.checked)) {
     previewImage.style.display = 'block';
     previewImage.src = currentImageSrc;
+} else {
+    previewImage.style.display = 'none';
 }
 
 updatePreview();
@@ -1975,6 +2078,8 @@ function toggleNotif(event) {
 
     if (profile) profile.classList.remove('show');
 
+    if (!document.hidden) fetchAdminNotifs();
+
 }
 
 function toggleProfile(event) {
@@ -2013,75 +2118,55 @@ function renderAdminNotifications(data) {
 
 }
 
+let adminNotifRequestInProgress = false;
+let adminNotifTimer = null;
+
 function fetchAdminNotifs() {
+    if (document.hidden || adminNotifRequestInProgress) return;
+    adminNotifRequestInProgress = true;
 
-    fetch('get_admin_notifs.php', { method: 'GET', cache: 'no-store', credentials: 'same-origin' })
-
-        .then(function(response) {
-
-            if (!response.ok) throw new Error('Notification request failed: HTTP ' + response.status);
-
-            return response.json();
-
-        })
-
-        .then(renderAdminNotifications)
-
-        .catch(function(error) { console.error('Error fetching admin notifications:', error); });
-
+    fetch('get_admin_notifs.php', {
+        method: 'GET',
+        cache: 'no-store',
+        credentials: 'same-origin'
+    })
+    .then(function(response) {
+        if (!response.ok) throw new Error('Notification request failed: HTTP ' + response.status);
+        return response.json();
+    })
+    .then(renderAdminNotifications)
+    .catch(function(error) {
+        console.error('Error fetching admin notifications:', error);
+    })
+    .finally(function() {
+        adminNotifRequestInProgress = false;
+    });
 }
 
-document.addEventListener('click', function(event) {
-
-    if (!event.target.closest('.notif-wrapper')) {
-
-        const notif = document.getElementById('notifBox');
-
-        if (notif) notif.classList.remove('show');
-
+function startAdminNotifPolling() {
+    if (document.hidden) return;
+    fetchAdminNotifs();
+    if (adminNotifTimer === null) {
+        adminNotifTimer = window.setInterval(fetchAdminNotifs, 15000);
     }
+}
 
-    if (!event.target.closest('.profile-wrapper')) {
-
-        const profile = document.getElementById('profileBox');
-
-        if (profile) profile.classList.remove('show');
-
+function stopAdminNotifPolling() {
+    if (adminNotifTimer !== null) {
+        window.clearInterval(adminNotifTimer);
+        adminNotifTimer = null;
     }
+}
 
+document.addEventListener('visibilitychange', function() {
+    if (document.hidden) {
+        stopAdminNotifPolling();
+    } else {
+        startAdminNotifPolling();
+    }
 });
 
-document.addEventListener('keydown', function(event) {
-
-    if (event.key === 'Escape') {
-
-        closeMobileSidebar();
-
-        const notif = document.getElementById('notifBox');
-
-        const profile = document.getElementById('profileBox');
-
-        if (notif) notif.classList.remove('show');
-
-        if (profile) profile.classList.remove('show');
-
-    }
-
-});
-
-document.querySelectorAll('.admin-sidebar .nav-item').forEach(function(link) {
-
-    link.addEventListener('click', function() {
-
-        if (window.innerWidth <= 900) closeMobileSidebar();
-
-    });
-
-});
-
-fetchAdminNotifs();
-
-setInterval(fetchAdminNotifs, 3000);
+startAdminNotifPolling();
 
 </script>
 </body>

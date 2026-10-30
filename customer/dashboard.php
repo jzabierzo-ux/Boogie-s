@@ -254,17 +254,25 @@ try {
 }
 
 
-// Normalize the saved image path using the same logic as book_appointment.php.
-$current_profile_pic_src = $current_profile_pic;
+// Normalize the saved profile image URL for the root uploads folder.
+$current_profile_pic_src = trim((string)$current_profile_pic);
+
 if (
-    $current_profile_pic_src !== 'default-avatar.png' &&
     $current_profile_pic_src !== '' &&
-    !preg_match('~^(?:https?://|/|data:|uploads/)~i', $current_profile_pic_src)
+    $current_profile_pic_src !== 'default-avatar.png' &&
+    !preg_match('~^(?:https?://|data:)~i', $current_profile_pic_src)
 ) {
-    $current_profile_pic_src = 'uploads/' . ltrim($current_profile_pic_src, '/');
+    $image_path = ltrim($current_profile_pic_src, '/');
+
+    // Support existing stored paths such as uploads/photo.jpg.
+    $image_path = preg_replace(
+        '~^(?:customer/)?uploads/~i',
+        '',
+        $image_path
+    );
+
+    $current_profile_pic_src = '/uploads/' . ltrim($image_path, '/');
 }
-
-
 
 
 
@@ -7023,12 +7031,20 @@ $has_upcoming = $upcoming !== null;
             }
         }
 
-        // Refresh immediately, then poll while the dashboard remains open.
+        // Refresh once on page load, then poll every 15 seconds.
+updateNotifications();
+
+setInterval(() => {
+    if (!document.hidden) {
         updateNotifications();
-        setInterval(updateNotifications, 3000);
-        document.addEventListener('visibilitychange', () => {
-            if (!document.hidden) updateNotifications();
-        });
+    }
+}, 15000);
+
+document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+        updateNotifications();
+    }
+});
 
 
 

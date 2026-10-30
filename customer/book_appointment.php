@@ -1,9 +1,18 @@
 <?php
 require_once __DIR__ . '/../shared_session_bootstrap.php';
-include 'db_supabase.php';
+require_once __DIR__ . '/../db_supabase.php';
 
 // Set timezone to Philippines
 date_default_timezone_set('Asia/Manila');
+header('Cache-Control: private, no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
+
+/** Read a scalar request value safely; arrays/objects are treated as invalid input. */
+function bookingRequestString(array $source, string $key): string
+{
+    $value = $source[$key] ?? '';
+    return is_string($value) || is_numeric($value) ? trim((string)$value) : '';
+}
 
 $bookingManilaTimezone = new DateTimeZone('Asia/Manila');
 $minimumOnlineBookingDate = (new DateTimeImmutable('tomorrow', $bookingManilaTimezone))->format('Y-m-d');
@@ -366,19 +375,26 @@ function bookingManualCapacityIntervals(
     return $intervals;
 }
 
-// Access Control
-if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
-    header("Location: login.php");
-    exit();
-}
-
-// Get user info
-$full_name = isset($_SESSION['user_name']) ? $_SESSION['user_name'] : (isset($_SESSION['full_name']) ? $_SESSION['full_name'] : 'User');
-$user_id = (int)($_SESSION['user_id'] ?? 0);
-if ($user_id <= 0) {
+// Access Control: this booking page is for customer accounts only.
+$sessionRole = $_SESSION['role'] ?? '';
+if (
+    ($_SESSION['logged_in'] ?? false) !== true ||
+    !is_string($sessionRole) ||
+    strtolower(trim($sessionRole)) !== 'customer'
+) {
     header('Location: login.php');
     exit();
 }
+
+// Get the signed-in customer details from the server-side session.
+$sessionName = $_SESSION['user_name'] ?? $_SESSION['full_name'] ?? 'User';
+$full_name = is_string($sessionName) && trim($sessionName) !== '' ? trim($sessionName) : 'User';
+$user_id = filter_var($_SESSION['user_id'] ?? null, FILTER_VALIDATE_INT);
+if ($user_id === false || $user_id === null || $user_id < 1) {
+    header('Location: login.php');
+    exit();
+}
+$user_id = (int)$user_id;
 
 // One CSRF token is used by the booking form and the View All Notifications action.
 if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
@@ -387,7 +403,7 @@ if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
 
 // AJAX endpoint: refresh only the signed-in customer's recent notifications and unread count.
 // Cast is_read to text so PostgreSQL BOOLEAN, numeric, and common text representations work.
-if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET' && ($_GET['ajax_notifications'] ?? '') === '1') {
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET' && bookingRequestString($_GET, 'ajax_notifications') === '1') {
     header('Content-Type: application/json; charset=UTF-8');
     header('Cache-Control: no-store, private, max-age=0, must-revalidate');
     header('Pragma: no-cache');
@@ -452,17 +468,34 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET' && ($_GET['ajax_notification
 $success_msg = '';
 $error_msg = '';
 
-// --- FETCH USER DETAILS FOR HEADER (Profile Pic) ---
+// --- FETCH AND NORMALIZE USER PROFILE IMAGE ---
 $profile_pic = '';
+$profile_pic_src = '';
 try {
     $stmt_user = $pdo->prepare("SELECT profile_image FROM users WHERE id = :id LIMIT 1");
     $stmt_user->execute([':id' => $user_id]);
-    $row = $stmt_user->fetch();
+    $row = $stmt_user->fetch(PDO::FETCH_ASSOC);
     if ($row) {
-        $profile_pic = $row['profile_image'] ?? '';
+        $profile_pic = trim((string)($row['profile_image'] ?? ''));
     }
 } catch (PDOException $e) {
+    error_log('Book appointment profile image lookup failed for user #' . $user_id . ': ' . $e->getMessage());
     $profile_pic = '';
+}
+
+// Stored profile_image values may be a bare filename, uploads/filename, or a full URL.
+// Normalize local images to the root uploads directory so the customer/ URL is not prepended.
+if ($profile_pic !== '' && $profile_pic !== 'default-avatar.png') {
+    if (preg_match('~^(?:https?://|data:)~i', $profile_pic)) {
+        $profile_pic_src = $profile_pic;
+    } else {
+        $local_profile_path = ltrim(str_replace('\\', '/', $profile_pic), '/');
+        $local_profile_path = preg_replace('~^(?:customer/)?uploads/~i', '', $local_profile_path);
+        $local_profile_path = ltrim((string)$local_profile_path, '/');
+        if ($local_profile_path !== '' && !str_contains($local_profile_path, '..')) {
+            $profile_pic_src = '/uploads/' . $local_profile_path;
+        }
+    }
 }
 
 // --- FETCH UNREAD NOTIFICATIONS ---
@@ -517,7 +550,7 @@ try {
 }
 
 // --- CATCH THE CATEGORY FROM THE URL ---
-$pre_selected_category = isset($_GET['category']) ? trim((string)$_GET['category']) : '';
+$pre_selected_category = bookingRequestString($_GET, 'category');
 
 // Fetch user's registered pets
 $user_pets = [];
@@ -532,22 +565,23 @@ try {
 // Protect Backend
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $receipt_filename = '';
-    $posted_csrf = (string)($_POST['csrf_token'] ?? '');
+    $posted_csrf = bookingRequestString($_POST, 'csrf_token');
     $session_csrf = (string)($_SESSION['csrf_token'] ?? '');
     if ($session_csrf === '' || $posted_csrf === '' || !hash_equals($session_csrf, $posted_csrf)) {
         $error_msg = 'Your form session expired. Refresh the page and try again.';
     }
 
-    $registered_pet_id = filter_var($_POST['registered_pet_id'] ?? 0, FILTER_VALIDATE_INT);
+    $registered_pet_id_input = $_POST['registered_pet_id'] ?? 0;
+    $registered_pet_id = filter_var(is_scalar($registered_pet_id_input) ? (string)$registered_pet_id_input : '0', FILTER_VALIDATE_INT);
     $registered_pet_id = ($registered_pet_id !== false && $registered_pet_id > 0) ? (int)$registered_pet_id : 0;
     $registered_pet_row = null;
 
-    $pet_name = trim((string)($_POST['pet_name'] ?? ''));
-    $pet_gender = trim((string)($_POST['pet_gender'] ?? ''));
-    $pet_type = trim((string)($_POST['pet_type'] ?? ''));
-    $pet_size = trim((string)($_POST['pet_size'] ?? ''));
-    $posted_category_for_size = trim((string)($_POST['service_category'] ?? ''));
-    $posted_service_for_size = trim((string)($_POST['specific_service'] ?? ''));
+    $pet_name = bookingRequestString($_POST, 'pet_name');
+    $pet_gender = bookingRequestString($_POST, 'pet_gender');
+    $pet_type = bookingRequestString($_POST, 'pet_type');
+    $pet_size = bookingRequestString($_POST, 'pet_size');
+    $posted_category_for_size = bookingRequestString($_POST, 'service_category');
+    $posted_service_for_size = bookingRequestString($_POST, 'specific_service');
     $posted_is_daycare_for_size = ($posted_category_for_size === 'Pet Hotel' && bookingIsHotelDaycare($posted_service_for_size));
 
     // For a selected registered pet, trust the record owned by the current customer
@@ -587,7 +621,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         if (in_array($stored_pet_weight, $daycareOnlyLabels, true)) {
                             // A Daycare range cannot be safely converted to an exact grooming/weight tier.
                             // Use the generic range selected in this form instead of guessing.
-                            $pet_size = trim((string)($_POST['pet_size'] ?? ''));
+                            $pet_size = bookingRequestString($_POST, 'pet_size');
                             if ($pet_size === '') {
                                 $error_msg = 'This pet profile has a Pet Daycare size range saved. Please select the pet\'s current size/weight for this service.';
                             }
@@ -608,15 +642,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
-    $service_category = trim((string)($_POST['service_category'] ?? ''));
-    $specific_service = trim((string)($_POST['specific_service'] ?? ''));
-    $haircut_style = trim((string)($_POST['haircut_style'] ?? ''));
+    $service_category = bookingRequestString($_POST, 'service_category');
+    $specific_service = bookingRequestString($_POST, 'specific_service');
+    $haircut_style = bookingRequestString($_POST, 'haircut_style');
 
-    $appointment_date = trim((string)($_POST['appointment_date'] ?? ''));
-    $appointment_time = trim((string)($_POST['appointment_time'] ?? ''));
-    $pickup_time = trim((string)($_POST['pickup_time'] ?? ''));
-    $checkout_date = trim((string)($_POST['checkout_date'] ?? ''));
-    $remarks = trim((string)($_POST['remarks'] ?? ''));
+    $appointment_date = bookingRequestString($_POST, 'appointment_date');
+    $appointment_time = bookingRequestString($_POST, 'appointment_time');
+    $pickup_time = bookingRequestString($_POST, 'pickup_time');
+    $checkout_date = bookingRequestString($_POST, 'checkout_date');
+    $remarks = bookingRequestString($_POST, 'remarks');
 
     $is_overnight_boarding = ($service_category === 'Pet Hotel' && bookingIsHotelBoarding($specific_service));
     $is_daycare = ($service_category === 'Pet Hotel' && bookingIsHotelDaycare($specific_service));
@@ -638,10 +672,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $checkout_date = '';
     }
 
-    $gcash_ref = trim((string)($_POST['gcash_ref'] ?? ''));
+    $gcash_ref = bookingRequestString($_POST, 'gcash_ref');
 
-    // Check Terms and Conditions
-    if (!isset($_POST['agree_terms'])) {
+    // Check Terms and Conditions; malformed array values do not count as consent.
+    if (bookingRequestString($_POST, 'agree_terms') !== 'on') {
         $error_msg = "Error: You must agree to the Terms and Conditions before booking.";
     }
 
@@ -1254,7 +1288,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         ':task_text' => $task_msg
                     ]);
                     $pdo->exec('RELEASE SAVEPOINT vet_task_savepoint');
-                } catch (PDOException $task_error) {
+                } catch (Throwable $task_error) {
                     $pdo->exec('ROLLBACK TO SAVEPOINT vet_task_savepoint');
                     $pdo->exec('RELEASE SAVEPOINT vet_task_savepoint');
                     error_log('Vet task creation failed for booking user #' . $user_id . ': ' . $task_error->getMessage());
@@ -1269,7 +1303,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt_admin_notif = $pdo->prepare("INSERT INTO admin_notifications (message) VALUES (:message)");
                 $stmt_admin_notif->execute([':message' => $admin_msg]);
                 $pdo->exec('RELEASE SAVEPOINT admin_notif_savepoint');
-            } catch (PDOException $notif_error) {
+            } catch (Throwable $notif_error) {
                 $pdo->exec('ROLLBACK TO SAVEPOINT admin_notif_savepoint');
                 $pdo->exec('RELEASE SAVEPOINT admin_notif_savepoint');
                 error_log('Admin notification insert failed after booking for user #' . $user_id . ': ' . $notif_error->getMessage());
@@ -1280,7 +1314,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             header("Location: bookings.php?msg=success");
             exit();
-        } catch (PDOException | RuntimeException $e) {
+        } catch (Throwable $e) {
             if ($pdo->inTransaction()) {
                 $pdo->rollBack();
             }
@@ -2811,12 +2845,14 @@ if ($error_msg !== '') {
 
                 <div class="profile-wrapper">
                     <div class="profile-trigger" onclick="toggleDropdown('profileDropdown')">
-                        <?php if (!empty($profile_pic)): ?>
+                        <?php if ($profile_pic_src !== ''): ?>
                             <img
-                                src="<?php echo (strpos($profile_pic, 'uploads/') === false ? 'uploads/' : '') . htmlspecialchars($profile_pic); ?>"
+                                src="<?php echo htmlspecialchars($profile_pic_src, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>"
                                 alt="Profile"
                                 class="profile-img"
+                                onerror="this.onerror=null;this.style.display='none';this.nextElementSibling.style.display='inline-flex';"
                             >
+                            <i class="fa-solid fa-circle-user" style="display:none;font-size:20px;color:var(--brand-blue);"></i>
                         <?php else: ?>
                             <i class="fa-solid fa-circle-user" style="font-size:20px;color:var(--brand-blue);"></i>
                         <?php endif; ?>
@@ -3008,7 +3044,7 @@ if ($error_msg !== '') {
                             </div>
 
                             <img
-                                src="images/qr.png"
+                                src="/images/qr.png"
                                 alt="Boogie's Pet Care GCash QR Code"
                                 class="gcash-qr-image"
                                 loading="eager"
@@ -3231,9 +3267,9 @@ if ($error_msg !== '') {
         const notificationBadge = document.getElementById('notif-badge');
         const notificationItemsContainer = document.getElementById('notif-items-container');
         const notificationViewAllForm = document.getElementById('notif-view-all-form');
-        const notificationSound = new Audio('notification.mp3');
+        const notificationSound = new Audio('/customer/notification.mp3');
         let previousUnreadCount = <?php echo (int)$unread_count; ?>;
-        let previousLatestNotificationId = <?php echo json_encode((string)($notifications[0]['id'] ?? ''), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
+        let previousLatestNotificationId = <?php echo json_encode((string)($notifications[0]['id'] ?? ''), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_INVALID_UTF8_SUBSTITUTE); ?>;
         let notificationRefreshInProgress = false;
 
         function renderAppointmentNotifications(items) {
@@ -3312,10 +3348,13 @@ if ($error_msg !== '') {
             }
         }
 
-        updateAppointmentNotifications();
+        // PHP already rendered the current badge/list. Poll periodically instead of
+        // duplicating those queries immediately after the page finishes loading.
         setInterval(() => {
             if (!document.hidden) updateAppointmentNotifications();
-        }, 3000);
+        }, 15000);
+
+        // Refresh immediately when the customer returns to this tab.
         document.addEventListener('visibilitychange', () => {
             if (!document.hidden) updateAppointmentNotifications();
         });
@@ -3335,23 +3374,14 @@ if ($error_msg !== '') {
             });
         }
 
-        const userPetsArray = <?php echo json_encode($user_pets); ?>;
+        const userPetsArray = <?php echo json_encode($user_pets, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT | JSON_INVALID_UTF8_SUBSTITUTE) ?: '[]'; ?>;
 
-        window.addEventListener('DOMContentLoaded', (event) => {
-            if (document.getElementById('appointment_date')) {
+        window.addEventListener('DOMContentLoaded', () => {
+            const dateInput = document.getElementById('appointment_date');
+            if (dateInput) {
+                // Keep the browser constraint aligned with the server's Asia/Manila date.
+                dateInput.min = <?php echo json_encode($minimumOnlineBookingDate, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT); ?>;
                 updateOptions();
-                
-                const dateInput = document.getElementById('appointment_date');
-                const now = new Date();
-                const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
-                const formatLocalDate = (date) => {
-                    const year = date.getFullYear();
-                    const month = String(date.getMonth() + 1).padStart(2, '0');
-                    const day = String(date.getDate()).padStart(2, '0');
-                    return `${year}-${month}-${day}`;
-                };
-                // Same-day online appointments are never allowed; tomorrow is the earliest date.
-                dateInput.setAttribute('min', formatLocalDate(tomorrow));
             }
         });
 
@@ -3807,7 +3837,7 @@ if ($error_msg !== '') {
                 }
                 setAvailabilityMessage('Checking Pet Daycare room capacity for the complete stay…');
                 const daycareUrl = `check_slots.php?date=${encodeURIComponent(date)}&category=${encodeURIComponent(category)}&specific_service=${encodeURIComponent(specificService)}&dropoff_time=${encodeURIComponent(dropoffTime)}&pickup_time=${encodeURIComponent(pickupTime)}`;
-                fetch(daycareUrl, { cache: 'no-store' })
+                fetch(daycareUrl, { cache: 'no-store', credentials: 'same-origin' })
                     .then(response => {
                         if (!response.ok) throw new Error('Availability endpoint returned HTTP ' + response.status);
                         return response.json();
@@ -3852,7 +3882,7 @@ if ($error_msg !== '') {
 
             let url = `check_slots.php?date=${encodeURIComponent(date)}&category=${encodeURIComponent(category)}&specific_service=${encodeURIComponent(specificService)}`;
             if (isBoarding) url += `&checkout_date=${encodeURIComponent(checkoutDate)}`;
-            fetch(url, { cache: 'no-store' })
+            fetch(url, { cache: 'no-store', credentials: 'same-origin' })
                 .then(response => {
                     if (!response.ok) throw new Error('Availability endpoint returned HTTP ' + response.status);
                     return response.json();

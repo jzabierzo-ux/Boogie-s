@@ -24,11 +24,7 @@ use PHPMailer\PHPMailer\Exception;
 
 
 
-require_once __DIR__ . '/../PHPMailer/src/Exception.php';
-
-require_once __DIR__ . '/../PHPMailer/src/PHPMailer.php';
-
-require_once __DIR__ . '/../PHPMailer/src/SMTP.php';
+// PHPMailer is loaded only when a logged-in user submits the contact form.
 
 
 
@@ -169,6 +165,11 @@ if (isset($_POST['send_contact'])) {
             }
 
 
+
+            // Load the mailer classes only when sending an email, not on every page view.
+            require_once __DIR__ . '/../PHPMailer/src/Exception.php';
+            require_once __DIR__ . '/../PHPMailer/src/PHPMailer.php';
+            require_once __DIR__ . '/../PHPMailer/src/SMTP.php';
 
             $mail = new PHPMailer(true);
 

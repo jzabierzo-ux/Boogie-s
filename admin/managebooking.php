@@ -1,7 +1,7 @@
 <?php
 require_once __DIR__ . '/../shared_session_bootstrap.php';
-include '../db_supabase.php';
-require_once '../includes/iprog_sms.php';
+require_once __DIR__ . '/../db_supabase.php';
+require_once __DIR__ . '/../includes/iprog_sms.php';
 
 // Set default timezone
 date_default_timezone_set('Asia/Manila');
@@ -51,13 +51,13 @@ if (!$admin_session_valid && !$staff_session_valid) {
     if ($requested_portal === 'staff') {
         header('Location: ../staff/stafflogin.php');
     } else {
-        header('Location: ../admin_login.php');
+        header('Location: admin_login.php');
     }
     exit();
 }
 
 if ($current_role === 'admin' && !$admin_session_valid) {
-    header('Location: ../admin_login.php');
+    header('Location: admin_login.php');
     exit();
 }
 
@@ -689,11 +689,12 @@ function renderBookingActionForm(
     string $confirmMessage,
     string $csrfToken
 ): void {
+    global $is_admin;
     $confirmJs = 'return confirm(' . json_encode($confirmMessage, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP) . ');';
     echo '<form method="POST" action="managebooking.php" class="booking-action-form" style="display:inline;margin:0;">';
     echo '<input type="hidden" name="booking_action" value="1">';
     echo '<input type="hidden" name="csrf_token" value="' . htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') . '">';
-    $portalForForm = (($_SESSION['admin_logged_in'] ?? false) === true && strtolower(trim((string)($_SESSION['role'] ?? ''))) === 'admin') ? 'admin' : 'staff';
+    $portalForForm = $is_admin ? 'admin' : 'staff';
     echo '<input type="hidden" name="login_portal" value="' . $portalForForm . '">';
     echo '<input type="hidden" name="id" value="' . $bookingId . '">';
     echo '<input type="hidden" name="action" value="' . htmlspecialchars($action, ENT_QUOTES, 'UTF-8') . '">';
@@ -705,6 +706,7 @@ function renderBookingActionForm(
 // 2. FETCH ADMIN PROFILE
 $admin_full_name = "User";
 $profile_img_path = "";
+$profile_img_src = "";
 $first_name = "User";
 
 if (isset($_SESSION['user_id'])) {
@@ -729,6 +731,54 @@ if (isset($_SESSION['user_id'])) {
         }
     } catch (PDOException $e) {
         // Keep page usable even if profile lookup fails.
+    }
+}
+
+// Resolve profile images saved by both Admin and Staff profile pages.
+// Admin profile uploads are stored in /admin/uploads; Staff uploads may be in /uploads.
+$raw_profile_img = trim((string)$profile_img_path);
+if ($raw_profile_img !== '') {
+    if (preg_match('~^(?:https?://|data:image/)~i', $raw_profile_img)) {
+        $profile_img_src = $raw_profile_img;
+    } else {
+        $normalized_profile_img = str_replace('\\', '/', $raw_profile_img);
+        $normalized_profile_img = ltrim($normalized_profile_img, '/');
+
+        // Keep the original path hint so legacy ../uploads paths prefer the project uploads folder.
+        $prefer_root_uploads = (bool)preg_match('~^(?:(?:\.\./)+|(?:staff/))uploads/~i', $normalized_profile_img);
+
+        $normalized_profile_img = preg_replace(
+            '~^(?:(?:\.\./)|(?:\./)|(?:customer/)|(?:admin/)|(?:staff/))+~i',
+            '',
+            $normalized_profile_img
+        );
+        $normalized_profile_img = preg_replace('~^uploads/~i', '', $normalized_profile_img);
+
+        // Reject traversal and invalid filesystem characters before checking either location.
+        if (
+            $normalized_profile_img !== ''
+            && !preg_match('~(^|/)\.\.?(/|$)|[<>:"|?*\\x00-\\x1F]~', $normalized_profile_img)
+        ) {
+            $encoded_segments = array_map('rawurlencode', explode('/', $normalized_profile_img));
+            $relative_url = implode('/', $encoded_segments);
+
+            $admin_upload_path = __DIR__ . '/uploads/' . $normalized_profile_img;
+            $root_upload_path = __DIR__ . '/../uploads/' . $normalized_profile_img;
+
+            if ($prefer_root_uploads) {
+                if (is_file($root_upload_path)) {
+                    $profile_img_src = '/uploads/' . $relative_url;
+                } elseif (is_file($admin_upload_path)) {
+                    $profile_img_src = '/admin/uploads/' . $relative_url;
+                }
+            } else {
+                if (is_file($admin_upload_path)) {
+                    $profile_img_src = '/admin/uploads/' . $relative_url;
+                } elseif (is_file($root_upload_path)) {
+                    $profile_img_src = '/uploads/' . $relative_url;
+                }
+            }
+        }
     }
 }
 
@@ -1281,56 +1331,37 @@ function bookingNotificationUnreadPredicate(PDO $pdo, string $tableName): string
         throw new InvalidArgumentException('Unsupported notifications table.');
     }
 
-    $typeStmt = $pdo->prepare("SELECT data_type
-        FROM information_schema.columns
-        WHERE table_schema = current_schema()
-          AND table_name = :table_name
-          AND column_name = 'is_read'
-        LIMIT 1");
-    $typeStmt->execute([':table_name' => $tableName]);
-    $dataType = strtolower(trim((string)$typeStmt->fetchColumn()));
-
-    if ($dataType === 'boolean') {
-        return 'COALESCE(is_read, FALSE) = FALSE';
-    }
-    if (in_array($dataType, ['smallint', 'integer', 'bigint', 'numeric', 'decimal', 'real', 'double precision'], true)) {
-        return '(is_read = 0 OR is_read IS NULL)';
-    }
-    if (in_array($dataType, ['text', 'character varying', 'character'], true)) {
-        return "(is_read IS NULL OR LOWER(BTRIM(CAST(is_read AS TEXT))) IN ('0', 'false', 'f', 'no', 'unread', ''))";
-    }
-
-    throw new RuntimeException('Unsupported or unknown is_read column type for ' . $tableName . '.');
+    // A text cast handles the supported PostgreSQL boolean, numeric, and text
+    // is_read column types without an extra information_schema round trip.
+    return "COALESCE(LOWER(BTRIM(CAST(is_read AS TEXT))), '') IN ('0', 'false', 'f', 'no', 'unread', '')";
 }
 
 if ($show_notifications) {
     try {
         if ($is_admin) {
             $unreadPredicate = bookingNotificationUnreadPredicate($pdo, 'admin_notifications');
-            $countStmt = $pdo->query("SELECT COUNT(*) FROM admin_notifications WHERE {$unreadPredicate}");
-            $unread_count = (int)$countStmt->fetchColumn();
-
-            $admin_notif_stmt = $pdo->query("SELECT id, message, created_at
+            // COUNT(*) OVER() returns the badge count with the same query used
+            // to load the latest notifications, avoiding a separate COUNT query.
+            $admin_notif_stmt = $pdo->query("SELECT id, message, created_at,
+                    COUNT(*) OVER() AS unread_total
                 FROM admin_notifications
                 WHERE {$unreadPredicate}
                 ORDER BY created_at DESC, id DESC
                 LIMIT 20");
             $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
+            $unread_count = (int)($admin_notifications[0]['unread_total'] ?? 0);
         } else {
             // Grooming and Pet Hotel Staff may only see notifications assigned to their own user ID.
             $unreadPredicate = bookingNotificationUnreadPredicate($pdo, 'notifications');
-            $countStmt = $pdo->prepare("SELECT COUNT(*) FROM notifications
-                WHERE user_id = :user_id AND {$unreadPredicate}");
-            $countStmt->execute([':user_id' => (int)$_SESSION['user_id']]);
-            $unread_count = (int)$countStmt->fetchColumn();
-
-            $staffNotifStmt = $pdo->prepare("SELECT id, title, message, type, created_at
+            $staffNotifStmt = $pdo->prepare("SELECT id, title, message, type, created_at,
+                    COUNT(*) OVER() AS unread_total
                 FROM notifications
                 WHERE user_id = :user_id AND {$unreadPredicate}
                 ORDER BY created_at DESC, id DESC
                 LIMIT 20");
             $staffNotifStmt->execute([':user_id' => (int)$_SESSION['user_id']]);
             $staff_notifications = $staffNotifStmt->fetchAll(PDO::FETCH_ASSOC);
+            $unread_count = (int)($staff_notifications[0]['unread_total'] ?? 0);
         }
     } catch (Throwable $e) {
         error_log('Manage booking notification fetch failed: ' . $e->getMessage());
@@ -1352,59 +1383,36 @@ if ($current_role === 'groomer') {
 }
 
 try {
-    $total_count_stmt = $pdo->query("SELECT COUNT(*) FROM appointments WHERE 1=1 $count_scope");
-    $total_count = (int)$total_count_stmt->fetchColumn();
-
-    $pending_count_stmt = $pdo->query("
-        SELECT COUNT(*)
+    // Fetch all dashboard status-card counts in one PostgreSQL request instead
+    // of sending seven sequential COUNT queries to Supabase.
+    $countsStmt = $pdo->query("SELECT
+        COUNT(*) AS total_count,
+        COUNT(*) FILTER (WHERE (LOWER(COALESCE(booking_status, '')) = 'pending'
+            OR booking_status IS NULL OR booking_status = '')) AS pending_count,
+        COUNT(*) FILTER (WHERE LOWER(COALESCE(booking_status, '')) = 'confirmed') AS confirmed_count,
+        COUNT(*) FILTER (WHERE LOWER(COALESCE(booking_status, '')) = 'completed') AS completed_count,
+        COUNT(*) FILTER (WHERE (LOWER(COALESCE(booking_status, '')) = 'cancelled'
+            OR LOWER(COALESCE(booking_status, '')) = 'no-show')) AS cancelled_count,
+        COUNT(*) FILTER (WHERE LOWER(COALESCE(booking_status, '')) = 'for rescheduling') AS reschedule_count,
+        COUNT(*) FILTER (WHERE LOWER(COALESCE(booking_status, '')) = 'rescheduled') AS rescheduled_count
         FROM appointments
-        WHERE (LOWER(COALESCE(booking_status, '')) = 'pending'
-           OR booking_status IS NULL
-           OR booking_status = '') $count_scope
-    ");
-    $pending_count = (int)$pending_count_stmt->fetchColumn();
-
-    $confirmed_count_stmt = $pdo->query("
-        SELECT COUNT(*)
-        FROM appointments
-        WHERE LOWER(COALESCE(booking_status, '')) = 'confirmed' $count_scope
-    ");
-    $confirmed_count = (int)$confirmed_count_stmt->fetchColumn();
-
-    $completed_count_stmt = $pdo->query("
-        SELECT COUNT(*)
-        FROM appointments
-        WHERE LOWER(COALESCE(booking_status, '')) = 'completed' $count_scope
-    ");
-    $completed_count = (int)$completed_count_stmt->fetchColumn();
-
-    $cancelled_count_stmt = $pdo->query("
-        SELECT COUNT(*)
-        FROM appointments
-        WHERE (LOWER(COALESCE(booking_status, '')) = 'cancelled'
-           OR LOWER(COALESCE(booking_status, '')) = 'no-show') $count_scope
-    ");
-    $cancelled_count = (int)$cancelled_count_stmt->fetchColumn();
-
-    $reschedule_count_stmt = $pdo->query("
-        SELECT COUNT(*)
-        FROM appointments
-        WHERE LOWER(COALESCE(booking_status, '')) = 'for rescheduling' $count_scope
-    ");
-    $reschedule_count = (int)$reschedule_count_stmt->fetchColumn();
-
-    $rescheduled_count_stmt = $pdo->query("
-        SELECT COUNT(*)
-        FROM appointments
-        WHERE LOWER(COALESCE(booking_status, '')) = 'rescheduled' $count_scope
-    ");
-    $rescheduled_count = (int)$rescheduled_count_stmt->fetchColumn();
+        WHERE 1=1 $count_scope");
+    $countData = $countsStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+    $total_count = (int)($countData['total_count'] ?? 0);
+    $pending_count = (int)($countData['pending_count'] ?? 0);
+    $confirmed_count = (int)($countData['confirmed_count'] ?? 0);
+    $completed_count = (int)($countData['completed_count'] ?? 0);
+    $cancelled_count = (int)($countData['cancelled_count'] ?? 0);
+    $reschedule_count = (int)($countData['reschedule_count'] ?? 0);
+    $rescheduled_count = (int)($countData['rescheduled_count'] ?? 0);
 } catch (PDOException $e) {
+    error_log('Manage booking status counts failed: ' . $e->getMessage());
     $total_count = 0;
     $pending_count = 0;
     $confirmed_count = 0;
     $completed_count = 0;
     $cancelled_count = 0;
+    $reschedule_count = 0;
     $rescheduled_count = 0;
 }
 
@@ -1452,8 +1460,13 @@ $where_clause = $where_parts ? 'WHERE ' . implode(' AND ', $where_parts) : '';
 
 // --- FETCH BOOKINGS ---
 try {
+    // Load only the columns rendered in the booking table. Avoid SELECT a.* so
+    // unused database fields are not transferred on every page visit.
     $bookings_sql = "
-        SELECT a.*, p.name AS pet_display_name
+        SELECT a.id, a.appointment_date, a.appointment_time, a.appointment_type,
+               a.booking_status, a.service, a.service_fee, a.total_price,
+               a.payment_method, a.payment_status, a.gcash_ref, a.gcash_receipt,
+               a.pickup_time, a.vet_doctor, p.name AS pet_display_name
         FROM appointments a
         LEFT JOIN pets p ON a.pet_id = p.id
         $where_clause
@@ -1480,21 +1493,26 @@ $availability_list_error = false;
 $availability_adjustments = [];
 if ($is_admin) {
     try {
-        $availability_table_exists = (bool)$pdo->query("SELECT to_regclass('public.availability_adjustments')")->fetchColumn();
-        if ($availability_table_exists) {
-            $availabilityStmt = $pdo->query("SELECT id, service_category, COALESCE(specific_service, '') AS specific_service,
-                    start_date::text AS start_date, (end_date - 1)::text AS display_end_date,
-                    start_time::text AS start_time, end_time::text AS end_time,
-                    adjustment_type, quantity, reason
-                FROM public.availability_adjustments
-                WHERE is_active = TRUE AND end_date > CURRENT_DATE
-                ORDER BY start_date ASC, start_time NULLS FIRST, id DESC
-                LIMIT 100");
-            $availability_adjustments = $availabilityStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
-        }
+        // Query the table directly. A separate to_regclass() call added another
+        // database round trip before the actual list query.
+        $availabilityStmt = $pdo->query("SELECT id, service_category, COALESCE(specific_service, '') AS specific_service,
+                start_date::text AS start_date, (end_date - 1)::text AS display_end_date,
+                start_time::text AS start_time, end_time::text AS end_time,
+                adjustment_type, quantity, reason
+            FROM public.availability_adjustments
+            WHERE is_active = TRUE AND end_date > CURRENT_DATE
+            ORDER BY start_date ASC, start_time NULLS FIRST, id DESC
+            LIMIT 100");
+        $availability_adjustments = $availabilityStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        $availability_table_exists = true;
     } catch (Throwable $e) {
         error_log('Manage booking availability list failed: ' . $e->getMessage());
-        $availability_list_error = true;
+        if ((string)$e->getCode() === '42P01') {
+            $availability_table_exists = false;
+        } else {
+            $availability_table_exists = true;
+            $availability_list_error = true;
+        }
     }
 }
 
@@ -2089,8 +2107,8 @@ if ($is_admin) {
                     <span class="admin-tag <?php echo !$is_admin ? 'staff' : ''; ?> <?php echo $current_role === 'pet_hotel_staff' ? 'pet-hotel-staff' : ''; ?>">
                         <?php echo strtoupper($_SESSION['role'] ?? 'ADMIN'); ?>
                     </span>
-                    <?php if (!empty($profile_img_path) && file_exists($profile_img_path)): ?>
-                        <img src="<?php echo htmlspecialchars($profile_img_path); ?>" class="top-avatar" alt="Profile Picture">
+                    <?php if ($profile_img_src !== ''): ?>
+                        <img src="<?php echo htmlspecialchars($profile_img_src, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>" class="top-avatar" alt="Profile Picture" onerror="this.onerror=null; this.style.display='none';">
                     <?php else: ?>
                         <div class="top-avatar-fallback"><?php echo strtoupper(substr($first_name, 0, 1)); ?></div>
                     <?php endif; ?>
@@ -3447,7 +3465,12 @@ if ($is_admin) {
                 : '<div class="notif-empty">No new notifications.</div>';
         }
 
+        let adminNotifFetchInProgress = false;
+
         function fetchAdminNotifs() {
+            if (adminNotifFetchInProgress || document.hidden) return;
+
+            adminNotifFetchInProgress = true;
             fetch('get_admin_notifs.php', {
                 method: 'GET',
                 cache: 'no-store',
@@ -3462,6 +3485,9 @@ if ($is_admin) {
                 .then(renderAdminNotifications)
                 .catch(function(error) {
                     console.error('Error fetching admin notifications:', error);
+                })
+                .finally(function() {
+                    adminNotifFetchInProgress = false;
                 });
         }
 
@@ -3506,7 +3532,10 @@ if ($is_admin) {
 
         <?php if ($show_notifications): ?>
         fetchAdminNotifs();
-        setInterval(fetchAdminNotifs, 3000);
+        setInterval(fetchAdminNotifs, 15000);
+        document.addEventListener('visibilitychange', function() {
+            if (!document.hidden) fetchAdminNotifs();
+        });
         <?php endif; ?>
     </script>
 </body>

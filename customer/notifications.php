@@ -133,9 +133,30 @@ $profile_image = $user_data['profile_image'] ?? null;
 
 
 
-// Match the existing header markup, which uses $profile_pic.
-
+// Normalize the saved profile image for pages inside /customer.
 $profile_pic = $profile_image ?: ($_SESSION['profile_image'] ?? '');
+$profile_pic_src = '';
+$stored_profile_pic = trim((string)$profile_pic);
+
+if ($stored_profile_pic !== '') {
+    if (preg_match('~^(?:https?://|data:)~i', $stored_profile_pic)) {
+        // Preserve externally hosted or data-URI profile images.
+        if (!preg_match('~(?:^|/)default-avatar\.png(?:[?#].*)?$~i', $stored_profile_pic)) {
+            $profile_pic_src = $stored_profile_pic;
+        }
+    } else {
+        // Support legacy database values: filename, uploads/filename,
+        // /uploads/filename, or customer/uploads/filename.
+        $image_path = ltrim($stored_profile_pic, '/');
+        $image_path = preg_replace('~^(?:customer/)?uploads/~i', '', $image_path);
+        $image_path = ltrim((string)$image_path, '/');
+
+        if ($image_path !== '' && strcasecmp(basename($image_path), 'default-avatar.png') !== 0) {
+            // Uploaded files are stored in the project-root /uploads directory.
+            $profile_pic_src = '/uploads/' . $image_path;
+        }
+    }
+}
 
 
 
@@ -2379,22 +2400,16 @@ $notification_total = count($notifs_list);
 
                     <div class="profile-trigger" onclick="toggleDropdown('profileDropdown')">
 
-                        <?php if (!empty($profile_pic)): ?>
-
+                        <?php if ($profile_pic_src !== ''): ?>
                             <img
-
-                                src="<?php echo (strpos($profile_pic, 'uploads/') === false ? 'uploads/' : '') . htmlspecialchars($profile_pic); ?>"
-
+                                src="<?php echo htmlspecialchars($profile_pic_src, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>"
                                 alt="Profile"
-
                                 class="profile-img"
-
+                                onerror="this.onerror=null; this.style.display='none'; this.nextElementSibling.style.display='inline-flex';"
                             >
-
+                            <i class="fa-solid fa-circle-user" style="display:none;font-size:20px;color:var(--brand-blue);" aria-hidden="true"></i>
                         <?php else: ?>
-
-                            <i class="fa-solid fa-circle-user" style="font-size:20px;color:var(--brand-blue);"></i>
-
+                            <i class="fa-solid fa-circle-user" style="font-size:20px;color:var(--brand-blue);" aria-hidden="true"></i>
                         <?php endif; ?>
 
 
@@ -2996,8 +3011,15 @@ $notification_total = count($notifs_list);
             }
         }
 
+        // Reduce repeated notification requests.
+setInterval(updateNotifications, 15000);
+
+// Refresh notifications when returning to the tab.
+document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) {
         updateNotifications();
-        setInterval(updateNotifications, 3000);
+    }
+});
 
     </script>
 

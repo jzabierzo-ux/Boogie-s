@@ -1,7 +1,7 @@
 <?php
 require_once __DIR__ . '/../shared_session_bootstrap.php';
 
-// Kung naka-login na sila, i-redirect sa home.php para sa personalized view
+// Kung naka-login na sila, i-redirect sa home.php para sa personalized view.
 if (isset($_SESSION['logged_in']) && $_SESSION['logged_in'] === true) {
     header('Location: home.php');
     exit();
@@ -9,12 +9,74 @@ if (isset($_SESSION['logged_in']) && $_SESSION['logged_in'] === true) {
 
 require_once __DIR__ . '/../db_supabase.php';
 
+/** Escape database values before placing them in HTML text or attributes. */
+function escapeHomeHtml($value): string
+{
+    return htmlspecialchars(
+        is_scalar($value) ? (string)$value : '',
+        ENT_QUOTES | ENT_SUBSTITUTE,
+        'UTF-8'
+    );
+}
+
+/**
+ * Allow only safe HTTP(S) URLs or local relative paths for promotion images.
+ * Existing ../uploads/... paths are normalized to uploads/..., as before.
+ */
+function normalizePromoImagePath($value): string
+{
+    if (!is_scalar($value)) {
+        return '';
+    }
+
+    $path = trim((string)$value);
+    if ($path === '' || preg_match('/[\x00-\x1F\x7F]/', $path)) {
+        return '';
+    }
+
+    if (preg_match('#^https?://#i', $path)) {
+        $scheme = strtolower((string)parse_url($path, PHP_URL_SCHEME));
+        return in_array($scheme, ['http', 'https'], true)
+            && filter_var($path, FILTER_VALIDATE_URL)
+            ? $path
+            : '';
+    }
+
+    // Reject protocol-relative, javascript:, data:, and other explicit schemes.
+    if (preg_match('#^(?://|[a-z][a-z0-9+.-]*:)#i', $path)) {
+        return '';
+    }
+
+    $path = str_replace('\\', '/', $path);
+    while (str_starts_with($path, '../') || str_starts_with($path, './')) {
+        $path = substr($path, str_starts_with($path, '../') ? 3 : 2);
+    }
+    $path = ltrim($path, '/');
+
+    if ($path === '' || preg_match('#(^|/)\.\.?(/|$)#', $path)) {
+        return '';
+    }
+
+    return $path;
+}
+
 // --- FETCH REAL REVIEWS ---
 $reviews_list = [];
 
 try {
-    $review_stmt = $pdo->prepare("\n        SELECT\n            r.*,\n            u.full_name,\n            a.service\n        FROM reviews r\n        JOIN users u ON r.user_id = u.id\n        JOIN appointments a ON r.appointment_id = a.id\n        WHERE r.rating >= 4\n        ORDER BY r.review_date DESC\n        LIMIT 3\n    ");
-    $review_stmt->execute();
+    $review_stmt = $pdo->query("
+        SELECT
+            r.rating,
+            r.comment,
+            u.full_name,
+            a.service
+        FROM reviews r
+        JOIN users u ON r.user_id = u.id
+        JOIN appointments a ON r.appointment_id = a.id
+        WHERE r.rating >= 4
+        ORDER BY r.review_date DESC
+        LIMIT 3
+    ");
     $reviews_list = $review_stmt->fetchAll(PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
     error_log('Reviews query failed: ' . $e->getMessage());
@@ -26,12 +88,22 @@ $total_reviews = 0;
 $avg_rating = '0.0';
 
 try {
-    $stats_stmt = $pdo->query("\n        SELECT\n            COUNT(*) AS total_reviews,\n            AVG(rating) AS avg_rating\n        FROM reviews\n    ");
+    $stats_stmt = $pdo->query("
+        SELECT
+            COUNT(*) AS total_reviews,
+            AVG(rating) AS avg_rating
+        FROM reviews
+    ");
     $stats_row = $stats_stmt->fetch(PDO::FETCH_ASSOC) ?: [];
 
-    $total_reviews = (int)($stats_row['total_reviews'] ?? 0);
-    $avg_rating = ($total_reviews > 0)
-        ? number_format((float)($stats_row['avg_rating'] ?? 0), 1)
+    $total_reviews = max(0, (int)($stats_row['total_reviews'] ?? 0));
+    $average_rating_value = (float)($stats_row['avg_rating'] ?? 0);
+    if (!is_finite($average_rating_value)) {
+        $average_rating_value = 0.0;
+    }
+    $average_rating_value = max(0.0, min(5.0, $average_rating_value));
+    $avg_rating = $total_reviews > 0
+        ? number_format($average_rating_value, 1)
         : '0.0';
 } catch (PDOException $e) {
     error_log('Review stats query failed: ' . $e->getMessage());
@@ -45,8 +117,21 @@ $parent_text = ($total_reviews === 1)
 $promos_list = [];
 
 try {
-    $promo_stmt = $pdo->prepare("\n        SELECT *\n        FROM promos\n        WHERE status = 'active'\n          AND (expiry_date >= ((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Manila')::date) OR expiry_date IS NULL)\n        ORDER BY id DESC\n        LIMIT 3\n    ");
-    $promo_stmt->execute();
+    $promo_stmt = $pdo->query("
+        SELECT
+            id,
+            title,
+            tag,
+            description,
+            image_url,
+            theme_color,
+            expiry_date
+        FROM promos
+        WHERE status = 'active'
+          AND (expiry_date >= ((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Manila')::date) OR expiry_date IS NULL)
+        ORDER BY id DESC
+        LIMIT 3
+    ");
     $promos_list = $promo_stmt->fetchAll(PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
     error_log('Promotions query failed: ' . $e->getMessage());
@@ -1570,6 +1655,7 @@ try {
                 <input
                     type="search"
                     id="siteSearchInput"
+                    maxlength="100"
                     placeholder="Search for grooming, hotel, or vet services..."
                     aria-label="Search services"
                 >
@@ -1691,30 +1777,33 @@ try {
                                 ? $theme_candidate
                                 : 'purple';
 
-                            $image_path = trim((string)($promo['image_url'] ?? ''));
-                            if ($image_path !== '') {
-                                $image_path = ltrim(str_replace('../', '', $image_path), '/');
-                            }
+                            $image_path = normalizePromoImagePath($promo['image_url'] ?? '');
+                            $expiry_timestamp = !empty($promo['expiry_date'])
+                                ? strtotime((string)$promo['expiry_date'])
+                                : false;
+                            $expiry_label = $expiry_timestamp !== false
+                                ? date('M j, Y', $expiry_timestamp)
+                                : '';
                         ?>
                         <article class="promo-card <?php echo $theme_class; ?> <?php echo $image_path !== '' ? 'has-image' : ''; ?>">
                             <?php if ($image_path !== ''): ?>
                                 <img
                                     class="promo-image"
-                                    src="<?php echo htmlspecialchars($image_path, ENT_QUOTES, 'UTF-8'); ?>"
-                                    alt="<?php echo htmlspecialchars($promo['title'] ?? 'Promotion', ENT_QUOTES, 'UTF-8'); ?>"
+                                    src="<?php echo escapeHomeHtml($image_path); ?>"
+                                    alt="<?php echo escapeHomeHtml($promo['title'] ?? 'Promotion'); ?>"
                                     loading="lazy"
                                 >
                             <?php endif; ?>
 
                             <div class="promo-body">
-                                <span class="tag"><?php echo htmlspecialchars($promo['tag'] ?? 'PROMO', ENT_QUOTES, 'UTF-8'); ?></span>
-                                <h3><?php echo htmlspecialchars($promo['title'] ?? 'Special Offer', ENT_QUOTES, 'UTF-8'); ?></h3>
-                                <p><?php echo htmlspecialchars($promo['description'] ?? '', ENT_QUOTES, 'UTF-8'); ?></p>
+                                <span class="tag"><?php echo escapeHomeHtml($promo['tag'] ?? 'PROMO'); ?></span>
+                                <h3><?php echo escapeHomeHtml($promo['title'] ?? 'Special Offer'); ?></h3>
+                                <p><?php echo escapeHomeHtml($promo['description'] ?? ''); ?></p>
 
-                                <?php if (!empty($promo['expiry_date'])): ?>
+                                <?php if ($expiry_label !== ''): ?>
                                     <div class="promo-meta">
                                         <i class="fa-regular fa-clock"></i>
-                                        Until <?php echo htmlspecialchars(date('M j, Y', strtotime($promo['expiry_date'])), ENT_QUOTES, 'UTF-8'); ?>
+                                        Until <?php echo escapeHomeHtml($expiry_label); ?>
                                     </div>
                                 <?php endif; ?>
                             </div>
@@ -1786,7 +1875,7 @@ try {
                     <p>
                         <?php
                             if ($total_reviews > 0) {
-                                echo "Rated " . htmlspecialchars($avg_rating) . "/5 by " . number_format($total_reviews) . " " . $parent_text;
+                                echo "Rated " . escapeHomeHtml($avg_rating) . "/5 by " . number_format($total_reviews) . " " . $parent_text;
                             } else {
                                 echo "No reviews yet. Be the first to share your experience!";
                             }
@@ -1798,28 +1887,43 @@ try {
                     <?php if (!empty($reviews_list)): ?>
                         <?php foreach($reviews_list as $row): ?>
                             <?php
-                                $review_name = $row['full_name'] ?? 'Valued Client';
-                                $initial = strtoupper(substr($review_name, 0, 1));
+                                $review_name_value = $row['full_name'] ?? 'Valued Client';
+                                $review_name = is_scalar($review_name_value)
+                                    ? trim((string)$review_name_value)
+                                    : 'Valued Client';
+                                if ($review_name === '') {
+                                    $review_name = 'Valued Client';
+                                }
+                                $first_character = function_exists('mb_substr')
+                                    ? mb_substr($review_name, 0, 1, 'UTF-8')
+                                    : substr($review_name, 0, 1);
+                                $initial = function_exists('mb_strtoupper')
+                                    ? mb_strtoupper($first_character, 'UTF-8')
+                                    : strtoupper($first_character);
                                 if (!preg_match('/^[A-Z0-9]$/', $initial)) {
                                     $initial = 'P';
                                 }
+                                $review_rating_value = filter_var($row['rating'] ?? 0, FILTER_VALIDATE_INT);
+                                $review_rating = $review_rating_value === false
+                                    ? 0
+                                    : max(0, min(5, (int)$review_rating_value));
                             ?>
                             <article class="t-card">
                                 <div class="stars">
                                     <?php
                                         for($i = 1; $i <= 5; $i++) {
-                                            echo $i <= $row['rating']
+                                            echo $i <= $review_rating
                                                 ? '<i class="fa-solid fa-star"></i>'
                                                 : '<i class="fa-regular fa-star"></i>';
                                         }
                                     ?>
                                 </div>
-                                <p class="t-text">"<?php echo htmlspecialchars($row['comment']); ?>"</p>
+                                <p class="t-text">"<?php echo escapeHomeHtml($row['comment'] ?? ''); ?>"</p>
                                 <div class="t-user">
-                                    <div class="t-avatar"><?php echo htmlspecialchars($initial); ?></div>
+                                    <div class="t-avatar"><?php echo escapeHomeHtml($initial); ?></div>
                                     <div>
-                                        <strong><?php echo htmlspecialchars($review_name); ?></strong>
-                                        <small><?php echo htmlspecialchars($row['service']); ?> Client</small>
+                                        <strong><?php echo escapeHomeHtml($review_name); ?></strong>
+                                        <small><?php echo escapeHomeHtml($row['service'] ?? ''); ?> Client</small>
                                     </div>
                                 </div>
                             </article>
@@ -1903,39 +2007,44 @@ try {
 
     <script>
         let currentSlideIndex = 0;
+        let searchStatusTimer = null;
         const slides = document.querySelectorAll('.slide');
         const dots = document.querySelectorAll('.dot');
         const track = document.querySelector('.slider-track');
 
         function setSlide(index) {
-            currentSlideIndex = index;
-            track.style.transform = `translateX(-${index * 100}%)`;
+            if (!track || slides.length === 0) return;
 
-            slides.forEach(s => s.classList.remove('active'));
-            dots.forEach(d => d.classList.remove('active'));
+            const numericIndex = Number.isFinite(Number(index)) ? Math.trunc(Number(index)) : 0;
+            currentSlideIndex = ((numericIndex % slides.length) + slides.length) % slides.length;
+            track.style.transform = `translateX(-${currentSlideIndex * 100}%)`;
 
-            if (slides[index]) slides[index].classList.add('active');
-            if (dots[index]) dots[index].classList.add('active');
+            slides.forEach(slide => slide.classList.remove('active'));
+            dots.forEach(dot => dot.classList.remove('active'));
+
+            slides[currentSlideIndex]?.classList.add('active');
+            dots[currentSlideIndex]?.classList.add('active');
         }
 
-        if (slides.length > 1) {
-            setInterval(() => {
-                currentSlideIndex = (currentSlideIndex + 1) % slides.length;
-                setSlide(currentSlideIndex);
+        // Keep the existing inline slider-dot handlers working.
+        window.setSlide = setSlide;
+
+        if (slides.length > 1 && track) {
+            window.setInterval(() => {
+                setSlide(currentSlideIndex + 1);
             }, 6000);
         }
 
         /* ===== SMART / RELATED SITE SEARCH ===== */
         const searchStatus = document.getElementById('searchStatus');
-        const searchForms = [
-            {
-                form: document.getElementById('siteSearchForm'),
-                input: document.getElementById('siteSearchInput')
-            },
-        ].filter(item => item.form && item.input);
+        const searchForms = [{
+            form: document.getElementById('siteSearchForm'),
+            input: document.getElementById('siteSearchInput')
+        }].filter(item => item.form && item.input);
+
+        const MAX_SEARCH_LENGTH = 100;
 
         // Related terms are mapped to the page that best matches the user's intent.
-        // The search is intentionally broader than exact page/category names.
         const searchRoutes = [
             {
                 keywords: [
@@ -1996,61 +2105,57 @@ try {
 
         function normalizeSearchText(value) {
             return String(value || '')
+                .slice(0, MAX_SEARCH_LENGTH)
                 .toLowerCase()
                 .replace(/[^a-z0-9+\s-]/g, ' ')
                 .replace(/\s+/g, ' ')
                 .trim();
         }
 
-        // Allows small spelling mistakes such as "groming" or "vaccinaton".
-        function levenshteinDistance(a, b) {
-            a = String(a);
-            b = String(b);
+        // Normalize the static keywords once instead of on every keystroke.
+        const preparedSearchRoutes = searchRoutes.map(route => ({
+            ...route,
+            normalizedKeywords: route.keywords.map(normalizeSearchText).filter(Boolean)
+        }));
 
+        // One-row Levenshtein implementation keeps typo checks lightweight.
+        function levenshteinDistance(a, b) {
             if (a === b) return 0;
             if (!a.length) return b.length;
             if (!b.length) return a.length;
+            if (a.length > b.length) [a, b] = [b, a];
 
-            const previous = Array.from({ length: b.length + 1 }, (_, i) => i);
+            let previous = Array.from({ length: a.length + 1 }, (_, index) => index);
 
-            for (let i = 1; i <= a.length; i++) {
+            for (let i = 1; i <= b.length; i++) {
                 const current = [i];
-
-                for (let j = 1; j <= b.length; j++) {
-                    const insertCost = current[j - 1] + 1;
-                    const deleteCost = previous[j] + 1;
-                    const replaceCost = previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1);
-
-                    current[j] = Math.min(insertCost, deleteCost, replaceCost);
+                for (let j = 1; j <= a.length; j++) {
+                    current[j] = Math.min(
+                        current[j - 1] + 1,
+                        previous[j] + 1,
+                        previous[j - 1] + (a[j - 1] === b[i - 1] ? 0 : 1)
+                    );
                 }
-
-                for (let j = 0; j < current.length; j++) {
-                    previous[j] = current[j];
-                }
+                previous = current;
             }
 
-            return previous[b.length];
+            return previous[a.length];
         }
 
         function searchKeywordMatches(query, keyword) {
             if (!query || !keyword) return false;
+            if (query.includes(keyword) || keyword.includes(query)) return true;
 
-            if (query.includes(keyword) || keyword.includes(query)) {
-                return true;
-            }
-
-            // Compare individual words so a longer phrase can still match a related term.
             const queryWords = query.split(' ').filter(Boolean);
             const keywordWords = keyword.split(' ').filter(Boolean);
 
-            for (const qWord of queryWords) {
-                for (const kWord of keywordWords) {
-                    if (qWord.length >= 4 && kWord.length >= 4) {
-                        const maxDistance = Math.min(2, Math.floor(Math.max(qWord.length, kWord.length) / 4));
-                        if (levenshteinDistance(qWord, kWord) <= maxDistance) {
-                            return true;
-                        }
-                    }
+            for (const queryWord of queryWords) {
+                if (queryWord.length < 4 || queryWord.length > 24) continue;
+
+                for (const keywordWord of keywordWords) {
+                    if (keywordWord.length < 4 || keywordWord.length > 24) continue;
+                    const maxDistance = Math.min(2, Math.floor(Math.max(queryWord.length, keywordWord.length) / 4));
+                    if (levenshteinDistance(queryWord, keywordWord) <= maxDistance) return true;
                 }
             }
 
@@ -2061,16 +2166,14 @@ try {
             const normalized = normalizeSearchText(query);
             if (!normalized) return null;
 
-            // Strong direct match first.
-            for (const route of searchRoutes) {
-                if (route.keywords.some(keyword => normalized.includes(normalizeSearchText(keyword)))) {
+            for (const route of preparedSearchRoutes) {
+                if (route.normalizedKeywords.some(keyword => normalized.includes(keyword))) {
                     return route;
                 }
             }
 
-            // Related/typo-tolerant match next.
-            for (const route of searchRoutes) {
-                if (route.keywords.some(keyword => searchKeywordMatches(normalized, normalizeSearchText(keyword)))) {
+            for (const route of preparedSearchRoutes) {
+                if (route.normalizedKeywords.some(keyword => searchKeywordMatches(normalized, keyword))) {
                     return route;
                 }
             }
@@ -2081,44 +2184,41 @@ try {
         function showSearchStatus(message) {
             if (!searchStatus) return;
 
-            searchStatus.innerHTML = message;
+            // Status messages are plain text; user input is never injected as HTML.
+            searchStatus.textContent = message;
             searchStatus.classList.add('show');
 
-            clearTimeout(window.searchStatusTimer);
-            window.searchStatusTimer = setTimeout(() => {
+            if (searchStatusTimer !== null) {
+                window.clearTimeout(searchStatusTimer);
+            }
+            searchStatusTimer = window.setTimeout(() => {
                 searchStatus.classList.remove('show');
+                searchStatusTimer = null;
             }, 2600);
         }
 
         searchForms.forEach(({ form, input }) => {
-            form.addEventListener('submit', function (event) {
+            form.addEventListener('submit', event => {
                 event.preventDefault();
-
-                const query = input.value.trim();
+                const query = input.value.trim().slice(0, MAX_SEARCH_LENGTH);
 
                 if (!query) {
                     input.focus();
-                    showSearchStatus(
-                        'Type something to search, like <strong>bath</strong>, <strong>vaccine</strong>, <strong>boarding</strong>, or <strong>price</strong>.'
-                    );
+                    showSearchStatus('Type something to search, like bath, vaccine, boarding, or price.');
                     return;
                 }
 
                 const route = findSearchRoute(query);
-
                 if (route) {
-                    showSearchStatus(`Opening <strong>${route.label}</strong>...`);
-                    setTimeout(() => {
+                    showSearchStatus(`Opening ${route.label}...`);
+                    window.setTimeout(() => {
                         window.location.href = route.url;
                     }, 180);
                 } else {
-                    showSearchStatus(
-                        'No related service found. Try a service, treatment, grooming term, boarding term, price, or contact detail.'
-                    );
+                    showSearchStatus('No related service found. Try a service, treatment, grooming term, boarding term, price, or contact detail.');
                 }
             });
         });
-
     </script>
 
     <script>

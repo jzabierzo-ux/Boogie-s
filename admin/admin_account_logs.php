@@ -26,7 +26,7 @@ $is_admin_logged_in = isset($_SESSION['logged_in'])
 
 if (!$is_admin_logged_in) {
 
-    header('Location: ../admin_login.php');
+    header('Location: /admin/admin_login.php');
 
     exit();
 
@@ -117,75 +117,63 @@ function adminLogFormatDate($value, string $format = 'M d, Y h:i A'): string
  */
 
 function adminLogSafeProfileImage($storedPath): string
-
 {
-
-    $relativePath = str_replace('\\', '/', trim((string)($storedPath ?? '')));
-
-    if ($relativePath === '') {
-
+    $path = str_replace('\\', '/', trim((string)($storedPath ?? '')));
+    if ($path === '' || preg_match('/[\x00-\x1F\x7F]/', $path)) {
         return '';
-
     }
 
-
-
-    $allowedPrefix = (strpos($relativePath, 'uploads/') === 0)
-
-        || (strpos($relativePath, '../uploads/') === 0);
-
-    if (!$allowedPrefix) {
-
+    // Only local upload paths are accepted. Strip known role-folder prefixes.
+    $path = ltrim($path, '/');
+    $path = preg_replace('#^(?:(?:customer|admin|staff)/)+#i', '', $path);
+    if (strpos($path, '../uploads/') === 0) {
+        $path = substr($path, strlen('../uploads/'));
+    } elseif (strpos($path, 'uploads/') === 0) {
+        $path = substr($path, strlen('uploads/'));
+    } else {
         return '';
-
     }
 
-
-
-    $resolvedPath = realpath(__DIR__ . '/' . $relativePath);
-
-    if ($resolvedPath === false || !is_file($resolvedPath)) {
-
+    if ($path === '') {
         return '';
-
     }
 
+    $segments = explode('/', $path);
+    foreach ($segments as $segment) {
+        if ($segment === '' || $segment === '.' || $segment === '..') {
+            return '';
+        }
+    }
 
-
-    $allowedRoots = [
-
-        realpath(__DIR__ . '/uploads'),
-
-        realpath(__DIR__ . '/../uploads'),
-
+    $candidates = [
+        [__DIR__ . '/uploads/' . $path, 'uploads/'],
+        [__DIR__ . '/../uploads/' . $path, '../uploads/'],
     ];
 
-
-
-    foreach ($allowedRoots as $root) {
-
-        if ($root === false) {
-
+    foreach ($candidates as [$candidate, $browserPrefix]) {
+        $resolvedPath = realpath($candidate);
+        if ($resolvedPath === false || !is_file($resolvedPath)) {
             continue;
-
         }
 
-
-
-        $rootPrefix = rtrim($root, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
-
-        if (strpos($resolvedPath, $rootPrefix) === 0) {
-
-            return $relativePath;
-
+        // Confirm the resolved file stays inside one of the expected uploads roots.
+        $uploadsRoot = realpath(strpos($browserPrefix, '../') === 0
+            ? __DIR__ . '/../uploads'
+            : __DIR__ . '/uploads');
+        if ($uploadsRoot === false) {
+            continue;
         }
 
+        $rootPrefix = rtrim($uploadsRoot, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+        if (strpos($resolvedPath, $rootPrefix) !== 0) {
+            continue;
+        }
+
+        $encodedPath = implode('/', array_map('rawurlencode', $segments));
+        return $browserPrefix . $encodedPath;
     }
 
-
-
     return '';
-
 }
 
 
@@ -261,215 +249,163 @@ $first_name = (string)($nameParts[0] ?? 'U');
 
 
 /* Read and constrain filters. */
-
 $searchRaw = $_GET['search'] ?? '';
-
 $search = is_string($searchRaw) ? trim(substr($searchRaw, 0, 150)) : '';
 
 $statusRaw = $_GET['status'] ?? 'all';
-
 $status_filter = is_string($statusRaw) ? strtoupper(trim($statusRaw)) : 'ALL';
-
 if (!in_array($status_filter, ['ALL', 'SUCCESS', 'FAILED'], true)) {
-
     $status_filter = 'ALL';
-
 }
 
-
-
+$pageRaw = $_GET['page'] ?? '1';
+$page = (is_string($pageRaw) || is_int($pageRaw))
+    ? filter_var($pageRaw, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]])
+    : false;
+$page = ($page === false || $page === null) ? 1 : (int)$page;
+$per_page = 25;
+$offset = 0;
+$total_pages = 1;
+$total_filtered = 0;
+$first_displayed = 0;
+$last_displayed = 0;
 $rows = [];
-
 $total_logs = 0;
-
 $success_logs = 0;
-
 $failed_logs = 0;
-
 $load_error = '';
 
-
-
-/* Build and execute the account-log query with PostgreSQL-compatible filters. */
-
-$query = '
-
-    SELECT
-
-        aal.id,
-
-        aal.user_id,
-
-        aal.action,
-
-        aal.status,
-
-        aal.ip_address,
-
-        aal.user_agent,
-
-        aal.created_at,
-
-        u.full_name,
-
-        u.email,
-
-        u.role
-
-    FROM admin_account_logs aal
-
-    LEFT JOIN users u ON u.id = aal.user_id
-
-    WHERE TRUE
-
-      AND (u.id IS NULL OR LOWER(TRIM(COALESCE(u.role, \'\'))) <> \'customer\')
-
-';
-
-$params = [];
-
-
+/* Keep the original search fields and status semantics, but filter in SQL. */
+$base_where = "(u.id IS NULL OR LOWER(TRIM(COALESCE(u.role, ''))) <> 'customer')";
+$filter_sql = '';
+$filter_params = [];
 
 if ($search !== '') {
-
-    $query .= '
-
+    $filter_sql .= '
         AND (
-
             u.full_name ILIKE :search_name
-
             OR u.email ILIKE :search_email
-
             OR CAST(aal.ip_address AS TEXT) ILIKE :search_ip
-
             OR aal.action ILIKE :search_action
-
             OR aal.status ILIKE :search_status
-
         )
-
     ';
-
     $searchPattern = '%' . $search . '%';
-
-    $params = [
-
+    $filter_params = [
         ':search_name' => $searchPattern,
-
         ':search_email' => $searchPattern,
-
         ':search_ip' => $searchPattern,
-
         ':search_action' => $searchPattern,
-
         ':search_status' => $searchPattern,
-
     ];
-
 }
-
-
 
 if ($status_filter === 'SUCCESS' || $status_filter === 'FAILED') {
-
-    $query .= ' AND aal.status = :status';
-
-    $params[':status'] = $status_filter;
-
+    $filter_sql .= ' AND aal.status = :status';
+    $filter_params[':status'] = $status_filter;
 }
 
-$query .= ' ORDER BY aal.created_at DESC NULLS LAST, aal.id DESC';
-
-
-
 try {
-
-    $result = $pdo->prepare($query);
-
-    $result->execute($params);
-
-    $rows = $result->fetchAll(PDO::FETCH_ASSOC);
-
-
-
-    $count_stmt = $pdo->query("
-
+    // Summary cards remain global (not affected by the current search/status filter).
+    // The same aggregate also returns the count of rows matching the active filters.
+    $summary_sql = "
         SELECT
-
             COUNT(*) AS total_logs,
-
             COUNT(*) FILTER (WHERE aal.status = 'SUCCESS' AND aal.action = 'LOGIN') AS success_logs,
-
-            COUNT(*) FILTER (WHERE aal.status = 'FAILED' AND aal.action = 'LOGIN') AS failed_logs
-
+            COUNT(*) FILTER (WHERE aal.status = 'FAILED' AND aal.action = 'LOGIN') AS failed_logs,
+            COUNT(*) FILTER (WHERE TRUE {$filter_sql}) AS filtered_logs
         FROM admin_account_logs aal
-
         LEFT JOIN users u ON u.id = aal.user_id
-
-        WHERE u.id IS NULL OR LOWER(TRIM(COALESCE(u.role, ''))) <> 'customer'
-
-    ");
-
-    $count_data = $count_stmt->fetch(PDO::FETCH_ASSOC);
-
-
+        WHERE {$base_where}
+    ";
+    $summary_stmt = $pdo->prepare($summary_sql);
+    $summary_stmt->execute($filter_params);
+    $count_data = $summary_stmt->fetch(PDO::FETCH_ASSOC);
 
     if ($count_data) {
-
         $total_logs = (int)($count_data['total_logs'] ?? 0);
-
         $success_logs = (int)($count_data['success_logs'] ?? 0);
-
         $failed_logs = (int)($count_data['failed_logs'] ?? 0);
-
+        $total_filtered = (int)($count_data['filtered_logs'] ?? 0);
     }
 
+    $total_pages = max(1, (int)ceil($total_filtered / $per_page));
+    if ($page > $total_pages) {
+        $page = $total_pages;
+    }
+    $offset = ($page - 1) * $per_page;
+
+    // Select only fields rendered by the table. Email remains searchable in SQL.
+    $query = "
+        SELECT
+            aal.id,
+            aal.action,
+            aal.status,
+            aal.ip_address,
+            aal.user_agent,
+            aal.created_at,
+            u.full_name,
+            u.role
+        FROM admin_account_logs aal
+        LEFT JOIN users u ON u.id = aal.user_id
+        WHERE {$base_where}
+        {$filter_sql}
+        ORDER BY aal.created_at DESC NULLS LAST, aal.id DESC
+        LIMIT :limit OFFSET :offset
+    ";
+    $result = $pdo->prepare($query);
+    foreach ($filter_params as $paramName => $paramValue) {
+        $result->bindValue($paramName, $paramValue, PDO::PARAM_STR);
+    }
+    $result->bindValue(':limit', $per_page, PDO::PARAM_INT);
+    $result->bindValue(':offset', $offset, PDO::PARAM_INT);
+    $result->execute();
+    $rows = $result->fetchAll(PDO::FETCH_ASSOC);
+
+    $first_displayed = $total_filtered > 0 ? $offset + 1 : 0;
+    $last_displayed = $total_filtered > 0 ? min($offset + count($rows), $total_filtered) : 0;
 } catch (PDOException $e) {
-
     error_log('Admin account logs query failed: ' . $e->getMessage());
-
     $load_error = 'Account logs could not be loaded right now. Please try again later.';
-
+    $rows = [];
 }
 
-
+// Build stable pagination/refresh links while retaining the active filters.
+$pagination_params = [];
+if ($search !== '') {
+    $pagination_params['search'] = $search;
+}
+if ($status_filter !== 'ALL') {
+    $pagination_params['status'] = $status_filter;
+}
+$refresh_params = $pagination_params;
+if ($page > 1) {
+    $refresh_params['page'] = $page;
+}
+$refresh_url = 'admin_account_logs.php' . ($refresh_params ? '?' . http_build_query($refresh_params) : '');
+$previous_url = 'admin_account_logs.php?' . http_build_query(array_merge($pagination_params, ['page' => max(1, $page - 1)]));
+$next_url = 'admin_account_logs.php?' . http_build_query(array_merge($pagination_params, ['page' => min($total_pages, $page + 1)]));
 
 /* Admin notifications only; staff notifications use their own portal. */
-
 $admin_notifications = [];
-
 $unread_count = 0;
-
 try {
-
     $admin_notif_stmt = $pdo->prepare('
-
-        SELECT id, message, created_at
-
+        SELECT id, message, created_at, COUNT(*) OVER() AS total_unread
         FROM admin_notifications
-
         WHERE is_read = 0
-
         ORDER BY created_at DESC, id DESC
-
         LIMIT 20
-
     ');
-
     $admin_notif_stmt->execute();
-
     $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
-
-    $unread_count = count($admin_notifications);
-
+    $unread_count = !empty($admin_notifications)
+        ? (int)($admin_notifications[0]['total_unread'] ?? count($admin_notifications))
+        : 0;
 } catch (PDOException $e) {
-
     error_log('Admin account logs notification query failed: ' . $e->getMessage());
-
     $admin_notifications = [];
-
     $unread_count = 0;
-
 }
 
 ?>
@@ -1509,6 +1445,64 @@ try {
         }
 
 
+
+        .pagination-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 14px;
+            flex-wrap: wrap;
+            padding: 16px 18px;
+            background: #fff;
+            border: 1px solid #e2e8f0;
+            border-top: 0;
+            border-radius: 0 0 12px 12px;
+        }
+        .pagination-info {
+            color: #64748b;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .pagination-controls {
+            display: inline-flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 8px;
+        }
+        .pagination-link, .pagination-disabled {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 36px;
+            padding: 8px 12px;
+            border: 1px solid #cbd5e1;
+            border-radius: 7px;
+            color: #334155;
+            background: #fff;
+            text-decoration: none;
+            font-size: 12px;
+            font-weight: 700;
+        }
+        .pagination-link:hover {
+            background: #f1f5f9;
+            border-color: #94a3b8;
+        }
+        .pagination-disabled {
+            color: #94a3b8;
+            background: #f8fafc;
+            cursor: not-allowed;
+        }
+        .pagination-current {
+            color: #475569;
+            font-size: 12px;
+            font-weight: 700;
+            white-space: nowrap;
+        }
+        @media (max-width: 560px) {
+            .pagination-bar { align-items: stretch; padding: 14px 12px; }
+            .pagination-controls { width: 100%; justify-content: space-between; }
+            .pagination-link, .pagination-disabled { flex: 1 1 0; }
+        }
 
         /* ------------------------------------------
 
@@ -2779,7 +2773,7 @@ try {
 
                 <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
 
-                    <a href="admin_account_logs.php<?php echo $search !== '' || $status_filter !== 'ALL' ? '?' . http_build_query(array_filter(['search' => $search, 'status' => $status_filter !== 'ALL' ? $status_filter : null], static fn($value) => $value !== null && $value !== '')) : ''; ?>" class="clear-btn" style="display:inline-flex;align-items:center;gap:8px;margin:0;">
+                    <a href="<?php echo adminLogEscape($refresh_url); ?>" class="clear-btn" style="display:inline-flex;align-items:center;gap:8px;margin:0;">
 
                         <i class="fa-solid fa-rotate"></i> Refresh Logs
 
@@ -3237,23 +3231,6 @@ try {
 
 
 
-                                        <div class="user-email">
-
-
-
-                                            <?php
-
-
-
-                                            echo adminLogEscape($row['email'] ?? '');
-
-
-
-                                            ?>
-
-
-
-                                        </div>
 
 
 
@@ -3535,9 +3512,9 @@ try {
 
                     <i class="fa-solid fa-clock-rotate-left"></i>
 
-                    <h3>No Account Logs Found</h3>
+                    <h3><?php echo ($search !== '' || $status_filter !== 'ALL') ? 'No Matching Account Logs' : 'No Account Logs Found'; ?></h3>
 
-                    <p>No account activity has been recorded yet.</p>
+                    <p><?php echo ($search !== '' || $status_filter !== 'ALL') ? 'Try adjusting your search term or status filter.' : 'No account activity has been recorded yet.'; ?></p>
 
                 </div>
 
@@ -3552,6 +3529,29 @@ try {
 
 
     </div>
+
+
+
+            <?php if ($load_error === ''): ?>
+                <div class="pagination-bar" aria-label="Account log pagination">
+                    <div class="pagination-info">
+                        Showing <?php echo number_format($first_displayed); ?>–<?php echo number_format($last_displayed); ?> of <?php echo number_format($total_filtered); ?> records
+                    </div>
+                    <div class="pagination-controls">
+                        <?php if ($page > 1): ?>
+                            <a class="pagination-link" href="<?php echo adminLogEscape($previous_url); ?>" rel="prev">Previous</a>
+                        <?php else: ?>
+                            <span class="pagination-disabled" aria-disabled="true">Previous</span>
+                        <?php endif; ?>
+                        <span class="pagination-current">Page <?php echo number_format($page); ?> of <?php echo number_format($total_pages); ?></span>
+                        <?php if ($page < $total_pages): ?>
+                            <a class="pagination-link" href="<?php echo adminLogEscape($next_url); ?>" rel="next">Next</a>
+                        <?php else: ?>
+                            <span class="pagination-disabled" aria-disabled="true">Next</span>
+                        <?php endif; ?>
+                    </div>
+                </div>
+            <?php endif; ?>
 
 
 
@@ -3659,9 +3659,12 @@ try {
 
 
 
+    let notificationRequestInFlight = false;
+
     function fetchAdminNotifs() {
 
-
+        if (document.hidden || notificationRequestInFlight) return;
+        notificationRequestInFlight = true;
 
         fetch('get_admin_notifs.php', {
 
@@ -3743,6 +3746,9 @@ try {
 
 
 
+        })
+        .finally(function () {
+            notificationRequestInFlight = false;
         });
 
 
@@ -3863,7 +3869,11 @@ try {
 
 
 
-            setInterval(fetchAdminNotifs, 3000);
+            setInterval(fetchAdminNotifs, 15000);
+
+            document.addEventListener('visibilitychange', function () {
+                if (!document.hidden) fetchAdminNotifs();
+            });
 
 
 

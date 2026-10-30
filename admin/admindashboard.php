@@ -2,7 +2,7 @@
 
 require_once __DIR__ . '/../shared_session_bootstrap.php';
 
-include '../db_supabase.php';
+require_once __DIR__ . '/../db_supabase.php';
 
 // --- ROLE-BASED ACCESS CHECK ---
 
@@ -82,7 +82,10 @@ if (isset($role_aliases[$current_role])) {
 
 if (($_SESSION['logged_in'] ?? false) !== true) {
 
-    header('Location: ../admin_login.php');
+    $login_target = in_array($current_role, ['manager', 'receptionist', 'groomer', 'pet_hotel_staff'], true)
+        ? '../staff/stafflogin.php'
+        : 'admin_login.php';
+    header('Location: ' . $login_target);
 
     exit();
 
@@ -181,6 +184,7 @@ $can_view_vet_schedule = in_array(
 $user_id = $_SESSION['user_id'];
 
 $profile_img_path = '';
+$profile_img_src = '';
 
 $full_name = (string)($_SESSION['user_name'] ?? 'User');
 
@@ -567,6 +571,66 @@ try {
 
     error_log('Admin dashboard database error: ' . $e->getMessage());
 
+}
+
+// Resolve profile images saved by both Admin and Staff profile pages.
+// Admin uploads are stored in /admin/uploads; Staff uploads may be in /uploads.
+$raw_profile_img = trim((string)$profile_img_path);
+if ($raw_profile_img !== '') {
+    if (preg_match('~^(?:https?://|data:image/)~i', $raw_profile_img)) {
+        $profile_img_src = $raw_profile_img;
+    } else {
+        $normalized_profile_img = str_replace('\\', '/', $raw_profile_img);
+        $normalized_profile_img = ltrim($normalized_profile_img, '/');
+        $normalized_profile_img = preg_replace('~^(?:\./)+~', '', $normalized_profile_img);
+
+        // Respect known paths written by the existing profile upload handlers.
+        if (stripos($normalized_profile_img, '../uploads/') === 0) {
+            $normalized_profile_img = substr($normalized_profile_img, strlen('../uploads/'));
+            $profile_upload_locations = [
+                ['disk' => __DIR__ . '/../uploads/', 'url' => '/uploads/']
+            ];
+        } elseif (stripos($normalized_profile_img, 'admin/uploads/') === 0) {
+            $normalized_profile_img = substr($normalized_profile_img, strlen('admin/uploads/'));
+            $profile_upload_locations = [
+                ['disk' => __DIR__ . '/uploads/', 'url' => '/admin/uploads/']
+            ];
+        } elseif (stripos($normalized_profile_img, 'uploads/') === 0) {
+            // admin_profile.php stores this form and writes files to admin/uploads/.
+            $normalized_profile_img = substr($normalized_profile_img, strlen('uploads/'));
+            $profile_upload_locations = [
+                ['disk' => __DIR__ . '/uploads/', 'url' => '/admin/uploads/'],
+                ['disk' => __DIR__ . '/../uploads/', 'url' => '/uploads/']
+            ];
+        } elseif (stripos($normalized_profile_img, 'staff/uploads/') === 0 || stripos($normalized_profile_img, 'customer/uploads/') === 0) {
+            $normalized_profile_img = substr($normalized_profile_img, strpos($normalized_profile_img, 'uploads/') + strlen('uploads/'));
+            $profile_upload_locations = [
+                ['disk' => __DIR__ . '/../uploads/', 'url' => '/uploads/'],
+                ['disk' => __DIR__ . '/uploads/', 'url' => '/admin/uploads/']
+            ];
+        } else {
+            // Legacy bare filenames are checked in both supported upload folders.
+            $profile_upload_locations = [
+                ['disk' => __DIR__ . '/uploads/', 'url' => '/admin/uploads/'],
+                ['disk' => __DIR__ . '/../uploads/', 'url' => '/uploads/']
+            ];
+        }
+
+        // Reject traversal and unsafe characters before checking either location.
+        if (
+            $normalized_profile_img !== '' &&
+            !preg_match('~(^|/)\.\.?(/|$)|[<>:"|?*\x00-\x1F]~', $normalized_profile_img)
+        ) {
+            foreach ($profile_upload_locations as $upload_location) {
+                $profile_disk_path = $upload_location['disk'] . $normalized_profile_img;
+                if (is_file($profile_disk_path)) {
+                    $encoded_segments = array_map('rawurlencode', explode('/', $normalized_profile_img));
+                    $profile_img_src = $upload_location['url'] . implode('/', $encoded_segments);
+                    break;
+                }
+            }
+        }
+    }
 }
 
 ?>
@@ -1124,9 +1188,10 @@ try {
 
                     <span class="admin-tag"><?php echo strtoupper($_SESSION['role'] ?? 'ADMIN'); ?></span>
 
-                    <?php if (!empty($profile_img_path) && file_exists($profile_img_path)): ?>
+                    <?php if ($profile_img_src !== ''): ?>
 
-                        <img src="<?php echo htmlspecialchars($profile_img_path); ?>" class="top-avatar" alt="Profile Picture">
+                        <img src="<?php echo htmlspecialchars($profile_img_src, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>" class="top-avatar" alt="Profile Picture" onerror="this.onerror=null; this.style.display='none'; if(this.nextElementSibling){this.nextElementSibling.style.display='flex';}">
+                        <div class="top-avatar-fallback" style="display:none;"><?php echo strtoupper(substr($first_name, 0, 1)); ?></div>
 
                     <?php else: ?>
 
@@ -1150,7 +1215,7 @@ try {
 
                         </a>
 
-                        <a href="../logout.php" class="profile-item logout-text">
+                        <a href="../customer/logout.php" class="profile-item logout-text">
 
                             <i class="fas fa-sign-out-alt"></i> Logout
 
@@ -1608,11 +1673,15 @@ try {
 
         });
 
-        // REAL-TIME NOTIFICATION FETCHER
+        // NOTIFICATION FETCHER: avoid overlapping requests and pause while the tab is hidden.
 
         let previousUnreadCount = <?php echo $unread_count; ?>;
+        let adminNotifFetchInProgress = false;
 
         function fetchAdminNotifs() {
+
+            if (adminNotifFetchInProgress || document.hidden) return;
+            adminNotifFetchInProgress = true;
 
             fetch('get_admin_notifs.php', { cache: 'no-store', credentials: 'same-origin' })
 
@@ -1662,15 +1731,19 @@ try {
 
                 })
 
-                .catch(error => console.error('Error fetching admin notifications:', error));
+                .catch(error => console.error('Error fetching admin notifications:', error))
+                .finally(() => { adminNotifFetchInProgress = false; });
 
         }
 
         <?php if ($show_notifications): ?>
 
+        // Initial refresh, then every 15 seconds instead of every 3 seconds.
         fetchAdminNotifs();
-
-        setInterval(fetchAdminNotifs, 3000);
+        setInterval(fetchAdminNotifs, 15000);
+        document.addEventListener('visibilitychange', function () {
+            if (!document.hidden) fetchAdminNotifs();
+        });
 
         <?php endif; ?>
 

@@ -10,7 +10,62 @@ if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true || $curren
 
 // DATABASE CONNECTION
 require_once __DIR__ . '/../db_supabase.php';
+date_default_timezone_set('Asia/Manila');
 $message = '';
+
+/** Escape values rendered into HTML attributes or text. */
+function addPromoEscape($value): string
+{
+    return htmlspecialchars((string)($value ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+}
+
+/** Resolve a stored profile image only from the Admin or shared uploads folders. */
+function addPromoProfileImageUrl($storedPath): string
+{
+    $path = trim((string)($storedPath ?? ''));
+    if ($path === '') {
+        return '';
+    }
+
+    // Existing deployments may store a remote profile-image URL.
+    if (preg_match('~^https?://~i', $path)) {
+        return filter_var($path, FILTER_VALIDATE_URL) ? $path : '';
+    }
+
+    $path = str_replace('\\', '/', $path);
+    $path = ltrim($path, '/');
+    $path = preg_replace('#^(?:(?:\.\./)+|(?:admin|staff|customer)/)+#i', '', $path);
+    if (strpos($path, 'uploads/') !== 0) {
+        return '';
+    }
+
+    $relative = substr($path, strlen('uploads/'));
+    if ($relative === '' || preg_match('#(^|/)\.\.?(/|$)|[\x00-\x1F]#', $relative)) {
+        return '';
+    }
+
+    $segments = explode('/', $relative);
+    $encodedSegments = [];
+    foreach ($segments as $segment) {
+        if ($segment === '' || $segment === '.' || $segment === '..') {
+            return '';
+        }
+        $encodedSegments[] = rawurlencode($segment);
+    }
+    $encodedRelative = implode('/', $encodedSegments);
+
+    $adminFile = __DIR__ . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $relative);
+    if (is_file($adminFile)) {
+        return 'uploads/' . $encodedRelative;
+    }
+
+    $sharedFile = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $relative);
+    if (is_file($sharedFile)) {
+        return '../uploads/' . $encodedRelative;
+    }
+
+    return '';
+}
 
 // CSRF protection for promotion creation.
 if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
@@ -44,17 +99,25 @@ if (isset($_SESSION['user_id'])) {
         $first_name = trim(explode(' ', $admin_full_name)[0], ',');
     }
 }
+$profile_img_src = addPromoProfileImageUrl($profile_img_path);
+$admin_full_name = trim((string)$admin_full_name);
+if ($admin_full_name === '') {
+    $admin_full_name = 'Admin';
+}
+$first_name = trim(explode(' ', $admin_full_name)[0] ?? 'Admin', ',');
 try {
     $admin_notif_stmt = $pdo->prepare("
-        SELECT id, message, created_at
+        SELECT id, message, created_at, COUNT(*) OVER() AS total_unread
         FROM admin_notifications
         WHERE is_read = 0
-        ORDER BY created_at DESC
+        ORDER BY created_at DESC NULLS LAST, id DESC
         LIMIT 20
     ");
     $admin_notif_stmt->execute();
     $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
-    $unread_count = count($admin_notifications);
+    $unread_count = !empty($admin_notifications)
+        ? (int)$admin_notifications[0]['total_unread']
+        : 0;
 } catch (PDOException $e) {
     $admin_notifications = [];
     $unread_count = 0;
@@ -1147,10 +1210,10 @@ $today = date('Y-m-d');
                         <?php foreach ($admin_notifications as $notif): ?>
                             <div class="notif-item">
                                 <i class="fa-solid fa-circle-exclamation" style="color:#e11d48;margin-right:5px;"></i>
-                                <?php echo htmlspecialchars((string)($notif['message'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>
+                                <?php echo addPromoEscape($notif['message'] ?? ''); ?>
                                 <br>
                                 <small style="color:#94a3b8;font-size:11px;">
-                                    <?php echo !empty($notif['created_at']) ? date('M d, g:i A', strtotime((string)$notif['created_at'])) : ''; ?>
+                                    <?php echo !empty($notif['created_at']) && strtotime((string)$notif['created_at']) !== false ? addPromoEscape(date('M d, g:i A', strtotime((string)$notif['created_at']))) : ''; ?>
                                 </small>
                             </div>
                         <?php endforeach; ?>
@@ -1161,14 +1224,14 @@ $today = date('Y-m-d');
             </div>
         </div>
         <div class="profile-wrapper" onclick="toggleProfile(event)">
-            <span class="admin-tag"><?php echo strtoupper($current_role ?: 'ADMIN'); ?></span>
-            <?php if (!empty($profile_img_path) && file_exists($profile_img_path)): ?>
-                <img src="<?php echo htmlspecialchars($profile_img_path, ENT_QUOTES, 'UTF-8'); ?>" class="top-avatar" alt="Profile Picture">
+            <span class="admin-tag"><?php echo addPromoEscape(strtoupper($current_role ?: 'ADMIN')); ?></span>
+            <?php if ($profile_img_src !== ''): ?>
+                <img src="<?php echo addPromoEscape($profile_img_src); ?>" class="top-avatar" alt="Profile Picture" loading="lazy">
             <?php else: ?>
-                <div class="top-avatar-fallback"><?php echo strtoupper(substr($first_name ?: 'A', 0, 1)); ?></div>
+                <div class="top-avatar-fallback"><?php echo addPromoEscape(strtoupper(substr($first_name ?: 'A', 0, 1))); ?></div>
             <?php endif; ?>
             <span class="name-label">
-                <?php echo htmlspecialchars($admin_full_name, ENT_QUOTES, 'UTF-8'); ?>
+                <?php echo addPromoEscape($admin_full_name); ?>
                 <i class="fas fa-chevron-down" style="font-size:10px;color:#94a3b8;"></i>
             </span>
             <div class="profile-dropdown" id="profileBox" onclick="event.stopPropagation()">
@@ -1230,7 +1293,7 @@ $today = date('Y-m-d');
                     type="text"
                     id="tag"
                     name="tag"
-                    value="<?php echo htmlspecialchars($_POST['tag'] ?? 'GROOMING DEAL'); ?>"
+                    value="<?php echo addPromoEscape($_POST['tag'] ?? 'GROOMING DEAL'); ?>"
                     maxlength="80"
                     placeholder="e.g. GROOMING DEAL"
                     required
@@ -1241,7 +1304,7 @@ $today = date('Y-m-d');
                     type="text"
                     id="title"
                     name="title"
-                    value="<?php echo htmlspecialchars($_POST['title'] ?? 'Fresh Look, Happy Pup'); ?>"
+                    value="<?php echo addPromoEscape($_POST['title'] ?? 'Fresh Look, Happy Pup'); ?>"
                     maxlength="120"
                     placeholder="e.g. 20% OFF Grooming"
                     required
@@ -1253,7 +1316,7 @@ $today = date('Y-m-d');
                     maxlength="500"
                     placeholder="Explain the promotion in a few clear sentences."
                     required
-                ><?php echo htmlspecialchars($_POST['description'] ?? 'Enjoy a special grooming offer for your furry friend. Book a grooming session today.'); ?></textarea>
+                ><?php echo addPromoEscape($_POST['description'] ?? 'Enjoy a special grooming offer for your furry friend. Book a grooming session today.'); ?></textarea>
                 <label class="section-label">Theme</label>
                 <div class="theme-options">
                     <?php
@@ -1277,8 +1340,8 @@ $today = date('Y-m-d');
                             type="date"
                             id="expiry_date"
                             name="expiry_date"
-                            value="<?php echo htmlspecialchars($_POST['expiry_date'] ?? ''); ?>"
-                            min="<?php echo htmlspecialchars($today); ?>"
+                            value="<?php echo addPromoEscape($_POST['expiry_date'] ?? ''); ?>"
+                            min="<?php echo addPromoEscape($today); ?>"
                             required
                         >
                     </div>
@@ -1371,19 +1434,30 @@ document.querySelectorAll('.preset').forEach((button) => {
     el.addEventListener('input', updatePreview);
     el.addEventListener('change', updatePreview);
 });
+let currentPromoPreviewUrl = null;
 imageInput.addEventListener('change', () => {
+    if (currentPromoPreviewUrl) {
+        URL.revokeObjectURL(currentPromoPreviewUrl);
+        currentPromoPreviewUrl = null;
+    }
+
     const file = imageInput.files && imageInput.files[0];
     if (!file) {
         imagePreview.style.display = 'none';
         previewImage.style.display = 'none';
+        imagePreviewImg.removeAttribute('src');
         previewImage.removeAttribute('src');
         return;
     }
-    const url = URL.createObjectURL(file);
+
+    currentPromoPreviewUrl = URL.createObjectURL(file);
     imagePreview.style.display = 'block';
-    imagePreviewImg.src = url;
+    imagePreviewImg.src = currentPromoPreviewUrl;
     previewImage.style.display = 'block';
-    previewImage.src = url;
+    previewImage.src = currentPromoPreviewUrl;
+});
+window.addEventListener('beforeunload', () => {
+    if (currentPromoPreviewUrl) URL.revokeObjectURL(currentPromoPreviewUrl);
 });
 updatePreview();
 
@@ -1431,14 +1505,27 @@ function renderAdminNotifications(data) {
     if (markRead) markRead.style.display = unread > 0 ? 'inline-block' : 'none';
     list.innerHTML = (data && data.html) ? data.html : '<div class="notif-empty">No new notifications.</div>';
 }
+let adminNotifRequestInFlight = false;
 function fetchAdminNotifs() {
-    fetch('get_admin_notifs.php', { method: 'GET', cache: 'no-store', credentials: 'same-origin' })
+    if (adminNotifRequestInFlight || document.hidden) return;
+    adminNotifRequestInFlight = true;
+
+    fetch('get_admin_notifs.php', {
+        method: 'GET',
+        cache: 'no-store',
+        credentials: 'same-origin'
+    })
         .then(function(response) {
             if (!response.ok) throw new Error('Notification request failed: HTTP ' + response.status);
             return response.json();
         })
         .then(renderAdminNotifications)
-        .catch(function(error) { console.error('Error fetching admin notifications:', error); });
+        .catch(function(error) {
+            console.error('Error fetching admin notifications:', error);
+        })
+        .finally(function() {
+            adminNotifRequestInFlight = false;
+        });
 }
 document.addEventListener('click', function(event) {
     if (!event.target.closest('.notif-wrapper')) {
@@ -1465,7 +1552,10 @@ document.querySelectorAll('.admin-sidebar .nav-item').forEach(function(link) {
     });
 });
 fetchAdminNotifs();
-setInterval(fetchAdminNotifs, 3000);
+window.setInterval(fetchAdminNotifs, 15000);
+document.addEventListener('visibilitychange', function() {
+    if (!document.hidden) fetchAdminNotifs();
+});
 </script>
 </body>
 </html>

@@ -1,399 +1,232 @@
 <?php
-
 require_once __DIR__ . '/../shared_session_bootstrap.php';
 
-require_once '../db_supabase.php';
-
-// An authenticated admin should remain in the Admin Portal.
-
-// Admin credentials are accepted only by admin_login.php.
-
-if (
-
-    ($_SESSION['logged_in'] ?? false) === true
-
-    && ($_SESSION['admin_logged_in'] ?? false) === true
-
-    && strtolower(trim((string)($_SESSION['role'] ?? ''))) === 'admin'
-
-    && (int)($_SESSION['user_id'] ?? 0) > 0
-
-) {
-
-    header('Location: ../admin/admindashboard.php?portal=admin');
-
-    exit();
-
-}
-
 /*
-
-|--------------------------------------------------------------------------
-
-| PERSONNEL ACCOUNT LOGGING
-
-|--------------------------------------------------------------------------
-
-*/
-
-function logAdminAccount($pdo, $user_id, $action, $status)
-
+ * Normalize legacy role labels without changing the stored database role.
+ */
+function normalizePersonnelRole($role): string
 {
-
-    $ip_address = $_SERVER['REMOTE_ADDR'] ?? 'UNKNOWN';
-
-    $user_agent = $_SERVER['HTTP_USER_AGENT'] ?? 'UNKNOWN';
-
-    try {
-
-        $stmt = $pdo->prepare("
-
-            INSERT INTO admin_account_logs
-
-                (user_id, action, status, ip_address, user_agent)
-
-            VALUES
-
-                (:user_id, :action, :status, :ip_address, :user_agent)
-
-        ");
-
-        $stmt->execute([
-
-            ':user_id' => $user_id !== null ? (int)$user_id : null,
-
-            ':action' => $action,
-
-            ':status' => $status,
-
-            ':ip_address' => $ip_address,
-
-            ':user_agent' => $user_agent
-
-        ]);
-
-    } catch (PDOException $e) {
-
-        // A logging issue must not expose database details to the user.
-
-        error_log('Account log insert failed: ' . $e->getMessage());
-
-    }
-
-}
-
-/** Normalize role labels without changing the stored database role. */
-
-function normalizePersonnelRole($role)
-
-{
-
     $role = strtolower(trim((string)$role));
-
-    $aliases = [
-
+    static $aliases = [
         'administrator' => 'admin',
-
         'shop manager' => 'manager',
-
         'shop_manager' => 'manager',
-
         'vet' => 'veterinarian',
-
         'veterinary' => 'veterinarian',
-
         'front desk' => 'receptionist',
-
         'front desk / receptionist' => 'receptionist',
-
         'front_desk' => 'receptionist',
-
         'front_desk_receptionist' => 'receptionist',
-
         'veterinary assistant' => 'vet_assistant',
-
         'vet assistant' => 'vet_assistant',
-
         'veterinary_assistant' => 'vet_assistant',
-
         'veterinary nurse' => 'vet_nurse',
-
         'vet nurse' => 'vet_nurse',
-
         'veterinary_nurse' => 'vet_nurse',
-
         'grooming staff' => 'groomer',
-
         'grooming staff / groomer' => 'groomer',
-
         'grooming_staff' => 'groomer',
-
         'grooming_staff_groomer' => 'groomer',
-
         'pet hotel staff' => 'pet_hotel_staff',
-
         'pet hotel staff / attendant' => 'pet_hotel_staff',
-
         'pet_hotel_attendant' => 'pet_hotel_staff',
-
         'pet_hotel_staff_attendant' => 'pet_hotel_staff',
-
-        // Normalize legacy database labels consistently with the other staff pages.
-
         'staff' => 'groomer',
-
-        'supervisor' => 'receptionist'
-
+        'supervisor' => 'receptionist',
     ];
 
     return $aliases[$role] ?? $role;
-
 }
 
-/**
-
- * Only personnel roles may use this login. Admin accounts use admin_login.php.
-
- */
-
-function isAllowedPersonnelRole($role)
-
+/** Only personnel roles may use this login; Admin has a separate login page. */
+function isAllowedPersonnelRole(string $role): bool
 {
-
-    // Admin is intentionally excluded because Admin has a separate login page.
-
     return in_array($role, [
-
         'manager',
-
         'receptionist',
-
         'groomer',
-
         'pet_hotel_staff',
-
         'veterinarian',
-
         'vet_assistant',
-
-        'vet_nurse'
-
+        'vet_nurse',
     ], true);
-
 }
 
-function showPersonnelLoginError($message)
-
+/** Write an account event without allowing an audit-log failure to break login. */
+function logPersonnelAccount(PDO $pdo, ?int $userId, string $action, string $status): void
 {
+    try {
+        $stmt = $pdo->prepare('
+            INSERT INTO admin_account_logs
+                (user_id, action, status, ip_address, user_agent)
+            VALUES
+                (:user_id, :action, :status, :ip_address, :user_agent)
+        ');
+        $stmt->execute([
+            ':user_id' => $userId,
+            ':action' => $action,
+            ':status' => $status,
+            ':ip_address' => (string)($_SERVER['REMOTE_ADDR'] ?? 'UNKNOWN'),
+            ':user_agent' => (string)($_SERVER['HTTP_USER_AGENT'] ?? 'UNKNOWN'),
+        ]);
+    } catch (Throwable $e) {
+        error_log('Personnel account log insert failed: ' . $e->getMessage());
+    }
+}
 
+function showPersonnelLoginError(string $message): void
+{
     $safeMessage = json_encode(
-
         $message,
-
         JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT
-
     );
-
     echo '<script>alert(' . $safeMessage . '); window.history.back();</script>';
-
     exit;
-
 }
 
-if (empty($_SESSION['personnel_login_csrf']) || !is_string($_SESSION['personnel_login_csrf'])) {
+// Keep already-authenticated users in the correct portal.
+$sessionRole = normalizePersonnelRole($_SESSION['role'] ?? '');
+$sessionLoggedIn = ($_SESSION['logged_in'] ?? false) === true;
+$sessionUserId = filter_var(
+    $_SESSION['user_id'] ?? null,
+    FILTER_VALIDATE_INT,
+    ['options' => ['min_range' => 1]]
+);
+$validSessionUser = $sessionUserId !== false && $sessionUserId !== null;
 
+if (
+    $sessionLoggedIn &&
+    ($_SESSION['admin_logged_in'] ?? false) === true &&
+    $sessionRole === 'admin' &&
+    $validSessionUser
+) {
+    header('Location: ../admin/admindashboard.php?portal=admin');
+    exit();
+}
+
+if (
+    $sessionLoggedIn &&
+    ($_SESSION['staff_logged_in'] ?? false) === true &&
+    $validSessionUser &&
+    isAllowedPersonnelRole($sessionRole)
+) {
+    if (in_array($sessionRole, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)) {
+        header('Location: staffdashboard.php');
+    } else {
+        header('Location: ../admin/admindashboard.php?portal=staff');
+    }
+    exit();
+}
+
+if (
+    empty($_SESSION['personnel_login_csrf']) ||
+    !is_string($_SESSION['personnel_login_csrf'])
+) {
     $_SESSION['personnel_login_csrf'] = bin2hex(random_bytes(32));
-
 }
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     $expectedCsrf = (string)($_SESSION['personnel_login_csrf'] ?? '');
-
     $postedCsrf = (string)($_POST['personnel_login_csrf'] ?? '');
 
     if ($expectedCsrf === '' || $postedCsrf === '' || !hash_equals($expectedCsrf, $postedCsrf)) {
-
         http_response_code(403);
-
         showPersonnelLoginError('Your login form expired. Refresh the page and try again.');
-
     }
 
     $usernameInput = trim((string)($_POST['username'] ?? ''));
-
     $passwordInput = (string)($_POST['password'] ?? '');
 
     if ($usernameInput === '' || $passwordInput === '') {
-
         showPersonnelLoginError('Please enter your username/email and password.');
-
     }
 
     try {
+        // The database is only needed for a valid POST login attempt.
+        require_once __DIR__ . '/../db_supabase.php';
 
-        // Retrieve by username/email first, then verify the stored password.
-
-        // Role matching happens after lookup so legacy labels can be normalized.
-
-        $stmt = $pdo->prepare("
-
-            SELECT *
-
+        // Fetch only the fields used by authentication, role routing and session setup.
+        // Exact username matches take priority over case-insensitive email matches.
+        $stmt = $pdo->prepare('
+            SELECT id, username, email, password, role, full_name, position
             FROM users
-
             WHERE username = :username OR LOWER(email) = LOWER(:email)
-
+            ORDER BY CASE WHEN username = :preferred_username THEN 0 ELSE 1 END
             LIMIT 1
-
-        ");
-
+        ');
         $stmt->execute([
-
             ':username' => $usernameInput,
-
-            ':email' => $usernameInput
-
+            ':email' => $usernameInput,
+            ':preferred_username' => $usernameInput,
         ]);
-
         $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if (
-
             !$user ||
-
             !isset($user['password']) ||
-
             !password_verify($passwordInput, (string)$user['password'])
-
         ) {
-
-            logAdminAccount(
-
+            logPersonnelAccount(
                 $pdo,
-
                 $user ? (int)$user['id'] : null,
-
                 'LOGIN',
-
                 'FAILED'
-
             );
-
             showPersonnelLoginError('Invalid username/email or password.');
-
         }
 
         $normalizedRole = normalizePersonnelRole($user['role'] ?? '');
 
         if ($normalizedRole === 'admin') {
-
-            logAdminAccount($pdo, (int)$user['id'], 'LOGIN', 'FAILED');
-
+            logPersonnelAccount($pdo, (int)$user['id'], 'LOGIN', 'FAILED');
             showPersonnelLoginError('This account is not authorized for the Personnel Portal.');
-
         }
 
         if (!isAllowedPersonnelRole($normalizedRole)) {
-
-            logAdminAccount($pdo, (int)$user['id'], 'LOGIN', 'FAILED');
-
+            logPersonnelAccount($pdo, (int)$user['id'], 'LOGIN', 'FAILED');
             http_response_code(403);
-
             showPersonnelLoginError('This account does not have an authorized personnel role.');
-
         }
 
-        logAdminAccount($pdo, (int)$user['id'], 'LOGIN', 'SUCCESS');
+        logPersonnelAccount($pdo, (int)$user['id'], 'LOGIN', 'SUCCESS');
 
+        // Rotate the session ID and replace pre-authentication session data.
         session_regenerate_id(true);
-
         $_SESSION = [];
-
         $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
-
         $_SESSION['logged_in'] = true;
-
         $_SESSION['staff_logged_in'] = true;
-
         $_SESSION['user_id'] = (int)$user['id'];
-
         $_SESSION['role'] = $normalizedRole;
 
-        $_SESSION['user_name'] = !empty($user['full_name'])
+        $fullName = trim((string)($user['full_name'] ?? ''));
+        $_SESSION['user_name'] = $fullName !== '' ? $fullName : 'System User';
+        $_SESSION['staff_name'] = $fullName !== '' ? $fullName : 'System User';
 
-            ? $user['full_name']
+        $position = trim((string)($user['position'] ?? ''));
+        $_SESSION['staff_position'] = $position !== '' ? $position : 'Personnel';
 
-            : 'System User';
-
-        $_SESSION['staff_name'] = !empty($user['full_name'])
-
-            ? $user['full_name']
-
-            : 'System User';
-
-        $_SESSION['staff_position'] = !empty($user['position'])
-
-            ? $user['position']
-
-            : 'Personnel';
-
-        // Route each role to its intended area. Destination pages must enforce
-
-        // their own server-side authorization; redirects are not permissions.
-
-        if (in_array(
-
-            $normalizedRole,
-
-            ['veterinarian', 'vet_assistant', 'vet_nurse'],
-
-            true
-
-        )) {
-
+        // Route each role to its intended area; destination pages must authorize independently.
+        if (in_array($normalizedRole, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)) {
             header('Location: staffdashboard.php');
-
-            exit;
-
+            exit();
         }
 
-        if (in_array(
-
-            $normalizedRole,
-
-            ['manager', 'receptionist', 'groomer', 'pet_hotel_staff'],
-
-            true
-
-        )) {
-
+        if (in_array($normalizedRole, ['manager', 'receptionist', 'groomer', 'pet_hotel_staff'], true)) {
             header('Location: ../admin/admindashboard.php?portal=staff');
-
-            exit;
-
+            exit();
         }
 
         // Defensive fallback; should be unreachable for an allowed role.
-
         session_unset();
-
         session_destroy();
-
         http_response_code(403);
-
         exit('Unauthorized personnel role.');
-
-    } catch (PDOException $e) {
-
-        error_log('Personnel login query failed: ' . $e->getMessage());
-
+    } catch (Throwable $e) {
+        error_log('Personnel login processing failed: ' . $e->getMessage());
         showPersonnelLoginError('Unable to process login right now. Please try again.');
-
     }
-
 }
-
 ?>
 <!DOCTYPE html>
 <html lang="en">

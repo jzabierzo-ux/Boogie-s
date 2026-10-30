@@ -111,58 +111,31 @@ if (!in_array($current_role, $allowed_user_page_roles, true)) {
 
 // 2. FETCH ADMIN PROFILE
 
-$admin_full_name = "User";
+$admin_full_name = (string)($_SESSION['user_name'] ?? 'User');
+$profile_img_path = '';
+$first_name = trim(explode(' ', $admin_full_name)[0] ?? 'User', ',');
 
-$profile_img_path = "";
+$uid = (int)$_SESSION['user_id'];
 
-$first_name = "User";
+try {
+    $get_admin = $pdo->prepare("
+        SELECT full_name, profile_image
+        FROM users
+        WHERE id = :id
+        LIMIT 1
+    ");
+    $get_admin->execute([':id' => $uid]);
+    $admin_data = $get_admin->fetch(PDO::FETCH_ASSOC);
 
-if (isset($_SESSION['user_id'])) {
-
-    $uid = (int)$_SESSION['user_id'];
-
-    try {
-
-        $get_admin = $pdo->prepare("
-
-            SELECT full_name, profile_image
-
-            FROM users
-
-            WHERE id = :id
-
-            LIMIT 1
-
-        ");
-
-        $get_admin->execute([':id' => $uid]);
-
-        $admin_data = $get_admin->fetch(PDO::FETCH_ASSOC);
-
-        if ($admin_data) {
-
-            $admin_full_name = $admin_data['full_name'] ?? 'User';
-
-            $profile_img_path = $admin_data['profile_image'] ?? '';
-
-            $_SESSION['user_name'] = $admin_full_name;
-
-            $first_name = explode(' ', $admin_full_name)[0];
-
-            $first_name = trim($first_name, ',');
-
-        }
-
-    } catch (PDOException $e) {
-
-        // Use session fallback when the profile query fails.
-
-        $admin_full_name = $_SESSION['user_name'] ?? 'User';
-
-        $first_name = trim(explode(' ', $admin_full_name)[0], ',');
-
+    if ($admin_data) {
+        $admin_full_name = (string)($admin_data['full_name'] ?? 'User');
+        $profile_img_path = (string)($admin_data['profile_image'] ?? '');
+        $_SESSION['user_name'] = $admin_full_name;
+        $first_name = trim(explode(' ', $admin_full_name)[0] ?? 'User', ',');
     }
-
+} catch (PDOException $e) {
+    // Use the session fallback when the profile query fails.
+    error_log('Manage users profile query failed: ' . $e->getMessage());
 }
 
 // --- NOTIFICATIONS: ADMIN ALERTS OR SERVICE-STAFF PERSONAL ALERTS ---
@@ -180,7 +153,7 @@ if ($show_notifications) {
     // Table names are selected from fixed role-based values, never from request input.
     $notification_table = $is_admin ? 'admin_notifications' : 'notifications';
     $notification_owner_sql = $is_admin ? '' : ' AND user_id = :user_id';
-    $notification_params = $is_admin ? [] : [':user_id' => (int)$_SESSION['user_id']];
+    $notification_params = $is_admin ? [] : [':user_id' => $uid];
 
     try {
         // Detect the existing PostgreSQL type instead of assuming is_read is numeric.
@@ -203,20 +176,26 @@ if ($show_notifications) {
             throw new RuntimeException('Unsupported or unknown is_read column type for ' . $notification_table . '.');
         }
 
-        $count_stmt = $pdo->prepare("SELECT COUNT(*) FROM {$notification_table} WHERE {$unread_predicate}{$notification_owner_sql}");
-        $count_stmt->execute($notification_params);
-        $unread_count = (int)$count_stmt->fetchColumn();
-
+        // COUNT(*) OVER() returns the full unread count alongside the newest 20 rows,
+        // avoiding a separate COUNT query for every dashboard/page load.
         $notification_columns = $is_admin
             ? 'id, message, created_at'
             : 'id, title, message, type, created_at';
-        $notif_stmt = $pdo->prepare("SELECT {$notification_columns}
+        $notif_stmt = $pdo->prepare("SELECT {$notification_columns}, COUNT(*) OVER() AS total_unread
             FROM {$notification_table}
             WHERE {$unread_predicate}{$notification_owner_sql}
             ORDER BY created_at DESC, id DESC
             LIMIT 20");
         $notif_stmt->execute($notification_params);
         $admin_notifications = $notif_stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        if (!empty($admin_notifications)) {
+            $unread_count = (int)($admin_notifications[0]['total_unread'] ?? 0);
+            foreach ($admin_notifications as &$notification_row) {
+                unset($notification_row['total_unread']);
+            }
+            unset($notification_row);
+        }
     } catch (Throwable $e) {
         error_log('Manage users notification fetch failed: ' . $e->getMessage());
         $admin_notifications = [];
@@ -224,139 +203,127 @@ if ($show_notifications) {
     }
 }
 
-// 3. FETCH USER STATISTICS
+// 3. FETCH USER STATISTICS (single aggregate query)
+$total_users = 0;
+$verified_users = 0;
+$contact_users = 0;
 
 try {
-
-    $total_q = $pdo->query("
-
-        SELECT COUNT(*) AS count
-
+    $stats_stmt = $pdo->query("
+        SELECT
+            COUNT(*) AS total,
+            COUNT(*) FILTER (
+                WHERE is_verified::text IN ('1', 'true', 't')
+            ) AS verified,
+            COUNT(*) FILTER (
+                WHERE contact_number IS NOT NULL
+                  AND contact_number <> ''
+            ) AS contact
         FROM users
-
         WHERE role = 'customer'
-
     ");
+    $stats_data = $stats_stmt->fetch(PDO::FETCH_ASSOC) ?: [];
 
-    $verified_q = $pdo->query("
-
-        SELECT COUNT(*) AS count
-
-        FROM users
-
-        WHERE role = 'customer'
-
-          AND is_verified::text IN ('1', 'true', 't')
-
-    ");
-
-    $contact_q = $pdo->query("
-
-        SELECT COUNT(*) AS count
-
-        FROM users
-
-        WHERE role = 'customer'
-
-          AND contact_number IS NOT NULL
-
-          AND contact_number <> ''
-
-    ");
-
-    $total_users = (int)($total_q->fetch(PDO::FETCH_ASSOC)['count'] ?? 0);
-
-    $verified_users = (int)($verified_q->fetch(PDO::FETCH_ASSOC)['count'] ?? 0);
-
-    $contact_users = (int)($contact_q->fetch(PDO::FETCH_ASSOC)['count'] ?? 0);
-
+    $total_users = (int)($stats_data['total'] ?? 0);
+    $verified_users = (int)($stats_data['verified'] ?? 0);
+    $contact_users = (int)($stats_data['contact'] ?? 0);
 } catch (PDOException $e) {
-
     error_log('Manage users statistics query failed: ' . $e->getMessage());
-
-    $total_users = 0;
-
-    $verified_users = 0;
-
-    $contact_users = 0;
-
 }
 
-// 4. FETCH USER LIST WITH SEARCH & FILTER
+// 4. FETCH USER LIST WITH SEARCH, FILTER, AND SERVER-SIDE PAGINATION
+$search = '';
+$filter_type = (string)($_GET['filter'] ?? '');
+$users_per_page = 20;
+$current_page = filter_var($_GET['page'] ?? 1, FILTER_VALIDATE_INT);
+if ($current_page === false || $current_page < 1) {
+    $current_page = 1;
+}
+$current_page = (int)$current_page;
+$offset = ($current_page - 1) * $users_per_page;
 
-$search = "";
-
-$filter_type = $_GET['filter'] ?? '';
+$users_list = [];
+$displayed_count = 0;
+$total_matching_users = 0;
+$total_pages = 1;
+$range_start = 0;
+$range_end = 0;
 
 try {
-
-    $query = "
-
-        SELECT id, full_name, user_category, email, contact_number, is_verified, created_at
-
-        FROM users
-
-        WHERE role = 'customer'
-
-    ";
-
+    $where_sql = " WHERE role = 'customer' ";
     $params = [];
 
-    if (isset($_GET['search']) && trim($_GET['search']) !== '') {
-
-        $search = trim($_GET['search']);
-
-        $query .= "
-
+    if (isset($_GET['search']) && trim((string)$_GET['search']) !== '') {
+        $search = trim((string)$_GET['search']);
+        $where_sql .= "
             AND (
-
                 full_name ILIKE :search
-
                 OR email ILIKE :search
-
                 OR contact_number ILIKE :search
-
             )
-
         ";
-
         $params[':search'] = '%' . $search . '%';
-
     } elseif ($filter_type === 'verified') {
-
-        $query .= " AND is_verified::text IN ('1', 'true', 't')";
-
+        $where_sql .= " AND is_verified::text IN ('1', 'true', 't')";
     } elseif ($filter_type === 'contact') {
-
-        $query .= "
-
-            AND contact_number IS NOT NULL
-
-            AND contact_number <> ''
-
-        ";
-
+        $where_sql .= " AND contact_number IS NOT NULL AND contact_number <> ''";
     }
 
-    $query .= " ORDER BY id DESC";
+    // The window count keeps the result total accurate without a separate COUNT query.
+    // Only one page of customer records is transferred to PHP at a time.
+    $query = "
+        SELECT
+            id,
+            full_name,
+            user_category,
+            email,
+            contact_number,
+            is_verified,
+            created_at,
+            COUNT(*) OVER() AS total_count
+        FROM users
+        {$where_sql}
+        ORDER BY id DESC
+        LIMIT :limit OFFSET :offset
+    ";
 
     $users_stmt = $pdo->prepare($query);
-
-    $users_stmt->execute($params);
+    foreach ($params as $param_name => $param_value) {
+        $users_stmt->bindValue($param_name, $param_value, PDO::PARAM_STR);
+    }
+    $users_stmt->bindValue(':limit', $users_per_page, PDO::PARAM_INT);
+    $users_stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+    $users_stmt->execute();
 
     $users_list = $users_stmt->fetchAll(PDO::FETCH_ASSOC);
-
     $displayed_count = count($users_list);
 
+    if (!empty($users_list)) {
+        $total_matching_users = (int)($users_list[0]['total_count'] ?? 0);
+        foreach ($users_list as &$user_row) {
+            unset($user_row['total_count']);
+        }
+        unset($user_row);
+    }
+
+    $total_pages = max(1, (int)ceil($total_matching_users / $users_per_page));
+    $range_start = ($displayed_count > 0) ? ($offset + 1) : 0;
+    $range_end = ($displayed_count > 0) ? min($offset + $displayed_count, $total_matching_users) : 0;
 } catch (PDOException $e) {
-
     error_log('Manage users list query failed: ' . $e->getMessage());
-
     $users_list = [];
-
     $displayed_count = 0;
-
+    $total_matching_users = 0;
+    $total_pages = 1;
+    $range_start = 0;
+    $range_end = 0;
 }
+
+// Preserve the active search/filter while moving between result pages.
+$pagination_params = $_GET;
+unset($pagination_params['page']);
+$previous_page_url = 'manageusers.php?' . http_build_query(array_merge($pagination_params, ['page' => max(1, $current_page - 1)]));
+$next_page_url = 'manageusers.php?' . http_build_query(array_merge($pagination_params, ['page' => min($total_pages, $current_page + 1)]));
 
 ?>
 
@@ -527,6 +494,12 @@ try {
         .user-card { background: var(--white); padding: 25px; border-radius: 16px; box-shadow: 0 4px 6px rgba(0,0,0,0.03); display: flex; flex-direction: column; border: 1px solid transparent; transition: 0.2s; border-left: 4px solid var(--navy-dark); }
 
         .user-card:hover { border-color: #e2e8f0; transform: translateY(-4px); box-shadow: 0 10px 20px rgba(0,0,0,0.08); border-left-color: var(--brand-yellow);}
+
+        .pagination { display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: 25px; flex-wrap: wrap; }
+        .pagination-info { color: var(--text-muted); font-size: 12px; font-weight: 600; }
+        .pagination-link { display: inline-flex; align-items: center; justify-content: center; min-width: 92px; padding: 9px 14px; border-radius: 8px; background: var(--navy-dark); color: var(--white); text-decoration: none; font-size: 12px; font-weight: 700; transition: background 0.2s, transform 0.2s; }
+        .pagination-link:hover { background: #003366; transform: translateY(-1px); }
+        .pagination-link.disabled { background: #e2e8f0; color: #94a3b8; pointer-events: none; }
 
         .user-card-top { display: flex; align-items: flex-start; gap: 20px; width: 100%; }
 
@@ -1100,7 +1073,7 @@ try {
 
         <div class="sidebar-header">
 
-            <img src="../bg.png" alt="Boogie's Logo" class="sidebar-logo">
+            <img src="./bg.png" alt="Boogie's Logo" class="sidebar-logo">
 
             <h2>
 
@@ -1339,7 +1312,7 @@ try {
 
                 <input type="text" name="search" class="search-input" value="<?php echo htmlspecialchars($search, ENT_QUOTES, 'UTF-8'); ?>" placeholder="Search by name, email, or contact number...">
 
-                <span class="result-count">Showing <?php echo $displayed_count; ?> users</span>
+                <span class="result-count">Showing <?php echo $range_start; ?>–<?php echo $range_end; ?> of <?php echo $total_matching_users; ?> users</span>
 
             </form>
 
@@ -1464,6 +1437,24 @@ try {
                 <?php endif; ?>
 
             </div>
+
+            <?php if ($total_pages > 1): ?>
+                <nav class="pagination" aria-label="Customer list pages">
+                    <?php if ($current_page > 1): ?>
+                        <a class="pagination-link" href="<?php echo htmlspecialchars($previous_page_url, ENT_QUOTES, 'UTF-8'); ?>"><i class="fas fa-chevron-left" style="margin-right: 7px;"></i>Previous</a>
+                    <?php else: ?>
+                        <span class="pagination-link disabled"><i class="fas fa-chevron-left" style="margin-right: 7px;"></i>Previous</span>
+                    <?php endif; ?>
+
+                    <span class="pagination-info">Page <?php echo $current_page; ?> of <?php echo $total_pages; ?></span>
+
+                    <?php if ($current_page < $total_pages): ?>
+                        <a class="pagination-link" href="<?php echo htmlspecialchars($next_page_url, ENT_QUOTES, 'UTF-8'); ?>">Next<i class="fas fa-chevron-right" style="margin-left: 7px;"></i></a>
+                    <?php else: ?>
+                        <span class="pagination-link disabled">Next<i class="fas fa-chevron-right" style="margin-left: 7px;"></i></span>
+                    <?php endif; ?>
+                </nav>
+            <?php endif; ?>
 
         </div>
 
@@ -1605,7 +1596,13 @@ try {
 
         }
 
+        let adminNotifFetchInProgress = false;
+
         function fetchAdminNotifs() {
+
+            // Avoid overlapping requests and pause polling while this tab is hidden.
+            if (adminNotifFetchInProgress || document.hidden) return;
+            adminNotifFetchInProgress = true;
 
             fetch('get_admin_notifs.php', {
 
@@ -1639,6 +1636,10 @@ try {
 
                 console.error('Error fetching admin notifications:', error);
 
+            })
+
+            .finally(function() {
+                adminNotifFetchInProgress = false;
             });
 
         }
@@ -1646,7 +1647,10 @@ try {
         <?php if ($show_notifications): ?>
 
         fetchAdminNotifs();
-        setInterval(fetchAdminNotifs, 3000);
+        setInterval(fetchAdminNotifs, 15000);
+        document.addEventListener('visibilitychange', function() {
+            if (!document.hidden) fetchAdminNotifs();
+        });
 
         const markReadForm = document.getElementById('mark-read-form');
         if (markReadForm) {

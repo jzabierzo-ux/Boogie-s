@@ -80,7 +80,7 @@ function customerLoginBlockedPortal(array $user): ?string
 
     ];
 
-    return in_array($role, $personnel, true) ? 'staff/stafflogin.php' : null;
+    return in_array($role, $personnel, true) ? '/staff/stafflogin.php' : null;
 
 }
 
@@ -1850,13 +1850,28 @@ if (isset($_POST['login_btn'])) {
 
         }
 
-        async function authenticateWithBackend(name, email) {
+        const googleLoginCsrfToken = <?php echo json_encode(
+            (string)($_SESSION['csrf_token'] ?? ''),
+            JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT
+        ); ?>;
 
-            if (backendProcessing || !email) return;
+        async function authenticateWithBackend(firebaseUser) {
+
+            if (backendProcessing || !firebaseUser) return;
 
             backendProcessing = true;
 
             try {
+
+                // Refresh the ID token and let the PHP server verify its signature and claims.
+                const idToken = await firebaseUser.getIdToken(true);
+                if (!idToken) {
+                    throw new Error('Firebase did not return an ID token.');
+                }
+
+                const formData = new URLSearchParams();
+                formData.set('id_token', idToken);
+                formData.set('csrf_token', googleLoginCsrfToken);
 
                 const response = await fetch('process_google_login.php', {
 
@@ -1866,49 +1881,39 @@ if (isset($_POST['login_btn'])) {
 
                     headers: {
 
-                        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+                        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                        'X-Requested-With': 'XMLHttpRequest'
 
                     },
 
-                    body:
-
-                        'full_name=' + encodeURIComponent(name || '') +
-
-                        '&email=' + encodeURIComponent(email)
+                    body: formData.toString()
 
                 });
 
-                if (!response.ok) {
+                const data = await response.json().catch(() => null);
 
-                    throw new Error('Server returned HTTP ' + response.status);
+                if (!response.ok || !data || !data.success) {
 
-                }
-
-                const data = await response.json();
-
-                if (data.success) {
-
+                    backendProcessing = false;
                     sessionStorage.removeItem('google_redirect_pending');
-
-                    window.location.replace(data.redirect || 'login.php');
-
+                    setGoogleButtonState(document.getElementById('googleLoginBtn'), false);
+                    alert('Login failed: ' + (data?.message || 'Please try again.'));
                     return;
 
                 }
 
-                backendProcessing = false;
-
                 sessionStorage.removeItem('google_redirect_pending');
 
-                alert('Login failed: ' + (data.message || 'Please try again.'));
+                window.location.replace(data.redirect || 'login.php');
 
             } catch (error) {
 
                 backendProcessing = false;
-
+                sessionStorage.removeItem('google_redirect_pending');
+                setGoogleButtonState(document.getElementById('googleLoginBtn'), false);
                 console.error('Backend Google login error:', error);
 
-                alert('Could not connect to the server. Please try again.');
+                alert('Could not complete Google sign-in. Please try again.');
 
             }
 
@@ -1922,13 +1927,7 @@ if (isset($_POST['login_btn'])) {
 
                 if (result && result.user) {
 
-                    await authenticateWithBackend(
-
-                        result.user.displayName || '',
-
-                        result.user.email || ''
-
-                    );
+                    await authenticateWithBackend(result.user);
 
                 }
 
@@ -1958,13 +1957,7 @@ if (isset($_POST['login_btn'])) {
 
             if (user && pending && !backendProcessing) {
 
-                await authenticateWithBackend(
-
-                    user.displayName || '',
-
-                    user.email || ''
-
-                );
+                await authenticateWithBackend(user);
 
             }
 
@@ -2012,13 +2005,7 @@ if (isset($_POST['login_btn'])) {
 
                     const result = await signInWithPopup(auth, provider);
 
-                    await authenticateWithBackend(
-
-                        result.user.displayName || '',
-
-                        result.user.email || ''
-
-                    );
+                    await authenticateWithBackend(result.user);
 
                 } catch (error) {
 

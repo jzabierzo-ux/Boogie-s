@@ -1,24 +1,52 @@
 <?php
+/**
+ * Mark the signed-in veterinary user's unread notifications as read.
+ * This endpoint intentionally updates only the current user's notifications.
+ */
+
 require_once __DIR__ . '/../shared_session_bootstrap.php';
-require_once '../db_supabase.php';
 
-// Normalize the session flag but keep this endpoint restricted to veterinary staff.
-$current_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
-$current_role = preg_replace('/[\s_-]+/', ' ', $current_role);
-$login_flag = $_SESSION['logged_in'] ?? false;
-$is_logged_in = ($login_flag === true || $login_flag === 1 || $login_flag === '1' ||
-    (is_string($login_flag) && strtolower(trim($login_flag)) === 'true'));
-$is_vet_role = in_array($current_role, ['vet', 'veterinarian'], true);
+// Normalize supported veterinary role aliases.
+$roleRaw = strtolower(trim((string)($_SESSION['role'] ?? '')));
+$normalizedRole = preg_replace('/[\s_-]+/', ' ', $roleRaw);
+$roleAliases = [
+    'vet' => 'veterinarian',
+    'veterinary' => 'veterinarian',
+    'veterinarian' => 'veterinarian',
+    'vet assistant' => 'vet_assistant',
+    'veterinary assistant' => 'vet_assistant',
+    'vet nurse' => 'vet_nurse',
+    'veterinary nurse' => 'vet_nurse',
+];
+$currentRole = $roleAliases[$normalizedRole] ?? $normalizedRole;
 
-if (!$is_logged_in || !$is_vet_role) {
-    header("Location: stafflogin.php");
-    exit();
+$loginFlags = [
+    $_SESSION['logged_in'] ?? false,
+    $_SESSION['staff_logged_in'] ?? false,
+];
+$isLoggedIn = false;
+foreach ($loginFlags as $flag) {
+    if ($flag === true || $flag === 1 || $flag === '1' ||
+        (is_string($flag) && strtolower(trim($flag)) === 'true')) {
+        $isLoggedIn = true;
+        break;
+    }
 }
 
-$user_id = (int)($_SESSION['user_id'] ?? $_SESSION['staff_id'] ?? $_SESSION['id'] ?? 0);
+if (!$isLoggedIn || !in_array($currentRole, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)) {
+    header('Location: stafflogin.php', true, 302);
+    exit;
+}
 
-// Return only to an approved page in the current /staff/ directory.
-$allowed_pages = [
+$userIdRaw = $_SESSION['user_id'] ?? $_SESSION['staff_id'] ?? $_SESSION['id'] ?? 0;
+$userId = filter_var($userIdRaw, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+if ($userId === false) {
+    http_response_code(403);
+    exit('Unable to identify the staff account.');
+}
+
+// Resolve a safe in-directory return page from a same-origin Referer only.
+$allowedPages = [
     'staffdashboard.php',
     'appointments.php',
     'view_records.php',
@@ -28,49 +56,89 @@ $allowed_pages = [
     'staff_profile.php',
     'profile.php',
 ];
-$redirect_page = 'staffdashboard.php';
+$redirectPage = 'staffdashboard.php';
+$referer = (string)($_SERVER['HTTP_REFERER'] ?? '');
+$httpHost = (string)($_SERVER['HTTP_HOST'] ?? '');
+$currentScheme = (!empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS']) !== 'off') ? 'https' : 'http';
+$currentAuthority = parse_url($currentScheme . '://' . $httpHost);
+$refererParts = $referer !== '' ? parse_url($referer) : false;
 
-$referer = $_SERVER['HTTP_REFERER'] ?? '';
-$current_host = strtolower((string)($_SERVER['HTTP_HOST'] ?? ''));
+if (is_array($currentAuthority) && is_array($refererParts)) {
+    $currentHost = strtolower((string)($currentAuthority['host'] ?? ''));
+    $refererHost = strtolower((string)($refererParts['host'] ?? ''));
+    $currentPort = (int)($currentAuthority['port'] ?? ($currentScheme === 'https' ? 443 : 80));
+    $refererScheme = strtolower((string)($refererParts['scheme'] ?? ''));
+    $refererPort = (int)($refererParts['port'] ?? ($refererScheme === 'https' ? 443 : 80));
+    $refererPath = (string)($refererParts['path'] ?? '');
 
-if ($referer !== '') {
-    $parsed = parse_url($referer);
-    $referer_host = strtolower((string)($parsed['host'] ?? ''));
-    $referer_path = (string)($parsed['path'] ?? '');
+    $sameOrigin = in_array($refererScheme, ['http', 'https'], true)
+        && $refererScheme === $currentScheme
+        && $currentHost !== ''
+        && hash_equals($currentHost, $refererHost)
+        && $currentPort === $refererPort;
 
-    // Supports local URLs such as /staff/ and deployments nested under /Pets/staff/.
-    if ($referer_host !== '' && $referer_host === $current_host &&
-        preg_match('~/staff/([^/]+\.php)$~i', $referer_path, $matches)) {
+    // Supports /staff/ and deployments nested under a project folder.
+    if ($sameOrigin && preg_match('~/staff/([^/]+\.php)$~i', $refererPath, $matches)) {
         $candidate = basename($matches[1]);
-        if (in_array($candidate, $allowed_pages, true)) {
-            $redirect_page = $candidate;
-            $query = (string)($parsed['query'] ?? '');
-            // Preserve simple query strings such as ?id=12 while rejecting header-control chars.
-            if ($query !== '' && preg_match('/^[A-Za-z0-9_.=&%-]*$/', $query)) {
-                $redirect_page .= '?' . $query;
+        if (in_array($candidate, $allowedPages, true)) {
+            $redirectPage = $candidate;
+            $query = (string)($refererParts['query'] ?? '');
+            if ($query !== '' && preg_match('/^[A-Za-z0-9_.=&%-]*$/D', $query)) {
+                $redirectPage .= '?' . $query;
             }
         }
     }
 }
 
-try {
-    // Mark only this signed-in user's staff notifications as read.
-    // Do not update every user's/admin's notifications globally.
-    if ($user_id > 0) {
-        $update_stmt = $pdo->prepare("
-            UPDATE notifications
-            SET is_read = 1
-            WHERE user_id = :user_id
-              AND is_read = 0
-        ");
-        $update_stmt->execute([':user_id' => $user_id]);
-    }
+// State-changing requests must use POST and a token already issued in this session.
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
+    http_response_code(405);
+    header('Allow: POST');
+    exit('Method not allowed.');
+}
 
-    header('Location: ' . $redirect_page);
-    exit();
+$tokenInput = $_POST['csrf_token'] ?? '';
+$submittedToken = is_string($tokenInput) ? $tokenInput : '';
+$sessionTokens = [
+    (string)($_SESSION['csrf_token'] ?? ''),
+    (string)($_SESSION['tasks_csrf'] ?? ''),
+    (string)($_SESSION['staff_dashboard_csrf'] ?? ''),
+];
+$validToken = false;
+if ($submittedToken !== '') {
+    foreach ($sessionTokens as $sessionToken) {
+        if ($sessionToken !== '' && hash_equals($sessionToken, $submittedToken)) {
+            $validToken = true;
+            break;
+        }
+    }
+}
+
+if (!$validToken) {
+    http_response_code(403);
+    exit('Invalid security token. Refresh the page and try again.');
+}
+
+
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
+
+try {
+    // Connect only after authentication and request validation.
+    require_once __DIR__ . '/../db_supabase.php';
+
+    $updateStmt = $pdo->prepare('
+        UPDATE notifications
+        SET is_read = 1
+        WHERE user_id = :user_id
+          AND is_read = 0
+    ');
+    $updateStmt->execute([':user_id' => $userId]);
 } catch (PDOException $e) {
     error_log('Mark staff notifications read error: ' . $e->getMessage());
-    header('Location: ' . $redirect_page);
-    exit();
+} catch (Throwable $e) {
+    error_log('Mark staff notifications read unexpected error: ' . $e->getMessage());
 }
-?>
+
+header('Location: ' . $redirectPage, true, 303);
+exit;

@@ -33,7 +33,14 @@ if (!in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], tru
     exit('Access denied. This dashboard is for veterinary personnel only.');
 }
 
-require_once '../db_supabase.php';
+$user_id = (int)($_SESSION['user_id'] ?? $_SESSION['staff_id'] ?? 0);
+if ($user_id <= 0) {
+    header('Location: stafflogin.php');
+    exit();
+}
+
+// Connect only after the veterinary session and account ID are validated.
+require_once __DIR__ . '/../db_supabase.php';
 date_default_timezone_set('Asia/Manila');
 header('Cache-Control: private, no-store, max-age=0');
 
@@ -43,7 +50,6 @@ $role_labels = [
     'vet_nurse' => 'Vet Nurse'
 ];
 $role_label = $role_labels[$current_role] ?? 'Veterinary Staff';
-$user_id = (int)($_SESSION['user_id'] ?? $_SESSION['staff_id'] ?? 0);
 
 if (empty($_SESSION['staff_dashboard_csrf'])) {
     $_SESSION['staff_dashboard_csrf'] = bin2hex(random_bytes(32));
@@ -108,26 +114,30 @@ function loadStaffDashboardNotifications(PDO $pdo, int $userId): array
         return [0, []];
     }
 
-    $countStmt = $pdo->prepare("
-        SELECT COUNT(*)
-        FROM notifications
-        WHERE user_id = :user_id
-          AND is_read = 0
-    ");
-    $countStmt->execute([':user_id' => $userId]);
-    $unreadCount = (int)$countStmt->fetchColumn();
-
-    $listStmt = $pdo->prepare("
-        SELECT id, title, message, type, created_at
+    // Window count returns the full unread total with the 20 newest rows
+    // in one database round-trip.
+    $notificationStmt = $pdo->prepare("
+        SELECT id, title, message, type, created_at,
+               COUNT(*) OVER() AS total_unread
         FROM notifications
         WHERE user_id = :user_id
           AND is_read = 0
         ORDER BY created_at DESC, id DESC
         LIMIT 20
     ");
-    $listStmt->execute([':user_id' => $userId]);
+    $notificationStmt->execute([':user_id' => $userId]);
+    $notifications = $notificationStmt->fetchAll(PDO::FETCH_ASSOC);
 
-    return [$unreadCount, $listStmt->fetchAll(PDO::FETCH_ASSOC)];
+    $unreadCount = $notifications
+        ? (int)($notifications[0]['total_unread'] ?? 0)
+        : 0;
+
+    foreach ($notifications as &$notification) {
+        unset($notification['total_unread']);
+    }
+    unset($notification);
+
+    return [$unreadCount, $notifications];
 }
 
 function renderStaffDashboardNotifications(array $notifications): string
@@ -187,8 +197,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit('Method not allowed.');
     }
 
-    $submittedToken = (string)($_POST['csrf_token'] ?? '');
-    if ($submittedToken === '' || !hash_equals($csrf_token, $submittedToken)) {
+    $submittedToken = $_POST['csrf_token'] ?? '';
+    if (!is_string($submittedToken) || $submittedToken === '' || !hash_equals($csrf_token, $submittedToken)) {
         http_response_code(403);
         exit('Invalid security token. Refresh the page and try again.');
     }
@@ -303,45 +313,42 @@ $greeting = ($hour < 12) ? 'Good Morning' : (($hour < 17) ? 'Good Afternoon' : '
    DASHBOARD COUNTS AND TODAY'S VETERINARY SCHEDULE
    ------------------------------------------------------------------------- */
 try {
-    $todayCountStmt = $pdo->prepare("
-        SELECT COUNT(*)
-        FROM appointments
-        WHERE appointment_date = :today
-          AND service LIKE 'Vet Services%'
-          AND (booking_status IS NULL OR booking_status <> 'Cancelled')
+    // Load all three dashboard metrics in one round-trip while preserving
+    // the original filters and totals shown by the cards.
+    $dashboardCountsStmt = $pdo->prepare("
+        SELECT
+            (
+                SELECT COUNT(*)
+                FROM appointments
+                WHERE appointment_date = :today
+                  AND service LIKE 'Vet Services%'
+                  AND (booking_status IS NULL OR booking_status <> 'Cancelled')
+            ) AS today_count,
+            (
+                SELECT COUNT(*)
+                FROM appointments
+                WHERE booking_status = 'Completed'
+                  AND service LIKE 'Vet Services%'
+            ) AS completed_count,
+            (SELECT COUNT(*) FROM pets) AS pet_count
     ");
-    $todayCountStmt->execute([':today' => $today]);
-    $today_count = (int)$todayCountStmt->fetchColumn();
+    $dashboardCountsStmt->execute([':today' => $today]);
+    $dashboardCounts = $dashboardCountsStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+
+    $today_count = (int)($dashboardCounts['today_count'] ?? 0);
+    $completed_count = (int)($dashboardCounts['completed_count'] ?? 0);
+    $pet_count = (int)($dashboardCounts['pet_count'] ?? 0);
 } catch (PDOException $e) {
-    error_log("Today's appointments count query failed: " . $e->getMessage());
+    error_log('Veterinary dashboard metrics query failed: ' . $e->getMessage());
     $today_count = 0;
-}
-
-try {
-    $completedCountStmt = $pdo->query("
-        SELECT COUNT(*)
-        FROM appointments
-        WHERE booking_status = 'Completed'
-          AND service LIKE 'Vet Services%'
-    ");
-    $completed_count = (int)$completedCountStmt->fetchColumn();
-} catch (PDOException $e) {
-    error_log('Completed consultations count query failed: ' . $e->getMessage());
     $completed_count = 0;
-}
-
-try {
-    $petCountStmt = $pdo->query('SELECT COUNT(*) FROM pets');
-    $pet_count = (int)$petCountStmt->fetchColumn();
-} catch (PDOException $e) {
-    error_log('Patient count query failed: ' . $e->getMessage());
     $pet_count = 0;
 }
 
 $today_schedule = [];
 try {
     $todayScheduleStmt = $pdo->prepare("
-        SELECT a.*, p.name AS pet_name
+        SELECT a.appointment_time, a.booking_status, a.service, p.name AS pet_name
         FROM appointments a
         LEFT JOIN pets p ON a.pet_id = p.id
         WHERE a.appointment_date = :today
@@ -2460,8 +2467,15 @@ input, select, textarea, button, img { max-width:100%; }
             });
         }
 
-        fetchStaffNotifs();
-        window.setInterval(fetchStaffNotifs, 15000);
+        // The initial badge/list is already server-rendered. Start polling
+        // after page load and refresh immediately when the tab becomes active.
+        window.setInterval(function () {
+            if (!document.hidden) fetchStaffNotifs();
+        }, 15000);
+
+        document.addEventListener('visibilitychange', function () {
+            if (!document.hidden) fetchStaffNotifs();
+        });
     </script>
 </body>
 </html>

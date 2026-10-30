@@ -15,6 +15,7 @@ $user_id = (int)($_SESSION['user_id'] ?? 0);
 
 
 $profile_image = null;
+$profile_image_src = '';
 
 $unread_count = 0;
 
@@ -118,6 +119,19 @@ if ($is_logged_in && $user_id > 0) {
         $user_data = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
 
         $profile_image = $user_data['profile_image'] ?? null;
+
+        // Resolve profile photos from the root uploads directory after the
+        // Customer pages were moved into the customer/ folder.
+        $stored_profile_image = trim((string)$profile_image);
+        if ($stored_profile_image !== '' && basename($stored_profile_image) !== 'default-avatar.png') {
+            if (preg_match('~^(?:https?://|data:)~i', $stored_profile_image)) {
+                $profile_image_src = $stored_profile_image;
+            } else {
+                $stored_profile_image = ltrim($stored_profile_image, '/');
+                $stored_profile_image = preg_replace('~^(?:customer/)?uploads/~i', '', $stored_profile_image);
+                $profile_image_src = '/uploads/' . ltrim((string)$stored_profile_image, '/');
+            }
+        }
 
     } catch (PDOException $e) {
 
@@ -1118,9 +1132,9 @@ footer{
 
                 <div class="profile-trigger" onclick="toggleDropdown('profileDropdown')">
 
-                    <?php if (!empty($profile_image)): ?>
+                    <?php if ($profile_image_src !== ''): ?>
 
-                        <img src="<?php echo htmlspecialchars((string)$profile_image, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>" alt="Profile" class="profile-avatar">
+                        <img src="<?php echo htmlspecialchars($profile_image_src, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>" alt="Profile" class="profile-avatar" onerror="this.onerror=null; this.style.display='none';">
 
                     <?php else: ?>
 
@@ -1648,8 +1662,13 @@ function toggleDropdown(id){
         }
     }
 
-    refreshFaqNotifications();
-    window.setInterval(refreshFaqNotifications, 3000);
+    // The initial badge and notification list are already rendered by PHP.
+    // Poll less frequently to reduce repeated requests to the PHP/Supabase backend.
+    window.setInterval(function() {
+        if (!document.hidden) refreshFaqNotifications();
+    }, 15000);
+
+    // Refresh promptly when the customer returns to this browser tab.
     document.addEventListener('visibilitychange', function() {
         if (!document.hidden) refreshFaqNotifications();
     });

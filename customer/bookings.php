@@ -1,7 +1,7 @@
 <?php
 require_once __DIR__ . '/../shared_session_bootstrap.php';
 
-include 'db_supabase.php';
+require_once __DIR__ . '/../db_supabase.php';
 require_once __DIR__ . '/../includes/iprog_sms.php';
 
 date_default_timezone_set('Asia/Manila');
@@ -480,7 +480,32 @@ try {
     $profile_image = null;
 }
 
-$profile_pic = $profile_image ?: ($_SESSION['profile_image'] ?? '');
+// Normalize the profile image value fetched from the users table (or session fallback).
+// The stored value may be a bare filename, uploads/filename, or customer/uploads/filename.
+$stored_profile_pic = trim((string)($profile_image ?: ($_SESSION['profile_image'] ?? '')));
+$profile_pic_src = '';
+
+if ($stored_profile_pic !== '' && basename($stored_profile_pic) !== 'default-avatar.png') {
+    if (preg_match('~^https?://~i', $stored_profile_pic)) {
+        // Support already-hosted profile pictures.
+        $profile_pic_src = $stored_profile_pic;
+    } elseif (preg_match('~^data:image/(?:png|jpe?g|gif|webp);base64,~i', $stored_profile_pic)) {
+        // Support a valid image data URL if one was explicitly stored.
+        $profile_pic_src = $stored_profile_pic;
+    } else {
+        $normalized_profile_path = ltrim($stored_profile_pic, '/');
+        $normalized_profile_path = preg_replace(
+            '~^(?:\./)*(?:customer/)?uploads/~i',
+            '',
+            $normalized_profile_path
+        );
+        // Profile images are uploaded as files in the root uploads directory.
+        $profile_filename = basename((string)$normalized_profile_path);
+        if ($profile_filename !== '' && $profile_filename !== '.' && $profile_filename !== '..') {
+            $profile_pic_src = '/uploads/' . rawurlencode($profile_filename);
+        }
+    }
+}
 
 // ============================================================
 // FETCH NOTIFICATIONS FOR HEADER
@@ -2229,11 +2254,12 @@ try {
 
                 <div class="profile-wrapper">
                     <div class="profile-trigger" onclick="toggleDropdown('profileDropdown')">
-                        <?php if (!empty($profile_pic)): ?>
+                        <?php if ($profile_pic_src !== ''): ?>
                             <img
-                                src="<?php echo (strpos($profile_pic, 'uploads/') === false ? 'uploads/' : '') . htmlspecialchars($profile_pic); ?>"
+                                src="<?php echo htmlspecialchars($profile_pic_src, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>"
                                 alt="Profile"
                                 class="profile-img"
+                                onerror="this.onerror=null; var icon=document.createElement('i'); icon.className='fa-solid fa-circle-user'; icon.style.fontSize='20px'; icon.style.color='var(--brand-blue)'; this.replaceWith(icon);"
                             >
                         <?php else: ?>
                             <i class="fa-solid fa-circle-user" style="font-size:20px;color:var(--brand-blue);"></i>
@@ -2968,43 +2994,58 @@ try {
             content.innerHTML = recentItems + viewAllForm;
         }
 
-        function updateNotifications() {
-            fetch('bookings.php?ajax=notifications', {
-                method: 'GET',
-                headers: { 'Accept': 'application/json' },
-                cache: 'no-store',
-                credentials: 'same-origin'
-            })
-                .then(response => {
-                    if (!response.ok) {
-                        throw new Error('Notification refresh request failed.');
-                    }
-                    return response.json();
-                })
-                .then(data => {
-                    const badge = document.getElementById('notif-badge');
-                    const unread = Number(data && data.unread);
+        let notificationRefreshInProgress = false;
 
-                    // Do not overwrite valid UI state if the server response is incomplete.
-                    if (!badge || !Number.isInteger(unread) || unread < 0 || !Array.isArray(data.notifications)) {
-                        return;
-                    }
+        async function updateNotifications() {
+            // Avoid extra traffic while hidden and avoid overlapping slow requests.
+            if (document.hidden || notificationRefreshInProgress) return;
+            notificationRefreshInProgress = true;
 
-                    if (unread > previousUnreadCount) {
-                        notifSound.play().catch(() => {});
-                    }
+            try {
+                const response = await fetch('bookings.php?ajax=notifications', {
+                    method: 'GET',
+                    headers: { 'Accept': 'application/json' },
+                    cache: 'no-store',
+                    credentials: 'same-origin'
+                });
 
-                    previousUnreadCount = unread;
-                    badge.innerText = String(unread);
-                    badge.style.display = unread > 0 ? 'inline-flex' : 'none';
-                    renderNotificationDropdown(data.notifications);
-                })
-                .catch(error => console.warn('Could not refresh notifications:', error));
+                if (!response.ok) {
+                    throw new Error('Notification refresh request failed (' + response.status + ').');
+                }
+
+                const data = await response.json();
+                const badge = document.getElementById('notif-badge');
+                const unread = Number(data && data.unread);
+
+                // Do not overwrite valid UI state if the server response is incomplete.
+                if (!badge || !Number.isInteger(unread) || unread < 0 || !Array.isArray(data.notifications)) {
+                    return;
+                }
+
+                if (unread > previousUnreadCount) {
+                    notifSound.play().catch(() => {});
+                }
+
+                previousUnreadCount = unread;
+                badge.innerText = String(unread);
+                badge.style.display = unread > 0 ? 'inline-flex' : 'none';
+                renderNotificationDropdown(data.notifications);
+            } catch (error) {
+                console.warn('Could not refresh notifications:', error);
+            } finally {
+                notificationRefreshInProgress = false;
+            }
         }
 
-        // Run once soon after load, then keep the open page current every 3 seconds.
-        updateNotifications();
-        setInterval(updateNotifications, 3000);
+        // Server-rendered notification data is already present on initial load.
+        // Poll less often, and refresh once when the user returns to the tab.
+        setInterval(() => {
+            if (!document.hidden) updateNotifications();
+        }, 15000);
+
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden) updateNotifications();
+        });
     </script>
 </body>
 </html>

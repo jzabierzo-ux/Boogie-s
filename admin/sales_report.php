@@ -18,6 +18,11 @@ $date_params = [];
 $total_revenue = 0.0;
 $total_transactions = 0;
 $history_rows = [];
+$history_per_page = 25;
+$requested_page = filter_var($_GET['page'] ?? 1, FILTER_VALIDATE_INT, ['options' => ['default' => 1, 'min_range' => 1]]);
+$current_page = max(1, (int)$requested_page);
+$total_pages = 1;
+$history_offset = 0;
 $admin_notifications = [];
 $unread_count = 0;
 if (isset($_SESSION['user_id'])) {
@@ -38,6 +43,36 @@ if (isset($_SESSION['user_id'])) {
         $first_name = trim(explode(' ', $admin_full_name)[0] ?? 'Administrator', ',');
     }
 }
+
+// Resolve Admin profile images from either admin/uploads or the shared project uploads folder.
+// The stored database value may be a relative path or an absolute image URL.
+$profile_img_src = null;
+if ($profile_img_path !== '') {
+    $stored_profile_path = trim($profile_img_path);
+    if (preg_match('#^(https?://|data:image/)#i', $stored_profile_path)) {
+        $profile_img_src = $stored_profile_path;
+    } else {
+        $normalized_profile_path = str_replace('\\', '/', $stored_profile_path);
+        $normalized_profile_path = preg_replace('#^(?:(?:\.\./)+|/)+#', '', $normalized_profile_path);
+        $normalized_profile_path = preg_replace('#^(?:customer|admin|staff)/#i', '', $normalized_profile_path);
+        $normalized_profile_path = preg_replace('#^uploads/#i', '', $normalized_profile_path);
+
+        if ($normalized_profile_path !== ''
+            && !preg_match('#(^|/)\.\.?(/|$)#', $normalized_profile_path)
+            && !preg_match('/[\x00-\x1F\x7F]/', $normalized_profile_path)) {
+            $admin_upload_file = __DIR__ . '/uploads/' . $normalized_profile_path;
+            $shared_upload_file = __DIR__ . '/../uploads/' . $normalized_profile_path;
+            $encoded_profile_path = implode('/', array_map('rawurlencode', explode('/', $normalized_profile_path)));
+
+            if (is_file($admin_upload_file)) {
+                $profile_img_src = 'uploads/' . $encoded_profile_path;
+            } elseif (is_file($shared_upload_file)) {
+                $profile_img_src = '../uploads/' . $encoded_profile_path;
+            }
+        }
+    }
+}
+
 // Validate date input strictly before including it in the parameterized query.
 $is_valid_report_date = static function (string $date): bool {
     if ($date === '') {
@@ -55,14 +90,16 @@ if (!$is_valid_report_date($start_date) || !$is_valid_report_date($end_date)) {
     $filter_error = 'The To Date must be the same as or later than the From Date.';
 }
 if ($filter_error === '') {
+    // Keep the appointment_date column unwrapped so PostgreSQL can use a date/time index.
+    // The exclusive end boundary includes the whole selected To Date for DATE and timestamp columns.
     if ($start_date !== '' && $end_date !== '') {
-        $date_filter_query = ' AND a.appointment_date::date BETWEEN :start_date AND :end_date';
+        $date_filter_query = " AND a.appointment_date >= CAST(:start_date AS DATE) AND a.appointment_date < (CAST(:end_date AS DATE) + INTERVAL '1 day')";
         $date_params = [':start_date' => $start_date, ':end_date' => $end_date];
     } elseif ($start_date !== '') {
-        $date_filter_query = ' AND a.appointment_date::date >= :start_date';
+        $date_filter_query = ' AND a.appointment_date >= CAST(:start_date AS DATE)';
         $date_params = [':start_date' => $start_date];
     } elseif ($end_date !== '') {
-        $date_filter_query = ' AND a.appointment_date::date <= :end_date';
+        $date_filter_query = " AND a.appointment_date < (CAST(:end_date AS DATE) + INTERVAL '1 day')";
         $date_params = [':end_date' => $end_date];
     }
 } else {
@@ -86,22 +123,36 @@ try {
 } catch (PDOException $e) {
     error_log('Sales report summary query error: ' . $e->getMessage());
 }
-// Completed transaction history; if the fee column is unavailable, still show history.
+// Paginate the completed transaction history; summary totals above still cover the full filtered period.
+$total_pages = max(1, (int)ceil($total_transactions / $history_per_page));
+$current_page = min($current_page, $total_pages);
+$history_offset = ($current_page - 1) * $history_per_page;
+
 try {
     $service_fee_select = $has_service_fee ? 'a.service_fee' : 'NULL AS service_fee';
-    $history_query = $pdo->prepare("SELECT a.id, a.appointment_date, a.appointment_time, a.service, {$service_fee_select}, p.name AS pet_name, p.owner_name AS walkin_owner, u.full_name AS registered_name FROM appointments a LEFT JOIN pets p ON a.pet_id = p.id LEFT JOIN users u ON a.user_id = u.id WHERE LOWER(a.booking_status) = 'completed' {$date_filter_query} ORDER BY a.appointment_date DESC, a.appointment_time DESC");
-    $history_query->execute($date_params);
+    $history_sql = "SELECT a.id, a.appointment_date, a.appointment_time, a.service, {$service_fee_select}, p.name AS pet_name, p.owner_name AS walkin_owner, u.full_name AS registered_name FROM appointments a LEFT JOIN pets p ON a.pet_id = p.id LEFT JOIN users u ON a.user_id = u.id WHERE LOWER(a.booking_status) = 'completed' {$date_filter_query} ORDER BY a.appointment_date DESC, a.appointment_time DESC, a.id DESC LIMIT :limit OFFSET :offset";
+    $history_query = $pdo->prepare($history_sql);
+    foreach ($date_params as $param_name => $param_value) {
+        $history_query->bindValue($param_name, $param_value, PDO::PARAM_STR);
+    }
+    $history_query->bindValue(':limit', $history_per_page, PDO::PARAM_INT);
+    $history_query->bindValue(':offset', $history_offset, PDO::PARAM_INT);
+    $history_query->execute();
     $history_rows = $history_query->fetchAll(PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
     error_log('Sales report history query error: ' . $e->getMessage());
     $history_rows = [];
 }
-// Admin notifications belong only to the Admin portal.
+
+$history_start = !empty($history_rows) ? $history_offset + 1 : 0;
+$history_end = !empty($history_rows) ? $history_offset + count($history_rows) : 0;
+
+// Admin notifications belong only to the Admin portal; load only the latest 20 while retaining the full unread count.
 try {
-    $admin_notif_query = $pdo->prepare('SELECT id, message, created_at FROM admin_notifications WHERE is_read = 0 ORDER BY created_at DESC');
+    $admin_notif_query = $pdo->prepare('SELECT id, message, created_at, COUNT(*) OVER() AS total_unread FROM admin_notifications WHERE is_read = 0 ORDER BY created_at DESC, id DESC LIMIT 20');
     $admin_notif_query->execute();
     $admin_notifications = $admin_notif_query->fetchAll(PDO::FETCH_ASSOC);
-    $unread_count = count($admin_notifications);
+    $unread_count = !empty($admin_notifications) ? (int)$admin_notifications[0]['total_unread'] : 0;
 } catch (PDOException $e) {
     error_log('Sales report notification query error: ' . $e->getMessage());
     $admin_notifications = [];
@@ -209,9 +260,16 @@ try {
         tr:hover td { background-color: #f8fafc; }
         .price-col { font-weight: 800; color: #10b981; font-size: 15px;}
         .guest-badge { background: #ffedd5; color: #ea580c; font-size: 10px; padding: 3px 8px; border-radius: 6px; font-weight: 800; border: 1px solid #fdba74; margin-left: 8px; letter-spacing: 0.5px;}
+        .pagination-footer { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-top:18px; }
+        .pagination-info { color:var(--text-muted); font-size:12px; font-weight:600; }
+        .pagination-controls { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+        .pagination-link { display:inline-flex; align-items:center; justify-content:center; min-height:36px; padding:8px 13px; border-radius:7px; background:#f1f5f9; color:var(--navy-dark); text-decoration:none; font-size:12px; font-weight:700; border:1px solid #e2e8f0; }
+        .pagination-link:hover { background:var(--brand-yellow); border-color:var(--brand-yellow); }
+        .pagination-link.disabled { opacity:.45; pointer-events:none; }
+        .pagination-current { color:var(--text-muted); font-size:12px; font-weight:700; padding:0 4px; }
         footer { text-align: center; padding: 40px; color: var(--text-muted); font-size: 12px; border-top: 1px solid rgba(0,0,0,0.05); margin-top: 20px;}
         @media print {
-            aside, .top-bar, .filter-section, .print-btn { display: none !important; }
+            aside, .top-bar, .filter-section, .print-btn, .pagination-footer { display: none !important; }
             main { margin-left: 0; padding: 0; }
             .container { padding: 0; }
             body { background: white; }
@@ -431,8 +489,8 @@ try {
                 </div>
                 <div class="profile-wrapper" onclick="toggleProfile(event)">
                     <span class="admin-tag"><?php echo strtoupper($_SESSION['role'] ?? 'ADMIN'); ?></span>
-                    <?php if (!empty($profile_img_path) && file_exists(__DIR__ . '/' . ltrim($profile_img_path, '/\\'))): ?>
-                        <img src="<?php echo htmlspecialchars($profile_img_path, ENT_QUOTES, 'UTF-8'); ?>" class="top-avatar" alt="Profile Picture">
+                    <?php if (!empty($profile_img_src)): ?>
+                        <img src="<?php echo htmlspecialchars($profile_img_src, ENT_QUOTES, 'UTF-8'); ?>" class="top-avatar" alt="Profile Picture">
                     <?php else: ?>
                         <div class="top-avatar-fallback"><?php echo strtoupper(substr($first_name, 0, 1)); ?></div>
                     <?php endif; ?>
@@ -538,6 +596,28 @@ try {
                         </div>
                     <?php endif; ?>
                 </div>
+                <div class="pagination-footer">
+                    <div class="pagination-info">
+                        Showing <?php echo number_format($history_start); ?>–<?php echo number_format($history_end); ?> of <?php echo number_format($total_transactions); ?> completed transactions
+                    </div>
+                    <?php if ($total_pages > 1): ?>
+                        <?php
+                            $pagination_params = [];
+                            if ($start_date !== '') { $pagination_params['start_date'] = $start_date; }
+                            if ($end_date !== '') { $pagination_params['end_date'] = $end_date; }
+                            $pagination_base = 'sales_report.php?';
+                        ?>
+                        <nav class="pagination-controls" aria-label="Transaction history pages">
+                            <?php if ($current_page > 1): ?>
+                                <a class="pagination-link" href="<?php echo htmlspecialchars($pagination_base . http_build_query($pagination_params + ['page' => $current_page - 1]), ENT_QUOTES, 'UTF-8'); ?>"><i class="fas fa-chevron-left"></i>&nbsp; Previous</a>
+                            <?php endif; ?>
+                            <span class="pagination-current">Page <?php echo number_format($current_page); ?> of <?php echo number_format($total_pages); ?></span>
+                            <?php if ($current_page < $total_pages): ?>
+                                <a class="pagination-link" href="<?php echo htmlspecialchars($pagination_base . http_build_query($pagination_params + ['page' => $current_page + 1]), ENT_QUOTES, 'UTF-8'); ?>">Next &nbsp;<i class="fas fa-chevron-right"></i></a>
+                            <?php endif; ?>
+                        </nav>
+                    <?php endif; ?>
+                </div>
             </div>
         </div>
         <footer>
@@ -585,7 +665,10 @@ try {
                 ? data.html
                 : '<div class="notif-empty">No new notifications.</div>';
         }
+        let adminNotifRequestInFlight = false;
         function fetchAdminNotifs() {
+            if (document.hidden || adminNotifRequestInFlight) return;
+            adminNotifRequestInFlight = true;
             fetch('get_admin_notifs.php', {
                 method: 'GET',
                 cache: 'no-store',
@@ -593,19 +676,23 @@ try {
             })
             .then(function(response) {
                 if (!response.ok) {
-                    throw new Error(
-                        'Notification request failed: HTTP ' + response.status
-                    );
+                    throw new Error('Notification request failed: HTTP ' + response.status);
                 }
                 return response.json();
             })
             .then(renderAdminNotifications)
             .catch(function(error) {
                 console.error('Error fetching admin notifications:', error);
+            })
+            .finally(function() {
+                adminNotifRequestInFlight = false;
             });
         }
         fetchAdminNotifs();
-        setInterval(fetchAdminNotifs, 3000);
+        setInterval(fetchAdminNotifs, 15000);
+        document.addEventListener('visibilitychange', function() {
+            if (!document.hidden) fetchAdminNotifs();
+        });
         // --- MOBILE SIDEBAR (same behavior as managepet.php) ---
         function toggleMobileSidebar(event) {
             if (event) event.stopPropagation();

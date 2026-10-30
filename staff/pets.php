@@ -1,75 +1,123 @@
 <?php
 require_once __DIR__ . '/../shared_session_bootstrap.php';
-require_once '../db_supabase.php'; 
 
 // --- SECURITY CHECK ---
-$current_role = strtolower(trim($_SESSION['role'] ?? ''));
+// Normalize spaces/hyphens so role aliases such as "Vet Assistant" still work.
+$current_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
+$current_role = preg_replace('/[\s-]+/', '_', $current_role) ?? '';
+$allowed_roles = ['admin', 'manager', 'vet', 'veterinarian', 'vet_assistant', 'vet_nurse'];
+$is_veterinary_role = in_array($current_role, ['vet', 'veterinarian', 'vet_assistant', 'vet_nurse'], true);
+$has_valid_staff_session = !$is_veterinary_role || (($_SESSION['staff_logged_in'] ?? false) === true);
 
 if (
-    !isset($_SESSION['logged_in']) ||
-    $_SESSION['logged_in'] !== true ||
-    !in_array($current_role, ['admin', 'manager', 'vet', 'veterinarian', 'vet assistant', 'vet_assistant', 'vet nurse', 'vet_nurse'], true)
+    ($_SESSION['logged_in'] ?? false) !== true ||
+    !in_array($current_role, $allowed_roles, true) ||
+    !$has_valid_staff_session
 ) {
-    header("Location: stafflogin.php");
+    header('Location: stafflogin.php');
     exit();
+}
+
+// Connect only after the session and role have been validated.
+require_once __DIR__ . '/../db_supabase.php';
+if (!isset($pdo) || !($pdo instanceof PDO)) {
+    http_response_code(500);
+    exit('Database connection is unavailable.');
 }
 
 // SET CORRECT TIMEZONE FOR PHILIPPINES
 date_default_timezone_set('Asia/Manila');
 
-$staff_name = $_SESSION['staff_name'] ?? 'Doctor';
+$staff_name = trim((string)($_SESSION['staff_name'] ?? 'Doctor'));
+if ($staff_name === '') {
+    $staff_name = 'Doctor';
+}
 
 // --- FETCH STAFF PROFILE IMAGE & FULL NAME ---
-$profile_img_path = "";
+$profile_img_path = '';
 $full_display_name = $staff_name;
+$uid = filter_var($_SESSION['user_id'] ?? $_SESSION['staff_id'] ?? null, FILTER_VALIDATE_INT);
 
-if (isset($_SESSION['user_id']) || isset($_SESSION['staff_id'])) {
-    $uid = $_SESSION['user_id'] ?? $_SESSION['staff_id'];
-    
-    // FIX: Idinagdag ang 'full_name' sa query para makuha ang buong pangalan
-    $stmt_staff = $pdo->prepare("SELECT full_name, profile_image FROM users WHERE id = :id LIMIT 1");
-    $stmt_staff->execute([':id' => $uid]);
-    $staff_data = $stmt_staff->fetch(PDO::FETCH_ASSOC);
+if ($uid !== false && $uid !== null && $uid > 0) {
+    try {
+        $stmt_staff = $pdo->prepare(
+            'SELECT full_name, profile_image FROM users WHERE id = :id LIMIT 1'
+        );
+        $stmt_staff->execute([':id' => $uid]);
+        $staff_data = $stmt_staff->fetch(PDO::FETCH_ASSOC);
 
-    if ($staff_data) {
-        $profile_img_path = $staff_data['profile_image'] ?? '';
-        if (!empty($staff_data['full_name'])) {
-            $full_display_name = $staff_data['full_name'];
+        if ($staff_data) {
+            $profile_img_path = trim((string)($staff_data['profile_image'] ?? ''));
+            $db_full_name = trim((string)($staff_data['full_name'] ?? ''));
+            if ($db_full_name !== '') {
+                $full_display_name = $db_full_name;
+            }
         }
+    } catch (Throwable $e) {
+        error_log('Patients Directory profile lookup failed: ' . $e->getMessage());
     }
 }
 
-// Linisin ang pangalan para sa Avatar Initial (Tatanggalin ang "Dr. " at comma)
-$clean_name = trim(str_replace('Dr. ', '', $full_display_name), " ,"); 
+// Linisin ang pangalan para sa Avatar Initial.
+$clean_name = trim(preg_replace('/^\s*(?:Dr\.?|Dra\.?|Doc\.?)\s+/i', '', $full_display_name) ?? $full_display_name, " ,");
 $first_letter = strtoupper(substr($clean_name, 0, 1));
-if ($first_letter === '') { $first_letter = 'D'; } 
+if ($first_letter === '') {
+    $first_letter = 'D';
+}
 
-// Siguraduhing may "Dr. " na nakadikit sa buong pangalan para formal
-$display_with_title = (stripos($full_display_name, 'Dr.') === false) ? 'Dr. ' . $full_display_name : $full_display_name;
+// Siguraduhing may "Dr. " na nakadikit sa buong pangalan para formal.
+$display_with_title = preg_match('/^\s*(?:Dr\.?|Dra\.?|Doc\.?)\s+/i', $full_display_name)
+    ? $full_display_name
+    : 'Dr. ' . $full_display_name;
 
 // Mobile top bar: show first name only to prevent crowding.
-$mobile_name_source = trim(preg_replace('/^\s*(?:Dr\.?|Dra\.?|Doc\.?)\s+/i', '', (string)$display_with_title));
+$mobile_name_source = trim(preg_replace('/^\s*(?:Dr\.?|Dra\.?|Doc\.?)\s+/i', '', $display_with_title) ?? $display_with_title);
 $first_name_only = trim((string)(preg_split('/\s+/', $mobile_name_source)[0] ?? ''));
 
-
 // --- FETCH NOTIFICATIONS ---
-$admin_notif_stmt = $pdo->prepare("SELECT * FROM admin_notifications WHERE is_read = 0 ORDER BY created_at DESC");
-$admin_notif_stmt->execute();
-$admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
-$unread_count = count($admin_notifications);
+// Keep the total unread count accurate while limiting the dropdown to recent items.
+$admin_notifications = [];
+$unread_count = 0;
+try {
+    $unread_count = (int)$pdo->query(
+        'SELECT COUNT(*) FROM admin_notifications WHERE is_read = 0'
+    )->fetchColumn();
+
+    $admin_notif_stmt = $pdo->query(
+        'SELECT message, created_at FROM admin_notifications WHERE is_read = 0 ORDER BY created_at DESC LIMIT 10'
+    );
+    $admin_notifications = $admin_notif_stmt ? $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC) : [];
+} catch (Throwable $e) {
+    error_log('Patients Directory notification lookup failed: ' . $e->getMessage());
+}
 
 // --- STATS LOGIC ---
-$total_res = $pdo->query("SELECT COUNT(*) AS total FROM pets")->fetch(PDO::FETCH_ASSOC);
-$total_pets = (int)($total_res['total'] ?? 0);
+// One aggregate query replaces three separate COUNT queries.
+$total_pets = 0;
+$dogs = 0;
+$cats = 0;
+$others = 0;
+try {
+    $stats_stmt = $pdo->query(
+        "SELECT COUNT(*) AS total, " .
+        "COALESCE(SUM(CASE WHEN pet_type = 'Dog' THEN 1 ELSE 0 END), 0) AS dogs, " .
+        "COALESCE(SUM(CASE WHEN pet_type = 'Cat' THEN 1 ELSE 0 END), 0) AS cats " .
+        'FROM pets'
+    );
+    $stats = $stats_stmt ? $stats_stmt->fetch(PDO::FETCH_ASSOC) : [];
+    $total_pets = (int)($stats['total'] ?? 0);
+    $dogs = (int)($stats['dogs'] ?? 0);
+    $cats = (int)($stats['cats'] ?? 0);
+    $others = max(0, $total_pets - $dogs - $cats);
+} catch (Throwable $e) {
+    error_log('Patients Directory statistics lookup failed: ' . $e->getMessage());
+}
 
-// These now use the 'pet_type' column from your database
-$dog_res = $pdo->query("SELECT COUNT(*) AS total FROM pets WHERE pet_type = 'Dog'")->fetch(PDO::FETCH_ASSOC);
-$dogs = (int)($dog_res['total'] ?? 0);
-
-$cat_res = $pdo->query("SELECT COUNT(*) AS total FROM pets WHERE pet_type = 'Cat'")->fetch(PDO::FETCH_ASSOC);
-$cats = (int)($cat_res['total'] ?? 0);
-
-$others = $total_pets - ($dogs + $cats);
+// Sanitize the category filter before it is used in both the header and table.
+$filter_type = trim((string)($_GET['type'] ?? ''));
+if (!in_array($filter_type, ['Dog', 'Cat', 'Other'], true)) {
+    $filter_type = '';
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -2107,7 +2155,7 @@ input, select, textarea, button, img { max-width:100%; }
                         <i class="fas fa-user-md"></i> VET
                     </div>
                     
-                    <?php if (!empty($profile_img_path) && (filter_var($profile_img_path, FILTER_VALIDATE_URL) || file_exists(__DIR__ . '/../' . ltrim($profile_img_path, '/')))): ?>
+                    <?php if (!empty($profile_img_path) && ((preg_match('#^https?://#i', $profile_img_path) && filter_var($profile_img_path, FILTER_VALIDATE_URL)) || (!preg_match('#^[a-z][a-z0-9+.-]*://#i', $profile_img_path) && is_file(__DIR__ . '/../' . ltrim($profile_img_path, '/'))))): ?>
                         <img src="<?php echo htmlspecialchars($profile_img_path, ENT_QUOTES, 'UTF-8'); ?>" class="top-avatar" alt="Profile Picture">
                     <?php else: ?>
                         <div class="top-avatar-fallback"><?php echo $first_letter; ?></div>
@@ -2163,9 +2211,9 @@ input, select, textarea, button, img { max-width:100%; }
                         <i class="fas fa-search"></i>
                         <input type="text" id="searchInput" placeholder="Search patients by name, breed, or type...">
                     </div>
-                    <?php if(isset($_GET['type'])): ?>
+                    <?php if($filter_type !== ''): ?>
                         <div style="font-size: 13px; font-weight: 700; color: var(--brand-blue); background: #eff6ff; padding: 8px 16px; border-radius: 8px;">
-                            Showing: <?php echo htmlspecialchars($_GET['type']); ?>s
+                            Showing: <?php echo htmlspecialchars($filter_type, ENT_QUOTES, 'UTF-8'); ?>s
                             <a href="pets.php" style="color: #ef4444; margin-left: 10px; text-decoration: none;"><i class="fas fa-times"></i> Clear</a>
                         </div>
                     <?php endif; ?>
@@ -2184,27 +2232,28 @@ input, select, textarea, button, img { max-width:100%; }
                         </thead>
                         <tbody>
                             <?php
-                            // --- UPDATED: TABLE FILTER LOGIC ---
-                            $filter_type = $_GET['type'] ?? '';
-
-                            $allowed_filters = ['Dog', 'Cat', 'Other'];
-                            if (!in_array($filter_type, $allowed_filters, true)) {
-                                $filter_type = '';
+                            // --- TABLE FILTER LOGIC ---
+                            // $filter_type was validated before the page markup.
+                            // Fetch only columns displayed on this page.
+                            $pet_columns = 'id, name, pet_type, breed, owner_name, owner_id';
+                            try {
+                                if ($filter_type === 'Dog' || $filter_type === 'Cat') {
+                                    $stmt_pets = $pdo->prepare(
+                                        "SELECT {$pet_columns} FROM pets WHERE pet_type = :pet_type ORDER BY id DESC"
+                                    );
+                                    $stmt_pets->execute([':pet_type' => $filter_type]);
+                                } elseif ($filter_type === 'Other') {
+                                    $stmt_pets = $pdo->query(
+                                        "SELECT {$pet_columns} FROM pets WHERE pet_type NOT IN ('Dog', 'Cat') ORDER BY id DESC"
+                                    );
+                                } else {
+                                    $stmt_pets = $pdo->query("SELECT {$pet_columns} FROM pets ORDER BY id DESC");
+                                }
+                                $rows = $stmt_pets ? $stmt_pets->fetchAll(PDO::FETCH_ASSOC) : [];
+                            } catch (Throwable $e) {
+                                error_log('Patients Directory pet listing failed: ' . $e->getMessage());
+                                $rows = [];
                             }
-
-                            if ($filter_type === 'Dog' || $filter_type === 'Cat') {
-                                $stmt_pets = $pdo->prepare(
-                                    'SELECT * FROM pets WHERE pet_type = :pet_type ORDER BY id DESC'
-                                );
-                                $stmt_pets->execute([':pet_type' => $filter_type]);
-                            } elseif ($filter_type === 'Other') {
-                                $stmt_pets = $pdo->query(
-                                    "SELECT * FROM pets WHERE pet_type NOT IN ('Dog', 'Cat') ORDER BY id DESC"
-                                );
-                            } else {
-                                $stmt_pets = $pdo->query('SELECT * FROM pets ORDER BY id DESC');
-                            }
-                            $rows = $stmt_pets ? $stmt_pets->fetchAll(PDO::FETCH_ASSOC) : [];
 
                             if (!empty($rows)) {
                                 foreach ($rows as $row) {
@@ -2255,21 +2304,15 @@ input, select, textarea, button, img { max-width:100%; }
         // --- Search functionality ---
         document.addEventListener("DOMContentLoaded", function() {
             const searchBox = document.getElementById("searchInput");
-            const tableRows = document.querySelectorAll("table tbody tr");
+            if (!searchBox) return;
 
-            searchBox.addEventListener("keyup", function(e) {
-                const searchTerm = e.target.value.toLowerCase();
+            const tableRows = document.querySelectorAll("table tbody tr");
+            searchBox.addEventListener("input", function() {
+                const searchTerm = searchBox.value.trim().toLowerCase();
 
                 tableRows.forEach(function(row) {
-                    if (row.cells[0].colSpan === 5) return; // Skip "No patients found" row (updated to 5)
-
-                    const rowText = row.textContent.toLowerCase();
-
-                    if (rowText.includes(searchTerm)) {
-                        row.style.display = "";
-                    } else {
-                        row.style.display = "none";
-                    }
+                    if (row.cells[0] && row.cells[0].colSpan === 5) return;
+                    row.style.display = row.textContent.toLowerCase().includes(searchTerm) ? "" : "none";
                 });
             });
         });
@@ -2319,63 +2362,74 @@ input, select, textarea, button, img { max-width:100%; }
         });
 
         function toggleNotif(event) {
-            event.stopPropagation();
-            document.getElementById("notifBox").classList.toggle("show");
-            document.getElementById("profileBox").classList.remove("show");
+            if (event) event.stopPropagation();
+            const notifBox = document.getElementById("notifBox");
+            const profileBox = document.getElementById("profileBox");
+            if (notifBox) notifBox.classList.toggle("show");
+            if (profileBox) profileBox.classList.remove("show");
         }
 
         function toggleProfile(event) {
-            event.stopPropagation();
-            document.getElementById("profileBox").classList.toggle("show");
-            document.getElementById("notifBox").classList.remove("show");
+            if (event) event.stopPropagation();
+            const profileBox = document.getElementById("profileBox");
+            const notifBox = document.getElementById("notifBox");
+            if (profileBox) profileBox.classList.toggle("show");
+            if (notifBox) notifBox.classList.remove("show");
         }
 
-        // Close dropdowns when clicking outside
+        // Close dropdowns when clicking outside.
         window.onclick = function(event) {
-            if (!event.target.closest('.notif-wrapper')) {
+            const target = event.target;
+            if (!target || typeof target.closest !== 'function') return;
+
+            if (!target.closest('.notif-wrapper')) {
                 const notifBox = document.getElementById("notifBox");
-                if (notifBox && notifBox.classList.contains('show')) {
-                    notifBox.classList.remove('show');
-                }
+                if (notifBox) notifBox.classList.remove('show');
             }
-            if (!event.target.closest('.profile-wrapper')) {
+            if (!target.closest('.profile-wrapper')) {
                 const profileBox = document.getElementById("profileBox");
-                if (profileBox && profileBox.classList.contains('show')) {
-                    profileBox.classList.remove('show');
-                }
+                if (profileBox) profileBox.classList.remove('show');
             }
-        }
+        };
 
         // --- REAL-TIME NOTIFICATION FETCHER ---
-        let previousUnreadCount = <?php echo $unread_count; ?>;
-        
         function fetchAdminNotifs() {
-            fetch('../admin/get_admin_notifs.php')
-                .then(response => response.json())
+            fetch('../admin/get_admin_notifs.php', {
+                method: 'GET',
+                headers: { 'Accept': 'application/json' },
+                credentials: 'same-origin'
+            })
+                .then(response => {
+                    if (!response.ok) throw new Error('Notification request failed: ' + response.status);
+                    return response.json();
+                })
                 .then(data => {
+                    if (!data || typeof data !== 'object') return;
+
                     const badge = document.getElementById('staff-notif-badge');
                     const notifList = document.getElementById('admin-notif-list');
                     const markReadBtn = document.getElementById('mark-read-link');
-                    
-                    if (data.unread > 0) {
-                        badge.style.display = 'inline-block';
-                        badge.innerText = data.unread;
-                        if(markReadBtn) markReadBtn.style.display = 'inline-block';
-                    } else {
-                        badge.style.display = 'none';
-                        if(markReadBtn) markReadBtn.style.display = 'none';
-                    }
+                    const unread = Math.max(0, Number.parseInt(data.unread, 10) || 0);
+                    const notificationHtml = typeof data.html === 'string' ? data.html : '';
 
-                    if (data.html !== "") {
-                        notifList.innerHTML = data.html;
-                    } else {
-                        notifList.innerHTML = '<div class="notif-empty">No new notifications.</div>';
+                    if (badge) {
+                        badge.style.display = unread > 0 ? 'inline-block' : 'none';
+                        badge.textContent = String(unread);
+                    }
+                    if (markReadBtn) {
+                        markReadBtn.style.display = unread > 0 ? 'inline-block' : 'none';
+                    }
+                    if (notifList) {
+                        notifList.innerHTML = notificationHtml.trim() !== ''
+                            ? notificationHtml
+                            : '<div class="notif-empty">No new notifications.</div>';
                     }
                 })
                 .catch(error => console.error('Error fetching notifications:', error));
         }
 
-        setInterval(fetchAdminNotifs, 3000);
+        // Reduce unnecessary requests while keeping the notification badge updated.
+        setInterval(fetchAdminNotifs, 10000);
     </script>
 </body>
 </html>

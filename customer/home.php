@@ -1,8 +1,85 @@
 <?php
 require_once __DIR__ . '/../shared_session_bootstrap.php';
 
-$is_logged_in = isset($_SESSION['logged_in']) && $_SESSION['logged_in'] === true;
-$user_name = $is_logged_in ? ($_SESSION['user_name'] ?? 'Guest') : 'Guest';
+// This page is the customer-facing home page. Treat other or incomplete
+// sessions as guests instead of showing customer dashboard links.
+$session_id_value = $_SESSION['user_id'] ?? null;
+$session_user_id = is_scalar($session_id_value) ? filter_var($session_id_value, FILTER_VALIDATE_INT) : false;
+$role_value = $_SESSION['role'] ?? null;
+$session_role = is_scalar($role_value) ? strtolower(trim((string)$role_value)) : '';
+$is_logged_in = (($_SESSION['logged_in'] ?? false) === true)
+    && $session_user_id !== false
+    && $session_user_id !== null
+    && $session_user_id > 0
+    && $session_role === 'customer';
+
+$user_name = 'Guest';
+if ($is_logged_in) {
+    $session_name = $_SESSION['user_name'] ?? 'Guest';
+    if (is_scalar($session_name)) {
+        $session_name = trim((string)$session_name);
+        if ($session_name !== '') {
+            $user_name = $session_name;
+        }
+    }
+}
+
+/** Safely escape values rendered into this page's HTML. */
+function homePageEscape($value, string $fallback = ''): string
+{
+    $value = is_scalar($value) ? (string)$value : $fallback;
+    return htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+}
+
+/** Allow secure remote images or safe relative paths for promotion artwork. */
+function homePagePromoImageSource($value): string
+{
+    if (!is_scalar($value)) {
+        return '';
+    }
+
+    $value = trim((string)$value);
+    if ($value === '' || preg_match('/[\x00-\x1F\x7F]/', $value) || str_contains($value, '\\')) {
+        return '';
+    }
+
+    // Remote promotion images must use HTTPS; reject javascript:, data:, and other schemes.
+    if (preg_match('~^[a-z][a-z0-9+.-]*:~i', $value)) {
+        if (stripos($value, 'https://') !== 0 || filter_var($value, FILTER_VALIDATE_URL) === false) {
+            return '';
+        }
+        return $value;
+    }
+
+    if (str_starts_with($value, '//')) {
+        return '';
+    }
+
+    // Keep the existing project convention that strips parent-folder prefixes.
+    $value = ltrim(str_replace('../', '', $value), '/');
+    $path_parts = explode('/', $value);
+    foreach ($path_parts as $part) {
+        if ($part === '..') {
+            return '';
+        }
+    }
+
+    return $value;
+}
+
+/** Format a promotion expiry date without emitting warnings for malformed values. */
+function homePageFormatDate($value): string
+{
+    if (!is_scalar($value) || trim((string)$value) === '') {
+        return '';
+    }
+
+    try {
+        return (new DateTimeImmutable((string)$value, new DateTimeZone('Asia/Manila')))->format('M j, Y');
+    } catch (Throwable $e) {
+        return '';
+    }
+}
 
 require_once __DIR__ . '/../db_supabase.php';
 
@@ -10,7 +87,7 @@ require_once __DIR__ . '/../db_supabase.php';
 $reviews_list = [];
 
 try {
-    $review_stmt = $pdo->prepare("\n        SELECT\n            r.*,\n            u.full_name,\n            a.service\n        FROM reviews r\n        JOIN users u ON r.user_id = u.id\n        JOIN appointments a ON r.appointment_id = a.id\n        WHERE r.rating >= 4\n        ORDER BY r.review_date DESC\n        LIMIT 3\n    ");
+    $review_stmt = $pdo->prepare("\n        SELECT\n            r.rating,\n            r.comment,\n            r.review_date,\n            u.full_name,\n            a.service\n        FROM reviews r\n        JOIN users u ON r.user_id = u.id\n        JOIN appointments a ON r.appointment_id = a.id\n        WHERE r.rating >= 4\n        ORDER BY r.review_date DESC\n        LIMIT 3\n    ");
     $review_stmt->execute();
     $reviews_list = $review_stmt->fetchAll(PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
@@ -42,7 +119,7 @@ $parent_text = ($total_reviews === 1)
 $promos_list = [];
 
 try {
-    $promo_stmt = $pdo->prepare("\n        SELECT *\n        FROM promos\n        WHERE status = 'active'\n          AND (expiry_date >= ((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Manila')::date) OR expiry_date IS NULL)\n        ORDER BY id DESC\n        LIMIT 3\n    ");
+    $promo_stmt = $pdo->prepare("\n        SELECT theme_color, image_url, title, tag, description, expiry_date\n        FROM promos\n        WHERE status = 'active'\n          AND (expiry_date >= ((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Manila')::date) OR expiry_date IS NULL)\n        ORDER BY id DESC\n        LIMIT 3\n    ");
     $promo_stmt->execute();
     $promos_list = $promo_stmt->fetchAll(PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
@@ -2109,6 +2186,7 @@ try {
                 <input
                     type="search"
                     id="siteSearchInput"
+                    maxlength="100"
                     placeholder="Search for grooming, hotel, or vet services..."
                     aria-label="Search services"
                 >
@@ -2119,7 +2197,7 @@ try {
 
             <div class="nav-links">
                 <?php if($is_logged_in): ?>
-                    <span class="hello-user"><i class="fa-regular fa-user"></i> Hi, <?php echo htmlspecialchars($user_name); ?></span>
+                    <span class="hello-user"><i class="fa-regular fa-user"></i> Hi, <?php echo homePageEscape($user_name); ?></span>
                     <a href="dashboard.php" class="cart-btn">Dashboard</a>
                     <a href="logout.php" class="logout-link">Logout</a>
                 <?php else: ?>
@@ -2134,6 +2212,7 @@ try {
                 <input
                     type="search"
                     id="mobileSiteSearchInput"
+                    maxlength="100"
                     placeholder="Search for grooming, hotel, or vet services..."
                     aria-label="Search services"
                 >
@@ -2214,7 +2293,7 @@ try {
                 </div>
                 <div class="stat-item">
                     <i class="fa-solid fa-star"></i>
-                    <strong><?php echo $avg_rating; ?>/5</strong>
+                    <strong><?php echo homePageEscape($avg_rating); ?>/5</strong>
                     <span>Average Rating</span>
                 </div>
                 <div class="stat-item">
@@ -2251,30 +2330,28 @@ try {
                                 ? $theme_candidate
                                 : 'purple';
 
-                            $image_path = trim((string)($promo['image_url'] ?? ''));
-                            if ($image_path !== '') {
-                                $image_path = ltrim(str_replace('../', '', $image_path), '/');
-                            }
+                            $image_path = homePagePromoImageSource($promo['image_url'] ?? '');
+                            $expiry_display = homePageFormatDate($promo['expiry_date'] ?? '');
                         ?>
                         <article class="promo-card <?php echo $theme_class; ?> <?php echo $image_path !== '' ? 'has-image' : ''; ?>">
                             <?php if ($image_path !== ''): ?>
                                 <img
                                     class="promo-image"
-                                    src="<?php echo htmlspecialchars($image_path, ENT_QUOTES, 'UTF-8'); ?>"
-                                    alt="<?php echo htmlspecialchars($promo['title'] ?? 'Promotion', ENT_QUOTES, 'UTF-8'); ?>"
+                                    src="<?php echo homePageEscape($image_path); ?>"
+                                    alt="<?php echo homePageEscape($promo['title'] ?? 'Promotion', 'Promotion'); ?>"
                                     loading="lazy"
                                 >
                             <?php endif; ?>
 
                             <div class="promo-body">
-                                <span class="tag"><?php echo htmlspecialchars($promo['tag'] ?? 'PROMO', ENT_QUOTES, 'UTF-8'); ?></span>
-                                <h3><?php echo htmlspecialchars($promo['title'] ?? 'Special Offer', ENT_QUOTES, 'UTF-8'); ?></h3>
-                                <p><?php echo htmlspecialchars($promo['description'] ?? '', ENT_QUOTES, 'UTF-8'); ?></p>
+                                <span class="tag"><?php echo homePageEscape($promo['tag'] ?? 'PROMO', 'PROMO'); ?></span>
+                                <h3><?php echo homePageEscape($promo['title'] ?? 'Special Offer', 'Special Offer'); ?></h3>
+                                <p><?php echo homePageEscape($promo['description'] ?? ''); ?></p>
 
-                                <?php if (!empty($promo['expiry_date'])): ?>
+                                <?php if ($expiry_display !== ''): ?>
                                     <div class="promo-meta">
                                         <i class="fa-regular fa-clock"></i>
-                                        Until <?php echo htmlspecialchars(date('M j, Y', strtotime($promo['expiry_date'])), ENT_QUOTES, 'UTF-8'); ?>
+                                        Until <?php echo homePageEscape($expiry_display); ?>
                                     </div>
                                 <?php endif; ?>
                             </div>
@@ -2346,7 +2423,7 @@ try {
                     <p>
                         <?php
                             if ($total_reviews > 0) {
-                                echo "Rated " . htmlspecialchars($avg_rating) . "/5 by " . number_format($total_reviews) . " " . $parent_text;
+                                echo "Rated " . homePageEscape($avg_rating) . "/5 by " . number_format($total_reviews) . " " . $parent_text;
                             } else {
                                 echo "No reviews yet. Be the first to share your experience!";
                             }
@@ -2358,28 +2435,39 @@ try {
                     <?php if (!empty($reviews_list)): ?>
                         <?php foreach($reviews_list as $row): ?>
                             <?php
-                                $review_name = $row['full_name'] ?? 'Valued Client';
+                                $review_name = is_scalar($row['full_name'] ?? null)
+                                    ? trim((string)$row['full_name'])
+                                    : 'Valued Client';
+                                if ($review_name === '') {
+                                    $review_name = 'Valued Client';
+                                }
                                 $initial = strtoupper(substr($review_name, 0, 1));
                                 if (!preg_match('/^[A-Z0-9]$/', $initial)) {
                                     $initial = 'P';
                                 }
+                                $review_rating_value = $row['rating'] ?? null;
+                                $review_rating = is_numeric($review_rating_value)
+                                    ? max(0, min(5, (float)$review_rating_value))
+                                    : 0;
+                                $review_comment = is_scalar($row['comment'] ?? null) ? (string)$row['comment'] : '';
+                                $review_service = is_scalar($row['service'] ?? null) ? (string)$row['service'] : 'Pet Service';
                             ?>
                             <article class="t-card">
                                 <div class="stars">
                                     <?php
                                         for($i = 1; $i <= 5; $i++) {
-                                            echo $i <= $row['rating']
+                                            echo $i <= $review_rating
                                                 ? '<i class="fa-solid fa-star"></i>'
                                                 : '<i class="fa-regular fa-star"></i>';
                                         }
                                     ?>
                                 </div>
-                                <p class="t-text">"<?php echo htmlspecialchars($row['comment']); ?>"</p>
+                                <p class="t-text">"<?php echo homePageEscape($review_comment); ?>"</p>
                                 <div class="t-user">
-                                    <div class="t-avatar"><?php echo htmlspecialchars($initial); ?></div>
+                                    <div class="t-avatar"><?php echo homePageEscape($initial); ?></div>
                                     <div>
-                                        <strong><?php echo htmlspecialchars($review_name); ?></strong>
-                                        <small><?php echo htmlspecialchars($row['service']); ?> Client</small>
+                                        <strong><?php echo homePageEscape($review_name); ?></strong>
+                                        <small><?php echo homePageEscape($review_service); ?> Client</small>
                                     </div>
                                 </div>
                             </article>
@@ -2464,18 +2552,19 @@ try {
         const track = document.querySelector('.slider-track');
 
         function setSlide(index) {
-            currentSlideIndex = index;
-            track.style.transform = `translateX(-${index * 100}%)`;
+            const nextIndex = Number(index);
+            if (!track || slides.length === 0 || !Number.isInteger(nextIndex) || nextIndex < 0 || nextIndex >= slides.length) {
+                return;
+            }
 
-            slides.forEach(s => s.classList.remove('active'));
-            dots.forEach(d => d.classList.remove('active'));
-
-            if (slides[index]) slides[index].classList.add('active');
-            if (dots[index]) dots[index].classList.add('active');
+            currentSlideIndex = nextIndex;
+            track.style.transform = `translateX(-${nextIndex * 100}%)`;
+            slides.forEach((slide, slideIndex) => slide.classList.toggle('active', slideIndex === nextIndex));
+            dots.forEach((dot, dotIndex) => dot.classList.toggle('active', dotIndex === nextIndex));
         }
 
-        if (slides.length > 1) {
-            setInterval(() => {
+        if (slides.length > 1 && track) {
+            window.setInterval(() => {
                 currentSlideIndex = (currentSlideIndex + 1) % slides.length;
                 setSlide(currentSlideIndex);
             }, 6000);
@@ -2560,57 +2649,69 @@ try {
                 .trim();
         }
 
-        // Small typo tolerance so searches like "groming" can still work.
-        function levenshteinDistance(a, b) {
-            a = String(a);
-            b = String(b);
-            const prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+        // Pre-normalize the static keyword list once instead of on every search.
+        const normalizedSearchRoutes = searchRoutes.map(route => ({
+            ...route,
+            normalizedKeywords: route.keywords
+                .map(normalizeSearchText)
+                .filter(Boolean)
+                .map(keyword => ({ phrase: keyword, words: keyword.split(' ') }))
+        }));
 
+        // Bounded Levenshtein check: only calculate distances up to two edits.
+        function levenshteinDistanceAtMostTwo(a, b) {
+            if (Math.abs(a.length - b.length) > 2) return 3;
+
+            let previous = Array.from({ length: b.length + 1 }, (_, index) => index);
             for (let i = 1; i <= a.length; i++) {
-                const current = [i];
-                for (let j = 1; j <= b.length; j++) {
+                const current = new Array(b.length + 1).fill(3);
+                current[0] = i;
+                const start = Math.max(1, i - 2);
+                const end = Math.min(b.length, i + 2);
+                let rowMinimum = current[0];
+
+                for (let j = start; j <= end; j++) {
                     const insertCost = current[j - 1] + 1;
-                    const deleteCost = prev[j] + 1;
-                    const replaceCost = prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1);
-                    current[j] = Math.min(insertCost, deleteCost, replaceCost);
+                    const deleteCost = previous[j] + 1;
+                    const replaceCost = previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1);
+                    current[j] = Math.min(insertCost, deleteCost, replaceCost, 3);
+                    rowMinimum = Math.min(rowMinimum, current[j]);
                 }
-                for (let j = 0; j < current.length; j++) prev[j] = current[j];
+
+                if (rowMinimum > 2) return 3;
+                previous = current;
             }
 
-            return prev[b.length];
+            return previous[b.length];
         }
 
         function findSearchRoute(query) {
-            const normalized = normalizeSearchText(query);
+            const normalized = normalizeSearchText(String(query || '').slice(0, 100));
+            if (!normalized) return null;
+
             const queryWords = normalized.split(' ').filter(Boolean);
             let bestRoute = null;
             let bestScore = 0;
 
-            for (const route of searchRoutes) {
+            for (const route of normalizedSearchRoutes) {
                 let score = 0;
 
-                for (const keyword of route.keywords) {
-                    const normalizedKeyword = normalizeSearchText(keyword);
-                    if (!normalizedKeyword) continue;
-
-                    // Strong match for a full phrase anywhere in the query.
-                    if (normalized.includes(normalizedKeyword)) {
-                        score += normalizedKeyword.includes(' ') ? 6 : 4;
+                for (const keyword of route.normalizedKeywords) {
+                    if (normalized.includes(keyword.phrase)) {
+                        score += keyword.phrase.includes(' ') ? 6 : 4;
                         continue;
                     }
 
-                    // Word-level partial/fuzzy matching.
-                    const keywordWords = normalizedKeyword.split(' ');
                     for (const qWord of queryWords) {
-                        for (const kWord of keywordWords) {
+                        for (const kWord of keyword.words) {
                             if (qWord.length >= 3 && kWord.startsWith(qWord)) {
                                 score += 2;
                             } else if (kWord.length >= 3 && qWord.startsWith(kWord)) {
                                 score += 2;
                             } else if (
-                                qWord.length >= 5 &&
-                                kWord.length >= 5 &&
-                                levenshteinDistance(qWord, kWord) <= 2
+                                qWord.length >= 5 && qWord.length <= 24 &&
+                                kWord.length >= 5 && kWord.length <= 24 &&
+                                levenshteinDistanceAtMostTwo(qWord, kWord) <= 2
                             ) {
                                 score += 2;
                             }
@@ -2627,14 +2728,16 @@ try {
             return bestScore > 0 ? bestRoute : null;
         }
 
+        let searchStatusTimer = 0;
         function showSearchStatus(message) {
             if (!searchStatus) return;
 
-            searchStatus.innerHTML = message;
+            // Search messages are plain text; do not parse them as HTML.
+            searchStatus.textContent = String(message || '');
             searchStatus.classList.add('show');
 
-            clearTimeout(window.searchStatusTimer);
-            window.searchStatusTimer = setTimeout(() => {
+            window.clearTimeout(searchStatusTimer);
+            searchStatusTimer = window.setTimeout(() => {
                 searchStatus.classList.remove('show');
             }, 2600);
         }
@@ -2643,19 +2746,19 @@ try {
             form.addEventListener('submit', function (event) {
                 event.preventDefault();
 
-                const query = input.value.trim();
+                const query = String(input.value || '').slice(0, 100).trim();
+                input.value = query;
 
                 if (!query) {
                     input.focus();
-                    showSearchStatus('Type something to search, like <strong>bath</strong>, <strong>vaccine</strong>, <strong>boarding</strong>, or <strong>prices</strong>.');
+                    showSearchStatus('Type something to search, like bath, vaccine, boarding, or prices.');
                     return;
                 }
 
                 const route = findSearchRoute(query);
-
                 if (route) {
-                    showSearchStatus(`Opening <strong>${route.label}</strong>...`);
-                    setTimeout(() => {
+                    showSearchStatus(`Opening ${route.label}...`);
+                    window.setTimeout(() => {
                         window.location.href = route.url;
                     }, 180);
                 } else {

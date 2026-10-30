@@ -2,30 +2,43 @@
 require_once __DIR__ . '/../shared_session_bootstrap.php';
 require_once __DIR__ . '/../db_supabase.php';
 
-if (
-    !isset($_SESSION['logged_in']) ||
-    $_SESSION['logged_in'] !== true ||
-    empty($_SESSION['user_id'])
-) {
-    header("Location: login.php");
+$login_value = $_SESSION['logged_in'] ?? null;
+$is_logged_in = in_array($login_value, [true, 1, '1', 'true'], true);
+$user_id = filter_var(
+    $_SESSION['user_id'] ?? null,
+    FILTER_VALIDATE_INT,
+    ['options' => ['min_range' => 1]]
+);
+
+if (!$is_logged_in || $user_id === false || $user_id === null) {
+    header('Location: login.php');
     exit();
 }
 
-$user_id = filter_var($_SESSION['user_id'], FILTER_VALIDATE_INT);
-$appointment_id = filter_input(INPUT_GET, 'appointment_id', FILTER_VALIDATE_INT);
+$appointment_id = filter_input(
+    INPUT_GET,
+    'appointment_id',
+    FILTER_VALIDATE_INT,
+    ['options' => ['min_range' => 1]]
+);
 
-if (!$user_id || !$appointment_id || $appointment_id < 1) {
+if (!$appointment_id) {
     http_response_code(400);
     exit('Invalid appointment request.');
 }
 
-if (empty($_SESSION['review_csrf_token'])) {
+if (
+    !isset($_SESSION['review_csrf_token']) ||
+    !is_string($_SESSION['review_csrf_token']) ||
+    preg_match('/\A[a-f0-9]{64}\z/i', $_SESSION['review_csrf_token']) !== 1
+) {
     $_SESSION['review_csrf_token'] = bin2hex(random_bytes(32));
 }
 $review_csrf_token = $_SESSION['review_csrf_token'];
 
 $form_error = '';
 $already_reviewed = false;
+$booking = null;
 
 try {
     $check_stmt = $pdo->prepare("
@@ -58,7 +71,7 @@ try {
         ':appointment_id' => $appointment_id,
         ':user_id' => $user_id
     ]);
-    $already_reviewed = (bool)$existing_stmt->fetchColumn();
+    $already_reviewed = (bool) $existing_stmt->fetchColumn();
 } catch (PDOException $e) {
     error_log('Review eligibility check failed: ' . $e->getMessage());
     http_response_code(500);
@@ -67,8 +80,13 @@ try {
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $submitted_token = $_POST['csrf_token'] ?? '';
-    $rating = filter_var($_POST['rating'] ?? null, FILTER_VALIDATE_INT);
-    $comment = trim((string)($_POST['comment'] ?? ''));
+    $raw_rating = $_POST['rating'] ?? null;
+    $rating = is_scalar($raw_rating)
+        ? filter_var($raw_rating, FILTER_VALIDATE_INT)
+        : false;
+    $raw_comment = $_POST['comment'] ?? '';
+    $comment_is_string = is_string($raw_comment);
+    $comment = $comment_is_string ? trim($raw_comment) : '';
 
     if (!is_string($submitted_token) || !hash_equals($review_csrf_token, $submitted_token)) {
         http_response_code(403);
@@ -77,35 +95,94 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $form_error = 'You have already reviewed this appointment.';
     } elseif ($rating === false || $rating < 1 || $rating > 5) {
         $form_error = 'Please select a rating from 1 to 5 stars.';
-    } elseif ($comment === '') {
+    } elseif (!$comment_is_string || $comment === '') {
         $form_error = 'Please enter your comments.';
-    } elseif (function_exists('mb_strlen') ? mb_strlen($comment, 'UTF-8') > 2000 : strlen($comment) > 8000) {
-        $form_error = 'Please keep your comment within 2,000 characters.';
     } else {
-        try {
-            $insert_stmt = $pdo->prepare("
-                INSERT INTO reviews
-                    (user_id, appointment_id, rating, comment, review_date)
-                VALUES
-                    (:user_id, :appointment_id, :rating, :comment, CURRENT_TIMESTAMP)
-            ");
-            $insert_stmt->execute([
-                ':user_id' => $user_id,
-                ':appointment_id' => $appointment_id,
-                ':rating' => $rating,
-                ':comment' => $comment
-            ]);
-            header('Location: bookings.php?msg=review_success');
-            exit();
-        } catch (PDOException $e) {
-            error_log('Review submission failed: ' . $e->getMessage());
-            $form_error = 'Unable to submit your review. It may already have been submitted; please refresh and check your bookings.';
+        if (function_exists('mb_strlen')) {
+            $comment_length = mb_strlen($comment, 'UTF-8');
+        } else {
+            $matched_length = preg_match_all('/./us', $comment);
+            $comment_length = ($matched_length === false) ? strlen($comment) : $matched_length;
+        }
+
+        if ($comment_length > 2000) {
+            $form_error = 'Please keep your comment within 2,000 characters.';
+        } else {
+            try {
+                // Lock the appointment while checking and inserting its review.
+                $pdo->beginTransaction();
+
+                $lock_stmt = $pdo->prepare("
+                    SELECT id
+                    FROM appointments
+                    WHERE id = :appointment_id
+                      AND user_id = :user_id
+                      AND booking_status = 'Completed'
+                    FOR UPDATE
+                ");
+                $lock_stmt->execute([
+                    ':appointment_id' => $appointment_id,
+                    ':user_id' => $user_id
+                ]);
+
+                if (!$lock_stmt->fetchColumn()) {
+                    $pdo->rollBack();
+                    http_response_code(404);
+                    $form_error = 'This appointment is no longer available for review.';
+                } else {
+                    $duplicate_stmt = $pdo->prepare("
+                        SELECT id
+                        FROM reviews
+                        WHERE appointment_id = :appointment_id
+                          AND user_id = :user_id
+                        LIMIT 1
+                    ");
+                    $duplicate_stmt->execute([
+                        ':appointment_id' => $appointment_id,
+                        ':user_id' => $user_id
+                    ]);
+
+                    if ($duplicate_stmt->fetchColumn()) {
+                        $pdo->rollBack();
+                        $already_reviewed = true;
+                        $form_error = 'You have already reviewed this appointment.';
+                    } else {
+                        $insert_stmt = $pdo->prepare("
+                            INSERT INTO reviews
+                                (user_id, appointment_id, rating, comment, review_date)
+                            VALUES
+                                (:user_id, :appointment_id, :rating, :comment, CURRENT_TIMESTAMP)
+                        ");
+                        $insert_stmt->execute([
+                            ':user_id' => $user_id,
+                            ':appointment_id' => $appointment_id,
+                            ':rating' => $rating,
+                            ':comment' => $comment
+                        ]);
+
+                        $pdo->commit();
+                        header('Location: bookings.php?msg=review_success');
+                        exit();
+                    }
+                }
+            } catch (PDOException $e) {
+                if ($pdo->inTransaction()) {
+                    $pdo->rollBack();
+                }
+
+                $sql_state = $e->errorInfo[0] ?? (string) $e->getCode();
+                if ($sql_state === '23505') {
+                    $already_reviewed = true;
+                    $form_error = 'You have already reviewed this appointment.';
+                } else {
+                    error_log('Review submission failed: ' . $e->getMessage());
+                    $form_error = 'Unable to submit your review right now. Please try again.';
+                }
+            }
         }
     }
 }
 ?>
-
-
 
 <!DOCTYPE html>
 
@@ -795,6 +872,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             rows="4"
 
             placeholder="Tell us what you liked or how we can improve..."
+
+            maxlength="2000"
 
             required
 

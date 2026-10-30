@@ -1,6 +1,5 @@
 <?php
 require_once __DIR__ . '/../shared_session_bootstrap.php';
-require_once __DIR__ . '/../db_supabase.php';
 
 // This page is part of the Admin portal. Keep Admin and Staff login separate.
 $current_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
@@ -22,6 +21,9 @@ if (!$user_id) {
     exit();
 }
 $user_id = (int)$user_id;
+
+// Open the database connection only after Admin authorization succeeds.
+require_once __DIR__ . '/../db_supabase.php';
 
 // CSRF token shared by both profile update forms.
 if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
@@ -69,7 +71,7 @@ function boogiesResolveProfileImageUrl($storedPath): ?string
 
 // Fetch the signed-in Admin's profile.
 try {
-    $get_user = $pdo->prepare('SELECT * FROM users WHERE id = :id LIMIT 1');
+    $get_user = $pdo->prepare('SELECT id, full_name, username, contact_number, profile_image, created_at, password FROM users WHERE id = :id LIMIT 1');
     $get_user->execute([':id' => $user_id]);
     $user_data = $get_user->fetch(PDO::FETCH_ASSOC) ?: [];
 
@@ -150,8 +152,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['update_profile']) ||
                     finfo_close($finfo);
                 }
 
-                if (!is_string($mime) || !isset($allowedMimes[$mime])) {
-                    $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Invalid image type. Only JPG, PNG, and GIF files are allowed.</div>';
+                $imageInfo = @getimagesize((string)$upload['tmp_name']);
+                $decodedMime = is_array($imageInfo) ? (string)($imageInfo['mime'] ?? '') : '';
+
+                if (
+                    !is_string($mime) || !isset($allowedMimes[$mime]) ||
+                    $decodedMime !== $mime
+                ) {
+                    $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Invalid image type. Only valid JPG, PNG, and GIF files are allowed.</div>';
                     $has_error = true;
                 } else {
                     $uploadDir = __DIR__ . DIRECTORY_SEPARATOR . 'uploads';
@@ -199,12 +207,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['update_profile']) ||
                     ':id' => $user_id,
                 ]);
 
+                // Keep the current page data in sync without another SELECT query.
+                $user_data['full_name'] = $full_name;
+                $user_data['username'] = $username;
+                $user_data['contact_number'] = $contact_number;
+                $user_data['profile_image'] = $profile_image;
                 $_SESSION['user_name'] = $full_name;
                 $message = '<div class="alert alert-success"><i class="fas fa-check-circle"></i> Profile updated successfully!</div>';
-
-                $get_user = $pdo->prepare('SELECT * FROM users WHERE id = :id LIMIT 1');
-                $get_user->execute([':id' => $user_id]);
-                $user_data = $get_user->fetch(PDO::FETCH_ASSOC) ?: $user_data;
                 $new_uploaded_path = null; // Keep the new file after the database update succeeds.
             } catch (PDOException $e) {
                 if ($new_uploaded_path && is_file($new_uploaded_path)) {
@@ -232,11 +241,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['update_profile']) ||
                 $hashed_new_password = password_hash($new_password, PASSWORD_DEFAULT);
                 $update_pass_stmt = $pdo->prepare('UPDATE users SET password = :password WHERE id = :id');
                 $update_pass_stmt->execute([':password' => $hashed_new_password, ':id' => $user_id]);
+                $user_data['password'] = $hashed_new_password;
                 $message = '<div class="alert alert-success"><i class="fas fa-check-circle"></i> Password successfully updated!</div>';
-
-                $get_user = $pdo->prepare('SELECT * FROM users WHERE id = :id LIMIT 1');
-                $get_user->execute([':id' => $user_id]);
-                $user_data = $get_user->fetch(PDO::FETCH_ASSOC) ?: $user_data;
             } catch (PDOException $e) {
                 error_log('Admin password update failed: ' . $e->getMessage());
                 $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Failed to update password.</div>';
@@ -270,11 +276,15 @@ $admin_notifications = [];
 $unread_count = 0;
 try {
     $admin_notif_stmt = $pdo->prepare(
-        'SELECT id, message, created_at FROM admin_notifications WHERE is_read = 0 ORDER BY created_at DESC LIMIT 20'
+        'SELECT id, message, created_at, COUNT(*) OVER() AS total_unread
+         FROM admin_notifications
+         WHERE is_read = 0
+         ORDER BY created_at DESC NULLS LAST, id DESC
+         LIMIT 20'
     );
     $admin_notif_stmt->execute();
     $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
-    $unread_count = count($admin_notifications);
+    $unread_count = (int)($admin_notifications[0]['total_unread'] ?? 0);
 } catch (PDOException $e) {
     error_log('Admin profile notifications fetch failed: ' . $e->getMessage());
     $admin_notifications = [];
@@ -1637,7 +1647,12 @@ $top_profile_image = $profile_image_url;
                 : '<div class="notif-empty">No new notifications.</div>';
         }
 
+        let notificationRequestPending = false;
+
         function fetchAdminNotifs() {
+            if (notificationRequestPending || document.hidden) return;
+
+            notificationRequestPending = true;
             fetch('get_admin_notifs.php', {
                 method: 'GET',
                 cache: 'no-store',
@@ -1652,6 +1667,9 @@ $top_profile_image = $profile_image_url;
             .then(renderAdminNotifications)
             .catch(function (error) {
                 console.error('Error fetching admin notifications:', error);
+            })
+            .finally(function () {
+                notificationRequestPending = false;
             });
         }
 
@@ -1669,7 +1687,11 @@ $top_profile_image = $profile_image_url;
 
         document.addEventListener('DOMContentLoaded', function () {
             fetchAdminNotifs();
-            setInterval(fetchAdminNotifs, 3000);
+            setInterval(fetchAdminNotifs, 15000);
+        });
+
+        document.addEventListener('visibilitychange', function () {
+            if (!document.hidden) fetchAdminNotifs();
         });
 
         window.addEventListener('resize', function () {

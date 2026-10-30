@@ -1,13 +1,44 @@
 <?php
 require_once __DIR__ . '/../shared_session_bootstrap.php';
+
+date_default_timezone_set('Asia/Manila');
+
+/**
+ * Escape dynamic values before writing them into HTML.
+ */
+function editProfileEscape($value): string
+{
+    if (!is_scalar($value) && $value !== null) {
+        return '';
+    }
+
+    return htmlspecialchars((string)($value ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+}
+
+// This page belongs to customer accounts only.
+$is_logged_in = ($_SESSION['logged_in'] ?? false) === true;
+$role_value = $_SESSION['role'] ?? '';
+$current_role = is_string($role_value) ? strtolower(trim($role_value)) : '';
+$user_id = filter_var($_SESSION['user_id'] ?? null, FILTER_VALIDATE_INT);
+
+if (!$is_logged_in || $current_role !== 'customer' || $user_id === false || $user_id === null || $user_id < 1) {
+    header('Location: login.php');
+    exit();
+}
+
+$user_id = (int)$user_id;
+
 require_once __DIR__ . '/../db_supabase.php';
 
-// Format notification timestamps consistently in Philippine time.
-// Timestamps with an explicit timezone keep that timezone; timezone-less
-// database timestamps are interpreted as UTC, matching the customer dashboard.
+$success_msg = '';
+$error_msg = '';
+
+// Format database timestamps consistently in Philippine time.
+// Timestamp values with an explicit timezone retain their own timezone;
+// timezone-less values are interpreted as UTC.
 function formatEditProfileNotificationTimestamp($value, string $format = 'M d, Y h:i A'): string
 {
-    if ($value === null || trim((string)$value) === '') {
+    if (!is_scalar($value) || trim((string)$value) === '') {
         return '';
     }
 
@@ -19,79 +50,106 @@ function formatEditProfileNotificationTimestamp($value, string $format = 'M d, Y
         return '';
     }
 }
-// Check if user is logged in
-if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
-    header("Location: login.php");
-    exit();
-}
-$user_id = (int)($_SESSION['user_id'] ?? 0);
-$success_msg = "";
-$error_msg = "";
-if ($user_id <= 0) {
-    header("Location: login.php");
-    exit();
-}
-// CSRF token for the profile update form.
-if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
+
+// Create a CSRF token for the profile update form when one is not present.
+if (!isset($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token']) || $_SESSION['csrf_token'] === '') {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
 }
+
 // --- PROCESS FORM SUBMISSION ---
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $posted_csrf = $_POST['csrf_token'] ?? '';
+
     if (!is_string($posted_csrf) || !hash_equals($_SESSION['csrf_token'], $posted_csrf)) {
         $error_msg = 'Your session has expired. Please refresh the page and try again.';
     } else {
-        $full_name = trim((string)($_POST['full_name'] ?? ''));
-        $contact_number = trim((string)($_POST['contact_number'] ?? ''));
-        $user_category = trim((string)($_POST['user_category'] ?? ''));
-        $name_length = function_exists('mb_strlen') ? mb_strlen($full_name, 'UTF-8') : strlen($full_name);
-        if ($full_name === '' || $name_length > 120) {
-            $error_msg = 'Please enter a name with no more than 120 characters.';
-        } elseif (!preg_match('/^[0-9]{11}$/', $contact_number)) {
-            $error_msg = 'Invalid contact number. Please enter exactly 11 digits (e.g., 09123456789).';
-        } elseif (!in_array($user_category, ['Pet Owner', 'Pet Breeder'], true)) {
-            $error_msg = 'Please select a valid account category.';
+        $full_name_input = $_POST['full_name'] ?? '';
+        $contact_number_input = $_POST['contact_number'] ?? '';
+        $user_category_input = $_POST['user_category'] ?? '';
+
+        if (!is_string($full_name_input) || !is_string($contact_number_input) || !is_string($user_category_input)) {
+            $error_msg = 'Invalid profile information. Please review your entries.';
+        } else {
+            $full_name = trim($full_name_input);
+            $contact_number = trim($contact_number_input);
+            $user_category = trim($user_category_input);
+
+            $name_length = function_exists('mb_strlen')
+                ? mb_strlen($full_name, 'UTF-8')
+                : strlen($full_name);
+
+            if ($full_name === '' || $name_length > 120 || preg_match('//u', $full_name) !== 1) {
+                $error_msg = 'Please enter a valid name with no more than 120 characters.';
+            } elseif (!preg_match('/^[0-9]{11}$/', $contact_number)) {
+                $error_msg = 'Invalid contact number. Please enter exactly 11 digits (e.g., 09123456789).';
+            } elseif (!in_array($user_category, ['Pet Owner', 'Pet Breeder'], true)) {
+                $error_msg = 'Please select a valid account category.';
+            }
         }
-        // Validate the optional profile photo by extension, size, and actual image MIME type.
+
         $new_profile_path = null;
-        if (empty($error_msg) && isset($_FILES['profile_image'])) {
-            $upload_error = (int)($_FILES['profile_image']['error'] ?? UPLOAD_ERR_NO_FILE);
-            if ($upload_error !== UPLOAD_ERR_NO_FILE) {
-                if ($upload_error !== UPLOAD_ERR_OK) {
+        $uploaded_absolute_path = null;
+
+        // Validate the optional profile photo by extension, size, and detected image MIME type.
+        if ($error_msg === '' && isset($_FILES['profile_image'])) {
+            $upload = $_FILES['profile_image'];
+
+            if (!is_array($upload)) {
+                $error_msg = 'Invalid profile picture upload.';
+            } else {
+                $upload_error = filter_var($upload['error'] ?? UPLOAD_ERR_NO_FILE, FILTER_VALIDATE_INT);
+
+                if ($upload_error === false) {
                     $error_msg = 'The profile picture could not be uploaded. Please try again.';
-                } else {
-                    $file_name = (string)($_FILES['profile_image']['name'] ?? '');
-                    $file_size = (int)($_FILES['profile_image']['size'] ?? 0);
-                    $file_tmp = (string)($_FILES['profile_image']['tmp_name'] ?? '');
-                    $file_ext = strtolower(pathinfo($file_name, PATHINFO_EXTENSION));
-                    $allowed_mime_by_extension = [
-                        'jpg' => 'image/jpeg',
-                        'jpeg' => 'image/jpeg',
-                        'png' => 'image/png',
-                        'gif' => 'image/gif',
-                    ];
-                    if (!isset($allowed_mime_by_extension[$file_ext])) {
-                        $error_msg = 'Invalid file type. Only JPG, JPEG, PNG, and GIF are allowed.';
-                    } elseif ($file_size <= 0 || $file_size > 5000000) {
-                        $error_msg = 'File is too large or empty. Maximum size is 5MB.';
-                    } elseif (!is_uploaded_file($file_tmp) || @getimagesize($file_tmp) === false) {
-                        $error_msg = 'The uploaded file is not a valid image.';
+                } elseif ($upload_error !== UPLOAD_ERR_NO_FILE) {
+                    if ($upload_error !== UPLOAD_ERR_OK) {
+                        $error_msg = 'The profile picture could not be uploaded. Please try again.';
                     } else {
-                        $finfo = new finfo(FILEINFO_MIME_TYPE);
-                        $detected_mime = $finfo->file($file_tmp);
-                        if ($detected_mime !== $allowed_mime_by_extension[$file_ext]) {
-                            $error_msg = 'The image type does not match the selected file extension.';
+                        $file_name = is_string($upload['name'] ?? null) ? $upload['name'] : '';
+                        $file_tmp = is_string($upload['tmp_name'] ?? null) ? $upload['tmp_name'] : '';
+                        $file_ext = strtolower(pathinfo($file_name, PATHINFO_EXTENSION));
+                        $allowed_mime_by_extension = [
+                            'jpg' => 'image/jpeg',
+                            'jpeg' => 'image/jpeg',
+                            'png' => 'image/png',
+                            'gif' => 'image/gif',
+                        ];
+
+                        $actual_file_size = ($file_tmp !== '' && is_file($file_tmp)) ? filesize($file_tmp) : false;
+
+                        if (!isset($allowed_mime_by_extension[$file_ext])) {
+                            $error_msg = 'Invalid file type. Only JPG, JPEG, PNG, and GIF are allowed.';
+                        } elseif (!is_uploaded_file($file_tmp) || $actual_file_size === false || $actual_file_size <= 0 || $actual_file_size > 5000000) {
+                            $error_msg = 'File is invalid or too large. Maximum file size is 5MB.';
                         } else {
-                            $upload_dir = __DIR__ . '/../uploads';
-                            if (!is_dir($upload_dir) && !mkdir($upload_dir, 0755, true) && !is_dir($upload_dir)) {
-                                $error_msg = 'Unable to prepare the profile picture folder.';
+                            $image_info = @getimagesize($file_tmp);
+
+                            if ($image_info === false || ($image_info['mime'] ?? '') !== $allowed_mime_by_extension[$file_ext]) {
+                                $error_msg = 'The uploaded file is not a valid image or does not match its extension.';
+                            } elseif (!class_exists('finfo')) {
+                                $error_msg = 'Image validation is unavailable on this server. Please contact support.';
                             } else {
-                                $new_file_name = 'user_' . $user_id . '_' . bin2hex(random_bytes(8)) . '.' . $file_ext;
-                                $upload_absolute_path = $upload_dir . DIRECTORY_SEPARATOR . $new_file_name;
-                                if (move_uploaded_file($file_tmp, $upload_absolute_path)) {
-                                    $new_profile_path = 'uploads/' . $new_file_name;
+                                $finfo = new finfo(FILEINFO_MIME_TYPE);
+                                $detected_mime = $finfo->file($file_tmp);
+
+                                if ($detected_mime !== $allowed_mime_by_extension[$file_ext]) {
+                                    $error_msg = 'The image type does not match the selected file extension.';
                                 } else {
-                                    $error_msg = 'Error uploading your image. Please try again.';
+                                    $upload_dir = __DIR__ . '/../uploads';
+
+                                    if (!is_dir($upload_dir) && !mkdir($upload_dir, 0755, true) && !is_dir($upload_dir)) {
+                                        $error_msg = 'Unable to prepare the profile picture folder.';
+                                    } else {
+                                        $new_file_name = 'user_' . $user_id . '_' . bin2hex(random_bytes(8)) . '.' . $file_ext;
+                                        $upload_absolute_path = $upload_dir . DIRECTORY_SEPARATOR . $new_file_name;
+
+                                        if (move_uploaded_file($file_tmp, $upload_absolute_path)) {
+                                            $new_profile_path = 'uploads/' . $new_file_name;
+                                        } else {
+                                            $upload_absolute_path = null;
+                                            $error_msg = 'Error uploading your image. Please try again.';
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -99,8 +157,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             }
         }
-        // Update the current user's account only if all form and upload checks passed.
-        if (empty($error_msg)) {
+
+        // Update only this customer's account after all validations pass.
+        if ($error_msg === '') {
             try {
                 if ($new_profile_path !== null) {
                     $update_stmt = $pdo->prepare("
@@ -118,6 +177,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         ':profile_image' => $new_profile_path,
                         ':user_id' => $user_id,
                     ]);
+
                     $_SESSION['profile_image'] = $new_profile_path;
                 } else {
                     $update_stmt = $pdo->prepare("
@@ -134,57 +194,60 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         ':user_id' => $user_id,
                     ]);
                 }
+
                 $success_msg = 'Your profile has been updated successfully!';
                 $_SESSION['user_name'] = $full_name;
                 $_SESSION['full_name'] = $full_name;
-            } catch (PDOException $e) {
+            } catch (Throwable $e) {
+                if ($uploaded_absolute_path !== null && is_file($uploaded_absolute_path)) {
+                    @unlink($uploaded_absolute_path);
+                }
                 error_log('Edit profile update failed: ' . $e->getMessage());
                 $error_msg = 'Error updating profile.';
             }
         }
     }
 }
+
 // --- FETCH CURRENT USER DATA TO PRE-FILL THE FORM ---
 try {
     $user_stmt = $pdo->prepare("
-        SELECT *
+        SELECT id, full_name, email, user_category, contact_number, profile_image
         FROM users
         WHERE id = :user_id
         LIMIT 1
     ");
-    $user_stmt->execute([
-        ':user_id' => $user_id
-    ]);
+    $user_stmt->execute([':user_id' => $user_id]);
     $user_data = $user_stmt->fetch(PDO::FETCH_ASSOC);
+
     if (!$user_data) {
         session_unset();
         session_destroy();
-        header("Location: login.php");
+        header('Location: login.php');
         exit();
     }
-} catch (PDOException $e) {
-    error_log("Edit profile user fetch failed: " . $e->getMessage());
-    die("Unable to load your profile right now.");
+} catch (Throwable $e) {
+    error_log('Edit profile user fetch failed: ' . $e->getMessage());
+    http_response_code(500);
+    exit('Unable to load your profile right now.');
 }
-// Determine the name to show in the header
-$header_name = $_SESSION['user_name']
-    ?? $_SESSION['full_name']
-    ?? 'User';
-// Fetch unread notifications count for the header
+
+// Use the database name as the source of truth for the page header.
+$header_name = (string)($user_data['full_name'] ?? 'User');
+
+// Fetch unread notifications. CAST supports BOOLEAN, numeric, and text is_read columns.
+$unread_count = 0;
 try {
     $notif_stmt = $pdo->prepare("
-        SELECT COUNT(*) AS unread
+        SELECT COUNT(*)
         FROM notifications
         WHERE user_id = :user_id
-          AND is_read = 0
+          AND (LOWER(CAST(is_read AS TEXT)) IN ('0', 'false', 'f') OR is_read IS NULL)
     ");
-    $notif_stmt->execute([
-        ':user_id' => $user_id
-    ]);
+    $notif_stmt->execute([':user_id' => $user_id]);
     $unread_count = (int)($notif_stmt->fetchColumn() ?? 0);
-} catch (PDOException $e) {
-    error_log("Edit profile notification count failed: " . $e->getMessage());
-    $unread_count = 0;
+} catch (Throwable $e) {
+    error_log('Edit profile notification count failed: ' . $e->getMessage());
 }
 
 // Fetch the latest notifications for the header dropdown.
@@ -198,17 +261,35 @@ try {
         LIMIT 5
     ");
     $notification_list_stmt->execute([':user_id' => $user_id]);
-    $notifications = $notification_list_stmt->fetchAll(PDO::FETCH_ASSOC);
-} catch (PDOException $e) {
+    $notifications = $notification_list_stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+} catch (Throwable $e) {
     error_log('Edit profile notification list failed: ' . $e->getMessage());
-    $notifications = [];
 }
 
-// Set default avatar if user has no profile image in DB
 $has_profile_pic = !empty($user_data['profile_image']);
+
+$default_avatar_src = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMjAgMTIwIj48cmVjdCB3aWR0aD0iMTIwIiBoZWlnaHQ9IjEyMCIgcng9IjYwIiBmaWxsPSIjZjFmNWY5Ii8+PGNpcmNsZSBjeD0iNjAiIGN5PSI0MyIgcj0iMjIiIGZpbGw9IiM5NGEzYjgiLz48cGF0aCBkPSJNMTggMTEyYzItMjUgMTktMzkgNDItMzlzNDAgMTQgNDIgMzkiIGZpbGw9IiM5NGEzYjgiLz48L3N2Zz4=';
+
 $current_profile_pic = $has_profile_pic
-    ? $user_data['profile_image']
-    : 'default-avatar.png';
+    ? trim((string)$user_data['profile_image'])
+    : $default_avatar_src;
+
+// Keep external HTTP(S) images and valid base64 image data. Treat other saved values
+// as local uploaded filenames and constrain them to the root uploads directory.
+if ($has_profile_pic) {
+    if (preg_match('~^https?://~i', $current_profile_pic) ||
+        preg_match('~^data:image/(?:png|jpeg|gif|webp);base64,~i', $current_profile_pic)) {
+        // Preserve explicitly supported image sources.
+    } else {
+        $image_filename = basename(str_replace('\\', '/', $current_profile_pic));
+        if ($image_filename !== '' && $image_filename !== '.' && $image_filename !== '..') {
+            $current_profile_pic = '/uploads/' . rawurlencode($image_filename);
+        } else {
+            $current_profile_pic = $default_avatar_src;
+            $has_profile_pic = false;
+        }
+    }
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -1230,11 +1311,11 @@ footer{
                                    class="notification-dropdown-item <?php echo $notificationIsRead ? '' : 'unread'; ?>"
                                    role="menuitem">
                                     <?php if (!empty($notification['title'])): ?>
-                                        <strong><?php echo htmlspecialchars((string)$notification['title'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></strong><br>
+                                        <strong><?php echo editProfileEscape($notification['title'] ?? ''); ?></strong><br>
                                     <?php endif; ?>
-                                    <?php echo htmlspecialchars((string)($notification['message'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
+                                    <?php echo editProfileEscape($notification['message'] ?? ''); ?>
                                     <?php if ($notificationTime !== ''): ?>
-                                        <small><?php echo htmlspecialchars($notificationTime, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></small>
+                                        <small><?php echo editProfileEscape($notificationTime); ?></small>
                                     <?php endif; ?>
                                 </a>
                             <?php endforeach; ?>
@@ -1248,7 +1329,7 @@ footer{
                 <a href="edit_profile.php" class="profile-link" title="Edit Profile">
                     <?php if ($has_profile_pic): ?>
                         <img
-                            src="<?php echo htmlspecialchars($current_profile_pic); ?>"
+                            src="<?php echo editProfileEscape($current_profile_pic); ?>"
                             alt="Profile"
                             onerror="this.style.display='none'; this.nextElementSibling.style.display='inline-flex';"
                         >
@@ -1256,7 +1337,7 @@ footer{
                     <?php else: ?>
                         <i class="fa-solid fa-circle-user" style="font-size:20px;color:var(--brand-blue);" aria-label="Default profile icon"></i>
                     <?php endif; ?>
-                    <span>Hi, <?php echo htmlspecialchars($header_name); ?></span>
+                    <span>Hi, <?php echo editProfileEscape($header_name); ?></span>
                 </a>
                 <a href="logout.php" class="logout-link">Logout</a>
             </div>
@@ -1284,26 +1365,26 @@ footer{
             </div>
         </div>
         <form action="edit_profile.php" method="POST" enctype="multipart/form-data">
-            <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
+            <input type="hidden" name="csrf_token" value="<?php echo editProfileEscape($_SESSION['csrf_token']); ?>">
             <div class="profile-layout">
                 <aside class="profile-card">
                     <div class="profile-cover"></div>
                     <div class="profile-card-body">
                         <div class="avatar-wrap">
                             <img
-                                src="<?php echo htmlspecialchars($current_profile_pic); ?>"
+                                src="<?php echo editProfileEscape($current_profile_pic); ?>"
                                 alt="Profile Picture"
                                 class="profile-photo"
                                 id="pic-preview"
-                                onerror="this.src='default-avatar.png';"
+                               onerror="this.onerror=null; this.src='<?php echo $default_avatar_src; ?>';"
                             >
                             <div class="camera-badge">
                                 <i class="fa-solid fa-camera"></i>
                             </div>
                         </div>
-                        <h2><?php echo htmlspecialchars($user_data['full_name']); ?></h2>
+                        <h2><?php echo editProfileEscape($user_data['full_name'] ?? ''); ?></h2>
                         <div class="profile-role">
-                            <?php echo htmlspecialchars($user_data['user_category'] ?? 'Pet Owner'); ?>
+                            <?php echo editProfileEscape($user_data['user_category'] ?? 'Pet Owner'); ?>
                         </div>
                         <label for="profile_image" class="photo-label">
                             <i class="fa-solid fa-camera"></i>
@@ -1345,13 +1426,13 @@ footer{
                     <?php if (!empty($success_msg)): ?>
                         <div class="alert success">
                             <i class="fa-solid fa-circle-check"></i>
-                            <div><?php echo htmlspecialchars($success_msg); ?></div>
+                            <div><?php echo editProfileEscape($success_msg); ?></div>
                         </div>
                     <?php endif; ?>
                     <?php if (!empty($error_msg)): ?>
                         <div class="alert error">
                             <i class="fa-solid fa-circle-exclamation"></i>
-                            <div><?php echo htmlspecialchars($error_msg); ?></div>
+                            <div><?php echo editProfileEscape($error_msg); ?></div>
                         </div>
                     <?php endif; ?>
                     <div class="form-divider"></div>
@@ -1364,7 +1445,8 @@ footer{
                                 name="full_name"
                                 class="form-control"
                                 autocomplete="name"
-                                value="<?php echo htmlspecialchars($user_data['full_name']); ?>"
+                                maxlength="120"
+                                value="<?php echo editProfileEscape($user_data['full_name'] ?? ''); ?>"
                                 required
                             >
                         </div>
@@ -1377,7 +1459,7 @@ footer{
                                 type="email"
                                 id="email"
                                 class="form-control"
-                                value="<?php echo htmlspecialchars($user_data['email']); ?>"
+                                value="<?php echo editProfileEscape($user_data['email'] ?? ''); ?>"
                                 readonly
                                 title="Your email address cannot be changed"
                             >
@@ -1400,7 +1482,7 @@ footer{
                                 id="contact_number"
                                 name="contact_number"
                                 class="form-control"
-                                value="<?php echo htmlspecialchars(isset($user_data['contact_number']) && $user_data['contact_number'] !== 'Not Provided' ? $user_data['contact_number'] : ''); ?>"
+                                value="<?php echo editProfileEscape(isset($user_data['contact_number']) && $user_data['contact_number'] !== 'Not Provided' ? $user_data['contact_number'] : ''); ?>"
                                 placeholder="e.g. 09123456789"
                                 required
                                 maxlength="11"
@@ -1528,14 +1610,26 @@ footer{
             return false;
         }
         function previewImage(event) {
-            const reader = new FileReader();
-            reader.onload = function(){
-                const output = document.getElementById('pic-preview');
-                output.src = reader.result;
-            };
-            if(event.target.files[0]) {
-                reader.readAsDataURL(event.target.files[0]);
+            const file = event && event.target && event.target.files
+                ? event.target.files[0]
+                : null;
+            const output = document.getElementById('pic-preview');
+
+            if (!file || !output) return;
+
+            const allowedTypes = ['image/jpeg', 'image/png', 'image/gif'];
+            if (!allowedTypes.includes(file.type) || file.size <= 0 || file.size > 5000000) {
+                event.target.value = '';
+                return;
             }
+
+            const reader = new FileReader();
+            reader.onload = function () {
+                if (typeof reader.result === 'string') {
+                    output.src = reader.result;
+                }
+            };
+            reader.readAsDataURL(file);
         }
     </script>
 </body>

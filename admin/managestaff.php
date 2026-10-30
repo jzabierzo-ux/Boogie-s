@@ -154,120 +154,110 @@ if (isset($_SESSION['user_id'])) {
 
 
 
-// 4. FETCH STATISTICS (non-admin personnel)
+// 4. FETCH PERSONNEL STATISTICS, NOTIFICATIONS, AND PAGINATED PERSONNEL LIST
+$total_staff = 0;
+$total_matches = 0;
+$total_pages = 1;
+$vet_list = [];
+$admin_notifications = [];
+$unread_count = 0;
 
+$search_raw = $_GET['search'] ?? '';
+$search = is_string($search_raw) ? trim($search_raw) : '';
+$page_raw = $_GET['page'] ?? '1';
+$page = is_string($page_raw) || is_int($page_raw) ? filter_var($page_raw, FILTER_VALIDATE_INT) : false;
+$page = ($page !== false && $page > 0) ? (int)$page : 1;
+$per_page = 20;
+
+// Keep role values fixed in SQL; never derive these identifiers from request input.
+$personnel_roles_sql = "'admin', 'administrator', 'manager', 'receptionist', 'groomer', 'pet_hotel_staff', 'veterinarian', 'vet_assistant', 'vet_nurse', 'vet', 'supervisor', 'staff'";
+$non_admin_roles_sql = "'manager', 'receptionist', 'groomer', 'pet_hotel_staff', 'veterinarian', 'vet_assistant', 'vet_nurse', 'vet', 'supervisor', 'staff'";
+
+// Calculate the personnel dashboard count and current search result count in one scan.
 try {
-
-    $total_staff_stmt = $pdo->query("
-
-        SELECT COUNT(*) AS count
-
-        FROM users
-
-        WHERE LOWER(COALESCE(role, '')) IN ('manager', 'receptionist', 'groomer', 'pet_hotel_staff', 'veterinarian', 'vet_assistant', 'vet_nurse', 'vet', 'supervisor', 'staff')
-
-    ");
-
-    $total_staff = (int)($total_staff_stmt->fetch(PDO::FETCH_ASSOC)['count'] ?? 0);
-
-} catch (PDOException $e) {
-
-    $total_staff = 0;
-
-}
-
-
-
-// --- FETCH ADMIN NOTIFICATIONS ---
-
-try {
-
-    $admin_notif_stmt = $pdo->prepare("
-
-        SELECT *
-
-        FROM admin_notifications
-
-        WHERE is_read = 0
-
-        ORDER BY created_at DESC
-
-    ");
-
-    $admin_notif_stmt->execute();
-
-    $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
-
-    $unread_count = count($admin_notifications);
-
-} catch (PDOException $e) {
-
-    $admin_notifications = [];
-
-    $unread_count = 0;
-
-}
-
-
-
-// 5. FETCH PERSONNEL LIST WITH SEARCH
-
-$search = trim($_GET['search'] ?? '');
-
-
-
-try {
-
-    $query = "
-
-        SELECT *
-
-        FROM users
-
-        WHERE LOWER(COALESCE(role, '')) IN ('admin', 'administrator', 'manager', 'receptionist', 'groomer', 'pet_hotel_staff', 'veterinarian', 'vet_assistant', 'vet_nurse', 'vet', 'supervisor', 'staff')
-
-    ";
-
-
-
-    $params = [];
-
-
-
+    $search_count_sql = '';
+    $stats_params = [];
     if ($search !== '') {
-
-        $query .= "
-
-            AND (
-
-                full_name ILIKE :search
-
-                OR username ILIKE :search
-
-            )
-
-        ";
-
-        $params[':search'] = '%' . $search . '%';
-
+        $search_count_sql = " AND (full_name ILIKE :search_name OR username ILIKE :search_username)";
+        $search_pattern = '%' . $search . '%';
+        $stats_params[':search_name'] = $search_pattern;
+        $stats_params[':search_username'] = $search_pattern;
     }
 
+    $stats_sql = "
+        SELECT
+            COUNT(*) FILTER (
+                WHERE LOWER(COALESCE(role, '')) IN ($non_admin_roles_sql)
+            ) AS total_staff,
+            COUNT(*) FILTER (
+                WHERE LOWER(COALESCE(role, '')) IN ($personnel_roles_sql)$search_count_sql
+            ) AS total_matches
+        FROM users
+        WHERE LOWER(COALESCE(role, '')) IN ($personnel_roles_sql)
+    ";
+    $stats_stmt = $pdo->prepare($stats_sql);
+    $stats_stmt->execute($stats_params);
+    $stats_data = $stats_stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+    $total_staff = (int)($stats_data['total_staff'] ?? 0);
+    $total_matches = (int)($stats_data['total_matches'] ?? 0);
 
+    $total_pages = max(1, (int)ceil($total_matches / $per_page));
+    $page = min($page, $total_pages);
+    $offset = ($page - 1) * $per_page;
 
-    $query .= " ORDER BY full_name ASC";
+    if ($total_matches > 0) {
+        $list_sql = "
+            SELECT id, role, position, full_name, username
+            FROM users
+            WHERE LOWER(COALESCE(role, '')) IN ($personnel_roles_sql)
+        ";
+        $list_params = [];
+        if ($search !== '') {
+            $list_sql .= " AND (full_name ILIKE :search_name OR username ILIKE :search_username)";
+            $search_pattern = '%' . $search . '%';
+            $list_params[':search_name'] = $search_pattern;
+            $list_params[':search_username'] = $search_pattern;
+        }
+        $list_sql .= " ORDER BY full_name ASC, id ASC LIMIT :limit OFFSET :offset";
 
-
-
-    $staff_stmt = $pdo->prepare($query);
-
-    $staff_stmt->execute($params);
-
-    $vet_list = $staff_stmt->fetchAll(PDO::FETCH_ASSOC);
-
+        $staff_stmt = $pdo->prepare($list_sql);
+        foreach ($list_params as $param => $value) {
+            $staff_stmt->bindValue($param, $value, PDO::PARAM_STR);
+        }
+        $staff_stmt->bindValue(':limit', $per_page, PDO::PARAM_INT);
+        $staff_stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+        $staff_stmt->execute();
+        $vet_list = $staff_stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
 } catch (PDOException $e) {
-
+    error_log('Personnel list/statistics query failed: ' . $e->getMessage());
+    $total_staff = 0;
+    $total_matches = 0;
+    $total_pages = 1;
+    $page = 1;
     $vet_list = [];
+}
 
+// Fetch only the latest 20 unread admin notifications and calculate the full unread
+// count in the same query. Casting is_read to text supports PostgreSQL boolean,
+// numeric, and text column variants without an additional schema-inspection query.
+try {
+    $admin_notif_stmt = $pdo->query("
+        SELECT id, message, created_at, COUNT(*) OVER() AS total_unread
+        FROM admin_notifications
+        WHERE is_read IS NULL
+           OR LOWER(BTRIM(CAST(is_read AS TEXT))) IN ('0', 'false', 'f', 'no', 'unread', '')
+        ORDER BY created_at DESC, id DESC
+        LIMIT 20
+    ");
+    $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
+    $unread_count = !empty($admin_notifications)
+        ? (int)($admin_notifications[0]['total_unread'] ?? count($admin_notifications))
+        : 0;
+} catch (PDOException $e) {
+    error_log('Personnel notification fetch failed: ' . $e->getMessage());
+    $admin_notifications = [];
+    $unread_count = 0;
 }
 
 ?>
@@ -493,6 +483,10 @@ try {
         .btn-delete-staff:hover { color: #ef4444; background: #fee2e2; }
         .btn-delete-staff { border: 0; cursor: pointer; font-family: inherit; }
         .flash-message { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; padding: 12px 16px; border-radius: 10px; margin: -10px 0 22px; font-size: 13px; font-weight: 600; }
+        .pagination { display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 24px; }
+        .pagination a, .pagination span { display: inline-flex; align-items: center; justify-content: center; min-width: 38px; padding: 8px 12px; border-radius: 8px; background: #fff; color: var(--navy-dark); border: 1px solid #e2e8f0; text-decoration: none; font-size: 12px; font-weight: 700; }
+        .pagination .current { background: var(--navy-dark); color: var(--brand-yellow); border-color: var(--navy-dark); }
+        .pagination .disabled { color: #94a3b8; background: #f8fafc; }
 
 
 
@@ -802,7 +796,10 @@ try {
 
                             Alerts
 
-                            <a href="mark_notifications_read.php" id="mark-read-link" class="mark-read-btn" style="display: <?php echo ($unread_count > 0) ? 'inline-block' : 'none'; ?>;">Mark all read</a>
+                            <form action="mark_notifications_read.php" method="post" style="margin: 0;">
+                                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token, ENT_QUOTES, 'UTF-8'); ?>">
+                                <button type="submit" id="mark-read-link" class="mark-read-btn" style="display: <?php echo ($unread_count > 0) ? 'inline-block' : 'none'; ?>; border: 0; background: transparent; padding: 0; cursor: pointer; font-family: inherit;">Mark all read</button>
+                            </form>
 
                         </div>
 
@@ -1024,6 +1021,24 @@ try {
 
             <?php endif; ?>
 
+            <?php if ($total_pages > 1): ?>
+                <nav class="pagination" aria-label="Personnel pages">
+                    <?php if ($page > 1): ?>
+                        <a href="?page=<?php echo $page - 1; ?><?php echo $search !== '' ? '&amp;search=' . rawurlencode($search) : ''; ?>" aria-label="Previous page">&laquo; Previous</a>
+                    <?php else: ?>
+                        <span class="disabled" aria-disabled="true">&laquo; Previous</span>
+                    <?php endif; ?>
+
+                    <span class="current" aria-current="page">Page <?php echo $page; ?> of <?php echo $total_pages; ?></span>
+
+                    <?php if ($page < $total_pages): ?>
+                        <a href="?page=<?php echo $page + 1; ?><?php echo $search !== '' ? '&amp;search=' . rawurlencode($search) : ''; ?>" aria-label="Next page">Next &raquo;</a>
+                    <?php else: ?>
+                        <span class="disabled" aria-disabled="true">Next &raquo;</span>
+                    <?php endif; ?>
+                </nav>
+            <?php endif; ?>
+
         </div>
 
 
@@ -1219,91 +1234,59 @@ try {
 
 
         function renderAdminNotifications(data) {
-
             const badge = document.getElementById('admin-notif-badge');
-
             const notifList = document.getElementById('admin-notif-list');
-
             const markReadBtn = document.getElementById('mark-read-link');
-
-
-
             if (!badge || !notifList) return;
 
-
-
-            const unread = Number(data && data.unread ? data.unread : 0);
-
-
+            const unread = Number(data && data.unread);
+            if (!Number.isFinite(unread)) return;
 
             badge.style.display = unread > 0 ? 'inline-block' : 'none';
-
-            badge.textContent = unread;
-
-
-
+            badge.textContent = String(unread);
             if (markReadBtn) {
-
                 markReadBtn.style.display = unread > 0 ? 'inline-block' : 'none';
-
             }
-
-
-
-            notifList.innerHTML = (data && data.html)
-
+            notifList.innerHTML = (data && typeof data.html === 'string' && data.html !== '')
                 ? data.html
-
                 : '<div class="notif-empty">No new notifications.</div>';
-
         }
 
-
-
+        let adminNotifFetchInProgress = false;
         function fetchAdminNotifs() {
+            if (adminNotifFetchInProgress || document.hidden) return;
+            adminNotifFetchInProgress = true;
 
             fetch('get_admin_notifs.php', {
-
                 method: 'GET',
-
                 cache: 'no-store',
-
                 credentials: 'same-origin'
-
             })
-
             .then(function(response) {
-
                 if (!response.ok) {
-
-                    throw new Error(
-
-                        'Notification request failed: HTTP ' + response.status
-
-                    );
-
+                    throw new Error('Notification request failed: HTTP ' + response.status);
                 }
-
                 return response.json();
-
             })
-
-            .then(renderAdminNotifications)
-
+            .then(function(data) {
+                if (!data || data.success === false || !Number.isFinite(Number(data.unread))) {
+                    throw new Error('Notification endpoint returned an invalid response.');
+                }
+                renderAdminNotifications(data);
+            })
             .catch(function(error) {
-
                 console.error('Error fetching admin notifications:', error);
-
+            })
+            .finally(function() {
+                adminNotifFetchInProgress = false;
             });
-
         }
 
-
-
         fetchAdminNotifs();
-
-        setInterval(fetchAdminNotifs, 3000);
-
+        setInterval(fetchAdminNotifs, 15000);
+        document.addEventListener('visibilitychange', function() {
+            if (!document.hidden) fetchAdminNotifs();
+        });
 
 
         function toggleMobileSidebar(event) {

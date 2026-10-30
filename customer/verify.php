@@ -2,45 +2,61 @@
 require_once __DIR__ . '/../shared_session_bootstrap.php';
 require_once __DIR__ . '/../db_supabase.php';
 
-if (empty($_SESSION['temp_email']) || !is_string($_SESSION['temp_email'])) {
+// Only continue when a valid email is stored for the pending registration.
+$temp_email = $_SESSION['temp_email'] ?? null;
+$email = is_string($temp_email) ? trim($temp_email) : '';
+
+if ($email === '' || strlen($email) > 254 || filter_var($email, FILTER_VALIDATE_EMAIL) === false) {
+    unset($_SESSION['temp_email'], $_SESSION['verify_csrf_token']);
     header('Location: register.php');
     exit();
 }
 
-$email = trim($_SESSION['temp_email']);
 $error_msg = '';
 
-if (empty($_SESSION['verify_csrf_token'])) {
+// Keep a valid CSRF token in the session.
+if (!isset($_SESSION['verify_csrf_token']) || !is_string($_SESSION['verify_csrf_token']) || $_SESSION['verify_csrf_token'] === '') {
     $_SESSION['verify_csrf_token'] = bin2hex(random_bytes(32));
 }
 $verify_csrf_token = $_SESSION['verify_csrf_token'];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['verify_btn'])) {
-    $submitted_token = $_POST['csrf_token'] ?? '';
-    $entered_otp = trim((string)($_POST['otp_code'] ?? ''));
+    $submitted_token = $_POST['csrf_token'] ?? null;
+    $otp_value = $_POST['otp_code'] ?? null;
+    $entered_otp = is_string($otp_value) ? trim($otp_value) : '';
 
     if (!is_string($submitted_token) || !hash_equals($verify_csrf_token, $submitted_token)) {
         http_response_code(403);
         $error_msg = 'Your session expired. Please refresh the page and try again.';
-    } elseif (!preg_match('/^[0-9]{6}$/', $entered_otp)) {
+    } elseif (!preg_match('/^[0-9]{6}$/D', $entered_otp)) {
         $error_msg = 'Please enter the 6-digit verification code.';
     } else {
         try {
-            // Verify and consume the OTP in one database update so it cannot be reused.
+            // Match and consume the OTP in one atomic update to prevent reuse.
+            // TRUE is the native PostgreSQL boolean literal used by Supabase.
             $update_stmt = $pdo->prepare("
                 UPDATE users
-                SET is_verified = 1,
-                    email_verified = 1,
+                SET is_verified = TRUE,
+                    email_verified = TRUE,
                     otp_code = NULL
                 WHERE email = :email
                   AND otp_code = :otp_code
+                  AND otp_code IS NOT NULL
+                RETURNING email
             ");
             $update_stmt->execute([
                 ':email' => $email,
                 ':otp_code' => $entered_otp
             ]);
 
-            if ($update_stmt->rowCount() === 1) {
+            $verified_user_id = $update_stmt->fetchColumn();
+
+            if ($verified_user_id !== false) {
+                // Rotate the session ID after the verification state changes.
+                if (session_status() === PHP_SESSION_ACTIVE) {
+                    session_regenerate_id(true);
+                }
+
                 unset($_SESSION['temp_email'], $_SESSION['verify_csrf_token']);
                 header('Location: login.php?msg=account_verified');
                 exit();

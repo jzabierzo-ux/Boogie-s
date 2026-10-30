@@ -1,234 +1,270 @@
 <?php
-
 require_once __DIR__ . '/../shared_session_bootstrap.php';
 
-require_once '../db_supabase.php';
+// Normalize the role names used across the Admin/Staff portals.
+// This keeps Add New Pet access consistent with the operational roles
+// that can already access managepet.php, while keeping Veterinarians blocked.
+$raw_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
+$role_key = preg_replace('/[\s\/\-]+/', '_', $raw_role);
+$role_key = preg_replace('/_+/', '_', trim((string)$role_key, '_'));
 
+$role_aliases = [
+    'administrator' => 'admin',
+    'shop_manager' => 'manager',
+    'front_desk' => 'receptionist',
+    'front_desk_receptionist' => 'receptionist',
+    'grooming_staff' => 'groomer',
+    'grooming_staff_groomer' => 'groomer',
+    'pet_hotel_attendant' => 'pet_hotel_staff',
+    'pet_hotel_staff_attendant' => 'pet_hotel_staff',
+    'vet' => 'veterinarian',
+    'veterinary' => 'veterinarian',
+];
 
-
-
- // --- SECURITY CHECK ---
-
-$current_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
+$current_role = $role_aliases[$role_key] ?? $role_key;
+$allowed_roles = [
+    'admin',
+    'manager',
+    'receptionist',
+    'groomer',
+    'pet_hotel_staff',
+    'staff',
+    'supervisor',
+];
 
 if (($_SESSION['logged_in'] ?? false) !== true) {
     header('Location: ../admin_login.php');
     exit();
 }
 
-if (!in_array($current_role, ['admin', 'supervisor', 'staff'], true)) {
+if (!in_array($current_role, $allowed_roles, true)) {
     http_response_code(403);
     exit('Access denied.');
 }
 
+// Do not initialize the database connection for unauthenticated or unauthorized users.
+require_once __DIR__ . '/../db_supabase.php';
+date_default_timezone_set('Asia/Manila');
 
+if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+$csrf_token = $_SESSION['csrf_token'];
 
+function addPetEscape($value): string
+{
+    return htmlspecialchars((string)($value ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+}
 
-$success_msg = "";
+function addPetPostString(string $key): string
+{
+    $value = $_POST[$key] ?? '';
+    return is_string($value) || is_numeric($value) ? trim((string)$value) : '';
+}
 
-$error_msg = "";
+/** Resolve only known project upload folders, preventing arbitrary local paths. */
+function addPetProfileImageSource($storedPath): string
+{
+    $path = trim((string)($storedPath ?? ''));
+    if ($path === '') {
+        return '';
+    }
 
+    // Allow already-hosted image URLs only; local filesystem paths are never emitted.
+    if (filter_var($path, FILTER_VALIDATE_URL)) {
+        $scheme = strtolower((string)parse_url($path, PHP_URL_SCHEME));
+        return in_array($scheme, ['http', 'https'], true) ? $path : '';
+    }
 
+    $path = str_replace('\\', '/', $path);
+    $path = ltrim($path, '/');
+    $path = preg_replace('#^(?:admin|staff|customer)/#i', '', $path);
 
-// 2. HANDLE FORM SUBMISSION (CREATE PET + SEND NOTIFICATION)
-
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-
-    $p_name = trim($_POST['name'] ?? '');
-
-    $p_type = trim($_POST['pet_type'] ?? '');
-
-    $p_breed = trim($_POST['breed'] ?? '');
-
-    $p_gender = trim($_POST['gender'] ?? '');
-
-    $p_age = trim($_POST['age'] ?? '');
-
-    $p_weight = trim($_POST['weight'] ?? '');
-
-    $owner_id = (int)($_POST['owner_id'] ?? 0);
-
-
-
-    if ($p_name === '' || $p_type === '' || $p_gender === '' || $owner_id <= 0) {
-
-        $error_msg = "Please complete all required pet and owner fields.";
-
+    if (strpos($path, '../uploads/') === 0) {
+        $relativeFile = substr($path, strlen('../uploads/'));
+        $candidateRoots = [
+            ['root' => realpath(__DIR__ . '/../uploads'), 'src' => '../uploads/'],
+        ];
+    } elseif (strpos($path, 'uploads/') === 0) {
+        $relativeFile = substr($path, strlen('uploads/'));
+        $candidateRoots = [
+            ['root' => realpath(__DIR__ . '/uploads'), 'src' => 'uploads/'],
+            ['root' => realpath(__DIR__ . '/../uploads'), 'src' => '../uploads/'],
+        ];
     } else {
+        return '';
+    }
 
+    if ($relativeFile === '' || strpos($relativeFile, '..') !== false || preg_match('/[\\x00-\\x1F]/', $relativeFile)) {
+        return '';
+    }
+
+    foreach ($candidateRoots as $candidate) {
+        $root = $candidate['root'];
+        if ($root === false) {
+            continue;
+        }
+        $resolved = realpath($root . DIRECTORY_SEPARATOR . $relativeFile);
+        $rootPrefix = rtrim($root, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+        if ($resolved !== false && is_file($resolved) && strpos($resolved, $rootPrefix) === 0) {
+            $encoded = implode('/', array_map('rawurlencode', explode('/', $relativeFile)));
+            return $candidate['src'] . $encoded;
+        }
+    }
+
+    return '';
+}
+
+$success_msg = '';
+$error_msg = '';
+$form_values = [];
+
+// Create the pet and its customer notification as one atomic operation.
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $form_values = $_POST;
+    $posted_token = $_POST['csrf_token'] ?? '';
+
+    if (!is_string($posted_token) || !hash_equals($csrf_token, $posted_token)) {
+        http_response_code(403);
+        exit('Invalid security token. Refresh the page and try again.');
+    }
+
+    $p_name = addPetPostString('name');
+    $p_type = addPetPostString('pet_type');
+    $p_breed = addPetPostString('breed');
+    $p_gender = addPetPostString('gender');
+    $p_age = addPetPostString('age');
+    $p_weight = addPetPostString('weight');
+    $owner_id = filter_var($_POST['owner_id'] ?? null, FILTER_VALIDATE_INT);
+
+    if ($p_name === '' || $p_type === '' || $p_gender === '' || !in_array($p_gender, ['Male', 'Female'], true) || $owner_id === false || $owner_id === null || $owner_id <= 0) {
+        $error_msg = 'Please complete all required pet and owner fields using valid values.';
+    } else {
         try {
+            $pdo->beginTransaction();
 
-            // Kunin ang full_name ng napiling owner
-
-            $user_stmt = $pdo->prepare("SELECT full_name FROM users WHERE id = :owner_id LIMIT 1");
-
+            // Re-check the owner role on the server; the dropdown alone is not a security boundary.
+            $user_stmt = $pdo->prepare(
+                "SELECT full_name FROM users WHERE id = :owner_id AND LOWER(TRIM(COALESCE(role, ''))) = 'customer' LIMIT 1"
+            );
             $user_stmt->execute([':owner_id' => $owner_id]);
-
             $user_row = $user_stmt->fetch(PDO::FETCH_ASSOC);
 
-
-
-            $owner_name = $user_row['full_name'] ?? 'Unknown Owner';
-
-
-
             if (!$user_row) {
-
                 throw new RuntimeException('Selected customer was not found.');
-
             }
 
-
-
-            // A. INSERT SA PETS TABLE
-
-            $insert_stmt = $pdo->prepare("\n                INSERT INTO pets\n                    (owner_id, owner_name, name, pet_type, breed, gender, age, weight)\n                VALUES\n                    (:owner_id, :owner_name, :name, :pet_type, :breed, :gender, :age, :weight)\n            ");
-
-
-
+            $owner_name = (string)($user_row['full_name'] ?? 'Unknown Owner');
+            $insert_stmt = $pdo->prepare(
+                'INSERT INTO pets (owner_id, owner_name, name, pet_type, breed, gender, age, weight) '
+                . 'VALUES (:owner_id, :owner_name, :name, :pet_type, :breed, :gender, :age, :weight)'
+            );
             $insert_stmt->execute([
-
                 ':owner_id' => $owner_id,
-
                 ':owner_name' => $owner_name,
-
                 ':name' => $p_name,
-
                 ':pet_type' => $p_type,
-
                 ':breed' => $p_breed,
-
                 ':gender' => $p_gender,
-
                 ':age' => $p_age,
-
-                ':weight' => $p_weight
-
+                ':weight' => $p_weight,
             ]);
 
-
-
-            // B. AUTO-NOTIFICATION PARA SA CUSTOMER
-
-            $notif_title = "New Pet Profile Created!";
-
-            $notif_message = "A new pet profile for '{$p_name}' has been successfully registered to your account.";
-
-            $notif_type = "system";
-
-
-
-            $notif_stmt = $pdo->prepare("\n                INSERT INTO notifications\n                    (user_id, title, message, type, is_read, created_at)\n                VALUES\n                    (:user_id, :title, :message, :type, 0, CURRENT_TIMESTAMP)\n            ");
-
-
-
+            $notif_stmt = $pdo->prepare(
+                'INSERT INTO notifications (user_id, title, message, type, is_read, created_at) '
+                . 'VALUES (:user_id, :title, :message, :type, 0, CURRENT_TIMESTAMP)'
+            );
             $notif_stmt->execute([
-
                 ':user_id' => $owner_id,
-
-                ':title' => $notif_title,
-
-                ':message' => $notif_message,
-
-                ':type' => $notif_type
-
+                ':title' => 'New Pet Profile Created!',
+                ':message' => "A new pet profile for '{$p_name}' has been successfully registered to your account.",
+                ':type' => 'system',
             ]);
 
-
-
-            $success_msg = "New pet successfully added and notification sent to owner!";
-
+            $pdo->commit();
+            $success_msg = 'New pet successfully added and notification sent to owner!';
+            $form_values = [];
         } catch (PDOException $e) {
-
-            error_log("Add pet failed: " . $e->getMessage());
-
-            $error_msg = "Error adding record. Please try again.";
-
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            error_log('Add pet database operation failed: ' . $e->getMessage());
+            $error_msg = 'Unable to add the pet right now. Please try again.';
         } catch (Throwable $e) {
-
-            error_log("Add pet failed: " . $e->getMessage());
-
-            $error_msg = "Error adding record: " . $e->getMessage();
-
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            error_log('Add pet operation failed: ' . $e->getMessage());
+            $error_msg = 'Unable to add the pet right now. Please check the selected owner and try again.';
         }
-
     }
-
 }
 
-
-
-// 3. FETCH CUSTOMERS ONLY (Para hindi kasama ang Admin at Vet/Staff)
-
+// Load only customer accounts for the owner selector.
 $users_result = [];
-
-
-
 try {
-
-    $users_stmt = $pdo->prepare("SELECT id, full_name FROM users WHERE role = 'customer' ORDER BY full_name ASC");
-
-    $users_stmt->execute();
-
+    $users_stmt = $pdo->query(
+        "SELECT id, full_name FROM users WHERE LOWER(TRIM(COALESCE(role, ''))) = 'customer' ORDER BY full_name ASC, id ASC"
+    );
     $users_result = $users_stmt->fetchAll(PDO::FETCH_ASSOC);
-
 } catch (PDOException $e) {
-
-    error_log("Fetch customers failed: " . $e->getMessage());
-
-    $error_msg = $error_msg ?: "Unable to load customer records.";
-
+    error_log('Add pet customer list query failed: ' . $e->getMessage());
+    $error_msg = $error_msg ?: 'Unable to load customer records.';
 }
 
-
-// --- ADMIN TOPBAR PROFILE + NOTIFICATIONS ---
-$admin_full_name = $_SESSION['user_name'] ?? 'User';
+// Shared profile information for the Admin/Staff header.
+$admin_full_name = trim((string)($_SESSION['user_name'] ?? 'User'));
+if ($admin_full_name === '') {
+    $admin_full_name = 'User';
+}
 $profile_img_path = '';
-$first_name = 'User';
-
 if (isset($_SESSION['user_id'])) {
-    try {
-        $uid = (int)$_SESSION['user_id'];
-        $profile_stmt = $pdo->prepare("
-            SELECT full_name, profile_image
-            FROM users
-            WHERE id = :id
-            LIMIT 1
-        ");
-        $profile_stmt->execute([':id' => $uid]);
-        $profile_data = $profile_stmt->fetch(PDO::FETCH_ASSOC);
-
-        if ($profile_data) {
-            $admin_full_name = $profile_data['full_name'] ?? $admin_full_name;
-            $profile_img_path = $profile_data['profile_image'] ?? '';
-            $_SESSION['user_name'] = $admin_full_name;
+    $uid = filter_var($_SESSION['user_id'], FILTER_VALIDATE_INT);
+    if ($uid !== false && $uid !== null && $uid > 0) {
+        try {
+            $profile_stmt = $pdo->prepare('SELECT full_name, profile_image FROM users WHERE id = :id LIMIT 1');
+            $profile_stmt->execute([':id' => $uid]);
+            $profile_data = $profile_stmt->fetch(PDO::FETCH_ASSOC);
+            if ($profile_data) {
+                $candidate_name = trim((string)($profile_data['full_name'] ?? ''));
+                if ($candidate_name !== '') {
+                    $admin_full_name = $candidate_name;
+                    $_SESSION['user_name'] = $admin_full_name;
+                }
+                $profile_img_path = (string)($profile_data['profile_image'] ?? '');
+            }
+        } catch (PDOException $e) {
+            error_log('Add pet profile lookup failed: ' . $e->getMessage());
         }
-    } catch (PDOException $e) {
-        error_log("Add pet profile lookup failed: " . $e->getMessage());
     }
 }
+$name_parts = preg_split('/\s+/', trim($admin_full_name));
+$first_name = (string)($name_parts[0] ?? 'U');
+$profile_img_src = addPetProfileImageSource($profile_img_path);
 
-$first_name = trim(explode(' ', $admin_full_name)[0] ?? 'User', ',');
+// Fetch only the newest 20 notification rows while retaining the full unread count.
 $admin_notifications = [];
 $unread_count = 0;
-
 try {
-    $notif_stmt = $pdo->query("
-        SELECT id, message, created_at
-        FROM admin_notifications
-        WHERE is_read = 0
-        ORDER BY created_at DESC
-        LIMIT 20
-    ");
+    $notif_stmt = $pdo->query(
+        'SELECT id, message, created_at, COUNT(*) OVER() AS total_unread '
+        . 'FROM admin_notifications WHERE is_read = 0 '
+        . 'ORDER BY created_at DESC, id DESC LIMIT 20'
+    );
     $admin_notifications = $notif_stmt->fetchAll(PDO::FETCH_ASSOC);
-    $unread_count = count($admin_notifications);
+    if (!empty($admin_notifications)) {
+        $unread_count = (int)$admin_notifications[0]['total_unread'];
+        foreach ($admin_notifications as &$notification_row) {
+            unset($notification_row['total_unread']);
+        }
+        unset($notification_row);
+    }
 } catch (PDOException $e) {
+    error_log('Add pet notification lookup failed: ' . $e->getMessage());
     $admin_notifications = [];
     $unread_count = 0;
 }
-
 ?>
-
 <!DOCTYPE html>
 
 <html lang="en">
@@ -241,7 +277,7 @@ try {
 
     <title>Add New Pet | Admin</title>
 
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght\@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 
@@ -851,258 +887,266 @@ try {
 </style>
 
 </head>
-
 <body>
-
-
-
-    <div class="container">
-
-        <div class="header">
-
-            <a href="managepet.php" class="btn-back"><i class="fas fa-arrow-left"></i> Back to Pets</a>
-
+    <aside>
+        <div class="sidebar-header">
+            <img src="bg.png" alt="Boogie's Logo" class="sidebar-logo">
+            <h2><?php echo $current_role === 'admin' ? "Boogie's Admin" : "Boogie's Staff"; ?></h2>
         </div>
+        <nav class="nav-links">
+            <a href="admindashboard.php" class="nav-item"><i class="fas fa-chart-line"></i> Dashboard</a>
+            <a href="managebooking.php" class="nav-item"><i class="fas fa-calendar-alt"></i> Bookings</a>
+            <a href="manageusers.php" class="nav-item"><i class="fas fa-users"></i> Users</a>
+            <a href="managepet.php" class="nav-item active"><i class="fas fa-dog"></i> Pets</a>
+            <?php if ($current_role === 'admin'): ?>
+                <a href="managestaff.php" class="nav-item"><i class="fas fa-id-badge"></i> Personnel</a>
+                <a href="managepromo.php" class="nav-item"><i class="fas fa-tags"></i> Promos</a>
+                <a href="manage_services.php" class="nav-item"><i class="fas fa-list-ul"></i> Pricelist</a>
+                <a href="sales_report.php" class="nav-item"><i class="fas fa-file-invoice-dollar"></i> Sales Report</a>
+                <a href="admin_account_logs.php" class="nav-item"><i class="fas fa-clock-rotate-left"></i> Account Logs</a>
+            <?php endif; ?>
+        </nav>
+    </aside>
+    <div class="sidebar-backdrop" id="sidebarBackdrop" onclick="closeMobileSidebar()"></div>
 
+    <main>
+        <header class="top-bar">
+            <div class="topbar-left">
+                <button class="mobile-menu-toggle" type="button" aria-label="Open admin menu" aria-expanded="false" onclick="toggleMobileSidebar(event)">
+                    <i class="fas fa-bars"></i>
+                </button>
+                <div class="breadcrumb">
+                    <i class="fas fa-dog" style="opacity:.5;font-size:14px;"></i>
+                    Management / Add New Pet
+                </div>
+            </div>
+            <div class="top-right-actions">
+                <div class="notif-wrapper" onclick="toggleNotif(event)">
+                    <i class="fa-solid fa-bell" style="font-size:22px;color:#64748b;"></i>
+                    <span id="admin-notif-badge" class="notif-badge" style="display:<?php echo $unread_count > 0 ? 'inline-flex' : 'none'; ?>;">
+                        <?php echo number_format($unread_count); ?>
+                    </span>
+                    <div class="notif-dropdown" id="notifBox" onclick="event.stopPropagation()">
+                        <div class="notif-header">
+                            Alerts
+                            <a href="mark_notifications_read.php" id="mark-read-link" class="mark-read-btn" style="display:<?php echo $unread_count > 0 ? 'inline-block' : 'none'; ?>;">Mark all read</a>
+                        </div>
+                        <div class="notif-body" id="admin-notif-list">
+                            <?php if ($admin_notifications): ?>
+                                <?php foreach ($admin_notifications as $notif): ?>
+                                    <div class="notif-item">
+                                        <i class="fa-solid fa-circle-exclamation" style="color:#e11d48;margin-right:5px;"></i>
+                                        <?php echo addPetEscape($notif['message'] ?? ''); ?>
+                                        <br><small style="color:#94a3b8;font-size:11px;">
+                                            <?php echo !empty($notif['created_at']) ? addPetEscape(date('M d, g:i A', strtotime((string)$notif['created_at']))) : ''; ?>
+                                        </small>
+                                    </div>
+                                <?php endforeach; ?>
+                            <?php else: ?>
+                                <div class="notif-empty">No new notifications.</div>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                </div>
+                <div class="profile-wrapper" onclick="toggleProfile(event)">
+                    <span class="admin-tag"><?php echo addPetEscape(strtoupper($current_role)); ?></span>
+                    <?php if ($profile_img_src !== ''): ?>
+                        <img src="<?php echo addPetEscape($profile_img_src); ?>" class="top-avatar" alt="Profile Picture">
+                    <?php else: ?>
+                        <div class="top-avatar-fallback"><?php echo addPetEscape(strtoupper(substr($first_name, 0, 1))); ?></div>
+                    <?php endif; ?>
+                    <span style="font-size:14px;font-weight:600;color:#4a5568;display:flex;align-items:center;gap:6px;">
+                        <?php echo addPetEscape($admin_full_name); ?>
+                        <i class="fas fa-chevron-down" style="font-size:10px;color:#94a3b8;"></i>
+                    </span>
+                    <div class="profile-dropdown" id="profileBox" onclick="event.stopPropagation()">
+                        <a href="admin_profile.php" class="profile-item"><i class="fas fa-user-circle"></i> My Profile</a>
+                        <a href="../logout.php" class="profile-item logout-text"><i class="fas fa-sign-out-alt"></i> Logout</a>
+                    </div>
+                </div>
+            </div>
+        </header>
 
-
-        <?php if($success_msg): ?>
-
-            <div class="alert alert-success"><i class="fas fa-check-circle"></i> <?php echo htmlspecialchars($success_msg); ?></div>
-
-        <?php endif; ?>
-
-
-
-        <?php if($error_msg): ?>
-
-            <div class="alert alert-error"><i class="fas fa-exclamation-circle"></i> <?php echo htmlspecialchars($error_msg); ?></div>
-
-        <?php endif; ?>
-
-
-
-        <div class="card">
-
-            <div class="card-title">
-
-                <i class="fas fa-plus-circle" style="color: var(--admin-purple);"></i> Register New Pet
-
+        <div class="container">
+            <div class="header">
+                <a href="managepet.php" class="btn-back"><i class="fas fa-arrow-left"></i> Back to Pets</a>
             </div>
 
+            <?php if ($success_msg !== ''): ?>
+                <div class="alert alert-success" role="status"><i class="fas fa-check-circle"></i> <?php echo addPetEscape($success_msg); ?></div>
+            <?php endif; ?>
 
+            <?php if ($error_msg !== ''): ?>
+                <div class="alert alert-error" role="alert"><i class="fas fa-exclamation-circle"></i> <?php echo addPetEscape($error_msg); ?></div>
+            <?php endif; ?>
 
-            <form action="" method="POST">
-
-                <div class="form-grid">
-
-                    <div class="form-group full-width">
-
-                        <label>Select Pet Owner</label>
-
-                        <select name="owner_id" required>
-
-                            <option value="" disabled selected>-- Select Owner (Customers Only) --</option>
-
-                            <?php
-
-                            if (!empty($users_result)) {
-
-                                foreach ($users_result as $u_row) {
-
-                                    echo '<option value="' . (int)$u_row['id'] . '">' . htmlspecialchars($u_row['full_name'] ?? '') . '</option>';
-
-                                }
-
-                            } else {
-
-                                echo '<option value="" disabled>No customer records found</option>';
-
-                            }
-
-                            ?>
-
-                        </select>
-
-                    </div>
-
-
-
-                    <div class="form-group">
-
-                        <label>Pet Name</label>
-
-                        <input type="text" name="name" placeholder="Enter pet's name" autocomplete="off" required>
-
-                    </div>
-
-                    <div class="form-group">
-
-                        <label>Pet Type</label>
-
-                        <input type="text" name="pet_type" placeholder="e.g. Dog, Cat" autocomplete="off" required>
-
-                    </div>
-
-                    <div class="form-group">
-
-                        <label>Breed</label>
-
-                        <input type="text" name="breed" placeholder="e.g. Bulldog" autocomplete="off">
-
-                    </div>
-
-                    <div class="form-group">
-
-                        <label>Gender</label>
-
-                        <select name="gender" required>
-
-                            <option value="" disabled selected>-- Select Gender --</option>
-
-                            <option value="Male">Male</option>
-
-                            <option value="Female">Female</option>
-
-                        </select>
-
-                    </div>
-
-                    <div class="form-group">
-
-                        <label>Age (Years)</label>
-
-                        <input type="text" name="age" placeholder="e.g. 6 yrs" inputmode="decimal" autocomplete="off">
-
-                    </div>
-
-                    <div class="form-group">
-
-                        <label>Weight</label>
-
-                        <input type="text" name="weight" placeholder="e.g. 20" inputmode="decimal" autocomplete="off">
-
-                    </div>
-
+            <div class="card">
+                <div class="card-title">
+                    <i class="fas fa-plus-circle" style="color:var(--admin-purple);"></i> Register New Pet
                 </div>
 
-                <button type="submit" class="btn-submit"><i class="fas fa-save"></i> Add Pet Profile</button>
+                <form action="" method="POST">
+                    <input type="hidden" name="csrf_token" value="<?php echo addPetEscape($csrf_token); ?>">
+                    <div class="form-grid">
+                        <div class="form-group full-width">
+                            <label for="owner_id">Select Pet Owner</label>
+                            <select name="owner_id" id="owner_id" required>
+                                <option value="" disabled <?php echo empty($form_values['owner_id']) ? 'selected' : ''; ?>>-- Select Owner (Customers Only) --</option>
+                                <?php foreach ($users_result as $u_row): ?>
+                                    <option value="<?php echo (int)$u_row['id']; ?>" <?php echo (string)($form_values['owner_id'] ?? '') === (string)$u_row['id'] ? 'selected' : ''; ?>>
+                                        <?php echo addPetEscape($u_row['full_name'] ?? ''); ?>
+                                    </option>
+                                <?php endforeach; ?>
+                                <?php if (!$users_result): ?>
+                                    <option value="" disabled>No customer records found</option>
+                                <?php endif; ?>
+                            </select>
+                        </div>
 
-            </form>
-
-        </div>
-
-    </div>
-
-
-
+                        <div class="form-group">
+                            <label for="pet_name">Pet Name</label>
+                            <input type="text" id="pet_name" name="name" placeholder="Enter pet's name" autocomplete="off" value="<?php echo addPetEscape($form_values['name'] ?? ''); ?>" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="pet_type">Pet Type</label>
+                            <input type="text" id="pet_type" name="pet_type" placeholder="e.g. Dog, Cat" autocomplete="off" value="<?php echo addPetEscape($form_values['pet_type'] ?? ''); ?>" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="breed">Breed</label>
+                            <input type="text" id="breed" name="breed" placeholder="e.g. Bulldog" autocomplete="off" value="<?php echo addPetEscape($form_values['breed'] ?? ''); ?>">
+                        </div>
+                        <div class="form-group">
+                            <label for="gender">Gender</label>
+                            <select name="gender" id="gender" required>
+                                <option value="" disabled <?php echo empty($form_values['gender']) ? 'selected' : ''; ?>>-- Select Gender --</option>
+                                <option value="Male" <?php echo ($form_values['gender'] ?? '') === 'Male' ? 'selected' : ''; ?>>Male</option>
+                                <option value="Female" <?php echo ($form_values['gender'] ?? '') === 'Female' ? 'selected' : ''; ?>>Female</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="age">Age (Years)</label>
+                            <input type="text" id="age" name="age" placeholder="e.g. 6 yrs" inputmode="decimal" autocomplete="off" value="<?php echo addPetEscape($form_values['age'] ?? ''); ?>">
+                        </div>
+                        <div class="form-group">
+                            <label for="weight">Weight</label>
+                            <input type="text" id="weight" name="weight" placeholder="e.g. 20" inputmode="decimal" autocomplete="off" value="<?php echo addPetEscape($form_values['weight'] ?? ''); ?>">
+                        </div>
+                    </div>
+                    <button type="submit" class="btn-submit"><i class="fas fa-save"></i> Add Pet Profile</button>
+                </form>
+            </div>
         </div>
     </main>
 
     <script>
-        function toggleMobileSidebar(event) {
-            if (event) event.stopPropagation();
-            const sidebar = document.querySelector('aside');
-            const backdrop = document.getElementById('sidebarBackdrop');
-            const button = document.querySelector('.mobile-menu-toggle');
-            if (!sidebar) return;
-            const open = sidebar.classList.toggle('mobile-open');
-            if (backdrop) backdrop.classList.toggle('show', open);
-            if (button) button.setAttribute('aria-expanded', open ? 'true' : 'false');
-        }
+    (function () {
+        const sidebar = document.querySelector('aside');
+        const backdrop = document.getElementById('sidebarBackdrop');
+        const menuButton = document.querySelector('.mobile-menu-toggle');
+        const notifBox = document.getElementById('notifBox');
+        const profileBox = document.getElementById('profileBox');
+        const badge = document.getElementById('admin-notif-badge');
+        const notifList = document.getElementById('admin-notif-list');
+        const markReadBtn = document.getElementById('mark-read-link');
+        let notificationRequestPending = false;
+        let notificationTimer = null;
 
-        function closeMobileSidebar() {
-            const sidebar = document.querySelector('aside');
-            const backdrop = document.getElementById('sidebarBackdrop');
-            const button = document.querySelector('.mobile-menu-toggle');
+        window.toggleMobileSidebar = function (event) {
+            if (event) event.stopPropagation();
+            if (!sidebar) return;
+            const isOpen = sidebar.classList.toggle('mobile-open');
+            if (backdrop) backdrop.classList.toggle('show', isOpen);
+            if (menuButton) menuButton.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+        };
+
+        window.closeMobileSidebar = function () {
             if (sidebar) sidebar.classList.remove('mobile-open');
             if (backdrop) backdrop.classList.remove('show');
-            if (button) button.setAttribute('aria-expanded', 'false');
-        }
+            if (menuButton) menuButton.setAttribute('aria-expanded', 'false');
+        };
 
-        function toggleNotif(event) {
+        window.toggleNotif = function (event) {
             if (event) event.stopPropagation();
-            const notifBox = document.getElementById('notifBox');
-            const profileBox = document.getElementById('profileBox');
             if (notifBox) notifBox.classList.toggle('show');
             if (profileBox) profileBox.classList.remove('show');
-        }
+        };
 
-        function toggleProfile(event) {
+        window.toggleProfile = function (event) {
             if (event) event.stopPropagation();
-            const profileBox = document.getElementById('profileBox');
-            const notifBox = document.getElementById('notifBox');
             if (profileBox) profileBox.classList.toggle('show');
             if (notifBox) notifBox.classList.remove('show');
-        }
-
-        document.addEventListener('click', function(event) {
-            if (!event.target.closest('.notif-wrapper')) {
-                const notifBox = document.getElementById('notifBox');
-                if (notifBox) notifBox.classList.remove('show');
-            }
-            if (!event.target.closest('.profile-wrapper')) {
-                const profileBox = document.getElementById('profileBox');
-                if (profileBox) profileBox.classList.remove('show');
-            }
-        });
-
-        document.addEventListener('keydown', function(event) {
-            if (event.key === 'Escape') {
-                closeMobileSidebar();
-                const notifBox = document.getElementById('notifBox');
-                const profileBox = document.getElementById('profileBox');
-                if (notifBox) notifBox.classList.remove('show');
-                if (profileBox) profileBox.classList.remove('show');
-            }
-        });
-
-        document.querySelectorAll('.nav-item').forEach(function(link) {
-            link.addEventListener('click', function() {
-                if (window.innerWidth <= 900) closeMobileSidebar();
-            });
-        });
+        };
 
         function renderAdminNotifications(data) {
-            const badge = document.getElementById('admin-notif-badge');
-            const notifList = document.getElementById('admin-notif-list');
-            const markReadBtn = document.getElementById('mark-read-link');
             if (!badge || !notifList) return;
-
-            const unread = Number(data && data.unread ? data.unread : 0);
+            const unread = Math.max(0, Number(data && data.unread ? data.unread : 0));
             badge.style.display = unread > 0 ? 'inline-flex' : 'none';
-            badge.textContent = unread;
-
-            if (markReadBtn) {
-                markReadBtn.style.display = unread > 0 ? 'inline-block' : 'none';
-            }
-
-            notifList.innerHTML = (data && data.html)
+            badge.textContent = unread > 99 ? '99+' : String(unread);
+            if (markReadBtn) markReadBtn.style.display = unread > 0 ? 'inline-block' : 'none';
+            notifList.innerHTML = (data && typeof data.html === 'string' && data.html !== '')
                 ? data.html
                 : '<div class="notif-empty">No new notifications.</div>';
         }
 
         function fetchAdminNotifs() {
+            if (document.hidden || notificationRequestPending || !badge || !notifList) return;
+            notificationRequestPending = true;
             fetch('get_admin_notifs.php', {
                 method: 'GET',
                 cache: 'no-store',
                 credentials: 'same-origin'
             })
-            .then(function(response) {
+            .then(function (response) {
                 if (!response.ok) throw new Error('Notification request failed: HTTP ' + response.status);
                 return response.json();
             })
             .then(renderAdminNotifications)
-            .catch(function(error) {
+            .catch(function (error) {
                 console.error('Error fetching admin notifications:', error);
+            })
+            .finally(function () {
+                notificationRequestPending = false;
             });
         }
 
-        document.addEventListener('DOMContentLoaded', function() {
+        function startNotificationPolling() {
+            if (notificationTimer !== null) clearInterval(notificationTimer);
             fetchAdminNotifs();
-            setInterval(fetchAdminNotifs, 3000);
+            notificationTimer = setInterval(fetchAdminNotifs, 15000);
+        }
+
+        document.addEventListener('click', function (event) {
+            if (!event.target.closest('.notif-wrapper') && notifBox) notifBox.classList.remove('show');
+            if (!event.target.closest('.profile-wrapper') && profileBox) profileBox.classList.remove('show');
         });
+
+        document.addEventListener('keydown', function (event) {
+            if (event.key === 'Escape') {
+                window.closeMobileSidebar();
+                if (notifBox) notifBox.classList.remove('show');
+                if (profileBox) profileBox.classList.remove('show');
+            }
+        });
+
+        document.querySelectorAll('.nav-item').forEach(function (link) {
+            link.addEventListener('click', function () {
+                if (window.innerWidth <= 900) window.closeMobileSidebar();
+            });
+        });
+
+        document.addEventListener('visibilitychange', function () {
+            if (document.hidden) {
+                if (notificationTimer !== null) {
+                    clearInterval(notificationTimer);
+                    notificationTimer = null;
+                }
+            } else {
+                startNotificationPolling();
+            }
+        });
+
+        if (!document.hidden) startNotificationPolling();
+    })();
     </script>
 </body>
-
 </html>

@@ -1,9 +1,29 @@
 <?php
 require_once __DIR__ . '/../shared_session_bootstrap.php';
-// Check if user is logged in
-$is_logged_in = isset($_SESSION['logged_in']) && $_SESSION['logged_in'] === true && strtolower(trim((string)($_SESSION['role'] ?? ''))) === 'customer';
-$user_name = $is_logged_in ? (string)($_SESSION['user_name'] ?? 'Customer') : 'Guest';
-// Generate booking URLs dynamically based on login status
+
+// Normalize session values without producing array-to-string warnings.
+$login_flag = $_SESSION['logged_in'] ?? false;
+$is_login_flag_valid = $login_flag === true
+    || $login_flag === 1
+    || $login_flag === '1'
+    || (is_string($login_flag) && strtolower(trim($login_flag)) === 'true');
+
+$role_value = $_SESSION['role'] ?? '';
+$current_role = is_scalar($role_value)
+    ? strtolower(trim((string)$role_value))
+    : '';
+
+// Customer-only booking links; staff/admin sessions remain guests on this page.
+$is_logged_in = $is_login_flag_valid && $current_role === 'customer';
+$name_value = $_SESSION['user_name'] ?? 'Customer';
+$user_name = ($is_logged_in && is_scalar($name_value))
+    ? trim((string)$name_value)
+    : 'Guest';
+if ($is_logged_in && $user_name === '') {
+    $user_name = 'Customer';
+}
+
+// Keep the existing booking destinations and service categories unchanged.
 $book_grooming = $is_logged_in ? 'book_appointment.php?category=Grooming' : 'login.php';
 $book_vet      = $is_logged_in ? 'book_appointment.php?category=Vet Services' : 'login.php';
 $book_hotel    = $is_logged_in ? 'book_appointment.php?category=Pet Hotel' : 'login.php';
@@ -979,6 +999,7 @@ $book_hotel    = $is_logged_in ? 'book_appointment.php?category=Pet Hotel' : 'lo
                 <input
                     type="search"
                     id="siteSearchInput"
+                    maxlength="100"
                     placeholder="Search for grooming, hotel, or vet services..."
                     aria-label="Search services"
                 >
@@ -988,7 +1009,7 @@ $book_hotel    = $is_logged_in ? 'book_appointment.php?category=Pet Hotel' : 'lo
             </form>
             <div class="nav-links">
                 <?php if($is_logged_in): ?>
-                    <span style="color: var(--brand-blue); font-weight: 600; font-size: 14px;"><i class="fa-regular fa-user"></i> Hi, <?php echo htmlspecialchars($user_name); ?></span>
+                    <span style="color: var(--brand-blue); font-weight: 600; font-size: 14px;"><i class="fa-regular fa-user"></i> Hi, <?php echo htmlspecialchars($user_name, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></span>
                     <a href="dashboard.php" class="cart-btn">Dashboard</a>
                     <a href="logout.php" style="color: #ef4444; text-decoration:none; font-weight: 600; font-size: 14px; margin-left:10px;">Logout</a>
                 <?php else: ?>
@@ -1002,6 +1023,7 @@ $book_hotel    = $is_logged_in ? 'book_appointment.php?category=Pet Hotel' : 'lo
                 <input
                     type="search"
                     id="mobileSiteSearchInput"
+                    maxlength="100"
                     placeholder="Search for grooming, hotel, or vet services..."
                     aria-label="Search services"
                 >
@@ -1053,7 +1075,7 @@ $book_hotel    = $is_logged_in ? 'book_appointment.php?category=Pet Hotel' : 'lo
                         <h3>Pet Grooming</h3>
                         <p class="desc">Keep your furry friend clean, comfortable, and looking their best with professional baths, haircuts, and grooming packages.</p>
                         <div class="button-group">
-                            <a href="<?php echo $book_grooming; ?>" class="btn-book">Book Grooming <i class="fa-solid fa-arrow-right"></i></a>
+                            <a href="<?php echo htmlspecialchars($book_grooming, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>" class="btn-book">Book Grooming <i class="fa-solid fa-arrow-right"></i></a>
                             <a href="grooming.php" class="btn-secondary">View details</a>
                         </div>
                         <p class="booking-hint"><i class="fa-solid fa-circle-info"></i> Choose your package on the next page.</p>
@@ -1068,7 +1090,7 @@ $book_hotel    = $is_logged_in ? 'book_appointment.php?category=Pet Hotel' : 'lo
                         <h3>Vet Services</h3>
                         <p class="desc">Support your pet's health with check-ups, vaccinations, deworming, diagnostics, and professional veterinary care.</p>
                         <div class="button-group">
-                            <a href="<?php echo $book_vet; ?>" class="btn-book" style="background:#0d82ba;color:#fff;">Book Vet Visit <i class="fa-solid fa-arrow-right"></i></a>
+                            <a href="<?php echo htmlspecialchars($book_vet, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>" class="btn-book" style="background:#0d82ba;color:#fff;">Book Vet Visit <i class="fa-solid fa-arrow-right"></i></a>
                             <a href="vetclinic.php" class="btn-secondary">View details</a>
                         </div>
                         <p class="booking-hint"><i class="fa-solid fa-circle-info"></i> Pick your schedule on the next page.</p>
@@ -1083,7 +1105,7 @@ $book_hotel    = $is_logged_in ? 'book_appointment.php?category=Pet Hotel' : 'lo
                         <h3>Pet Hotel</h3>
                         <p class="desc">Going away? Let your pet stay somewhere safe, comfortable, and supervised with our daycare and overnight boarding service.</p>
                         <div class="button-group">
-                            <a href="<?php echo $book_hotel; ?>" class="btn-book" style="background:#b77900;color:#fff;">Book Pet Hotel <i class="fa-solid fa-arrow-right"></i></a>
+                            <a href="<?php echo htmlspecialchars($book_hotel, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>" class="btn-book" style="background:#b77900;color:#fff;">Book Pet Hotel <i class="fa-solid fa-arrow-right"></i></a>
                             <a href="pethotel.php" class="btn-secondary">View details</a>
                         </div>
                         <p class="booking-hint"><i class="fa-solid fa-circle-info"></i> Specify your dates on the next page.</p>
@@ -1219,72 +1241,91 @@ $book_hotel    = $is_logged_in ? 'book_appointment.php?category=Pet Hotel' : 'lo
         ];
         function normalizeSearchText(value) {
             return String(value || '')
+                .slice(0, 100)
                 .toLowerCase()
                 .replace(/[^a-z0-9+\s-]/g, ' ')
                 .replace(/\s+/g, ' ')
                 .trim();
         }
-        function levenshteinDistance(a, b) {
-            a = String(a);
-            b = String(b);
-            if (a === b) return 0;
-            if (!a.length) return b.length;
-            if (!b.length) return a.length;
-            const previous = Array.from({ length: b.length + 1 }, (_, i) => i);
+
+        // Prepare normalized keywords once instead of rebuilding them on every search.
+        const indexedSearchRoutes = searchRoutes.map(route => ({
+            ...route,
+            normalizedKeywords: route.keywords
+                .map(keyword => normalizeSearchText(keyword))
+                .filter(Boolean)
+        }));
+
+        // Only calculate typo distance when it can match within two edits.
+        function isWithinEditDistance(a, b, limit = 2) {
+            if (a === b) return true;
+            if (Math.abs(a.length - b.length) > limit) return false;
+
+            let previous = Array.from({ length: b.length + 1 }, (_, index) => index);
             for (let i = 1; i <= a.length; i++) {
                 const current = [i];
+                let rowMinimum = current[0];
+
                 for (let j = 1; j <= b.length; j++) {
                     const insertCost = current[j - 1] + 1;
                     const deleteCost = previous[j] + 1;
                     const replaceCost = previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1);
                     current[j] = Math.min(insertCost, deleteCost, replaceCost);
+                    rowMinimum = Math.min(rowMinimum, current[j]);
                 }
-                for (let j = 0; j < current.length; j++) {
-                    previous[j] = current[j];
-                }
+
+                if (rowMinimum > limit) return false;
+                previous = current;
             }
-            return previous[b.length];
+            return previous[b.length] <= limit;
         }
+
         function findSearchRoute(query) {
-    const normalized = normalizeSearchText(query);
-    const queryWords = normalized.split(' ').filter(Boolean);
-    if (!normalized) return null;
+            const normalized = normalizeSearchText(query);
+            const queryWords = normalized.split(' ').filter(Boolean);
+            if (!normalized) return null;
 
-    let bestRoute = null;
-    let bestScore = 0;
+            let bestRoute = null;
+            let bestScore = 0;
 
-    for (const route of searchRoutes) {
-        let score = 0;
-        for (const keyword of route.keywords) {
-            const normalizedKeyword = normalizeSearchText(keyword);
-            if (!normalizedKeyword) continue;
-            if (normalized.includes(normalizedKeyword)) {
-                score += normalizedKeyword.includes(' ') ? 6 : 4;
-                continue;
-            }
-            const keywordWords = normalizedKeyword.split(' ').filter(Boolean);
-            for (const qWord of queryWords) {
-                for (const kWord of keywordWords) {
-                    if (qWord.length >= 3 && kWord.startsWith(qWord)) {
-                        score += 2;
-                    } else if (kWord.length >= 3 && qWord.startsWith(kWord)) {
-                        score += 2;
-                    } else if (qWord.length >= 5 && kWord.length >= 5 && levenshteinDistance(qWord, kWord) <= 2) {
-                        score += 2;
+            for (const route of indexedSearchRoutes) {
+                let score = 0;
+                for (const normalizedKeyword of route.normalizedKeywords) {
+                    if (normalized.includes(normalizedKeyword)) {
+                        score += normalizedKeyword.includes(' ') ? 6 : 4;
+                        continue;
+                    }
+
+                    const keywordWords = normalizedKeyword.split(' ').filter(Boolean);
+                    for (const queryWord of queryWords) {
+                        for (const keywordWord of keywordWords) {
+                            if (queryWord.length >= 3 && keywordWord.startsWith(queryWord)) {
+                                score += 2;
+                            } else if (keywordWord.length >= 3 && queryWord.startsWith(keywordWord)) {
+                                score += 2;
+                            } else if (
+                                queryWord.length >= 5 && keywordWord.length >= 5
+                                && isWithinEditDistance(queryWord, keywordWord, 2)
+                            ) {
+                                score += 2;
+                            }
+                        }
                     }
                 }
+
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestRoute = route;
+                }
             }
+
+            return bestScore > 0 ? bestRoute : null;
         }
-        if (score > bestScore) {
-            bestScore = score;
-            bestRoute = route;
-        }
-    }
-    return bestScore > 0 ? bestRoute : null;
-}
-function showSearchStatus(message) {
+
+        function showSearchStatus(message) {
             if (!searchStatus) return;
-            searchStatus.innerHTML = message;
+            // All status messages are plain text; never interpret search input as HTML.
+            searchStatus.textContent = message;
             searchStatus.classList.add('show');
             clearTimeout(window.searchStatusTimer);
             window.searchStatusTimer = setTimeout(() => {
@@ -1298,13 +1339,13 @@ function showSearchStatus(message) {
                 if (!query) {
                     input.focus();
                     showSearchStatus(
-                        'Type something to search, like <strong>bath</strong>, <strong>vaccine</strong>, <strong>boarding</strong>, or <strong>price</strong>.'
+                        'Type something to search, like bath, vaccine, boarding, or price.'
                     );
                     return;
                 }
                 const route = findSearchRoute(query);
                 if (route) {
-                    showSearchStatus(`Opening <strong>${route.label}</strong>...`);
+                    showSearchStatus(`Opening ${route.label}...`);
                     setTimeout(() => {
                         window.location.href = route.url;
                     }, 180);

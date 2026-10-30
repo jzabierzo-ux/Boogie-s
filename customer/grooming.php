@@ -1,57 +1,72 @@
 <?php
-
 require_once __DIR__ . '/../shared_session_bootstrap.php';
-
-// Include Supabase/PostgreSQL database connection
-
 require_once __DIR__ . '/../db_supabase.php';
 
-// Check if user is logged in
+// Only customer accounts should receive customer dashboard and booking links.
+$session_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
+$session_user_id = filter_var($_SESSION['user_id'] ?? null, FILTER_VALIDATE_INT);
+$is_logged_in = (
+    ($_SESSION['logged_in'] ?? false) === true
+    && $session_user_id !== false
+    && $session_user_id !== null
+    && $session_user_id > 0
+    && $session_role === 'customer'
+);
 
-$is_logged_in = isset($_SESSION['logged_in']) && $_SESSION['logged_in'] === true;
-
-$user_name = $is_logged_in ? (string)($_SESSION['user_name'] ?? 'Customer') : 'Guest';
-
-// Fetch ONLY grooming services from your services_pricelist table
-
-$result = [];
-
-try {
-
-    // PostgreSQL/Supabase boolean column
-
-    $stmt = $pdo->query("
-
-        SELECT *
-
-        FROM services_pricelist
-
-        WHERE category IN (
-
-            'Basic Pet Grooming',
-
-            'Full Grooming Package',
-
-            'Bath & Blow Dry'
-
-        )
-
-        AND LOWER(CAST(is_available AS TEXT)) IN ('true', 't', '1')
-
-        ORDER BY category ASC, price ASC
-
-    ");
-
-    $result = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-} catch (PDOException $e) {
-
-    error_log("Grooming service query failed: " . $e->getMessage());
-
-    $result = [];
-
+$user_name = $is_logged_in ? trim((string)($_SESSION['user_name'] ?? 'Customer')) : 'Guest';
+if ($user_name === '') {
+    $user_name = 'Customer';
 }
 
+function groomingEscape($value): string
+{
+    return htmlspecialchars((string)$value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+}
+
+// Keep the existing descriptions but define them once instead of rebuilding them for every card.
+$grooming_descriptions = [
+    'basic' => [
+        'small' => 'For small pets weighing 1–5 kg, this basic session focuses on everyday coat care and a tidy finish without making the routine more involved than needed.',
+        'medium' => 'Made for pets in the 6–10 kg range, this visit helps refresh a medium-sized coat and manage loose fur from daily play and activity.',
+        'large' => 'For pets weighing 11–15 kg, this practical grooming option helps keep a larger coat presentable by lifting everyday dirt and loose hair.',
+        'extra_large' => 'Suited to pets in the 16–20 kg range, this session gives a bigger coat routine upkeep and helps keep surface dirt and shedding under control.',
+        'xxl' => 'For very large pets weighing 21–25 kg, this straightforward grooming visit is ideal for maintaining a neat coat between more detailed grooming sessions.'
+    ],
+    'full' => [
+        'small' => 'This fuller grooming routine is tailored to small pets weighing 1–5 kg, giving them a more complete refresh and a carefully finished look.',
+        'medium' => 'For 6–10 kg pets, the full package offers a more thorough tidy-up for the coat, helping your pet look well groomed after the visit.',
+        'large' => 'Designed for pets weighing 11–15 kg, this package provides a more complete grooming session for a larger body and coat than a basic maintenance visit.',
+        'extra_large' => 'For pets in the 16–20 kg range, this full package supports a more detailed coat refresh and a neat finish suited to a larger pet.',
+        'xxl' => 'Created for pets weighing 21–25 kg, this package allows for a more thorough grooming refresh to help a very large coat look neat and well cared for.'
+    ],
+    'bath' => [
+        'small' => 'A gentle wash and blow-dry for pets weighing 1–5 kg helps rinse away daily dirt and leave a small coat fresh and easier to brush.',
+        'medium' => 'For 6–10 kg pets, the bath and blow-dry service washes away everyday grime, then dries the coat so it feels fresher after the visit.',
+        'large' => 'This wash-and-dry option suits pets in the 11–15 kg range, helping clean a larger coat and remove lingering everyday odors.',
+        'extra_large' => 'For pets weighing 16–20 kg, bathing followed by blow-drying helps freshen a bigger coat and makes routine brushing easier afterward.',
+        'xxl' => 'A useful wash-and-dry refresh for very large pets weighing 21–25 kg, helping rinse away built-up dirt and leave the coat clean and dry.'
+    ]
+];
+
+// Fetch only fields rendered by the grooming service cards.
+$result = [];
+try {
+    $stmt = $pdo->query("
+        SELECT id, category, service_name, price
+        FROM services_pricelist
+        WHERE category IN (
+            'Basic Pet Grooming',
+            'Full Grooming Package',
+            'Bath & Blow Dry'
+        )
+          AND LOWER(CAST(is_available AS TEXT)) IN ('true', 't', '1')
+        ORDER BY category ASC, price ASC
+    ");
+    $result = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    error_log('Grooming service query failed: ' . $e->getMessage());
+    $result = [];
+}
 ?>
 
 <!DOCTYPE html>
@@ -74,9 +89,9 @@ try {
 
         :root {
 
-            --brand-yellow: #ffcc00;&#x20;
+            --brand-yellow: #ffcc00;
 
-            --brand-blue: #001f3f;&#x20;
+            --brand-blue: #001f3f;
 
             --brand-blue-light: #002d5b;
             --brand-blue-2: #0b3b66;
@@ -2451,6 +2466,8 @@ try {
 
                     id="siteSearchInput"
 
+                    maxlength="100"
+
                     placeholder="Search for grooming, hotel, or vet services..."
 
                     aria-label="Search services"
@@ -2469,7 +2486,7 @@ try {
 
                 <?php if($is_logged_in): ?>
 
-                    <span style="color: var(--brand-blue); font-weight: 600; font-size: 14px;"><i class="fa-regular fa-user"></i> Hi, <?php echo htmlspecialchars($user_name); ?></span>
+                    <span style="color: var(--brand-blue); font-weight: 600; font-size: 14px;"><i class="fa-regular fa-user"></i> Hi, <?php echo groomingEscape($user_name); ?></span>
 
                     <a href="dashboard.php" class="cart-btn">Dashboard</a>
 
@@ -2593,8 +2610,7 @@ try {
                         $service_name_text = (string)($row['service_name'] ?? '');
                         $service_name_lower = strtolower($service_name_text);
 
-                        // Identify the pet-size row so the description is specific to
-                        // the size/weight even when several cards share one service.
+                        // Identify the pet-size row for the matching description.
                         if (strpos($service_name_lower, 'xxl') !== false || strpos($service_name_lower, '21-25') !== false || strpos($service_name_lower, '21–25') !== false) {
                             $size_key = 'xxl';
                             $size_label = 'XXL Large (21–25 kg)';
@@ -2611,30 +2627,6 @@ try {
                             $size_key = 'large';
                             $size_label = 'Large (11–15 kg)';
                         }
-
-                        $descriptions = [
-                            'basic' => [
-                                'small' => 'For small pets weighing 1–5 kg, this basic session focuses on everyday coat care and a tidy finish without making the routine more involved than needed.',
-                                'medium' => 'Made for pets in the 6–10 kg range, this visit helps refresh a medium-sized coat and manage loose fur from daily play and activity.',
-                                'large' => 'For pets weighing 11–15 kg, this practical grooming option helps keep a larger coat presentable by lifting everyday dirt and loose hair.',
-                                'extra_large' => 'Suited to pets in the 16–20 kg range, this session gives a bigger coat routine upkeep and helps keep surface dirt and shedding under control.',
-                                'xxl' => 'For very large pets weighing 21–25 kg, this straightforward grooming visit is ideal for maintaining a neat coat between more detailed grooming sessions.'
-                            ],
-                            'full' => [
-                                'small' => 'This fuller grooming routine is tailored to small pets weighing 1–5 kg, giving them a more complete refresh and a carefully finished look.',
-                                'medium' => 'For 6–10 kg pets, the full package offers a more thorough tidy-up for the coat, helping your pet look well groomed after the visit.',
-                                'large' => 'Designed for pets weighing 11–15 kg, this package provides a more complete grooming session for a larger body and coat than a basic maintenance visit.',
-                                'extra_large' => 'For pets in the 16–20 kg range, this full package supports a more detailed coat refresh and a neat finish suited to a larger pet.',
-                                'xxl' => 'Created for pets weighing 21–25 kg, this package allows for a more thorough grooming refresh to help a very large coat look neat and well cared for.'
-                            ],
-                            'bath' => [
-                                'small' => 'A gentle wash and blow-dry for pets weighing 1–5 kg helps rinse away daily dirt and leave a small coat fresh and easier to brush.',
-                                'medium' => 'For 6–10 kg pets, the bath and blow-dry service washes away everyday grime, then dries the coat so it feels fresher after the visit.',
-                                'large' => 'This wash-and-dry option suits pets in the 11–15 kg range, helping clean a larger coat and remove lingering everyday odors.',
-                                'extra_large' => 'For pets weighing 16–20 kg, bathing followed by blow-drying helps freshen a bigger coat and makes routine brushing easier afterward.',
-                                'xxl' => 'A useful wash-and-dry refresh for very large pets weighing 21–25 kg, helping rinse away built-up dirt and leave the coat clean and dry.'
-                            ]
-                        ];
 
                         if (strpos($category_lower, 'basic') !== false) {
                             $visual_class = 'basic';
@@ -2658,8 +2650,19 @@ try {
                             $description_group = 'basic';
                         }
 
-                        $service_description = $descriptions[$description_group][$size_key]
+                        $service_description = $grooming_descriptions[$description_group][$size_key]
                             ?? ('This grooming option is listed for ' . $size_label . ' pets. Review the service name and rate to choose the option that fits your pet.');
+
+                        $service_id = filter_var($row['id'] ?? null, FILTER_VALIDATE_INT);
+                        $booking_url = ($is_logged_in && $service_id !== false && $service_id !== null && $service_id > 0)
+                            ? 'book_appointment.php?service_id=' . $service_id . '&category=Grooming'
+                            : 'login.php';
+
+                        $raw_price = $row['price'] ?? null;
+                        $price_is_valid = is_numeric($raw_price)
+                            && is_finite((float)$raw_price)
+                            && (float)$raw_price >= 0;
+                        $formatted_price = $price_is_valid ? number_format((float)$raw_price, 2) : null;
 
                     ?>
 
@@ -2679,21 +2682,21 @@ try {
 
                             <span class="service-tag <?php echo $tag_class; ?>">
 
-                                <?php echo htmlspecialchars($tag_text); ?>
+                                <?php echo groomingEscape($tag_text); ?>
 
                             </span>
 
-                            <h3><?php echo htmlspecialchars($row['category']); ?></h3>
+                            <h3><?php echo groomingEscape($category); ?></h3>
 
                             <div class="service-name">
 
-                                <?php echo htmlspecialchars($row['service_name']); ?>
+                                <?php echo groomingEscape($service_name_text); ?>
 
                             </div>
 
                             <p class="service-description">
 
-                                <?php echo htmlspecialchars($service_description, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
+                                <?php echo groomingEscape($service_description); ?>
 
                             </p>
 
@@ -2703,11 +2706,15 @@ try {
 
                                     <span class="price-label">Service rate</span>
 
-                                    <span class="price">₱<?php echo number_format($row['price'], 2); ?></span>
+                                    <?php if ($formatted_price !== null): ?>
+                                        <span class="price">₱<?php echo $formatted_price; ?></span>
+                                    <?php else: ?>
+                                        <span class="price">Price unavailable</span>
+                                    <?php endif; ?>
 
                                 </div>
 
-                                <a href="<?php echo $is_logged_in ? 'book_appointment.php?service_id=' . (int)($row['id'] ?? 0) . '&category=Grooming' : 'login.php'; ?>" class="btn-book">
+                                <a href="<?php echo groomingEscape($booking_url); ?>" class="btn-book">
 
                                     Book Now <i class="fa-solid fa-arrow-right"></i>
 
@@ -2867,10 +2874,10 @@ try {
 
     <script>
         // ===== SHARED SMART / RELATED SEARCH =====
-        const searchForms = [
-            { form: document.getElementById('siteSearchForm'), input: document.getElementById('siteSearchInput') }
-        ].filter(item => item.form && item.input);
+        const searchForm = document.getElementById('siteSearchForm');
+        const searchInput = document.getElementById('siteSearchInput');
         const searchStatus = document.getElementById('searchStatus');
+        let searchStatusTimer = null;
 
         const searchRoutes = [
             {
@@ -2928,25 +2935,29 @@ try {
 
         function normalizeSearchText(value) {
             return String(value || '')
+                .slice(0, 100)
                 .toLowerCase()
                 .replace(/[^a-z0-9+\s-]/g, ' ')
                 .replace(/\s+/g, ' ')
                 .trim();
         }
 
-        function levenshteinDistance(a, b) {
-            a = String(a);
-            b = String(b);
+        // Normalize route keywords once instead of repeating this work on every search.
+        const normalizedSearchRoutes = searchRoutes.map(route => ({
+            ...route,
+            normalizedKeywords: route.keywords.map(normalizeSearchText)
+        }));
 
+        function levenshteinDistance(a, b) {
             if (a === b) return 0;
             if (!a.length) return b.length;
             if (!b.length) return a.length;
+            if (Math.abs(a.length - b.length) > 2) return 3;
 
-            const previous = Array.from({ length: b.length + 1 }, (_, i) => i);
+            let previous = Array.from({ length: b.length + 1 }, (_, index) => index);
 
             for (let i = 1; i <= a.length; i++) {
                 const current = [i];
-
                 for (let j = 1; j <= b.length; j++) {
                     current[j] = Math.min(
                         current[j - 1] + 1,
@@ -2954,10 +2965,7 @@ try {
                         previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)
                     );
                 }
-
-                for (let j = 0; j < current.length; j++) {
-                    previous[j] = current[j];
-                }
+                previous = current;
             }
 
             return previous[b.length];
@@ -2967,20 +2975,17 @@ try {
             if (!query || !keyword) return false;
             if (query.includes(keyword) || keyword.includes(query)) return true;
 
-            const queryWords = query.split(' ').filter(Boolean);
-            const keywordWords = keyword.split(' ').filter(Boolean);
+            const queryWords = query.split(' ').filter(word => word.length >= 4 && word.length <= 24);
+            const keywordWords = keyword.split(' ').filter(word => word.length >= 4 && word.length <= 24);
 
-            for (const qWord of queryWords) {
-                for (const kWord of keywordWords) {
-                    if (qWord.length >= 4 && kWord.length >= 4) {
-                        const maxDistance = Math.min(
-                            2,
-                            Math.floor(Math.max(qWord.length, kWord.length) / 4)
-                        );
-
-                        if (levenshteinDistance(qWord, kWord) <= maxDistance) {
-                            return true;
-                        }
+            for (const queryWord of queryWords) {
+                for (const keywordWord of keywordWords) {
+                    const maxDistance = Math.min(
+                        2,
+                        Math.floor(Math.max(queryWord.length, keywordWord.length) / 4)
+                    );
+                    if (maxDistance > 0 && levenshteinDistance(queryWord, keywordWord) <= maxDistance) {
+                        return true;
                     }
                 }
             }
@@ -2990,21 +2995,16 @@ try {
 
         function findSearchRoute(query) {
             const normalized = normalizeSearchText(query);
-
             if (!normalized) return null;
 
-            for (const route of searchRoutes) {
-                if (route.keywords.some(keyword =>
-                    normalized.includes(normalizeSearchText(keyword))
-                )) {
+            for (const route of normalizedSearchRoutes) {
+                if (route.normalizedKeywords.some(keyword => normalized.includes(keyword))) {
                     return route;
                 }
             }
 
-            for (const route of searchRoutes) {
-                if (route.keywords.some(keyword =>
-                    searchKeywordMatches(normalized, normalizeSearchText(keyword))
-                )) {
+            for (const route of normalizedSearchRoutes) {
+                if (route.normalizedKeywords.some(keyword => searchKeywordMatches(normalized, keyword))) {
                     return route;
                 }
             }
@@ -3014,70 +3014,66 @@ try {
 
         function showSearchStatus(message) {
             if (!searchStatus) return;
-
-            searchStatus.innerHTML = message;
+            searchStatus.textContent = message;
             searchStatus.classList.add('show');
-
-            clearTimeout(window.searchStatusTimer);
-
-            window.searchStatusTimer = setTimeout(() => {
+            clearTimeout(searchStatusTimer);
+            searchStatusTimer = setTimeout(() => {
                 searchStatus.classList.remove('show');
             }, 2600);
         }
 
-        searchForms.forEach(({ form, input }) => {
-            form.addEventListener('submit', function (event) {
+        if (searchForm && searchInput) {
+            searchForm.addEventListener('submit', event => {
                 event.preventDefault();
-
-                const query = input.value.trim();
+                const query = searchInput.value.trim().slice(0, 100);
+                searchInput.value = query;
 
                 if (!query) {
-                    input.focus();
-                    showSearchStatus(
-                        'Type something to search, like <strong>bath</strong>, <strong>vaccine</strong>, <strong>boarding</strong>, or <strong>price</strong>.'
-                    );
+                    searchInput.focus();
+                    showSearchStatus('Type something to search, like bath, vaccine, boarding, or price.');
                     return;
                 }
 
                 const route = findSearchRoute(query);
-
                 if (route) {
-                    showSearchStatus(`Opening <strong>${route.label}</strong>...`);
-
-                    setTimeout(() => {
-                        window.location.href = route.url;
+                    showSearchStatus(`Opening ${route.label}...`);
+                    window.setTimeout(() => {
+                        window.location.assign(route.url);
                     }, 180);
                 } else {
-                    showSearchStatus(
-                        'No related service found. Try grooming, vet, boarding, price, or contact.'
-                    );
+                    showSearchStatus('No related service found. Try grooming, vet, boarding, price, or contact.');
                 }
             });
-        });
+        }
 
         // ===== GMAIL COMPOSE =====
         function openGmailCompose(event, url) {
             event.preventDefault();
 
+            let targetUrl;
+            try {
+                targetUrl = new URL(url, window.location.href);
+            } catch (error) {
+                return;
+            }
+
+            // This handler is intended only for the fixed Gmail compose link in the footer.
+            if (targetUrl.protocol !== 'https:' || targetUrl.hostname !== 'mail.google.com') {
+                return;
+            }
+
             const width = 760;
             const height = 650;
-            const left = Math.max(
-                0,
-                Math.round((window.screen.width - width) / 2)
-            );
-            const top = Math.max(
-                0,
-                Math.round((window.screen.height - height) / 2)
-            );
-
+            const left = Math.max(0, Math.round((window.screen.width - width) / 2));
+            const top = Math.max(0, Math.round((window.screen.height - height) / 2));
             const popup = window.open(
-                url,
+                targetUrl.href,
                 'boogiesGmailCompose',
                 `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`
             );
 
             if (!popup) {
-                window.location.href = url;
+                window.location.href = targetUrl.href;
             }
         }
     </script>

@@ -177,225 +177,134 @@ if (isset($_SESSION['user_id'])) {
 
 
 
+// Resolve profile images saved by both Admin and Staff profile upload pages.
+// Admin uploads may live in /admin/uploads; Staff uploads may live in /uploads.
+$profile_img_src = '';
+$raw_profile_img = trim((string)$profile_img_path);
+if ($raw_profile_img !== '') {
+    if (preg_match('~^https?://~i', $raw_profile_img) || preg_match('~^data:image/~i', $raw_profile_img)) {
+        $profile_img_src = $raw_profile_img;
+    } else {
+        $normalized_profile_img = str_replace('\\', '/', $raw_profile_img);
+        $normalized_profile_img = ltrim($normalized_profile_img, '/');
+        $normalized_profile_img = preg_replace(
+            '~^(?:(?:\.\./)|(?:\./)|(?:customer/)|(?:admin/)|(?:staff/))+~i',
+            '',
+            $normalized_profile_img
+        );
+        $normalized_profile_img = preg_replace('~^uploads/~i', '', $normalized_profile_img);
+
+        if (
+            $normalized_profile_img !== '' &&
+            !preg_match('~(^|/)\.\.?(/|$)|[<>:"|?*\x00-\x1F]~', $normalized_profile_img)
+        ) {
+            $encoded_segments = array_map('rawurlencode', explode('/', $normalized_profile_img));
+            $encoded_relative_path = implode('/', $encoded_segments);
+
+            $admin_upload_path = __DIR__ . '/uploads/' . $normalized_profile_img;
+            $root_upload_path = __DIR__ . '/../uploads/' . $normalized_profile_img;
+
+            if (is_file($admin_upload_path)) {
+                $profile_img_src = 'uploads/' . $encoded_relative_path;
+            } elseif (is_file($root_upload_path)) {
+                $profile_img_src = '../uploads/' . $encoded_relative_path;
+            }
+        }
+    }
+}
 
 
-
-
-// 4. FETCH PROMO STATISTICS
-
-
-
+// 4. FETCH PROMO STATISTICS AND PAGINATED PROMO LIST
 $total_promos = 0;
-
 $active_promos = 0;
-
 $expired_promos = 0;
-
 $promos = [];
+$filtered_promo_count = 0;
+$per_page = 20;
 
 $filter = $_GET['filter'] ?? 'all';
 if (!is_string($filter) || !in_array($filter, ['all', 'active', 'expired'], true)) {
     $filter = 'all';
 }
 
+$page_input = $_GET['page'] ?? 1;
+$validated_page = filter_var($page_input, FILTER_VALIDATE_INT, [
+    'options' => ['min_range' => 1]
+]);
+$requested_page = ($validated_page === false) ? 1 : (int)$validated_page;
+$total_pages = 1;
+$current_page = 1;
+$offset = 0;
 
-
-
-
-
+// Use Manila's calendar date consistently for promo counts and filtering.
+$manila_today_sql = "((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Manila')::date)";
 
 try {
-
-
-
-    $total_stmt = $pdo->query("
-
-
-
-        SELECT COUNT(*) AS count
-
-
-
+    // One aggregate query replaces the three separate promo COUNT queries.
+    $stats_stmt = $pdo->query("
+        SELECT
+            COUNT(*) AS total,
+            COUNT(*) FILTER (
+                WHERE (expiry_date IS NULL OR expiry_date >= {$manila_today_sql})
+                  AND status = 'active'
+            ) AS active,
+            COUNT(*) FILTER (
+                WHERE expiry_date < {$manila_today_sql}
+            ) AS expired
         FROM promos
-
-
-
     ");
-
-
-
-
-
-
-
-    $active_stmt = $pdo->query("
-
-
-
-        SELECT COUNT(*) AS count
-
-
-
-        FROM promos
-
-
-
-        WHERE (expiry_date IS NULL OR expiry_date >= ((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Manila')::date))
-
-          AND status = 'active'
-
-
-
-    ");
-
-
-
-
-
-
-
-    $expired_stmt = $pdo->query("
-
-
-
-        SELECT COUNT(*) AS count
-
-
-
-        FROM promos
-
-
-
-        WHERE expiry_date < ((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Manila')::date)
-
-
-
-    ");
-
-
-
-
-
-
-
-    $total_promos = (int)($total_stmt->fetch(PDO::FETCH_ASSOC)['count'] ?? 0);
-
-
-
-    $active_promos = (int)($active_stmt->fetch(PDO::FETCH_ASSOC)['count'] ?? 0);
-
-
-
-    $expired_promos = (int)($expired_stmt->fetch(PDO::FETCH_ASSOC)['count'] ?? 0);
-
-
-
-
-
-
-
-    // 5. FETCH PROMOS WITH FILTERING
-
-
-
-
-
-
-
+    $promo_stats = $stats_stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+    $total_promos = (int)($promo_stats['total'] ?? 0);
+    $active_promos = (int)($promo_stats['active'] ?? 0);
+    $expired_promos = (int)($promo_stats['expired'] ?? 0);
+
+    // The summary counts above also provide the exact number of rows for the
+    // selected filter, so a separate filtered COUNT query is not necessary.
+    $filtered_promo_count = match ($filter) {
+        'active' => $active_promos,
+        'expired' => $expired_promos,
+        default => $total_promos,
+    };
+
+    $total_pages = max(1, (int)ceil($filtered_promo_count / $per_page));
+    $current_page = min($requested_page, $total_pages);
+    $offset = ($current_page - 1) * $per_page;
+
+    // Fetch only the fields rendered in the table and only one page at a time.
     $query = "
-
-
-
-        SELECT *
-
-
-
+        SELECT id, tag, title, theme_color, button_text, target_url, expiry_date, status
         FROM promos
-
-
-
     ";
 
-
-
-
-
-
-
     if ($filter === 'active') {
-
-
-
         $query .= "
-
-
-
-            WHERE (expiry_date IS NULL OR expiry_date >= ((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Manila')::date))
-
+            WHERE (expiry_date IS NULL OR expiry_date >= {$manila_today_sql})
               AND status = 'active'
-
-
-
         ";
-
-
-
     } elseif ($filter === 'expired') {
-
-
-
         $query .= "
-
-
-
-            WHERE expiry_date < ((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Manila')::date)
-
-
-
+            WHERE expiry_date < {$manila_today_sql}
         ";
-
-
-
     }
 
-
-
-
-
-
-
-    $query .= " ORDER BY id DESC";
-
-
-
-
-
-
+    $query .= " ORDER BY id DESC LIMIT :limit OFFSET :offset";
 
     $promo_stmt = $pdo->prepare($query);
-
-
-
+    $promo_stmt->bindValue(':limit', $per_page, PDO::PARAM_INT);
+    $promo_stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
     $promo_stmt->execute();
-
-
-
-    $promos = $promo_stmt->fetchAll(PDO::FETCH_ASSOC);
-
-
-
-} catch (PDOException $e) {
-
+    $promos = $promo_stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+} catch (Throwable $e) {
     error_log('Manage promos query failed: ' . $e->getMessage());
+    $total_promos = 0;
+    $active_promos = 0;
+    $expired_promos = 0;
+    $filtered_promo_count = 0;
+    $total_pages = 1;
+    $current_page = 1;
+    $offset = 0;
     $promos = [];
-
 }
-
-
-
-
-
-
 
 $current_date = (new DateTimeImmutable('now', new DateTimeZone('Asia/Manila')))->format('Y-m-d');
 
@@ -406,64 +315,28 @@ $current_date = (new DateTimeImmutable('now', new DateTimeZone('Asia/Manila')))-
 
 
 // --- FETCH ADMIN NOTIFICATIONS ---
-
-
-
+$admin_notifications = [];
+$unread_count = 0;
 try {
-
-
-
-    $admin_notif_stmt = $pdo->prepare("
-
-
-
-        SELECT *
-
-
-
+    // The window count gives the full unread total while returning only the
+    // latest 20 rows for the dropdown, using a single database query.
+    $admin_notif_stmt = $pdo->query("
+        SELECT id, message, created_at,
+               COUNT(*) OVER() AS total_unread
         FROM admin_notifications
-
-
-
         WHERE is_read = 0
-
-
-
-        ORDER BY created_at DESC
-
-
-
+        ORDER BY created_at DESC, id DESC
+        LIMIT 20
     ");
-
-
-
-    $admin_notif_stmt->execute();
-
-
-
-    $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
-
-
-
-    $unread_count = count($admin_notifications);
-
-
-
-} catch (PDOException $e) {
-
-
-
+    $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    if (!empty($admin_notifications)) {
+        $unread_count = (int)($admin_notifications[0]['total_unread'] ?? 0);
+    }
+} catch (Throwable $e) {
+    error_log('Manage promos notification fetch failed: ' . $e->getMessage());
     $admin_notifications = [];
-
-
-
     $unread_count = 0;
-
-
-
 }
-
-
 
 ?>
 
@@ -996,6 +869,16 @@ try {
 
 
         .clear-filter:hover { background: #f87171; color: white; }
+
+        .pagination { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 16px 20px; border-top: 1px solid #f1f5f9; flex-wrap: wrap; }
+        .pagination-info { color: var(--text-muted); font-size: 12px; font-weight: 600; }
+        .pagination-links { display: flex; align-items: center; gap: 6px; }
+        .pagination-link { display: inline-flex; align-items: center; justify-content: center; min-width: 34px; padding: 7px 11px; border: 1px solid #e2e8f0; border-radius: 7px; color: var(--navy-dark); background: #fff; text-decoration: none; font-size: 12px; font-weight: 700; }
+        .pagination-link:hover { background: var(--brand-yellow); border-color: var(--brand-yellow); }
+        .pagination-link.disabled { color: #94a3b8; background: #f8fafc; cursor: not-allowed; }
+        .pagination-current { color: var(--text-muted); font-size: 12px; font-weight: 700; padding: 0 5px; }
+        @media (max-width: 560px) { .pagination { align-items: flex-start; flex-direction: column; padding: 14px; } }
+
 
 
 
@@ -2163,14 +2046,8 @@ try {
 
 
 
-                    <?php if (!empty($profile_img_path) && file_exists($profile_img_path)): ?>
-
-
-
-                        <img src="<?php echo htmlspecialchars($profile_img_path); ?>" class="top-avatar" alt="Profile Picture">
-
-
-
+                    <?php if ($profile_img_src !== ''): ?>
+                        <img src="<?php echo htmlspecialchars($profile_img_src, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>" class="top-avatar" alt="Profile Picture" onerror="this.onerror=null; this.style.display='none';">
                     <?php else: ?>
 
 
@@ -2749,6 +2626,32 @@ try {
 
                             </tbody>
 
+                        <div class="pagination">
+                            <span class="pagination-info">
+                                <?php
+                                    $first_promo_row = $filtered_promo_count > 0 ? ($offset + 1) : 0;
+                                    $last_promo_row = min($offset + count($promos), $filtered_promo_count);
+                                ?>
+                                Showing <?php echo $first_promo_row; ?>–<?php echo $last_promo_row; ?> of <?php echo $filtered_promo_count; ?> promotions
+                            </span>
+                            <?php if ($total_pages > 1): ?>
+                                <div class="pagination-links">
+                                    <?php if ($current_page > 1): ?>
+                                        <a class="pagination-link" href="managepromo.php?<?php echo htmlspecialchars(http_build_query(['filter' => $filter, 'page' => $current_page - 1]), ENT_QUOTES, 'UTF-8'); ?>">Previous</a>
+                                    <?php else: ?>
+                                        <span class="pagination-link disabled">Previous</span>
+                                    <?php endif; ?>
+                                    <span class="pagination-current">Page <?php echo $current_page; ?> of <?php echo $total_pages; ?></span>
+                                    <?php if ($current_page < $total_pages): ?>
+                                        <a class="pagination-link" href="managepromo.php?<?php echo htmlspecialchars(http_build_query(['filter' => $filter, 'page' => $current_page + 1]), ENT_QUOTES, 'UTF-8'); ?>">Next</a>
+                                    <?php else: ?>
+                                        <span class="pagination-link disabled">Next</span>
+                                    <?php endif; ?>
+                                </div>
+                            <?php endif; ?>
+                        </div>
+
+
 
 
                         </table>
@@ -3075,91 +2978,42 @@ try {
 
 
 
+        let adminNotifFetchInProgress = false;
+
         function fetchAdminNotifs() {
-
-
+            if (adminNotifFetchInProgress || document.hidden) return;
+            adminNotifFetchInProgress = true;
 
             fetch('get_admin_notifs.php', {
-
-
-
                 method: 'GET',
-
-
-
                 cache: 'no-store',
-
-
-
                 credentials: 'same-origin'
-
-
-
             })
-
-
-
             .then(function(response) {
-
-
-
                 if (!response.ok) {
-
-
-
-                    throw new Error(
-
-
-
-                        'Notification request failed: HTTP ' + response.status
-
-
-
-                    );
-
-
-
+                    throw new Error('Notification request failed: HTTP ' + response.status);
                 }
-
-
-
                 return response.json();
-
-
-
             })
-
-
-
-            .then(renderAdminNotifications)
-
-
-
+            .then(function(data) {
+                if (!data || data.success === false || !Number.isFinite(Number(data.unread))) {
+                    throw new Error('Notification endpoint returned an invalid response.');
+                }
+                renderAdminNotifications(data);
+            })
             .catch(function(error) {
-
-
-
                 console.error('Error fetching admin notifications:', error);
-
-
-
+            })
+            .finally(function() {
+                adminNotifFetchInProgress = false;
             });
-
-
-
         }
 
-
-
-
-
-
-
         fetchAdminNotifs();
-
-
-
-        setInterval(fetchAdminNotifs, 3000);
+        setInterval(fetchAdminNotifs, 15000);
+        document.addEventListener('visibilitychange', function() {
+            if (!document.hidden) fetchAdminNotifs();
+        });
 
 
 

@@ -10,11 +10,19 @@ require_once __DIR__ . '/../db_supabase.php';
 
 
 
-// Check if user is logged in
+// Read the customer session without casting unexpected values to strings.
+$login_flag = $_SESSION['logged_in'] ?? false;
+$is_logged_in = (
+    $login_flag === true ||
+    $login_flag === 1 ||
+    (is_string($login_flag) && in_array(strtolower(trim($login_flag)), ['1', 'true'], true))
+);
 
-$is_logged_in = isset($_SESSION['logged_in']) && $_SESSION['logged_in'] === true;
-
-$user_name = $is_logged_in ? (string)($_SESSION['user_name'] ?? 'Customer') : 'Guest';
+$raw_user_name = $_SESSION['user_name'] ?? 'Customer';
+$user_name = is_scalar($raw_user_name) ? trim((string)$raw_user_name) : 'Customer';
+if ($user_name === '') {
+    $user_name = $is_logged_in ? 'Customer' : 'Guest';
+}
 
 
 
@@ -2627,6 +2635,7 @@ try {
                     id="siteSearchInput"
                     placeholder="Search for grooming, hotel, or vet services..."
                     aria-label="Search services"
+                    maxlength="100"
                 >
                 <button type="submit" aria-label="Search">
                     <i class="fa-solid fa-magnifying-glass"></i>
@@ -2776,6 +2785,8 @@ try {
                         $service_name_text = trim((string)($row['service_name'] ?? ''));
                         $service_name_lower = strtolower($service_name_text);
                         $size_source = strtolower($service_name_text . ' ' . (string)($row['pet_size'] ?? '') . ' ' . (string)($row['size'] ?? ''));
+                        $service_price = is_numeric($row['price'] ?? null) ? (float)$row['price'] : null;
+                        $service_id = filter_var($row['id'] ?? null, FILTER_VALIDATE_INT);
                         $size_key = '';
 
                         // Detect weight brackets when they are included in the service label.
@@ -2878,7 +2889,7 @@ try {
                             // infer the displayed price bracket from the existing clinic
                             // price bands so the correct size-specific description is used.
                             if ($size_key === '') {
-                                $deworming_price = (float)($row['price'] ?? 0);
+                                $deworming_price = $service_price ?? 0.0;
                                 $price_size_map = [
                                     200 => 'small',
                                     250 => 'medium',
@@ -3041,7 +3052,7 @@ try {
 
                             <div class="service-name">
 
-                                <?php echo htmlspecialchars((string)$row['service_name'], ENT_QUOTES, 'UTF-8'); ?>
+                                <?php echo htmlspecialchars($service_name_text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
 
                             </div>
 
@@ -3061,13 +3072,13 @@ try {
 
                                     <span class="price-label">Service fee</span>
 
-                                    <span class="price">₱<?php echo number_format($row['price'], 2); ?></span>
+                                    <span class="price">₱<?php echo $service_price !== null ? number_format($service_price, 2) : '—'; ?></span>
 
                                 </div>
 
 
 
-                                <a href="<?php echo $is_logged_in ? 'book_appointment.php?service_id=' . (int)$row['id'] . '&category=Vet' : 'login.php'; ?>" class="btn-book">
+                                <a href="<?php echo ($is_logged_in && $service_id !== false && $service_id > 0) ? 'book_appointment.php?service_id=' . $service_id . '&category=Vet' : 'login.php'; ?>" class="btn-book">
 
                                     Book Now <i class="fa-solid fa-arrow-right"></i>
 
@@ -3300,25 +3311,28 @@ try {
         ];
 
         function normalizeSearchText(value) {
-            return String(value || '')
+            return String(value ?? '')
+                .slice(0, 100)
                 .toLowerCase()
                 .replace(/[^a-z0-9+\s-]/g, ' ')
                 .replace(/\s+/g, ' ')
                 .trim();
         }
 
-        function levenshteinDistance(a, b) {
-            a = String(a);
-            b = String(b);
+        // Check only the small edit-distance range used by the search matcher.
+        function isWithinEditDistance(a, b, maxDistance) {
+            if (a === b) return true;
+            if (Math.abs(a.length - b.length) > maxDistance) return false;
 
-            if (a === b) return 0;
-            if (!a.length) return b.length;
-            if (!b.length) return a.length;
+            if (a.length > b.length) {
+                [a, b] = [b, a];
+            }
 
-            const previous = Array.from({ length: b.length + 1 }, (_, i) => i);
+            let previous = Array.from({ length: b.length + 1 }, (_, i) => i);
 
             for (let i = 1; i <= a.length; i++) {
                 const current = [i];
+                let rowMin = i;
 
                 for (let j = 1; j <= b.length; j++) {
                     current[j] = Math.min(
@@ -3326,15 +3340,21 @@ try {
                         previous[j] + 1,
                         previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)
                     );
+                    rowMin = Math.min(rowMin, current[j]);
                 }
 
-                for (let j = 0; j < current.length; j++) {
-                    previous[j] = current[j];
-                }
+                if (rowMin > maxDistance) return false;
+                previous = current;
             }
 
-            return previous[b.length];
+            return previous[b.length] <= maxDistance;
         }
+
+        // Normalize route keywords once instead of repeating it on every search.
+        const preparedSearchRoutes = searchRoutes.map(route => ({
+            ...route,
+            normalizedKeywords: route.keywords.map(normalizeSearchText)
+        }));
 
         function searchKeywordMatches(query, keyword) {
             if (!query || !keyword) return false;
@@ -3351,7 +3371,7 @@ try {
                             Math.floor(Math.max(qWord.length, kWord.length) / 4)
                         );
 
-                        if (levenshteinDistance(qWord, kWord) <= maxDistance) {
+                        if (isWithinEditDistance(qWord, kWord, maxDistance)) {
                             return true;
                         }
                     }
@@ -3366,17 +3386,15 @@ try {
 
             if (!normalized) return null;
 
-            for (const route of searchRoutes) {
-                if (route.keywords.some(keyword =>
-                    normalized.includes(normalizeSearchText(keyword))
-                )) {
+            for (const route of preparedSearchRoutes) {
+                if (route.normalizedKeywords.some(keyword => normalized.includes(keyword))) {
                     return route;
                 }
             }
 
-            for (const route of searchRoutes) {
-                if (route.keywords.some(keyword =>
-                    searchKeywordMatches(normalized, normalizeSearchText(keyword))
+            for (const route of preparedSearchRoutes) {
+                if (route.normalizedKeywords.some(keyword =>
+                    searchKeywordMatches(normalized, keyword)
                 )) {
                     return route;
                 }
@@ -3388,7 +3406,7 @@ try {
         function showSearchStatus(message) {
             if (!searchStatus) return;
 
-            searchStatus.innerHTML = message;
+            searchStatus.textContent = message;
             searchStatus.classList.add('show');
 
             clearTimeout(window.searchStatusTimer);
@@ -3402,12 +3420,12 @@ try {
             searchForm.addEventListener('submit', function (event) {
                 event.preventDefault();
 
-                const query = searchInput.value.trim();
+                const query = searchInput.value.trim().slice(0, 100);
 
                 if (!query) {
                     searchInput.focus();
                     showSearchStatus(
-                        'Type something to search, like <strong>bath</strong>, <strong>vaccine</strong>, <strong>boarding</strong>, or <strong>price</strong>.'
+                        'Type something to search, like bath, vaccine, boarding, or price.'
                     );
                     return;
                 }
@@ -3415,7 +3433,7 @@ try {
                 const route = findSearchRoute(query);
 
                 if (route) {
-                    showSearchStatus(`Opening <strong>${route.label}</strong>...`);
+                    showSearchStatus(`Opening ${route.label}...`);
 
                     setTimeout(() => {
                         window.location.href = route.url;

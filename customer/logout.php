@@ -49,7 +49,7 @@ $userAgent = $_SERVER['HTTP_USER_AGENT'] ?? null;
 // Keep Admin, personnel, and customer login destinations separate.
 $redirectPage = 'login.php';
 if ($role === 'admin') {
-    $redirectPage = 'admin_login.php';
+    $redirectPage = '/admin/admin_login.php';
 } elseif (in_array($role, [
     'manager',
     'receptionist',
@@ -59,7 +59,7 @@ if ($role === 'admin') {
     'vet_assistant',
     'vet_nurse',
 ], true)) {
-    $redirectPage = 'staff/stafflogin.php';
+    $redirectPage = '/staff/stafflogin.php';
 }
 
 // Destroy the session and clear its browser cookie before trying to write logs.

@@ -1,6 +1,5 @@
 <?php
 require_once __DIR__ . '/../shared_session_bootstrap.php';
-include '../db_supabase.php';
 
 // --- ROLE-BASED ACCESS CONTROL ---
 $raw_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
@@ -64,6 +63,10 @@ if (!in_array($current_role, $allowed_pet_roles, true)) {
     exit('Access denied. This role cannot edit pet records.');
 }
 
+// Open the database connection only after the session and role have been authorized.
+require_once __DIR__ . '/../db_supabase.php';
+date_default_timezone_set('Asia/Manila');
+
 // CSRF protection for the edit form.
 if (empty($_SESSION['editpet_csrf_token']) || !is_string($_SESSION['editpet_csrf_token'])) {
     $_SESSION['editpet_csrf_token'] = bin2hex(random_bytes(32));
@@ -73,6 +76,88 @@ function editpet_post_string(string $key): string
 {
     $value = $_POST[$key] ?? '';
     return is_scalar($value) ? trim((string)$value) : '';
+}
+
+
+/** Resolve only known profile upload locations; reject arbitrary filesystem paths. */
+function editPetResolveProfileImageUrl($storedPath): string
+{
+    if (!is_string($storedPath) || trim($storedPath) === '') {
+        return '';
+    }
+
+    $path = trim(str_replace('\\', '/', $storedPath));
+    if (preg_match('#^https?://#i', $path)) {
+        return filter_var($path, FILTER_VALIDATE_URL) ? $path : '';
+    }
+
+    $isAdminUpload = strpos($path, 'uploads/') === 0;
+    $isSharedUpload = strpos($path, '../uploads/') === 0;
+    if (!$isAdminUpload && !$isSharedUpload) {
+        return '';
+    }
+
+    $filename = basename($path);
+    if ($filename === '' || $filename === '.' || $filename === '..') {
+        return '';
+    }
+
+    $adminFile = __DIR__ . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . $filename;
+    $sharedFile = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . $filename;
+
+    // A DB value of uploads/... may refer to Admin's own uploads folder or
+    // the older project-level uploads folder. Prefer the matching real file.
+    if ($isAdminUpload && is_file($adminFile)) {
+        return 'uploads/' . rawurlencode($filename);
+    }
+    if (is_file($sharedFile)) {
+        return '../uploads/' . rawurlencode($filename);
+    }
+
+    return '';
+}
+
+/** Return the exact unread total and the latest notification rows in one query. */
+function editPetFetchAdminNotifications(PDO $pdo, int $limit = 20): array
+{
+    $limit = max(1, min(50, $limit));
+    $sql = '
+        SELECT unread.unread_count,
+               notification_rows.message,
+               notification_rows.created_at
+        FROM (
+            SELECT COUNT(*) AS unread_count
+            FROM admin_notifications
+            WHERE is_read = 0
+        ) AS unread
+        LEFT JOIN (
+            SELECT message, created_at
+            FROM admin_notifications
+            WHERE is_read = 0
+            ORDER BY created_at DESC, id DESC
+            LIMIT :limit
+        ) AS notification_rows ON TRUE
+        ORDER BY notification_rows.created_at DESC NULLS LAST
+    ';
+
+    $stmt = $pdo->prepare($sql);
+    $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+    $stmt->execute();
+    $records = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    $count = (int)($records[0]['unread_count'] ?? 0);
+    $notifications = [];
+    foreach ($records as $record) {
+        if ($record['message'] === null && $record['created_at'] === null) {
+            continue;
+        }
+        $notifications[] = [
+            'message' => (string)($record['message'] ?? ''),
+            'created_at' => $record['created_at'] ?? null,
+        ];
+    }
+
+    return ['count' => $count, 'notifications' => $notifications];
 }
 
 // Validate the requested pet ID before querying the database.
@@ -98,20 +183,10 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'admin_notifications') {
     }
 
     try {
-        $count_stmt = $pdo->query('SELECT COUNT(*) FROM admin_notifications WHERE is_read = 0');
-        $current_unread_count = (int)$count_stmt->fetchColumn();
-
-        $list_stmt = $pdo->query(
-            'SELECT message, created_at
-             FROM admin_notifications
-             WHERE is_read = 0
-             ORDER BY created_at DESC
-             LIMIT 20'
-        );
-        $rows = $list_stmt->fetchAll(PDO::FETCH_ASSOC);
+        $snapshot = editPetFetchAdminNotifications($pdo, 20);
         $items = [];
 
-        foreach ($rows as $notification) {
+        foreach ($snapshot['notifications'] as $notification) {
             $created_at = '';
             if (!empty($notification['created_at'])) {
                 $timestamp = strtotime((string)$notification['created_at']);
@@ -121,14 +196,14 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'admin_notifications') {
             }
 
             $items[] = [
-                'message' => (string)($notification['message'] ?? ''),
+                'message' => $notification['message'],
                 'created_at' => $created_at,
             ];
         }
 
         echo json_encode([
             'success' => true,
-            'count' => $current_unread_count,
+            'count' => $snapshot['count'],
             'notifications' => $items,
         ], JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
     } catch (PDOException $e) {
@@ -166,10 +241,19 @@ $first_name = trim(explode(' ', $admin_full_name)[0] ?? 'User', ',');
 if ($first_name === '') {
     $first_name = 'U';
 }
+$profile_img_src = editPetResolveProfileImageUrl($profile_img_path);
 
 // Load the target pet first. This also prevents updates to a non-existent ID.
 try {
-    $pet_stmt = $pdo->prepare('SELECT * FROM pets WHERE id = :pet_id LIMIT 1');
+    $pet_stmt = $pdo->prepare("
+        SELECT p.id, p.owner_id, p.owner_name, p.name, p.pet_type, p.breed,
+               p.gender, p.age, p.weight,
+               COALESCE(NULLIF(TRIM(p.owner_name), ''), u.full_name) AS owner_display
+        FROM pets p
+        LEFT JOIN users u ON u.id = p.owner_id
+        WHERE p.id = :pet_id
+        LIMIT 1
+    " );
     $pet_stmt->execute([':pet_id' => $pet_id]);
     $row = $pet_stmt->fetch(PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
@@ -188,8 +272,7 @@ if (!$row) {
 $users_list = [];
 if ($can_transfer_owner) {
     try {
-        $users_query = $pdo->prepare("SELECT id, full_name, email FROM users WHERE role = 'customer' ORDER BY full_name ASC");
-        $users_query->execute();
+        $users_query = $pdo->query("SELECT id, full_name, email FROM users WHERE role = 'customer' ORDER BY full_name ASC, id ASC");
         $users_list = $users_query->fetchAll(PDO::FETCH_ASSOC);
     } catch (PDOException $e) {
         error_log('Edit pet customer list fetch failed: ' . $e->getMessage());
@@ -330,24 +413,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-$current_owner_display = trim((string)($row['owner_name'] ?? ''));
-if ($current_owner_display === '') {
-    foreach ($users_list as $user) {
-        if ((int)$user['id'] === (int)($row['owner_id'] ?? 0)) {
-            $current_owner_display = trim((string)($user['full_name'] ?? ''));
-            break;
-        }
-    }
-}
-if ($current_owner_display === '' && (int)($row['owner_id'] ?? 0) > 0) {
-    try {
-        $owner_name_stmt = $pdo->prepare('SELECT full_name FROM users WHERE id = :owner_id LIMIT 1');
-        $owner_name_stmt->execute([':owner_id' => (int)$row['owner_id']]);
-        $current_owner_display = trim((string)($owner_name_stmt->fetchColumn() ?: ''));
-    } catch (PDOException $e) {
-        error_log('Edit pet current owner lookup failed: ' . $e->getMessage());
-    }
-}
+$current_owner_display = trim((string)($row['owner_display'] ?? $row['owner_name'] ?? ''));
 if ($current_owner_display === '') {
     $current_owner_display = 'Customer #' . (int)($row['owner_id'] ?? 0);
 }
@@ -357,12 +423,9 @@ $admin_notifications = [];
 $unread_count = 0;
 if ($is_admin) {
     try {
-        $admin_count_stmt = $pdo->query("SELECT COUNT(*) FROM admin_notifications WHERE is_read = 0");
-        $unread_count = (int)$admin_count_stmt->fetchColumn();
-
-        $admin_notif_stmt = $pdo->prepare("SELECT id, message, created_at FROM admin_notifications WHERE is_read = 0 ORDER BY created_at DESC LIMIT 20");
-        $admin_notif_stmt->execute();
-        $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
+        $notification_snapshot = editPetFetchAdminNotifications($pdo, 20);
+        $unread_count = $notification_snapshot['count'];
+        $admin_notifications = $notification_snapshot['notifications'];
     } catch (PDOException $e) {
         error_log('Edit pet admin notification fetch failed: ' . $e->getMessage());
         $admin_notifications = [];
@@ -566,8 +629,8 @@ if ($is_admin) {
 
                 <div class="profile-wrapper" onclick="toggleProfile(event)">
                     <span class="admin-tag"><?php echo strtoupper($current_role ?: 'STAFF'); ?></span>
-                    <?php if (!empty($profile_img_path) && file_exists(__DIR__ . '/' . ltrim($profile_img_path, '/'))): ?>
-                        <img src="<?php echo htmlspecialchars($profile_img_path, ENT_QUOTES, 'UTF-8'); ?>" class="top-avatar" alt="Profile Picture">
+                    <?php if ($profile_img_src !== ''): ?>
+                        <img src="<?php echo htmlspecialchars($profile_img_src, ENT_QUOTES, 'UTF-8'); ?>" class="top-avatar" alt="Profile Picture">
                     <?php else: ?>
                         <div class="top-avatar-fallback"><?php echo strtoupper(substr($first_name, 0, 1)); ?></div>
                     <?php endif; ?>
@@ -691,13 +754,14 @@ if ($is_admin) {
 
         let adminNotifRefreshInProgress = false;
 
-        async function refreshAdminNotifications() {
+        async function refreshAdminNotifications(force = false) {
             const badge = document.getElementById('admin-notif-badge');
             const list = document.getElementById('admin-notif-list');
             const markAllLink = document.getElementById('mark-read-link');
 
             // The bell exists only for Admin accounts on this page.
             if (!badge || !list || adminNotifRefreshInProgress) return;
+            if (document.hidden && !force) return;
 
             adminNotifRefreshInProgress = true;
             try {
@@ -762,7 +826,7 @@ if ($is_admin) {
 
         function toggleNotif(event) {
             event.stopPropagation();
-            refreshAdminNotifications();
+            refreshAdminNotifications(true);
             const notifBox = document.getElementById('notifBox');
             const profileBox = document.getElementById('profileBox');
             if (notifBox) notifBox.classList.toggle('show');
@@ -806,8 +870,13 @@ if ($is_admin) {
 
         // Refresh the Admin-only notification bell without reloading the whole page.
         if (document.getElementById('admin-notif-badge')) {
-            refreshAdminNotifications();
-            window.setInterval(refreshAdminNotifications, 3000);
+            refreshAdminNotifications(true);
+            window.setInterval(function() {
+                refreshAdminNotifications(false);
+            }, 15000);
+            document.addEventListener('visibilitychange', function() {
+                if (!document.hidden) refreshAdminNotifications(true);
+            });
         }
     </script>
 </body>

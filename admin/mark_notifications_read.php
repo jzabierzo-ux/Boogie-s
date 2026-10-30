@@ -5,6 +5,8 @@ require_once __DIR__ . '/../shared_session_bootstrap.php';
 |--------------------------------------------------------------------------
 | AUTHENTICATION AND ROLE NORMALIZATION
 |--------------------------------------------------------------------------
+| Admin alerts are shared Admin-only records. Groomer and Pet Hotel Staff
+| may only mark notification rows addressed to their own user ID as read.
 */
 $rawRole = strtolower(trim((string)($_SESSION['role'] ?? '')));
 $roleAliases = [
@@ -24,33 +26,49 @@ if ($currentRole !== '') {
     $_SESSION['role'] = $currentRole;
 }
 
-$isLoggedIn = ($_SESSION['logged_in'] ?? false) === true;
-$userId = filter_var($_SESSION['user_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+$loggedIn = ($_SESSION['logged_in'] ?? false) === true;
+$userId = filter_var(
+    $_SESSION['user_id'] ?? null,
+    FILTER_VALIDATE_INT,
+    ['options' => ['min_range' => 1]]
+);
 $isAdmin = $currentRole === 'admin';
 $isServiceStaff = in_array($currentRole, ['groomer', 'pet_hotel_staff'], true);
 
-if (!$isLoggedIn || (!$isAdmin && !$isServiceStaff)) {
+$adminSessionValid = $loggedIn
+    && ($_SESSION['admin_logged_in'] ?? false) === true
+    && $isAdmin
+    && $userId !== false
+    && $userId !== null;
+
+$staffSessionValid = $loggedIn
+    && ($_SESSION['staff_logged_in'] ?? false) === true
+    && $isServiceStaff
+    && $userId !== false
+    && $userId !== null;
+
+if (!$adminSessionValid && !$staffSessionValid) {
     http_response_code(403);
     exit('Access denied.');
 }
-if ($userId === false || $userId === null) {
-    http_response_code(403);
-    exit('Access denied: invalid session.');
-}
+
+$isAdmin = $adminSessionValid;
 
 /*
 |--------------------------------------------------------------------------
-| METHOD + CSRF CHECK
+| METHOD AND CSRF VALIDATION
 |--------------------------------------------------------------------------
-| Keep legacy GET compatibility for Admin while other admin-page links are
-| migrated. Service staff must always submit POST + CSRF.
+| A few older Admin pages still use a GET anchor for "Mark all read".
+| Keep that Admin-only compatibility until those pages are migrated to POST.
+| Service Staff must always use POST with the shared session CSRF token.
 */
 $method = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'));
 if ($method === 'GET' && $isAdmin) {
-    // Transitional compatibility for older Admin notification links only.
+    // Legacy Admin link compatibility; no GET access is granted to Staff.
 } elseif ($method === 'POST') {
     $sessionToken = $_SESSION['csrf_token'] ?? '';
     $postedToken = $_POST['csrf_token'] ?? '';
+
     if (
         !is_string($sessionToken) || $sessionToken === '' ||
         !is_string($postedToken) || $postedToken === '' ||
@@ -65,13 +83,23 @@ if ($method === 'GET' && $isAdmin) {
     exit('Method not allowed.');
 }
 
-require_once __DIR__ . '/../db_supabase.php';
+// shared_session_bootstrap.php normally loads the PDO connection itself.
+// Keep this guarded include for compatibility with requests where a session
+// was already active before the shared bootstrap was loaded.
+if (!isset($pdo) || !($pdo instanceof PDO)) {
+    require_once __DIR__ . '/../db_supabase.php';
+}
+if (!isset($pdo) || !($pdo instanceof PDO)) {
+    error_log('Mark notifications read: database connection is unavailable.');
+    http_response_code(503);
+    exit('Notifications are temporarily unavailable. Please try again.');
+}
 
 /**
- * Return a safe update value and unread predicate for the table's actual
- * is_read type. Only fixed, allow-listed table names may be passed here.
+ * Determine the correct SQL value and unread condition for a fixed table's
+ * existing PostgreSQL is_read column type. Table identifiers are allow-listed.
  */
-function getNotificationReadSql(PDO $pdo, string $tableName): array
+function markReadNotificationSql(PDO $pdo, string $tableName): array
 {
     $allowedTables = ['admin_notifications', 'notifications'];
     if (!in_array($tableName, $allowedTables, true)) {
@@ -80,7 +108,7 @@ function getNotificationReadSql(PDO $pdo, string $tableName): array
 
     $typeStmt = $pdo->prepare("SELECT data_type
         FROM information_schema.columns
-        WHERE table_schema = current_schema()
+        WHERE table_schema = 'public'
           AND table_name = :table_name
           AND column_name = 'is_read'
         LIMIT 1");
@@ -94,7 +122,9 @@ function getNotificationReadSql(PDO $pdo, string $tableName): array
         ];
     }
 
-    if (in_array($dataType, ['smallint', 'integer', 'bigint', 'numeric', 'decimal', 'real', 'double precision'], true)) {
+    if (in_array($dataType, [
+        'smallint', 'integer', 'bigint', 'numeric', 'decimal', 'real', 'double precision'
+    ], true)) {
         return [
             'read_value' => '1',
             'unread_predicate' => '(is_read = 0 OR is_read IS NULL)',
@@ -108,28 +138,37 @@ function getNotificationReadSql(PDO $pdo, string $tableName): array
         ];
     }
 
-    throw new RuntimeException('Unsupported or unknown is_read column type for ' . $tableName . '.');
+    throw new RuntimeException(
+        'Unsupported or unknown is_read column type for public.' . $tableName . '.'
+    );
 }
 
 try {
     if ($isAdmin) {
-        $readSql = getNotificationReadSql($pdo, 'admin_notifications');
-        // Admin alerts are shared Admin-only records, as in the existing schema.
-        $stmt = $pdo->prepare('UPDATE admin_notifications SET is_read = ' . $readSql['read_value'] . ' WHERE ' . $readSql['unread_predicate']);
+        $readSql = markReadNotificationSql($pdo, 'admin_notifications');
+        $stmt = $pdo->prepare(
+            'UPDATE public.admin_notifications '
+            . 'SET is_read = ' . $readSql['read_value'] . ' '
+            . 'WHERE ' . $readSql['unread_predicate']
+        );
         $stmt->execute();
         $redirectTarget = 'managebooking.php';
     } else {
-        $readSql = getNotificationReadSql($pdo, 'notifications');
-        // Service staff may update only notification rows addressed to themselves.
-        $stmt = $pdo->prepare('UPDATE notifications SET is_read = ' . $readSql['read_value'] . ' WHERE user_id = :user_id AND ' . $readSql['unread_predicate']);
+        $readSql = markReadNotificationSql($pdo, 'notifications');
+        $stmt = $pdo->prepare(
+            'UPDATE public.notifications '
+            . 'SET is_read = ' . $readSql['read_value'] . ' '
+            . 'WHERE user_id = :user_id AND ' . $readSql['unread_predicate']
+        );
         $stmt->execute([':user_id' => (int)$userId]);
         $redirectTarget = 'admindashboard.php';
     }
+
+    // 303 prevents a browser from replaying a successful POST on refresh.
+    header('Location: ' . $redirectTarget, true, $method === 'POST' ? 303 : 302);
+    exit();
 } catch (Throwable $e) {
     error_log('Mark notifications read failed: ' . $e->getMessage());
     http_response_code(500);
     exit('Unable to mark notifications as read right now. Please try again.');
 }
-
-header('Location: ' . $redirectTarget);
-exit;

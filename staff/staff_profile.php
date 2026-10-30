@@ -1,6 +1,5 @@
 <?php
 require_once __DIR__ . '/../shared_session_bootstrap.php';
-require_once __DIR__ . '/../db_supabase.php';
 
 // 1. SECURITY: normalize role names used by Admin and Staff accounts.
 // This page is shared by operational staff, so service-staff roles must be allowed too.
@@ -63,6 +62,25 @@ $csrf_token = $_SESSION['csrf_token'];
 // Safely get the user ID
 $user_id = (int)($_SESSION['user_id'] ?? $_SESSION['staff_id'] ?? $_SESSION['id'] ?? 0);
 
+if ($user_id <= 0) {
+    header('Location: stafflogin.php');
+    exit;
+}
+
+// Connect only after the session, role, and account ID have been validated.
+require_once __DIR__ . '/../db_supabase.php';
+
+/** Return a scalar POST value safely; arrays/objects are rejected. */
+function staffProfilePostValue(string $key, bool $trim = true): string
+{
+    $value = $_POST[$key] ?? '';
+    if (!is_string($value)) {
+        return '';
+    }
+
+    return $trim ? trim($value) : $value;
+}
+
 
 /** Resolve a stored profile-image value to a browser URL without trusting filesystem paths. */
 function resolveStaffProfileImageUrl($storedPath): string
@@ -96,27 +114,26 @@ $error_msg = "";
 
 // 2. HANDLE PROFILE PICTURE UPLOAD
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['profile_image'])) {
-    $submitted_csrf = $_POST['csrf_token'] ?? '';
+    $submitted_csrf = staffProfilePostValue('csrf_token', false);
+    $upload = $_FILES['profile_image'];
 
     if (!hash_equals($csrf_token, $submitted_csrf)) {
         $error_msg = "Invalid request. Please refresh the page and try again.";
-    } elseif ($user_id <= 0) {
-        $error_msg = "Invalid user session.";
-    } elseif ($_FILES['profile_image']['error'] !== UPLOAD_ERR_OK) {
-        $error_msg = "Failed to upload image. Please try again.";
-    } elseif ($_FILES['profile_image']['size'] > 2 * 1024 * 1024) {
-        $error_msg = "Profile picture must not exceed 2MB.";
+    } elseif (!is_array($upload) || !isset($upload['error'], $upload['size'], $upload['tmp_name'], $upload['name'])
+        || is_array($upload['error']) || is_array($upload['size']) || is_array($upload['tmp_name']) || is_array($upload['name'])) {
+        $error_msg = "Invalid image upload request.";
+    } elseif ((int)$upload['error'] !== UPLOAD_ERR_OK) {
+        $error_msg = ((int)$upload['error'] === UPLOAD_ERR_INI_SIZE || (int)$upload['error'] === UPLOAD_ERR_FORM_SIZE)
+            ? "Profile picture must not exceed 2MB."
+            : "Failed to upload image. Please try again.";
+    } elseif ((int)$upload['size'] <= 0 || (int)$upload['size'] > 2 * 1024 * 1024) {
+        $error_msg = "Profile picture must be between 1 byte and 2MB.";
+    } elseif (!is_string($upload['tmp_name']) || !is_uploaded_file($upload['tmp_name'])) {
+        $error_msg = "Invalid image upload. Please choose the image again.";
     } else {
         $upload_dir = __DIR__ . '/../uploads/';
-
-        if (!is_dir($upload_dir) && !@mkdir($upload_dir, 0755, true) && !is_dir($upload_dir)) {
-            $error_msg = 'The upload folder is not available. On Vercel, configure persistent Supabase Storage for profile pictures.';
-        } elseif (!is_writable($upload_dir)) {
-            $error_msg = 'The upload folder is not writable. On Vercel, configure persistent Supabase Storage for profile pictures.';
-        }
-
-        $tmp_name = $_FILES['profile_image']['tmp_name'];
-        $original_name = $_FILES['profile_image']['name'] ?? '';
+        $tmp_name = $upload['tmp_name'];
+        $original_name = (string)$upload['name'];
         $file_ext = strtolower(pathinfo($original_name, PATHINFO_EXTENSION));
         $allowed_mimes = [
             'jpg'  => 'image/jpeg',
@@ -125,17 +142,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['profile_image'])) {
             'gif'  => 'image/gif'
         ];
 
-        $finfo = finfo_open(FILEINFO_MIME_TYPE);
-        $mime_type = $finfo ? finfo_file($finfo, $tmp_name) : false;
-        if ($finfo) {
-            finfo_close($finfo);
+        if (!is_dir($upload_dir) && !@mkdir($upload_dir, 0755, true) && !is_dir($upload_dir)) {
+            $error_msg = 'The upload folder is not available. On Vercel, configure persistent Supabase Storage for profile pictures.';
+        } elseif (!is_writable($upload_dir)) {
+            $error_msg = 'The upload folder is not writable. On Vercel, configure persistent Supabase Storage for profile pictures.';
         }
 
-        if ($error_msg !== '') {
-            // Keep the directory/deployment error above.
-        } elseif (!is_uploaded_file($tmp_name) || !isset($allowed_mimes[$file_ext]) || $mime_type !== $allowed_mimes[$file_ext]) {
+        $image_info = @getimagesize($tmp_name);
+        $detected_mime = is_array($image_info) ? ($image_info['mime'] ?? '') : '';
+        $finfo_mime = '';
+
+        if (function_exists('finfo_open')) {
+            $finfo = finfo_open(FILEINFO_MIME_TYPE);
+            if ($finfo) {
+                $finfo_mime = (string)finfo_file($finfo, $tmp_name);
+                finfo_close($finfo);
+            }
+        }
+
+        if ($error_msg === '' && (
+            !isset($allowed_mimes[$file_ext])
+            || $detected_mime !== $allowed_mimes[$file_ext]
+            || $finfo_mime !== $allowed_mimes[$file_ext]
+        )) {
             $error_msg = "Invalid image file. Only JPG, PNG, and GIF images are allowed.";
-        } else {
+        }
+
+        if ($error_msg === '') {
+            $target_path = '';
+
             try {
                 $new_filename = 'staff_' . $user_id . '_' . bin2hex(random_bytes(8)) . '.' . $file_ext;
                 $target_path = $upload_dir . $new_filename;
@@ -148,21 +183,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['profile_image'])) {
                         UPDATE users
                         SET profile_image = :profile_image
                         WHERE id = :user_id
+                        RETURNING id
                     ");
-
                     $update_img_stmt->execute([
                         ':profile_image' => $public_image_path,
                         ':user_id' => $user_id
                     ]);
 
-                    $success_msg = "Profile picture updated successfully!";
+                    if (!$update_img_stmt->fetchColumn()) {
+                        @unlink($target_path);
+                        $error_msg = "Unable to save the profile picture for this account.";
+                    } else {
+                        $success_msg = "Profile picture updated successfully!";
+                    }
                 }
-            } catch (PDOException $e) {
-                error_log("Profile image update failed: " . $e->getMessage());
-                $error_msg = "Database error. Failed to save image path.";
             } catch (Throwable $e) {
-                error_log("Profile image upload failed: " . $e->getMessage());
-                $error_msg = "Unable to process the profile picture.";
+                if ($target_path !== '' && is_file($target_path)) {
+                    @unlink($target_path);
+                }
+                error_log("Profile image update failed: " . $e->getMessage());
+                $error_msg = "Unable to save the profile picture. Please try again.";
             }
         }
     }
@@ -170,30 +210,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['profile_image'])) {
 
 // 3. HANDLE PROFILE DETAILS UPDATE (TINANGGAL NA ANG EMAIL)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_profile'])) {
-    $submitted_csrf = $_POST['csrf_token'] ?? '';
+    $submitted_csrf = staffProfilePostValue('csrf_token', false);
+    $new_name = staffProfilePostValue('full_name');
+    $new_username = staffProfilePostValue('username');
+    $new_contact = staffProfilePostValue('contact_number');
 
     if (!hash_equals($csrf_token, $submitted_csrf)) {
         $error_msg = "Invalid request. Please refresh the page and try again.";
-    }
-
-    $new_name = trim($_POST['full_name'] ?? '');
-    $new_username = trim($_POST['username'] ?? '');
-    $new_contact = trim($_POST['contact_number'] ?? '');
-
-    if ($submitted_csrf !== '' && hash_equals($csrf_token, $submitted_csrf) && $user_id > 0) {
-        if ($new_name === '' || $new_username === '') {
-            $error_msg = 'Full name and username are required.';
-        } else {
+    } elseif ($new_name === '' || $new_username === '') {
+        $error_msg = 'Full name and username are required.';
+    } else {
         try {
-            // Check muna kung may kaparehas na username ang iba
             $check_user_stmt = $pdo->prepare("
                 SELECT id
                 FROM users
                 WHERE username = :username
-                  AND id != :user_id
+                  AND id <> :user_id
                 LIMIT 1
             ");
-
             $check_user_stmt->execute([
                 ':username' => $new_username,
                 ':user_id' => $user_id
@@ -202,15 +236,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_profile'])) {
             if ($check_user_stmt->fetchColumn()) {
                 $error_msg = "Username is already taken by another account. Please choose another one.";
             } else {
-                // Update kasama ang username, walang email
                 $update_info_stmt = $pdo->prepare("
                     UPDATE users
                     SET full_name = :full_name,
                         username = :username,
                         contact_number = :contact_number
                     WHERE id = :user_id
+                    RETURNING id
                 ");
-
                 $update_info_stmt->execute([
                     ':full_name' => $new_name,
                     ':username' => $new_username,
@@ -218,31 +251,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_profile'])) {
                     ':user_id' => $user_id
                 ]);
 
-                $_SESSION['staff_name'] = $new_name;
-                $_SESSION['user_name'] = $new_name;
-                $success_msg = "Profile details saved successfully!";
+                if ($update_info_stmt->fetchColumn()) {
+                    $_SESSION['staff_name'] = $new_name;
+                    $_SESSION['user_name'] = $new_name;
+                    $success_msg = "Profile details saved successfully!";
+                } else {
+                    $error_msg = "Unable to update this profile. Please sign in again.";
+                }
             }
         } catch (PDOException $e) {
             error_log("Profile details update failed: " . $e->getMessage());
+            $error_msg = ((string)$e->getCode() === '23505')
+                ? "Username is already taken by another account. Please choose another one."
+                : "Failed to update profile details.";
+        } catch (Throwable $e) {
+            error_log("Profile details update failed: " . $e->getMessage());
             $error_msg = "Failed to update profile details.";
-        }
         }
     }
 }
 
 
-
 // 4. HANDLE PASSWORD CHANGE
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['change_password'])) {
-    $submitted_csrf = $_POST['csrf_token'] ?? '';
-    $current_password = $_POST['current_password'] ?? '';
-    $new_password = $_POST['new_password'] ?? '';
-    $confirm_password = $_POST['confirm_password'] ?? '';
+    $submitted_csrf = staffProfilePostValue('csrf_token', false);
+    $current_password = staffProfilePostValue('current_password', false);
+    $new_password = staffProfilePostValue('new_password', false);
+    $confirm_password = staffProfilePostValue('confirm_password', false);
 
-    if (!hash_equals($csrf_token, (string)$submitted_csrf)) {
+    if (!hash_equals($csrf_token, $submitted_csrf)) {
         $error_msg = "Invalid request. Please refresh the page and try again.";
-    } elseif ($user_id <= 0) {
-        $error_msg = "Invalid user session.";
     } elseif ($current_password === '' || $new_password === '' || $confirm_password === '') {
         $error_msg = "Please complete all password fields.";
     } elseif (strlen($new_password) < 8) {
@@ -251,25 +289,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['change_password'])) {
         $error_msg = "New password and confirmation password do not match.";
     } else {
         try {
-            $password_stmt = $pdo->prepare("SELECT password FROM users WHERE id = :user_id LIMIT 1");
+            $password_stmt = $pdo->prepare("
+                SELECT password
+                FROM users
+                WHERE id = :user_id
+                LIMIT 1
+            ");
             $password_stmt->execute([':user_id' => $user_id]);
             $password_row = $password_stmt->fetch(PDO::FETCH_ASSOC);
 
             if (!$password_row || empty($password_row['password'])) {
                 $error_msg = "Unable to verify your current password.";
-            } elseif (!password_verify($current_password, $password_row['password'])) {
+            } elseif (!password_verify($current_password, (string)$password_row['password'])) {
                 $error_msg = "Current password is incorrect.";
             } else {
                 $new_password_hash = password_hash($new_password, PASSWORD_DEFAULT);
-
-                $update_password_stmt = $pdo->prepare("\n                    UPDATE users\n                    SET password = :password\n                    WHERE id = :user_id\n                ");
-
+                $update_password_stmt = $pdo->prepare("
+                    UPDATE users
+                    SET password = :password
+                    WHERE id = :user_id
+                    RETURNING id
+                ");
                 $update_password_stmt->execute([
                     ':password' => $new_password_hash,
                     ':user_id' => $user_id
                 ]);
 
-                $success_msg = "Password changed successfully!";
+                if ($update_password_stmt->fetchColumn()) {
+                    $success_msg = "Password changed successfully!";
+                } else {
+                    $error_msg = "Unable to update your password. Please sign in again.";
+                }
             }
         } catch (PDOException $e) {
             error_log("Password update failed: " . $e->getMessage());
@@ -287,7 +337,7 @@ $staff_data = null;
 if ($user_id > 0) {
     try {
         $get_staff_stmt = $pdo->prepare("
-            SELECT *
+            SELECT id, full_name, username, contact_number, position, profile_image
             FROM users
             WHERE id = :user_id
             LIMIT 1
@@ -304,7 +354,7 @@ if ($user_id > 0) {
 }
 
 // Siguradong full_name ang gagamitin at ilalabas din natin ang username
-$full_display_name = $staff_data['full_name'] ?? $_SESSION['staff_name'] ?? 'Personnel';
+$full_display_name = (string)($staff_data['full_name'] ?? $_SESSION['staff_name'] ?? 'Personnel');
 $profile_img_path = $staff_data['profile_image'] ?? '';
 $profile_img_url = resolveStaffProfileImageUrl($profile_img_path);
 $staff_username = $staff_data['username'] ?? '';
@@ -313,8 +363,14 @@ $staff_position = $staff_data['position'] ?? strtoupper($current_role);
 
 // Format first name at initial para sa display
 $clean_name = trim(str_replace('Dr. ', '', $full_display_name), " ,");
-$first_name_only = explode(' ', $clean_name)[0];
-$first_letter = strtoupper(substr($clean_name, 0, 1));
+$name_parts = preg_split('/\s+/', $clean_name, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+$first_name_only = $name_parts[0] ?? 'Personnel';
+$first_letter = function_exists('mb_substr')
+    ? mb_strtoupper(mb_substr($clean_name, 0, 1, 'UTF-8'), 'UTF-8')
+    : strtoupper(substr($clean_name, 0, 1));
+if ($first_letter === '') {
+    $first_letter = 'P';
+}
 
 // Siguraduhing may "Dr. " sa unahan ng full name para sa formal displays kung VET siya
 if ($current_role === 'veterinarian') {
@@ -332,15 +388,21 @@ $unread_count = 0;
 
 if ($can_view_admin_notifications) {
     try {
+        $unread_count_stmt = $pdo->query("
+            SELECT COUNT(*)
+            FROM admin_notifications
+            WHERE is_read = 0
+        ");
+        $unread_count = (int)$unread_count_stmt->fetchColumn();
+
         $admin_notif_stmt = $pdo->query("
-            SELECT *
+            SELECT id, message, created_at
             FROM admin_notifications
             WHERE is_read = 0
             ORDER BY created_at DESC
+            LIMIT 10
         ");
-
         $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
-        $unread_count = count($admin_notifications);
     } catch (PDOException $e) {
         error_log("Admin notifications query failed: " . $e->getMessage());
     }
@@ -359,7 +421,7 @@ if ($can_view_admin_notifications) {
         :root {
             --brand-blue: #1d63ff;
             --brand-yellow: #ffcc00;
-            --sidebar-navy: #001529; 
+            --sidebar-navy: #001529;
             --bg-light: #f4f7fe;
             --white: #ffffff;
             --text-main: #2d3748;
@@ -375,30 +437,30 @@ if ($can_view_admin_notifications) {
         .sidebar-header { padding: 30px 20px; text-align: center; border-bottom: 1px solid rgba(255,255,255,0.05); }
         .sidebar-logo-img { width: 70px; height: auto; object-fit: contain; margin-bottom: 10px; }
         .sidebar-header h2 { font-size: 15px; color: var(--brand-yellow); text-transform: uppercase; letter-spacing: 1px; font-weight: 800; }
-        
+
         /* --- EXACT ADMIN SIDEBAR CLONE CSS (YELLOW ACTIVE) --- */
-        .nav-links { 
-            flex-grow: 1; padding: 20px 15px; display: flex; flex-direction: column; gap: 5px; 
+        .nav-links {
+            flex-grow: 1; padding: 20px 15px; display: flex; flex-direction: column; gap: 5px;
         }
         .nav-item {
-            display: flex; align-items: center; padding: 14px 20px; color: #94a3b8; 
+            display: flex; align-items: center; padding: 14px 20px; color: #94a3b8;
             text-decoration: none; transition: all 0.3s ease; font-size: 14px;
             font-weight: 500; border-radius: 10px; position: relative;
         }
         .nav-item i { width: 32px; font-size: 18px; transition: transform 0.3s; text-align: center;}
-        .nav-item:hover { 
-            color: var(--white); background-color: rgba(255, 255, 255, 0.05); 
-            transform: translateX(4px); 
+        .nav-item:hover {
+            color: var(--white); background-color: rgba(255, 255, 255, 0.05);
+            transform: translateX(4px);
         }
-        .nav-item.active { 
-            color: var(--brand-yellow); 
-            background-color: rgba(255, 204, 0, 0.08); 
-            font-weight: 700; 
+        .nav-item.active {
+            color: var(--brand-yellow);
+            background-color: rgba(255, 204, 0, 0.08);
+            font-weight: 700;
         }
         .nav-item.active::before {
-            content: ''; position: absolute; left: -15px; top: 15%; height: 70%; width: 5px; 
-            background-color: var(--brand-yellow); border-radius: 0 5px 5px 0; 
-            box-shadow: 2px 0 8px rgba(255, 204, 0, 0.5); 
+            content: ''; position: absolute; left: -15px; top: 15%; height: 70%; width: 5px;
+            background-color: var(--brand-yellow); border-radius: 0 5px 5px 0;
+            box-shadow: 2px 0 8px rgba(255, 204, 0, 0.5);
         }
 
         /* --- MAIN CONTENT & HEADER --- */
@@ -416,9 +478,9 @@ if ($can_view_admin_notifications) {
         .notif-body { max-height: 300px; overflow-y: auto; }
         .notif-item { padding: 12px 15px; border-bottom: 1px solid #f1f5f9; font-size: 13px; line-height: 1.4; color: #475569; }
         .notif-item:hover { background: #f8fafc; }
-        
+
         .role-label {
-            display: flex; align-items: center; gap: 6px; background: rgba(255, 204, 0, 0.15); 
+            display: flex; align-items: center; gap: 6px; background: rgba(255, 204, 0, 0.15);
             color: #d97706; padding: 4px 12px; border-radius: 6px; font-size: 11px;
             font-weight: 800; letter-spacing: 0.5px; border: 1px solid rgba(255, 204, 0, 0.3);
             text-transform: uppercase;
@@ -426,7 +488,7 @@ if ($can_view_admin_notifications) {
         .profile-wrapper { position: relative; display: flex; align-items: center; gap: 15px; border-left: 1px solid var(--border); padding-left: 20px; cursor: pointer; user-select: none; }
         .top-avatar { width: 35px; height: 35px; border-radius: 50%; object-fit: cover; border: 2px solid var(--brand-blue); }
         .top-avatar-fallback { width: 35px; height: 35px; border-radius: 50%; background: var(--sidebar-navy); color: var(--brand-yellow); display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 14px; border: 2px solid var(--brand-yellow); box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        
+
         .profile-dropdown { display: none; position: absolute; right: 0; top: 45px; width: 200px; background: white; border: 1px solid var(--border); box-shadow: 0 10px 25px rgba(0,0,0,0.1); border-radius: 12px; z-index: 1000; overflow: hidden; text-align: left; }
         .profile-dropdown.show { display: block; }
         .profile-item { padding: 12px 15px; display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--text-main); text-decoration: none; transition: 0.2s; font-weight: 600;}
@@ -434,48 +496,48 @@ if ($can_view_admin_notifications) {
 
         /* --- PROFILE CARD STYLES --- */
         .container { padding: 40px; flex-grow: 1; display: flex; flex-direction: column; align-items: center; }
-        
-        .profile-card { 
-            background: var(--white); border-radius: 20px; padding: 40px; 
-            box-shadow: 0 10px 30px rgba(0,0,0,0.03); width: 100%; max-width: 700px; 
+
+        .profile-card {
+            background: var(--white); border-radius: 20px; padding: 40px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.03); width: 100%; max-width: 700px;
             border: 1px solid var(--border); border-top: 5px solid var(--sidebar-navy);
         }
-        
+
         .card-header { text-align: center; margin-bottom: 30px; border-bottom: 1px solid #f1f5f9; padding-bottom: 20px;}
         .card-header h1 { font-size: 24px; font-weight: 800; color: var(--sidebar-navy); margin-bottom: 5px;}
         .card-header p { font-size: 14px; color: var(--text-muted); font-weight: 500;}
-        
+
         .avatar-upload-container { position: relative; width: 140px; height: 140px; margin: 0 auto 30px; }
         .avatar-preview { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; border: 4px solid var(--white); box-shadow: 0 8px 20px rgba(0, 21, 41, 0.15); }
         .avatar-fallback-large { width: 100%; height: 100%; border-radius: 50%; background: var(--sidebar-navy); color: var(--brand-yellow); display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 45px; border: 4px solid var(--white); box-shadow: 0 8px 20px rgba(0, 21, 41, 0.15); }
-        
-        .avatar-edit-btn { 
-            position: absolute; bottom: 5px; right: 5px; background: var(--brand-yellow); 
-            color: var(--sidebar-navy); width: 40px; height: 40px; border-radius: 50%; 
-            display: flex; align-items: center; justify-content: center; cursor: pointer; 
-            border: 3px solid white; transition: 0.3s; box-shadow: 0 4px 10px rgba(0,0,0,0.1); 
+
+        .avatar-edit-btn {
+            position: absolute; bottom: 5px; right: 5px; background: var(--brand-yellow);
+            color: var(--sidebar-navy); width: 40px; height: 40px; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center; cursor: pointer;
+            border: 3px solid white; transition: 0.3s; box-shadow: 0 4px 10px rgba(0,0,0,0.1);
             font-size: 16px;
         }
         .avatar-edit-btn:hover { transform: scale(1.1); background: #e6b800;}
 
         .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; text-align: left;}
-        
+
         .form-group { text-align: left; }
         .form-group.full-width { grid-column: span 2; }
         .form-group label { display: block; font-size: 14px; font-weight: 700; color: var(--sidebar-navy); margin-bottom: 8px; }
-        .form-group input { 
-            width: 100%; padding: 14px 18px; border: 2px solid var(--border); 
-            border-radius: 10px; font-size: 14px; outline: none; transition: 0.2s; 
+        .form-group input {
+            width: 100%; padding: 14px 18px; border: 2px solid var(--border);
+            border-radius: 10px; font-size: 14px; outline: none; transition: 0.2s;
             background: #f8fafc; font-family: 'Poppins', sans-serif;
         }
         .form-group input:focus { border-color: var(--sidebar-navy); background: white; }
-        
+
         .form-group input[readonly] { background: #e2e8f0; color: #64748b; cursor: not-allowed; border-color: #cbd5e1; }
-        
-        .btn-save { 
-            background: var(--brand-yellow); color: var(--sidebar-navy); border: none; 
-            padding: 15px 25px; border-radius: 10px; font-weight: 800; cursor: pointer; 
-            transition: 0.3s; width: 100%; font-size: 15px; margin-top: 20px; 
+
+        .btn-save {
+            background: var(--brand-yellow); color: var(--sidebar-navy); border: none;
+            padding: 15px 25px; border-radius: 10px; font-weight: 800; cursor: pointer;
+            transition: 0.3s; width: 100%; font-size: 15px; margin-top: 20px;
             font-family: 'Poppins', sans-serif; box-shadow: 0 4px 6px rgba(0,0,0,0.05);
             display: flex; align-items: center; justify-content: center; gap: 10px;
         }
@@ -486,7 +548,7 @@ if ($can_view_admin_notifications) {
         .alert-error { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
 
         footer { text-align: center; padding: 30px; color: var(--text-muted); font-size: 12px; margin-top: auto; }
-        
+
         @media (max-width: 600px) {
             .form-grid { grid-template-columns: 1fr; }
             .form-group.full-width { grid-column: span 1; }
@@ -931,7 +993,7 @@ if ($can_view_admin_notifications) {
             .top-avatar, .top-avatar-fallback { width: 30px; height: 30px; flex-basis: 30px; }
         }
 
-    
+
 
 /* ================================================================
    FINAL MOBILE-FLEXIBLE STAFF LAYOUT
@@ -2255,7 +2317,7 @@ input, select, textarea, button, img { max-width:100%; }
                 <i class="fas fa-bars" aria-hidden="true"></i>
             </button>
             <div class="breadcrumb">
-                <i class="fas fa-user-circle" style="color: var(--brand-blue);"></i> 
+                <i class="fas fa-user-circle" style="color: var(--brand-blue);"></i>
                 <?php
                     if (in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)) {
                         $profile_portal_label = 'Veterinary Portal';
@@ -2275,12 +2337,12 @@ input, select, textarea, button, img { max-width:100%; }
                     echo htmlspecialchars($profile_portal_label, ENT_QUOTES, 'UTF-8');
                 ?> / My Profile
             </div>
-            
+
             <div class="top-right-actions">
                 <div class="notif-wrapper" onclick="toggleNotif(event)">
                     <i class="fa-solid fa-bell" style="font-size: 20px; color: var(--text-muted);"></i>
                     <span id="staff-notif-badge" class="notif-badge" style="display: <?php echo ($unread_count > 0) ? 'inline-block' : 'none'; ?>;"><?php echo $unread_count; ?></span>
-                    
+
                     <div class="notif-dropdown" id="notifBox" onclick="event.stopPropagation()">
                         <div class="notif-header">
                             Alerts
@@ -2304,7 +2366,7 @@ input, select, textarea, button, img { max-width:100%; }
 
                 <div class="profile-wrapper" onclick="toggleProfile(event)">
                     <div class="role-label">
-                        <i class="<?php echo in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true) ? 'fas fa-user-md' : 'fas fa-user-tie'; ?>"></i> 
+                        <i class="<?php echo in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true) ? 'fas fa-user-md' : 'fas fa-user-tie'; ?>"></i>
                         <?php
                             $role_display_labels = [
                                 'admin' => 'Admin',
@@ -2319,13 +2381,13 @@ input, select, textarea, button, img { max-width:100%; }
                             echo htmlspecialchars(strtoupper($role_display_labels[$current_role] ?? $current_role), ENT_QUOTES, 'UTF-8');
                         ?>
                     </div>
-                    
+
                     <?php if ($profile_img_url !== ''): ?>
                         <img src="<?php echo htmlspecialchars($profile_img_url, ENT_QUOTES, 'UTF-8'); ?>" class="top-avatar" alt="Profile Picture">
                     <?php else: ?>
-                        <div class="top-avatar-fallback"><?php echo $first_letter; ?></div>
+                        <div class="top-avatar-fallback"><?php echo htmlspecialchars($first_letter, ENT_QUOTES, 'UTF-8'); ?></div>
                     <?php endif; ?>
-                    
+
                     <span class="profile-name-text desktop-profile-name" style="font-size:14px;font-weight:700;color:var(--sidebar-navy);display:flex;align-items:center;gap:6px;">
                         <?php echo htmlspecialchars($display_with_title); ?>
                         <i class="fas fa-chevron-down" style="font-size: 10px; color: var(--text-muted); opacity: 0.5;"></i>
@@ -2346,7 +2408,7 @@ input, select, textarea, button, img { max-width:100%; }
 
         <div class="container">
             <div class="profile-card">
-                
+
                 <div class="card-header">
                     <h1>My Profile</h1>
                     <p>Manage your account settings and preferences</p>
@@ -2355,7 +2417,7 @@ input, select, textarea, button, img { max-width:100%; }
                 <?php if (!empty($success_msg)): ?>
                     <div class="alert alert-success"><i class="fas fa-check-circle"></i> <?php echo htmlspecialchars($success_msg, ENT_QUOTES, 'UTF-8'); ?></div>
                 <?php endif; ?>
-                
+
                 <?php if (!empty($error_msg)): ?>
                     <div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> <?php echo htmlspecialchars($error_msg, ENT_QUOTES, 'UTF-8'); ?></div>
                 <?php endif; ?>
@@ -2369,9 +2431,9 @@ input, select, textarea, button, img { max-width:100%; }
                     <?php if ($profile_img_url !== ''): ?>
                         <img src="<?php echo htmlspecialchars($profile_img_url, ENT_QUOTES, 'UTF-8'); ?>" class="avatar-preview" alt="Profile">
                     <?php else: ?>
-                        <div class="avatar-fallback-large"><?php echo $first_letter; ?></div>
+                        <div class="avatar-fallback-large"><?php echo htmlspecialchars($first_letter, ENT_QUOTES, 'UTF-8'); ?></div>
                     <?php endif; ?>
-                    
+
                     <label for="imageUpload" class="avatar-edit-btn" title="Change Profile Picture">
                         <i class="fas fa-camera"></i>
                     </label>
@@ -2384,7 +2446,7 @@ input, select, textarea, button, img { max-width:100%; }
                             <label>Full Name</label>
                             <input type="text" name="full_name" value="<?php echo htmlspecialchars($full_display_name, ENT_QUOTES, 'UTF-8'); ?>" required>
                         </div>
-                        
+
                         <div class="form-group">
                             <label>Username (Used for Login)</label>
                             <input type="text" name="username" value="<?php echo htmlspecialchars($staff_username, ENT_QUOTES, 'UTF-8'); ?>" required>
@@ -2400,7 +2462,7 @@ input, select, textarea, button, img { max-width:100%; }
                             <input type="text" value="<?php echo htmlspecialchars($staff_position, ENT_QUOTES, 'UTF-8'); ?>" readonly>
                         </div>
                     </div>
-                    
+
                     <button type="submit" name="update_profile" class="btn-save"><i class="fas fa-save"></i> Save Profile Details</button>
                 </form>
             </div>
@@ -2491,62 +2553,85 @@ input, select, textarea, button, img { max-width:100%; }
         });
 
         function toggleNotif(event) {
-            event.stopPropagation();
-            document.getElementById("notifBox").classList.toggle("show");
-            document.getElementById("profileBox").classList.remove("show");
+            if (event) event.stopPropagation();
+            const notifBox = document.getElementById("notifBox");
+            const profileBox = document.getElementById("profileBox");
+            if (notifBox) notifBox.classList.toggle("show");
+            if (profileBox) profileBox.classList.remove("show");
         }
 
         function toggleProfile(event) {
-            event.stopPropagation();
-            document.getElementById("profileBox").classList.toggle("show");
-            document.getElementById("notifBox").classList.remove("show");
+            if (event) event.stopPropagation();
+            const profileBox = document.getElementById("profileBox");
+            const notifBox = document.getElementById("notifBox");
+            if (profileBox) profileBox.classList.toggle("show");
+            if (notifBox) notifBox.classList.remove("show");
         }
 
         window.onclick = function(event) {
-            if (!event.target.closest('.notif-wrapper')) {
+            const target = event.target instanceof Element ? event.target : null;
+            if (target && !target.closest('.notif-wrapper')) {
                 const notifBox = document.getElementById("notifBox");
                 if (notifBox && notifBox.classList.contains('show')) {
                     notifBox.classList.remove('show');
                 }
             }
-            if (!event.target.closest('.profile-wrapper')) {
+            if (target && !target.closest('.profile-wrapper')) {
                 const profileBox = document.getElementById("profileBox");
                 if (profileBox && profileBox.classList.contains('show')) {
                     profileBox.classList.remove('show');
                 }
             }
         }
-        
-        let previousUnreadCount = <?php echo $unread_count; ?>;
-        
+
+        let notificationRequestInProgress = false;
+
         function fetchAdminNotifs() {
-            fetch('../admin/get_admin_notifs.php', { credentials: 'same-origin' })
-                .then(response => response.json())
+            if (document.hidden || notificationRequestInProgress) return;
+
+            const badge = document.getElementById('staff-notif-badge');
+            const notifList = document.getElementById('staff-notif-list');
+            const markReadBtn = document.getElementById('mark-read-link');
+            if (!badge || !notifList) return;
+
+            notificationRequestInProgress = true;
+
+            fetch('../admin/get_admin_notifs.php', {
+                credentials: 'same-origin',
+                headers: { 'Accept': 'application/json' },
+                cache: 'no-store'
+            })
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Notification request failed.');
+                    }
+                    return response.json();
+                })
                 .then(data => {
-                    const badge = document.getElementById('staff-notif-badge');
-                    const notifList = document.getElementById('staff-notif-list');
-                    const markReadBtn = document.getElementById('mark-read-link');
-                    
-                    if (data.unread > 0) {
-                        badge.style.display = 'inline-block';
-                        badge.innerText = data.unread;
-                        if(markReadBtn) markReadBtn.style.display = 'inline-block';
-                    } else {
-                        badge.style.display = 'none';
-                        if(markReadBtn) markReadBtn.style.display = 'none';
+                    if (!data || typeof data !== 'object') return;
+
+                    const unread = Math.max(0, Number.parseInt(data.unread, 10) || 0);
+                    badge.style.display = unread > 0 ? 'inline-block' : 'none';
+                    badge.textContent = String(unread);
+
+                    if (markReadBtn) {
+                        markReadBtn.style.display = unread > 0 ? 'inline-block' : 'none';
                     }
 
-                    if (data.html !== "") {
+                    if (typeof data.html === 'string' && data.html !== '') {
                         notifList.innerHTML = data.html;
                     } else {
                         notifList.innerHTML = '<div class="notif-empty">No new alerts.</div>';
                     }
                 })
-                .catch(error => console.error('Error fetching notifications:', error));
+                .catch(error => console.error('Error fetching notifications:', error))
+                .finally(() => {
+                    notificationRequestInProgress = false;
+                });
         }
 
         if (<?php echo $can_view_admin_notifications ? 'true' : 'false'; ?>) {
-            setInterval(fetchAdminNotifs, 3000);
+            window.setInterval(fetchAdminNotifs, 10000);
         }
     </script>
 </body>

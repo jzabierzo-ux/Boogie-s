@@ -1,189 +1,302 @@
 <?php
 require_once __DIR__ . '/../shared_session_bootstrap.php';
-require_once '../db_supabase.php';
 
-// --- SECURITY CHECK ---
-// Normalize role and session login flag consistently with other staff pages.
-$current_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
-$current_role = preg_replace('/[\\s_-]+/', ' ', $current_role);
-$login_flag = $_SESSION['logged_in'] ?? false;
-$is_personnel_logged_in = ($login_flag === true || $login_flag === 1 || $login_flag === '1' ||
-    (is_string($login_flag) && strtolower(trim($login_flag)) === 'true'));
+/* -------------------------------------------------------------------------
+   AUTHENTICATION — only Admin and Veterinary personnel may view this page.
+   Check the session before opening a database connection.
+   ------------------------------------------------------------------------- */
+$current_role_raw = strtolower(trim((string)($_SESSION['role'] ?? '')));
+$current_role_raw = preg_replace('/[\s_-]+/', ' ', $current_role_raw);
+$role_aliases = [
+    'administrator' => 'admin',
+    'admin' => 'admin',
+    'vet' => 'veterinarian',
+    'veterinary' => 'veterinarian',
+    'veterinarian' => 'veterinarian'
+];
+$current_role = $role_aliases[$current_role_raw] ?? $current_role_raw;
 
-$is_vet_or_admin = $is_personnel_logged_in
-    && in_array($current_role, ['admin', 'vet', 'veterinarian'], true);
-
-if (!$is_vet_or_admin) {
-    header("Location: stafflogin.php");
-    exit();
+$login_flags = [$_SESSION['logged_in'] ?? false, $_SESSION['staff_logged_in'] ?? false];
+$is_logged_in = false;
+foreach ($login_flags as $login_flag) {
+    if ($login_flag === true || $login_flag === 1 || $login_flag === '1'
+        || (is_string($login_flag) && strtolower(trim($login_flag)) === 'true')) {
+        $is_logged_in = true;
+        break;
+    }
 }
 
-// SET CORRECT TIMEZONE FOR PHILIPPINES
-date_default_timezone_set('Asia/Manila');
+$is_admin = $current_role === 'admin';
+$is_veterinarian = $current_role === 'veterinarian';
+if (!$is_logged_in) {
+    header('Location: stafflogin.php');
+    exit;
+}
+if (!$is_admin && !$is_veterinarian) {
+    http_response_code(403);
+    exit('Access denied. This page is for Admin and Veterinary personnel only.');
+}
 
-if (empty($_SESSION['csrf_token'])) {
+$user_id = (int)($_SESSION['user_id'] ?? $_SESSION['staff_id'] ?? $_SESSION['id'] ?? 0);
+if ($user_id <= 0) {
+    header('Location: stafflogin.php');
+    exit;
+}
+
+$pet_id = filter_var($_GET['id'] ?? null, FILTER_VALIDATE_INT);
+if ($pet_id === false || $pet_id === null || $pet_id <= 0) {
+    http_response_code(400);
+    exit('Invalid Patient ID.');
+}
+
+require_once __DIR__ . '/../db_supabase.php';
+date_default_timezone_set('Asia/Manila');
+header('Cache-Control: private, no-store, max-age=0');
+
+if (!isset($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token']) || strlen($_SESSION['csrf_token']) < 32) {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
 }
 $csrf_token = $_SESSION['csrf_token'];
 
-$staff_name = $_SESSION['staff_name'] ?? 'Doctor';
-
-// --- FETCH STAFF PROFILE IMAGE & FULL NAME ---
-$profile_img_path = "";
-$full_display_name = $staff_name;
-
-if (isset($_SESSION['user_id']) || isset($_SESSION['staff_id'])) {
-    $uid = $_SESSION['user_id'] ?? $_SESSION['staff_id'];
-
-    try {
-        $get_staff = $pdo->prepare("
-            SELECT full_name, profile_image
-            FROM users
-            WHERE id = :uid
-            LIMIT 1
-        ");
-        $get_staff->execute([
-            ':uid' => (int)$uid
-        ]);
-
-        $staff_data = $get_staff->fetch(PDO::FETCH_ASSOC);
-
-        if ($staff_data) {
-            $profile_img_path = $staff_data['profile_image'] ?? '';
-
-            if (!empty($staff_data['full_name'])) {
-                $full_display_name = $staff_data['full_name'];
-            }
-        }
-    } catch (PDOException $e) {
-        error_log("Staff profile query failed: " . $e->getMessage());
+/** Resolve profile images without allowing local paths to escape the project. */
+function resolveViewRecordProfileImage(string $storedPath): string
+{
+    $storedPath = trim($storedPath);
+    if ($storedPath === '') {
+        return '';
     }
+
+    if (filter_var($storedPath, FILTER_VALIDATE_URL)) {
+        $scheme = strtolower((string)parse_url($storedPath, PHP_URL_SCHEME));
+        return in_array($scheme, ['http', 'https'], true) ? $storedPath : '';
+    }
+
+    $normalized = str_replace('\\', '/', $storedPath);
+    $normalized = preg_replace('#^(?:\.\./|\./)+#', '', ltrim($normalized, '/'));
+    if ($normalized === '' || preg_match('#(^|/)\.\.(?:/|$)#', $normalized)) {
+        return '';
+    }
+
+    $projectRoot = realpath(dirname(__DIR__));
+    if ($projectRoot === false) {
+        return '';
+    }
+
+    $absolutePath = realpath($projectRoot . DIRECTORY_SEPARATOR . $normalized);
+    if ($absolutePath === false || !is_file($absolutePath)) {
+        return '';
+    }
+
+    $rootPrefix = rtrim($projectRoot, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+    if (strpos($absolutePath, $rootPrefix) !== 0) {
+        return '';
+    }
+
+    $urlSegments = array_map('rawurlencode', explode('/', $normalized));
+    return '../' . implode('/', $urlSegments);
 }
 
-// Linisin ang pangalan para sa Avatar Initial
-$clean_name = trim(str_replace('Dr. ', '', $full_display_name), " ,");
-$first_letter = strtoupper(substr($clean_name, 0, 1));
+/** Return unread notifications for the active account type. */
+function loadViewRecordNotifications(PDO $pdo, bool $isAdmin, int $userId): array
+{
+    if ($isAdmin) {
+        $countStmt = $pdo->query("SELECT COUNT(*) FROM admin_notifications WHERE is_read = 0");
+        $unread = (int)$countStmt->fetchColumn();
+        $listStmt = $pdo->query("\n            SELECT message, created_at\n            FROM admin_notifications\n            WHERE is_read = 0\n            ORDER BY created_at DESC\n            LIMIT 20\n        ");
+    } else {
+        $countStmt = $pdo->prepare("\n            SELECT COUNT(*)\n            FROM notifications\n            WHERE user_id = :user_id AND is_read = 0\n        ");
+        $countStmt->execute([':user_id' => $userId]);
+        $unread = (int)$countStmt->fetchColumn();
+        $listStmt = $pdo->prepare("\n            SELECT message, created_at\n            FROM notifications\n            WHERE user_id = :user_id AND is_read = 0\n            ORDER BY created_at DESC, id DESC\n            LIMIT 20\n        ");
+        $listStmt->execute([':user_id' => $userId]);
+    }
 
-// Siguraduhing may "Dr. " na nakadikit sa buong pangalan para formal
-$display_with_title = (stripos($full_display_name, 'Dr.') === false)
-    ? 'Dr. ' . $full_display_name
-    : $full_display_name;
+    return [$unread, $listStmt->fetchAll(PDO::FETCH_ASSOC)];
+}
 
-// Mobile top bar: show first name only to prevent crowding.
-$mobile_name_source = trim(preg_replace('/^\s*(?:Dr\.?|Dra\.?|Doc\.?)\s+/i', '', (string)$display_with_title));
+/** Build safe dropdown markup for initial render and AJAX refresh. */
+function renderViewRecordNotifications(array $notifications): string
+{
+    if (!$notifications) {
+        return '<div class="notif-empty">No new clinic alerts.</div>';
+    }
+
+    $html = '';
+    foreach ($notifications as $notification) {
+        $message = trim((string)($notification['message'] ?? ''));
+        $html .= '<div class="notif-item">';
+        $html .= '<i class="fa-solid fa-circle-exclamation" style="color:#ef4444;margin-right:5px;" aria-hidden="true"></i>';
+        $html .= htmlspecialchars($message !== '' ? $message : 'New notification', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $timestamp = !empty($notification['created_at']) ? strtotime((string)$notification['created_at']) : false;
+        if ($timestamp !== false) {
+            $html .= '<br><small style="color:#94a3b8;font-size:11px;">';
+            $html .= htmlspecialchars(date('M d, g:i A', $timestamp), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+            $html .= '</small>';
+        }
+        $html .= '</div>';
+    }
+    return $html;
+}
+
+$staff_name = (string)($_SESSION['staff_name'] ?? $_SESSION['user_name'] ?? 'Doctor');
+$full_display_name = $staff_name;
+$profile_img_path = '';
+$profile_img_src = '';
+
+try {
+    $getStaff = $pdo->prepare("\n        SELECT full_name, profile_image\n        FROM users\n        WHERE id = :user_id\n        LIMIT 1\n    ");
+    $getStaff->execute([':user_id' => $user_id]);
+    $staffData = $getStaff->fetch(PDO::FETCH_ASSOC) ?: [];
+    $profile_img_path = (string)($staffData['profile_image'] ?? '');
+    $profile_img_src = resolveViewRecordProfileImage($profile_img_path);
+    if (!empty($staffData['full_name'])) {
+        $full_display_name = (string)$staffData['full_name'];
+    }
+} catch (PDOException $e) {
+    error_log('View patient record profile query failed: ' . $e->getMessage());
+}
+
+$name_without_title = trim((string)preg_replace('/^\s*(?:Dr\.?|Dra\.?|Doc\.?)\s+/i', '', $full_display_name));
+$first_letter = strtoupper(substr($name_without_title !== '' ? $name_without_title : 'D', 0, 1));
+$has_doctor_title = preg_match('/^\s*(?:Dr\.?|Dra\.?|Doc\.?)\s+/i', $full_display_name) === 1;
+$display_with_title = ($is_veterinarian && !$has_doctor_title) ? 'Dr. ' . $full_display_name : $full_display_name;
+$mobile_name_source = trim((string)preg_replace('/^\s*(?:Dr\.?|Dra\.?|Doc\.?)\s+/i', '', $display_with_title));
 $first_name_only = trim((string)(preg_split('/\s+/', $mobile_name_source)[0] ?? ''));
 
-
-// --- FETCH NOTIFICATIONS ---
-$admin_notifications = [];
-$unread_count = 0;
-
+/* -------------------------------------------------------------------------
+   LOAD THE REQUESTED PATIENT RECORD — only columns used by this page.
+   ------------------------------------------------------------------------- */
 try {
-    $admin_notif_query = $pdo->query("
-        SELECT *
-        FROM admin_notifications
-        WHERE is_read = 0
-        ORDER BY created_at DESC
-    ");
-
-    $admin_notifications = $admin_notif_query->fetchAll(PDO::FETCH_ASSOC);
-    $unread_count = count($admin_notifications);
-} catch (PDOException $e) {
-    error_log("Admin notifications query failed: " . $e->getMessage());
-}
-
-// --- VIEW RECORD LOGIC ---
-// Check if a valid ID was passed in the URL
-if (!isset($_GET['id']) || !is_numeric($_GET['id'])) {
-    die("Invalid Patient ID.");
-}
-
-$pet_id = (int)$_GET['id'];
-
-// Fetch pet data from the database
-try {
-    $stmt = $pdo->prepare("
-        SELECT *
-        FROM pets
-        WHERE id = :pet_id
-        LIMIT 1
-    ");
-
-    $stmt->execute([
-        ':pet_id' => $pet_id
-    ]);
-
-    $row = $stmt->fetch(PDO::FETCH_ASSOC);
-
+    $petStmt = $pdo->prepare("\n        SELECT id, owner_id, owner_name, name, pet_type, breed, gender, age, weight,\n               medical_history, special_needs, status\n        FROM pets\n        WHERE id = :pet_id\n        LIMIT 1\n    ");
+    $petStmt->execute([':pet_id' => $pet_id]);
+    $row = $petStmt->fetch(PDO::FETCH_ASSOC);
     if (!$row) {
-        die("Patient not found in the database.");
+        http_response_code(404);
+        exit('Patient not found in the database.');
     }
 } catch (PDOException $e) {
-    error_log("Patient record query failed: " . $e->getMessage());
-    die("Unable to load patient record.");
+    error_log('Patient record query failed: ' . $e->getMessage());
+    http_response_code(500);
+    exit('Unable to load patient record.');
 }
 
-// Map the data
-$p_name = $row['name'] ?? 'Unknown';
-$p_type = $row['pet_type'] ?? 'Unknown';
-$p_breed = $row['breed'] ?? 'Unknown';
-$p_gender = $row['gender'] ?? 'Unknown';
-$p_age = $row['age'] ?? 'Unknown';
-$p_weight = $row['weight'] ?? 'Unknown';
-$o_name = $row['owner_name'] ?? 'Unknown';
+$p_name = (string)($row['name'] ?? 'Unknown');
+$p_type = (string)($row['pet_type'] ?? 'Unknown');
+$p_breed = (string)($row['breed'] ?? 'Unknown');
+$p_gender = (string)($row['gender'] ?? 'Unknown');
+$p_age = (string)($row['age'] ?? 'Unknown');
+$p_weight = (string)($row['weight'] ?? 'Unknown');
+$o_name = (string)($row['owner_name'] ?? 'Unknown');
+$owner_id = (int)($row['owner_id'] ?? 0);
+$med_history = (string)($row['medical_history'] ?? '');
+$special_needs = (string)($row['special_needs'] ?? '');
+$p_status = (string)($row['status'] ?? 'Pending');
 
-// --- KINUHA NATIN ANG TAMANG OWNER ID PARA SA NOTIF ---
-$owner_id = $row['owner_id'] ?? 0;
+/* -------------------------------------------------------------------------
+   HANDLE POST ACTIONS WITH CSRF PROTECTION.
+   Consultation notes remain owner notifications; they are not appended to
+   medical_history, matching the existing page behavior.
+   ------------------------------------------------------------------------- */
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $action = is_string($_POST['action'] ?? null) ? $_POST['action'] : '';
+    $submittedCsrf = is_string($_POST['csrf_token'] ?? null) ? $_POST['csrf_token'] : '';
 
-$med_history = $row['medical_history'] ?? '';
-$special_needs = $row['special_needs'] ?? '';
-$p_status = $row['status'] ?? 'Pending';
-
-// --- SEND NOTE TO USER LOGIC (REMOVED MEDICAL HISTORY UPDATE) ---
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_note'])) {
-    $submitted_csrf = $_POST['csrf_token'] ?? '';
-
-    if (!hash_equals($_SESSION['csrf_token'] ?? '', $submitted_csrf)) {
+    if ($submittedCsrf === '' || !hash_equals($csrf_token, $submittedCsrf)) {
         http_response_code(403);
-        die('Invalid security token. Please refresh the page and try again.');
+        exit('Invalid security token. Please refresh the page and try again.');
     }
 
-    $new_note_text = trim($_POST['new_note'] ?? '');
+    if ($action === 'mark_notifications_read') {
+        try {
+            if ($isAdmin) {
+                $markReadStmt = $pdo->prepare("UPDATE admin_notifications SET is_read = 1 WHERE is_read = 0");
+                $markReadStmt->execute();
+            } else {
+                $markReadStmt = $pdo->prepare("\n                    UPDATE notifications\n                    SET is_read = 1\n                    WHERE user_id = :user_id AND is_read = 0\n                ");
+                $markReadStmt->execute([':user_id' => $user_id]);
+            }
+        } catch (PDOException $e) {
+            error_log('View patient record mark-notifications-read failed: ' . $e->getMessage());
+            http_response_code(500);
+            exit('Unable to update notifications right now.');
+        }
 
-    if ($new_note_text === '') {
-        header("Location: view_records.php?id=" . $pet_id);
+        header('Location: view_records.php?id=' . rawurlencode((string)$pet_id), true, 303);
         exit;
     }
-    $doctor_name = "Dr. " . str_replace('Dr. ', '', $clean_name);
 
-    // --- SEND NOTIFICATION TO THE PET OWNER ONLY ---
-    if ((int)$owner_id > 0) {
-        $notif_title = "New Medical Note for " . $p_name;
-        $notif_message = "$doctor_name added a note for $p_name: \"$new_note_text\"";
+    if ($action === 'add_note') {
+        $new_note_text = is_string($_POST['new_note'] ?? null) ? trim($_POST['new_note']) : '';
+        $noteLength = function_exists('mb_strlen') ? mb_strlen($new_note_text, 'UTF-8') : strlen($new_note_text);
+
+        if ($new_note_text === '' || $noteLength > 5000) {
+            http_response_code(400);
+            exit($new_note_text === '' ? 'Please enter a consultation note.' : 'Consultation note must not exceed 5,000 characters.');
+        }
+        if ($owner_id <= 0) {
+            http_response_code(400);
+            exit('This patient does not have a valid owner account.');
+        }
+
+        $doctor_name = $is_veterinarian ? $display_with_title : $full_display_name;
+        if ($doctor_name === '') {
+            $doctor_name = $is_veterinarian ? 'Dr. Veterinary Staff' : 'Clinic Staff';
+        }
+        $notif_title = 'New Medical Note for ' . $p_name;
+        $notif_message = $doctor_name . ' added a note for ' . $p_name . ': "' . $new_note_text . '"';
 
         try {
-            $notif_stmt = $pdo->prepare("
-                INSERT INTO notifications
-                (user_id, title, message, is_read, created_at)
-                VALUES
-                (:user_id, :title, :message, 0, CURRENT_TIMESTAMP)
-            ");
-
-            $notif_stmt->execute([
-                ':user_id' => (int)$owner_id,
+            $notifStmt = $pdo->prepare("\n                INSERT INTO notifications (user_id, title, message, is_read, created_at)\n                VALUES (:user_id, :title, :message, 0, CURRENT_TIMESTAMP)\n            ");
+            $notifStmt->execute([
+                ':user_id' => $owner_id,
                 ':title' => $notif_title,
                 ':message' => $notif_message
             ]);
         } catch (PDOException $e) {
-            error_log("Medical note notification failed: " . $e->getMessage());
+            error_log('Medical note notification failed: ' . $e->getMessage());
+            http_response_code(500);
+            exit('Unable to send the consultation note to the pet owner. Please try again.');
         }
+
+        header('Location: view_records.php?id=' . rawurlencode((string)$pet_id), true, 303);
+        exit;
     }
 
-    // Refresh page
-    header("Location: view_records.php?id=" . $pet_id);
+    http_response_code(400);
+    exit('Invalid request action.');
+}
+
+/* -------------------------------------------------------------------------
+   INITIAL NOTIFICATIONS — Admin gets admin alerts; Vet gets own alerts.
+   ------------------------------------------------------------------------- */
+$admin_notifications = [];
+$unread_count = 0;
+try {
+    [$unread_count, $admin_notifications] = loadViewRecordNotifications($pdo, $is_admin, $user_id);
+} catch (PDOException $e) {
+    error_log('View patient record notifications query failed: ' . $e->getMessage());
+}
+
+if (($_GET['ajax'] ?? '') === 'notifications') {
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+    header('Pragma: no-cache');
+    try {
+        [$ajaxUnreadCount, $ajaxNotifications] = loadViewRecordNotifications($pdo, $is_admin, $user_id);
+        echo json_encode([
+            'success' => true,
+            'unread' => $ajaxUnreadCount,
+            'html' => renderViewRecordNotifications($ajaxNotifications)
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    } catch (PDOException $e) {
+        error_log('View patient record notification refresh failed: ' . $e->getMessage());
+        http_response_code(500);
+        echo json_encode(['success' => false, 'unread' => 0, 'html' => '<div class="notif-empty">Unable to load notifications.</div>']);
+    }
     exit;
 }
 ?>
+
 
 <!DOCTYPE html>
 <html lang="en">
@@ -2019,7 +2132,11 @@ input, select, textarea, button, img { max-width:100%; }
                     <div class="notif-dropdown" id="notifBox" onclick="event.stopPropagation()">
                         <div class="notif-header">
                             Alerts
-                            <a href="mark_notifications_read.php" id="mark-read-link" class="mark-read-btn" style="display: <?php echo ($unread_count > 0) ? 'inline-block' : 'none'; ?>;">Mark all read</a>
+                            <form method="POST" action="" style="display:inline; margin:0;">
+                                <input type="hidden" name="action" value="mark_notifications_read">
+                                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
+                                <button type="submit" id="mark-read-link" class="mark-read-btn" style="display: <?php echo ($unread_count > 0) ? 'inline-block' : 'none'; ?>;">Mark all read</button>
+                            </form>
                         </div>
                         
                         <div class="notif-body" id="admin-notif-list">
@@ -2043,8 +2160,8 @@ input, select, textarea, button, img { max-width:100%; }
                         <i class="fas fa-user-md"></i> VET
                     </div>
                     
-                    <?php if (!empty($profile_img_path) && file_exists($profile_img_path)): ?>
-                        <img src="<?php echo htmlspecialchars($profile_img_path); ?>" class="top-avatar" alt="Profile Picture">
+                    <?php if ($profile_img_src !== ''): ?>
+                        <img src="<?php echo htmlspecialchars($profile_img_src, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>" class="top-avatar" alt="Profile Picture">
                     <?php else: ?>
                         <div class="top-avatar-fallback"><?php echo $first_letter; ?></div>
                     <?php endif; ?>
@@ -2107,6 +2224,7 @@ input, select, textarea, button, img { max-width:100%; }
 
                 <h3 class="section-title"><i class="fas fa-stethoscope" style="color: var(--sidebar-navy);"></i> Add Consultation Note</h3>
                 <form method="POST" action="" class="note-form">
+                    <input type="hidden" name="action" value="add_note">
                     <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token, ENT_QUOTES, 'UTF-8'); ?>">
                     <textarea name="new_note" placeholder="Type diagnosis, prescriptions, or clinical notes here to notify the owner..." required></textarea>
                     <button type="submit" name="add_note" class="btn-submit"><i class="fas fa-paper-plane"></i> Send Note to Owner</button>
@@ -2216,36 +2334,58 @@ input, select, textarea, button, img { max-width:100%; }
             }
         }
 
-        // --- REAL-TIME NOTIFICATION FETCHER ---
-        let previousUnreadCount = <?php echo $unread_count; ?>;
-        
-        function fetchAdminNotifs() {
-            fetch('../admin/get_admin_notifs.php')
-                .then(response => response.json())
-                .then(data => {
-                    const badge = document.getElementById('admin-notif-badge');
-                    const notifList = document.getElementById('admin-notif-list');
-                    const markReadBtn = document.getElementById('mark-read-link');
-                    
-                    if (data.unread > 0) {
-                        badge.style.display = 'inline-block';
-                        badge.innerText = data.unread;
-                        if(markReadBtn) markReadBtn.style.display = 'inline-block';
-                    } else {
-                        badge.style.display = 'none';
-                        if(markReadBtn) markReadBtn.style.display = 'none';
-                    }
+        // --- ROLE-AWARE NOTIFICATION REFRESH ---
+        const notificationBadge = document.getElementById('admin-notif-badge');
+        const notificationList = document.getElementById('admin-notif-list');
+        const markReadButton = document.getElementById('mark-read-link');
+        let notificationRequestPending = false;
 
-                    if (data.html !== "") {
-                        notifList.innerHTML = data.html;
-                    } else {
-                        notifList.innerHTML = '<div class="notif-empty">No new notifications.</div>';
-                    }
-                })
-                .catch(error => console.error('Error fetching notifications:', error));
+        async function fetchAdminNotifs() {
+            if (document.hidden || notificationRequestPending || !notificationBadge || !notificationList) {
+                return;
+            }
+
+            notificationRequestPending = true;
+            try {
+                const url = new URL(window.location.href);
+                url.searchParams.set('ajax', 'notifications');
+                const response = await fetch(url.toString(), {
+                    method: 'GET',
+                    cache: 'no-store',
+                    headers: { 'Accept': 'application/json' }
+                });
+                if (!response.ok) {
+                    throw new Error('Notification request failed: ' + response.status);
+                }
+
+                const data = await response.json();
+                if (!data || data.success !== true) {
+                    throw new Error('Invalid notification response.');
+                }
+
+                const unread = Math.max(0, Number.parseInt(data.unread, 10) || 0);
+                notificationBadge.textContent = String(unread);
+                notificationBadge.style.display = unread > 0 ? 'inline-block' : 'none';
+                if (markReadButton) {
+                    markReadButton.style.display = unread > 0 ? 'inline-block' : 'none';
+                }
+                notificationList.innerHTML = typeof data.html === 'string' && data.html !== ''
+                    ? data.html
+                    : '<div class="notif-empty">No new clinic alerts.</div>';
+            } catch (error) {
+                console.error('Error fetching notifications:', error);
+            } finally {
+                notificationRequestPending = false;
+            }
         }
 
-        setInterval(fetchAdminNotifs, 3000);
+        // Poll less often and refresh immediately when the page becomes visible.
+        const notificationPollTimer = window.setInterval(fetchAdminNotifs, 10000);
+        document.addEventListener('visibilitychange', function () {
+            if (!document.hidden) {
+                fetchAdminNotifs();
+            }
+        });
     </script>
 </body>
 </html>

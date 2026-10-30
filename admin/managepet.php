@@ -128,6 +128,38 @@ if (empty($_SESSION['managepet_csrf_token']) || !is_string($_SESSION['managepet_
 
 }
 
+// Load owner choices on demand instead of querying every customer on each page view.
+if ($_SERVER['REQUEST_METHOD'] === 'GET' && (($_GET['ajax'] ?? '') === 'customer_options')) {
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+
+    try {
+        $customer_stmt = $pdo->query("SELECT id, full_name
+            FROM users
+            WHERE LOWER(TRIM(COALESCE(role, ''))) = 'customer'
+            ORDER BY full_name ASC");
+        $customer_rows = $customer_stmt->fetchAll(PDO::FETCH_ASSOC);
+        $customer_options = [];
+
+        foreach ($customer_rows as $customer_row) {
+            $customer_options[] = [
+                'id' => (int)($customer_row['id'] ?? 0),
+                'full_name' => (string)($customer_row['full_name'] ?? '')
+            ];
+        }
+
+        echo json_encode(
+            ['success' => true, 'customers' => $customer_options],
+            JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE
+        );
+    } catch (Throwable $e) {
+        error_log('Manage Pet customer options error: ' . $e->getMessage());
+        http_response_code(500);
+        echo json_encode(['success' => false, 'message' => 'Unable to load customer accounts.']);
+    }
+    exit();
+}
+
 // 2. FETCH ADMIN PROFILE
 
 $admin_full_name = "User";
@@ -360,33 +392,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_pet'])) {
 
 }
 
-// FETCH CUSTOMER ACCOUNTS ONLY FOR THE ADD PET OWNER DROPDOWN.
-
-try {
-
-    $users_list_stmt = $pdo->query("
-
-        SELECT id, full_name
-
-        FROM users
-
-        WHERE LOWER(TRIM(COALESCE(role, ''))) = 'customer'
-
-        ORDER BY full_name ASC
-
-    ");
-
-    $users_list = $users_list_stmt->fetchAll(PDO::FETCH_ASSOC);
-
-} catch (PDOException $e) {
-
-    error_log('Manage Pet customer list error: ' . $e->getMessage());
-
-    $users_list = [];
-
-    $error_msg = $error_msg ?: 'Unable to load customer list.';
-
-}
+// Customer choices are loaded only when the Add Pet modal is opened.
 
 // 3. DATABASE INITIALIZATION & SAFETY CHECK
 
@@ -400,67 +406,100 @@ $breeds = [];
 
 $pets_list = [];
 
+$total_filtered_pets = 0;
 $showing_count = 0;
+$showing_start = 0;
+$showing_end = 0;
+$page_size = 20;
 
 $filter_gender = (isset($_GET['gender']) && is_string($_GET['gender'])) ? $_GET['gender'] : '';
+$filter_gender = in_array($filter_gender, ['Male', 'Female'], true) ? $filter_gender : '';
+$search = (isset($_GET['search']) && is_string($_GET['search'])) ? trim($_GET['search']) : '';
+$filter_breed = (isset($_GET['breed']) && is_string($_GET['breed'])) ? trim($_GET['breed']) : '';
+$requested_page = filter_var($_GET['page'] ?? 1, FILTER_VALIDATE_INT);
+$current_page = ($requested_page !== false && $requested_page > 0) ? $requested_page : 1;
+$total_pages = 1;
 
 try {
 
-    // 4. FETCH PET STATISTICS
+    // 4. FETCH ALL PET STATISTICS IN ONE AGGREGATE QUERY
+    $stats_stmt = $pdo->query("SELECT
+            COUNT(*) AS total,
+            COUNT(*) FILTER (WHERE gender = 'Male') AS male,
+            COUNT(*) FILTER (WHERE gender = 'Female') AS female
+        FROM pets");
+    $stats = $stats_stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+    $total_pets = (int)($stats['total'] ?? 0);
+    $male_pets = (int)($stats['male'] ?? 0);
+    $female_pets = (int)($stats['female'] ?? 0);
 
-    $total_pets_stmt = $pdo->query("SELECT COUNT(*) AS count FROM pets");
-
-    $male_pets_stmt = $pdo->query("SELECT COUNT(*) AS count FROM pets WHERE gender = 'Male'");
-
-    $female_pets_stmt = $pdo->query("SELECT COUNT(*) AS count FROM pets WHERE gender = 'Female'");
-
-    $total_pets = (int)($total_pets_stmt->fetch(PDO::FETCH_ASSOC)['count'] ?? 0);
-
-    $male_pets = (int)($male_pets_stmt->fetch(PDO::FETCH_ASSOC)['count'] ?? 0);
-
-    $female_pets = (int)($female_pets_stmt->fetch(PDO::FETCH_ASSOC)['count'] ?? 0);
-
-    // 5. FETCH BREEDS FOR FILTER
-
-    $breeds_stmt = $pdo->query("
-
-        SELECT DISTINCT breed
-
+    // 5. FETCH BREEDS FOR THE FILTER
+    $breeds_stmt = $pdo->query("SELECT DISTINCT breed
         FROM pets
-
         WHERE breed IS NOT NULL
-
           AND breed <> ''
-
-        ORDER BY breed ASC
-
-    ");
-
+        ORDER BY breed ASC");
     $breeds = $breeds_stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    // 6. FETCH ALL PETS WITH GENDER FILTER
-
-    $pets_query = "SELECT * FROM pets";
-
+    // 6. SERVER-SIDE SEARCH, BREED/GENDER FILTERING, AND PAGINATION
+    // Search pet name, breed, owner ID, and gender (Male/Female).
+    $where_parts = ['1 = 1'];
     $pets_params = [];
 
-    if ($filter_gender === 'Male' || $filter_gender === 'Female') {
-
-        $pets_query .= " WHERE gender = :gender";
-
+    if ($filter_gender !== '') {
+        $where_parts[] = 'gender = :gender';
         $pets_params[':gender'] = $filter_gender;
-
     }
 
-    $pets_query .= " ORDER BY id DESC";
+    if ($filter_breed !== '') {
+        $where_parts[] = "LOWER(COALESCE(breed, '')) = LOWER(:breed)";
+        $pets_params[':breed'] = $filter_breed;
+    }
 
-    $pets_stmt = $pdo->prepare($pets_query);
+    if ($search !== '') {
+        $where_parts[] = "(
+            COALESCE(name, '') ILIKE :search_name
+            OR COALESCE(breed, '') ILIKE :search_breed
+            OR CAST(owner_id AS TEXT) ILIKE :search_owner
+            OR LOWER(COALESCE(gender, '')) LIKE :search_gender
+        )";
+        $search_like = '%' . $search . '%';
+        $pets_params[':search_name'] = $search_like;
+        $pets_params[':search_breed'] = $search_like;
+        $pets_params[':search_owner'] = $search_like;
+        // Prefix matching avoids matching "Female" when the user searches "male".
+        $pets_params[':search_gender'] = strtolower($search) . '%';
+    }
 
-    $pets_stmt->execute($pets_params);
+    $pets_where_sql = implode(' AND ', $where_parts);
 
+    $count_stmt = $pdo->prepare("SELECT COUNT(*) FROM pets WHERE {$pets_where_sql}");
+    $count_stmt->execute($pets_params);
+    $total_filtered_pets = (int)$count_stmt->fetchColumn();
+
+    $total_pages = max(1, (int)ceil($total_filtered_pets / $page_size));
+    if ($current_page > $total_pages) {
+        $current_page = $total_pages;
+    }
+    $offset = ($current_page - 1) * $page_size;
+
+    // Only the columns displayed or used by the page are selected.
+    $pets_stmt = $pdo->prepare("SELECT id, owner_id, name, breed, gender
+        FROM pets
+        WHERE {$pets_where_sql}
+        ORDER BY id DESC
+        LIMIT :limit OFFSET :offset");
+    foreach ($pets_params as $param_name => $param_value) {
+        $pets_stmt->bindValue($param_name, $param_value, PDO::PARAM_STR);
+    }
+    $pets_stmt->bindValue(':limit', $page_size, PDO::PARAM_INT);
+    $pets_stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+    $pets_stmt->execute();
     $pets_list = $pets_stmt->fetchAll(PDO::FETCH_ASSOC);
 
     $showing_count = count($pets_list);
+    $showing_start = $showing_count > 0 ? $offset + 1 : 0;
+    $showing_end = $showing_count > 0 ? $offset + $showing_count : 0;
 
 } catch (PDOException $e) {
 
@@ -474,7 +513,12 @@ try {
 
     $pets_list = [];
 
+    $total_filtered_pets = 0;
     $showing_count = 0;
+    $showing_start = 0;
+    $showing_end = 0;
+    $current_page = 1;
+    $total_pages = 1;
 
     if ($error_msg === '') {
 
@@ -488,8 +532,7 @@ try {
 $admin_notifications = [];
 $unread_count = 0;
 if ($show_notifications) {
-    // Determine the real PostgreSQL type so the initial page render agrees with
-    // get_admin_notifs.php and works with BOOLEAN, numeric, or text is_read columns.
+    // Detect the actual PostgreSQL column type for compatibility with existing schemas.
     $notification_table = $is_admin ? 'admin_notifications' : 'notifications';
     try {
         $read_type_stmt = $pdo->prepare("SELECT data_type
@@ -512,28 +555,32 @@ if ($show_notifications) {
         }
 
         if ($is_admin) {
-            $count_stmt = $pdo->query("SELECT COUNT(*) FROM admin_notifications WHERE {$notification_unread_predicate}");
-            $unread_count = (int)$count_stmt->fetchColumn();
-
-            $admin_notif_stmt = $pdo->query("SELECT id, message, created_at
+            $notification_sql = "SELECT id, message, created_at,
+                    COUNT(*) OVER() AS unread_count
                 FROM admin_notifications
                 WHERE {$notification_unread_predicate}
                 ORDER BY created_at DESC, id DESC
-                LIMIT 20");
-            $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
+                LIMIT 20";
+            $notification_stmt = $pdo->query($notification_sql);
         } else {
-            $count_stmt = $pdo->prepare("SELECT COUNT(*) FROM notifications
-                WHERE user_id = :user_id AND {$notification_unread_predicate}");
-            $count_stmt->execute([':user_id' => (int)$_SESSION['user_id']]);
-            $unread_count = (int)$count_stmt->fetchColumn();
-
-            $staff_notif_stmt = $pdo->prepare("SELECT id, title, message, type, created_at
+            $notification_sql = "SELECT id, title, message, type, created_at,
+                    COUNT(*) OVER() AS unread_count
                 FROM notifications
-                WHERE user_id = :user_id AND {$notification_unread_predicate}
+                WHERE user_id = :user_id
+                  AND {$notification_unread_predicate}
                 ORDER BY created_at DESC, id DESC
-                LIMIT 20");
-            $staff_notif_stmt->execute([':user_id' => (int)$_SESSION['user_id']]);
-            $admin_notifications = $staff_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
+                LIMIT 20";
+            $notification_stmt = $pdo->prepare($notification_sql);
+            $notification_stmt->execute([':user_id' => (int)$_SESSION['user_id']]);
+        }
+
+        $notification_rows = $notification_stmt->fetchAll(PDO::FETCH_ASSOC);
+        if (!empty($notification_rows)) {
+            $unread_count = (int)($notification_rows[0]['unread_count'] ?? 0);
+            foreach ($notification_rows as $notification_row) {
+                unset($notification_row['unread_count']);
+                $admin_notifications[] = $notification_row;
+            }
         }
     } catch (Throwable $e) {
         error_log('Manage Pet notification fetch failed: ' . $e->getMessage());
@@ -541,6 +588,19 @@ if ($show_notifications) {
         $unread_count = 0;
     }
 }
+
+// Preserve active filters when navigating between result pages.
+$pet_page_params = [];
+if ($filter_gender !== '') {
+    $pet_page_params['gender'] = $filter_gender;
+}
+if ($search !== '') {
+    $pet_page_params['search'] = $search;
+}
+if ($filter_breed !== '') {
+    $pet_page_params['breed'] = $filter_breed;
+}
+
 ?>
 
 <!DOCTYPE html>
@@ -782,6 +842,12 @@ if ($show_notifications) {
         .empty-state { background: var(--white); border-radius: 16px; padding: 100px 0; text-align: center; color: #94a3b8; box-shadow: 0 4px 6px rgba(0,0,0,0.03); border: 1px dashed #e2e8f0; }
 
         .empty-state i { font-size: 60px; margin-bottom: 20px; opacity: 0.2; }
+
+        .pet-pagination { display: flex; align-items: center; justify-content: center; gap: 16px; margin: 22px 0 8px; flex-wrap: wrap; }
+        .page-link { display: inline-flex; align-items: center; justify-content: center; padding: 9px 14px; border-radius: 8px; background: var(--navy-dark); color: var(--brand-yellow); text-decoration: none; font-size: 12px; font-weight: 700; }
+        .page-link:hover { background: #003366; }
+        .page-link.disabled { background: #e2e8f0; color: #94a3b8; cursor: not-allowed; }
+        .page-indicator { color: var(--text-muted); font-size: 12px; font-weight: 700; }
 
         footer { text-align: center; padding: 40px; color: var(--text-muted); font-size: 12px; background: transparent; border-top: 1px solid rgba(0,0,0,0.05); }
 
@@ -1570,47 +1636,48 @@ if ($show_notifications) {
 
             </div>
 
-            <div class="filter-container">
+            <form method="GET" action="managepet.php" class="filter-container" id="petFilterForm">
 
                 <div class="filter-group">
 
                     <i class="fas fa-search"></i>
 
-                    <input type="text" id="petSearch" class="search-input" placeholder="Search by pet name, breed, or owner ID...">
+                    <?php if ($filter_gender !== ''): ?>
+                        <input type="hidden" name="gender" value="<?php echo htmlspecialchars($filter_gender, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
+                    <?php endif; ?>
 
-                    <select id="breedFilter" class="breed-select">
+                    <input type="text" id="petSearch" name="search" class="search-input" value="<?php echo htmlspecialchars($search, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>" placeholder="Search by pet name, breed, gender, or owner ID..." autocomplete="off">
+
+                    <select id="breedFilter" name="breed" class="breed-select">
 
                         <option value="">All Breeds</option>
 
                         <?php if (!empty($breeds)): ?>
 
                             <?php foreach($breeds as $breed): ?>
-
-                                <option value="<?php echo htmlspecialchars((string)($breed['breed'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
-
-                                    <?php echo htmlspecialchars((string)($breed['breed'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
-
+                                <?php $breed_value = (string)($breed['breed'] ?? ''); ?>
+                                <option value="<?php echo htmlspecialchars($breed_value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>" <?php echo (strcasecmp($filter_breed, $breed_value) === 0) ? 'selected' : ''; ?>>
+                                    <?php echo htmlspecialchars($breed_value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
                                 </option>
-
                             <?php endforeach; ?>
 
                         <?php endif; ?>
 
                     </select>
 
-                    <span class="result-count" id="showingCountText">Showing <?php echo $showing_count; ?> of <?php echo $showing_count; ?> pets</span>
+                    <span class="result-count" id="showingCountText">Showing <?php echo $showing_start; ?>–<?php echo $showing_end; ?> of <?php echo $total_filtered_pets; ?> pets</span>
 
                 </div>
 
                 <div class="filter-actions">
 
-                    <button class="btn-add" onclick="openPetModal()"><i class="fas fa-plus"></i> Add New Pet</button>
+                    <button type="button" class="btn-add" onclick="openPetModal()"><i class="fas fa-plus"></i> Add New Pet</button>
 
                 </div>
 
-            </div>
+            </form>
 
-            <?php if ($showing_count > 0): ?>
+            <?php if (!empty($pets_list)): ?>
 
                 <div class="pet-table-wrapper">
 
@@ -1712,6 +1779,24 @@ if ($show_notifications) {
 
             <?php endif; ?>
 
+            <?php if ($total_pages > 1): ?>
+                <nav class="pet-pagination" aria-label="Pet records pagination">
+                    <?php if ($current_page > 1): ?>
+                        <a class="page-link" href="?<?php echo htmlspecialchars(http_build_query(array_merge($pet_page_params, ['page' => $current_page - 1])), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">&laquo; Previous</a>
+                    <?php else: ?>
+                        <span class="page-link disabled">&laquo; Previous</span>
+                    <?php endif; ?>
+
+                    <span class="page-indicator">Page <?php echo $current_page; ?> of <?php echo $total_pages; ?></span>
+
+                    <?php if ($current_page < $total_pages): ?>
+                        <a class="page-link" href="?<?php echo htmlspecialchars(http_build_query(array_merge($pet_page_params, ['page' => $current_page + 1])), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">Next &raquo;</a>
+                    <?php else: ?>
+                        <span class="page-link disabled">Next &raquo;</span>
+                    <?php endif; ?>
+                </nav>
+            <?php endif; ?>
+
         </div>
 
         <footer>
@@ -1738,20 +1823,8 @@ if ($show_notifications) {
 
                     <label>Select Owner (Customer) *</label>
 
-                    <select name="owner_id" required>
-
-                        <option value="">-- Search / Choose Customer --</option>
-
-                        <?php foreach ($users_list as $user): ?>
-
-                            <option value="<?php echo (int)$user['id']; ?>">
-
-                                ID: <?php echo (int)$user['id']; ?> - <?php echo htmlspecialchars((string)($user['full_name'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
-
-                            </option>
-
-                        <?php endforeach; ?>
-
+                    <select name="owner_id" id="petOwnerSelect" required disabled>
+                        <option value="">Open this form to load customer accounts...</option>
                     </select>
 
                 </div>
@@ -1844,9 +1917,63 @@ if ($show_notifications) {
 
     // --- MODAL LOGIC ---
 
+    let petOwnersLoaded = false;
+    let petOwnersLoading = false;
+
+    function loadPetOwners() {
+        const ownerSelect = document.getElementById('petOwnerSelect');
+        if (!ownerSelect || petOwnersLoaded || petOwnersLoading) return;
+
+        petOwnersLoading = true;
+        ownerSelect.disabled = true;
+        ownerSelect.replaceChildren(new Option('Loading customer accounts...', ''));
+
+        fetch('managepet.php?ajax=customer_options', {
+            method: 'GET',
+            cache: 'no-store',
+            credentials: 'same-origin',
+            headers: { 'Accept': 'application/json' }
+        })
+        .then(function(response) {
+            if (!response.ok) {
+                throw new Error('Customer list request failed (HTTP ' + response.status + ').');
+            }
+            return response.json();
+        })
+        .then(function(data) {
+            if (!data || data.success !== true || !Array.isArray(data.customers)) {
+                throw new Error('Customer list response was invalid.');
+            }
+
+            ownerSelect.replaceChildren(new Option('-- Search / Choose Customer --', ''));
+            data.customers.forEach(function(customer) {
+                const customerId = Number(customer && customer.id);
+                if (!Number.isSafeInteger(customerId) || customerId < 1) return;
+                const customerName = String(customer.full_name || 'Customer');
+                ownerSelect.add(new Option('ID: ' + customerId + ' - ' + customerName, String(customerId)));
+            });
+
+            if (ownerSelect.options.length === 1) {
+                ownerSelect.replaceChildren(new Option('No customer accounts found', ''));
+            }
+
+            petOwnersLoaded = true;
+            ownerSelect.disabled = false;
+        })
+        .catch(function(error) {
+            console.error('Unable to load pet owners:', error);
+            ownerSelect.replaceChildren(new Option('Unable to load customers. Close and reopen to retry.', ''));
+            ownerSelect.disabled = false;
+        })
+        .finally(function() {
+            petOwnersLoading = false;
+        });
+    }
+
     function openPetModal() {
 
         document.getElementById('addPetModal').style.display = 'flex';
+        loadPetOwners();
 
     }
 
@@ -2022,45 +2149,34 @@ if ($show_notifications) {
 
     }
 
+    let adminNotifFetchInProgress = false;
+
     function fetchAdminNotifs() {
+        if (document.hidden || adminNotifFetchInProgress) return;
+        adminNotifFetchInProgress = true;
 
         fetch('get_admin_notifs.php', {
-
             method: 'GET',
-
             cache: 'no-store',
-
             credentials: 'same-origin'
-
         })
-
         .then(function(response) {
-
             if (!response.ok) {
-
-                throw new Error(
-
-                    'Notification request failed: HTTP ' + response.status
-
-                );
-
+                throw new Error('Notification request failed: HTTP ' + response.status);
             }
-
             return response.json();
-
         })
-
         .then(function(data) {
             if (!data || data.success !== true) {
                 throw new Error('Notification endpoint returned an unsuccessful response.');
             }
             renderAdminNotifications(data);
         })
-
         .catch(function(error) {
-
             console.error('Error fetching admin notifications:', error);
-
+        })
+        .finally(function() {
+            adminNotifFetchInProgress = false;
         });
 
     }
@@ -2074,69 +2190,33 @@ if ($show_notifications) {
         if (canFetchAdminNotifications) {
 
             fetchAdminNotifs();
-
-            setInterval(fetchAdminNotifs, 3000);
+            setInterval(fetchAdminNotifs, 15000);
+            document.addEventListener('visibilitychange', function() {
+                if (!document.hidden) fetchAdminNotifs();
+            });
 
         }
 
     });
 
-    // --- Pet Filter Logic ---
-
+    // --- SERVER-SIDE PET FILTERS ---
     document.addEventListener('DOMContentLoaded', function() {
-
+        const filterForm = document.getElementById('petFilterForm');
         const searchInput = document.getElementById('petSearch');
-
         const breedFilter = document.getElementById('breedFilter');
+        if (!filterForm || !searchInput || !breedFilter) return;
 
-        const tableRows = document.querySelectorAll('.pet-row');
+        let searchTimer = null;
+        searchInput.addEventListener('input', function() {
+            window.clearTimeout(searchTimer);
+            searchTimer = window.setTimeout(function() {
+                filterForm.submit();
+            }, 350);
+        });
 
-        const countText = document.getElementById('showingCountText');
-
-        const baseFilteredTotal = <?php echo $showing_count; ?>;
-
-        function performFilter() {
-
-            const searchTerm = searchInput.value.toLowerCase();
-
-            const selectedBreed = breedFilter.value.toLowerCase();
-
-            let visibleCount = 0;
-
-            tableRows.forEach(row => {
-
-                const petName = row.querySelector('td:first-child').innerText.toLowerCase();
-
-                const ownerId = row.querySelector('td:nth-child(4)').innerText.toLowerCase();
-
-                const breed = row.getAttribute('data-breed').toLowerCase();
-
-                const matchesSearch = petName.includes(searchTerm) || breed.includes(searchTerm) || ownerId.includes(searchTerm);
-
-                const matchesBreed = selectedBreed === "" || breed === selectedBreed;
-
-                if (matchesSearch && matchesBreed) {
-
-                    row.style.display = "";
-
-                    visibleCount++;
-
-                } else {
-
-                    row.style.display = "none";
-
-                }
-
-            });
-
-            countText.textContent = `Showing ${visibleCount} of ${baseFilteredTotal} pets`;
-
-        }
-
-        searchInput.addEventListener('input', performFilter);
-
-        breedFilter.addEventListener('change', performFilter);
-
+        breedFilter.addEventListener('change', function() {
+            filterForm.submit();
+        });
     });
 
     </script>

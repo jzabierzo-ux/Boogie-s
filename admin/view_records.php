@@ -1,7 +1,5 @@
 <?php
 require_once __DIR__ . '/../shared_session_bootstrap.php';
-include '../db_supabase.php';
-
 
 // --- 1. ROLE-BASED ACCESS CONTROL ---
 // Keep this Admin-side record page consistent with managepet.php/editpet.php.
@@ -57,6 +55,7 @@ if (in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true
     header('Location: ../staff/staffdashboard.php');
     exit();
 }
+
 // Admin, Manager, Receptionist, Groomer, and Pet Hotel Staff can view pet records.
 $allowed_record_roles = ['admin', 'manager', 'receptionist', 'groomer', 'pet_hotel_staff'];
 if (!in_array($current_role, $allowed_record_roles, true)) {
@@ -64,9 +63,8 @@ if (!in_array($current_role, $allowed_record_roles, true)) {
     exit('Access denied. This role cannot view pet records.');
 }
 
-// --- 2. BACK BUTTON ---
+// --- 2. VALIDATE PET ID ---
 $back_link = 'managepet.php';
-
 $pet_id = filter_var($_GET['id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
 if ($pet_id === false || $pet_id === null) {
     http_response_code(400);
@@ -74,156 +72,76 @@ if ($pet_id === false || $pet_id === null) {
 }
 $pet_id = (int)$pet_id;
 
-
+// Open the database connection only after authentication and authorization.
+require_once __DIR__ . '/../db_supabase.php';
 
 // --- 3. FETCH PET DATA ---
-
-
-
 try {
-
-
-
-    $query = "
-
-
-
-        SELECT *
-
-
-
+    // Select only the fields displayed or used by this page.
+    $pet_query = '
+        SELECT
+            name,
+            pet_type,
+            breed,
+            gender,
+            age,
+            weight,
+            owner_name,
+            medical_history,
+            special_needs,
+            status
         FROM pets
-
-
-
         WHERE id = :pet_id
-
-
-
         LIMIT 1
-
-
-
-    ";
-
-
-    $stmt = $pdo->prepare($query);
-
-
-    $stmt->execute([':pet_id' => $pet_id]);
-
-
-    $row = $stmt->fetch(PDO::FETCH_ASSOC);
-
-
-
+    ';
+    $pet_stmt = $pdo->prepare($pet_query);
+    $pet_stmt->execute([':pet_id' => $pet_id]);
+    $row = $pet_stmt->fetch(PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
-
     error_log('View pet record query failed: ' . $e->getMessage());
     http_response_code(500);
-    exit("Unable to load the pet record at this time.");
-
+    exit('Unable to load the pet record at this time.');
 }
-
-
 
 if (!$row) {
     http_response_code(404);
-    exit("Pet not found in the database.");
+    exit('Pet not found in the database.');
 }
 
-
-// Map the data
-
-
-
+// Map the pet data with safe display defaults.
 $p_name = $row['name'] ?? 'Unknown';
-
-
-
 $p_type = $row['pet_type'] ?? 'Unknown';
-
-
-
 $p_breed = $row['breed'] ?? 'Unknown';
-
-
-
 $p_gender = $row['gender'] ?? 'Unknown';
-
-
-
 $p_age = $row['age'] ?? 'Unknown';
-
-
-
 $p_weight = $row['weight'] ?? 'Unknown';
-
-
-
 $o_name = $row['owner_name'] ?? 'Unknown';
-
-
-
 $med_history = $row['medical_history'] ?? 'No medical history recorded.';
-
-
-
 $special_needs = $row['special_needs'] ?? 'No special care instructions provided.';
-
-
-
 $p_status = $row['status'] ?? 'Pending';
 
-
 // --- 4. FETCH APPOINTMENT & TRANSACTION HISTORY ---
-
 try {
-
-
-
-    $appt_query = "
-
-
-
-        SELECT *
-
-
-
+    // Use only the fields displayed in the history table and a stable tie-breaker.
+    $appt_query = '
+        SELECT
+            id,
+            appointment_date,
+            appointment_time,
+            service,
+            service_fee,
+            booking_status
         FROM appointments
-
-
-
         WHERE pet_id = :pet_id
-
-
-
-        ORDER BY appointment_date DESC, appointment_time DESC
-
-
-
-    ";
-
-
-
-    $stmt_appt = $pdo->prepare($appt_query);
-
-
-
-    $stmt_appt->execute([':pet_id' => $pet_id]);
-
-
-    $appointments = $stmt_appt->fetchAll(PDO::FETCH_ASSOC);
-
-
-
+        ORDER BY appointment_date DESC, appointment_time DESC, id DESC
+    ';
+    $appt_stmt = $pdo->prepare($appt_query);
+    $appt_stmt->execute([':pet_id' => $pet_id]);
+    $appointments = $appt_stmt->fetchAll(PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
     error_log('View pet appointment history query failed: ' . $e->getMessage());
     $appointments = [];
 }
-
-
-
 ?>
 
 

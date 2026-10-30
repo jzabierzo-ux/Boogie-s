@@ -1,52 +1,317 @@
 <?php
-
-
 require_once __DIR__ . '/../shared_session_bootstrap.php';
-
-
-if (empty($_SESSION['register_csrf_token'])) {
-
-    $_SESSION['register_csrf_token'] = bin2hex(random_bytes(32));
-
-}
-
-$register_csrf_token = $_SESSION['register_csrf_token'];
-
-
-// Use the new PostgreSQL/Supabase connection.
-
-
 require_once __DIR__ . '/../db_supabase.php';
 
-
-// ============================================================
-
-
-// PHPMailer
-
-
-// ============================================================
-
+if (
+    !isset($_SESSION['register_csrf_token']) ||
+    !is_string($_SESSION['register_csrf_token']) ||
+    !preg_match('/\A[a-f0-9]{64}\z/i', $_SESSION['register_csrf_token'])
+) {
+    $_SESSION['register_csrf_token'] = bin2hex(random_bytes(32));
+}
+$register_csrf_token = $_SESSION['register_csrf_token'];
 
 use PHPMailer\PHPMailer\PHPMailer;
-
-
 use PHPMailer\PHPMailer\Exception;
 
-
 require_once __DIR__ . '/../PHPMailer/src/Exception.php';
-
-
 require_once __DIR__ . '/../PHPMailer/src/PHPMailer.php';
-
-
 require_once __DIR__ . '/../PHPMailer/src/SMTP.php';
 
+if (!defined('SMTP_EMAIL')) {
+    define('SMTP_EMAIL', getenv('SMTP_EMAIL') ?: 'prototyp6712@gmail.com');
+}
+if (!defined('SMTP_PASS')) {
+    define('SMTP_PASS', getenv('SMTP_PASS') ?: '');
+}
+
+/** Read a scalar POST value without array-to-string warnings. */
+function registerPostString(string $key): string
+{
+    $value = $_POST[$key] ?? '';
+    return is_string($value) ? $value : '';
+}
+
+/** Normalize PostgreSQL/PDO boolean representations. */
+function registerDbBooleanTrue($value): bool
+{
+    if (is_bool($value)) {
+        return $value;
+    }
+    if (!is_scalar($value)) {
+        return false;
+    }
+    return in_array(strtolower(trim((string)$value)), ['1', 't', 'true', 'yes', 'on'], true);
+}
+
+function registerStringLength(string $value): int
+{
+    return function_exists('mb_strlen') ? mb_strlen($value, 'UTF-8') : strlen($value);
+}
+
+/** Decode a strict base64url JWT segment. */
+function registerGoogleBase64UrlDecode(string $value): string|false
+{
+    if ($value === '' || !preg_match('/^[A-Za-z0-9_-]+$/D', $value)) {
+        return false;
+    }
+
+    $remainder = strlen($value) % 4;
+    if ($remainder === 1) {
+        return false;
+    }
+
+    $value = strtr($value, '-_', '+/');
+    if ($remainder !== 0) {
+        $value .= str_repeat('=', 4 - $remainder);
+    }
+
+    return base64_decode($value, true);
+}
+
 /**
- * Send a registration OTP using the same SMTP routine for regular registration,
- * Google sign-up, and resend requests. Retry with implicit TLS on port 465 if
- * Gmail STARTTLS on port 587 fails. The OTP value stays the same between retries.
+ * Fetch and cache Google's Firebase Secure Token public certificates.
+ * The endpoint's max-age header controls the cache lifetime.
  */
+function registerGoogleFirebasePublicKeys(bool $forceRefresh = false): array
+{
+    static $memoryKeys = null;
+    static $memoryExpiresAt = 0;
+
+    $projectId = trim((string)(getenv('FIREBASE_PROJECT_ID') ?: 'boogiespetcare'));
+    $cacheFile = rtrim(sys_get_temp_dir(), DIRECTORY_SEPARATOR)
+        . DIRECTORY_SEPARATOR
+        . 'boogie_firebase_keys_' . hash('sha256', $projectId) . '.json';
+    $now = time();
+
+    if (!$forceRefresh && is_array($memoryKeys) && $memoryExpiresAt > $now) {
+        return $memoryKeys;
+    }
+
+    if (!$forceRefresh && is_file($cacheFile)) {
+        $cachedJson = @file_get_contents($cacheFile);
+        if (is_string($cachedJson) && $cachedJson !== '') {
+            $cached = json_decode($cachedJson, true);
+            if (
+                is_array($cached)
+                && isset($cached['expires_at'], $cached['keys'])
+                && is_numeric($cached['expires_at'])
+                && (int)$cached['expires_at'] > $now
+                && is_array($cached['keys'])
+                && $cached['keys'] !== []
+            ) {
+                $memoryKeys = $cached['keys'];
+                $memoryExpiresAt = (int)$cached['expires_at'];
+                return $memoryKeys;
+            }
+        }
+    }
+
+    $certUrl = 'https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com';
+    $context = stream_context_create([
+        'http' => [
+            'method' => 'GET',
+            'timeout' => 8,
+            'ignore_errors' => false,
+            'header' => "Accept: application/json\r\nUser-Agent: BoogiesPetCare-FirebaseTokenVerifier/1.0\r\n",
+        ],
+        'ssl' => [
+            'verify_peer' => true,
+            'verify_peer_name' => true,
+            'allow_self_signed' => false,
+        ],
+    ]);
+
+    $responseHeaders = [];
+    $certBody = @file_get_contents($certUrl, false, $context);
+    if (!isset($http_response_header) || !is_array($http_response_header)) {
+        throw new RuntimeException('Firebase signing certificates could not be retrieved.');
+    }
+    $responseHeaders = $http_response_header;
+
+    $httpStatus = 0;
+    $cacheMaxAge = 3600;
+    foreach ($responseHeaders as $headerLine) {
+        if (preg_match('/^HTTP\/\S+\s+(\d{3})/', $headerLine, $statusMatch)) {
+            $httpStatus = (int)$statusMatch[1];
+        } elseif (stripos($headerLine, 'Cache-Control:') === 0
+            && preg_match('/(?:^|[,\s])max-age=(\d+)/i', $headerLine, $ageMatch)) {
+            $cacheMaxAge = max(60, min(21600, (int)$ageMatch[1]));
+        }
+    }
+
+    if ($certBody === false || $httpStatus !== 200 || strlen($certBody) > 65536) {
+        throw new RuntimeException('Firebase signing certificates are temporarily unavailable.');
+    }
+
+    $keys = json_decode($certBody, true);
+    if (!is_array($keys) || $keys === []) {
+        throw new RuntimeException('Firebase signing certificate response was invalid.');
+    }
+
+    foreach ($keys as $keyId => $certificate) {
+        if (
+            !is_string($keyId)
+            || $keyId === ''
+            || !is_string($certificate)
+            || strpos($certificate, '-----BEGIN CERTIFICATE-----') === false
+            || strpos($certificate, '-----END CERTIFICATE-----') === false
+        ) {
+            throw new RuntimeException('Firebase signing certificate response was invalid.');
+        }
+    }
+
+    $expiresAt = $now + $cacheMaxAge;
+    $memoryKeys = $keys;
+    $memoryExpiresAt = $expiresAt;
+
+    $cachePayload = json_encode(
+        ['expires_at' => $expiresAt, 'keys' => $keys],
+        JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE
+    );
+    if (is_string($cachePayload)) {
+        $temporaryFile = @tempnam(sys_get_temp_dir(), 'boogie-firebase-keys-');
+        if ($temporaryFile !== false) {
+            @chmod($temporaryFile, 0600);
+            if (@file_put_contents($temporaryFile, $cachePayload, LOCK_EX) !== false) {
+                @rename($temporaryFile, $cacheFile);
+            } else {
+                @unlink($temporaryFile);
+            }
+        }
+    }
+
+    return $keys;
+}
+
+/** Verify the Firebase ID-token signature and required identity claims. */
+function registerGoogleVerifyFirebaseIdToken(string $idToken): array
+{
+    if ($idToken === '' || strlen($idToken) > 16384) {
+        throw new InvalidArgumentException('Missing or invalid Google sign-in token.');
+    }
+
+    $segments = explode('.', $idToken);
+    if (count($segments) !== 3) {
+        throw new InvalidArgumentException('Malformed Firebase ID token.');
+    }
+
+    [$encodedHeader, $encodedClaims, $encodedSignature] = $segments;
+    $headerJson = registerGoogleBase64UrlDecode($encodedHeader);
+    $claimsJson = registerGoogleBase64UrlDecode($encodedClaims);
+    $signature = registerGoogleBase64UrlDecode($encodedSignature);
+
+    if ($headerJson === false || $claimsJson === false || $signature === false || $signature === '') {
+        throw new InvalidArgumentException('Malformed Firebase ID token.');
+    }
+
+    $header = json_decode($headerJson, true);
+    $claims = json_decode($claimsJson, true);
+    if (!is_array($header) || !is_array($claims)) {
+        throw new InvalidArgumentException('Malformed Firebase ID token claims.');
+    }
+
+    $keyId = $header['kid'] ?? '';
+    if (($header['alg'] ?? '') !== 'RS256' || !is_string($keyId) || $keyId === '') {
+        throw new InvalidArgumentException('Unsupported Firebase ID token signature.');
+    }
+
+    $keys = registerGoogleFirebasePublicKeys(false);
+    if (!isset($keys[$keyId])) {
+        // Refresh once in case Google has rotated its signing certificates.
+        $keys = registerGoogleFirebasePublicKeys(true);
+    }
+    if (!isset($keys[$keyId])) {
+        throw new InvalidArgumentException('Unrecognized Firebase ID token signing key.');
+    }
+
+    $projectId = trim((string)(getenv('FIREBASE_PROJECT_ID') ?: 'boogiespetcare'));
+    $now = time();
+    $clockSkew = 60;
+    $expectedIssuer = 'https://securetoken.google.com/' . $projectId;
+
+    if (
+        $projectId === ''
+        || ($claims['aud'] ?? null) !== $projectId
+        || ($claims['iss'] ?? null) !== $expectedIssuer
+        || !isset($claims['exp'], $claims['iat'], $claims['auth_time'])
+        || !is_numeric($claims['exp'])
+        || !is_numeric($claims['iat'])
+        || !is_numeric($claims['auth_time'])
+        || (int)$claims['exp'] <= $now
+        || (int)$claims['iat'] <= 0
+        || (int)$claims['iat'] > ($now + $clockSkew)
+        || (int)$claims['auth_time'] <= 0
+        || (int)$claims['auth_time'] > ($now + $clockSkew)
+        || !isset($claims['sub'])
+        || !is_string($claims['sub'])
+        || trim($claims['sub']) === ''
+        || strlen($claims['sub']) > 128
+    ) {
+        throw new InvalidArgumentException('Firebase ID token claims did not pass validation.');
+    }
+
+    $firebaseClaims = $claims['firebase'] ?? null;
+    if (
+        !is_array($firebaseClaims)
+        || ($firebaseClaims['sign_in_provider'] ?? '') !== 'google.com'
+        || ($claims['email_verified'] ?? false) !== true
+    ) {
+        throw new InvalidArgumentException('A verified Google account is required.');
+    }
+
+    $email = strtolower(trim((string)($claims['email'] ?? '')));
+    if ($email === '' || strlen($email) > 254 || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        throw new InvalidArgumentException('The verified Google account has no valid email address.');
+    }
+
+    $certificate = openssl_x509_read($keys[$keyId]);
+    if ($certificate === false) {
+        throw new RuntimeException('Firebase signing certificate could not be loaded.');
+    }
+
+    $verified = openssl_verify(
+        $encodedHeader . '.' . $encodedClaims,
+        $signature,
+        $certificate,
+        OPENSSL_ALGO_SHA256
+    );
+    if ($verified !== 1) {
+        throw new InvalidArgumentException('Firebase ID token signature is invalid.');
+    }
+
+    $name = trim((string)($claims['name'] ?? ''));
+    if ($name === '') {
+        $name = strstr($email, '@', true) ?: 'Customer';
+    }
+    if (strlen($name) > 150) {
+        // Avoid clipping a UTF-8 name in the middle of a multi-byte character.
+        $name = strstr($email, '@', true) ?: 'Customer';
+    }
+
+    return [
+        'uid' => $claims['sub'],
+        'email' => $email,
+        'full_name' => $name,
+    ];
+}
+
+
+/** Output a safe alert and optionally navigate to a local page. */
+function registerAlert(string $message, ?string $redirect = null): void
+{
+    $flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
+    echo '<script>alert(' . json_encode($message, $flags) . ');';
+    if ($redirect !== null) {
+        $allowedRedirects = ['register.php', 'login.php', 'index.php'];
+        if (in_array($redirect, $allowedRedirects, true)) {
+            echo 'window.location.assign(' . json_encode($redirect, $flags) . ');';
+        }
+    }
+    echo '</script>';
+}
+
+/** Send a registration OTP using Gmail SMTP, with a 465 fallback. */
 function sendRegistrationOtpEmail(
     string $recipientEmail,
     string $recipientName,
@@ -56,7 +321,7 @@ function sendRegistrationOtpEmail(
     string $intro
 ): void {
     $smtpEmail = trim((string)SMTP_EMAIL);
-    $smtpPassword = preg_replace('/\\s+/', '', (string)SMTP_PASS);
+    $smtpPassword = preg_replace('/\s+/', '', (string)SMTP_PASS);
 
     if ($smtpEmail === '' || $smtpPassword === '') {
         throw new RuntimeException('SMTP_EMAIL or SMTP_PASS is not configured.');
@@ -111,48 +376,10 @@ function sendRegistrationOtpEmail(
     throw new RuntimeException('Gmail SMTP delivery failed on both configured connection methods. ' . implode(' | ', $errors));
 }
 
-
-
-// ============================================================
-
-
-// EMAIL SETTINGS
-
-
-// IMPORTANT: Put your NEW Gmail App Password here locally.
-
-
-// Do NOT commit the real password to GitHub.
-
-
-// ============================================================
-
-
-if (!defined('SMTP_EMAIL')) {
-
-
-    define('SMTP_EMAIL', getenv('SMTP_EMAIL') ?: 'prototyp6712@gmail.com');
-
-
-}
-
-
-if (!defined('SMTP_PASS')) {
-
-
-    define('SMTP_PASS', getenv('SMTP_PASS') ?: '');
-
-
-}
-
-
-// ============================================================
-// GOOGLE REGISTRATION OTP: SEND THE FIRST CODE HERE
-// Keep Google sign-up inside the registration flow instead of
-// redirecting to the login page's resend-code workflow.
-// ============================================================
+// GOOGLE REGISTRATION: Firebase client authentication followed by email OTP.
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['google_register_btn'])) {
     header('Content-Type: application/json; charset=UTF-8');
+    header('Cache-Control: no-store');
 
     $jsonResponse = static function (bool $success, string $message, ?string $redirect = null, int $status = 200): void {
         http_response_code($status);
@@ -164,30 +391,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['google_register_btn']
         exit;
     };
 
-    $postedCsrf = (string)($_POST['csrf_token'] ?? '');
+    $postedCsrf = registerPostString('csrf_token');
     if ($postedCsrf === '' || !hash_equals($register_csrf_token, $postedCsrf)) {
         $jsonResponse(false, 'Your registration session expired. Refresh the page and try again.', null, 403);
     }
 
-    $googleName = trim((string)($_POST['full_name'] ?? ''));
-    $googleEmail = strtolower(trim((string)($_POST['email'] ?? '')));
-    if ($googleName === '' || strlen($googleName) > 150 || !filter_var($googleEmail, FILTER_VALIDATE_EMAIL) || strlen($googleEmail) > 254) {
-        $jsonResponse(false, 'Google did not provide valid account details. Please try again.', null, 400);
+    // Never trust a name or email supplied directly by the browser.
+    // Verify the Firebase ID token and derive the account details from its signed claims.
+    $idToken = registerPostString('id_token');
+    try {
+        $verifiedGoogleUser = registerGoogleVerifyFirebaseIdToken($idToken);
+    } catch (InvalidArgumentException $tokenError) {
+        $jsonResponse(false, 'Google authentication could not be verified. Please sign in with Google again.', null, 401);
+    } catch (Throwable $tokenError) {
+        error_log('Firebase token verification failed during registration: ' . $tokenError->getMessage());
+        $jsonResponse(false, 'Google verification is temporarily unavailable. Please try again later.', null, 503);
     }
 
-    $smtpEmail = trim((string)SMTP_EMAIL);
-    $smtpPassword = preg_replace('/\s+/', '', (string)SMTP_PASS);
-    if ($smtpEmail === '' || $smtpPassword === '') {
+    $googleName = trim((string)$verifiedGoogleUser['full_name']);
+    $googleEmail = strtolower(trim((string)$verifiedGoogleUser['email']));
+    if (
+        $googleName === '' || registerStringLength($googleName) > 150 ||
+        !filter_var($googleEmail, FILTER_VALIDATE_EMAIL) || strlen($googleEmail) > 254
+    ) {
+        $jsonResponse(false, 'Google did not provide valid verified account details. Please try again.', null, 400);
+    }
+
+    if (trim((string)SMTP_EMAIL) === '' || preg_replace('/\s+/', '', (string)SMTP_PASS) === '') {
         $jsonResponse(false, 'Email verification is not configured on the server. Please contact the administrator.', null, 500);
     }
 
     $googleUserId = 0;
     $googleIsNewUser = false;
     $googleOtp = (string)random_int(100000, 999999);
-    unset($_SESSION['temp_email'], $_SESSION['register_otp_last_sent'], $_SESSION['register_otp_resends']);
 
     try {
-        $findUser = $pdo->prepare('SELECT id, email, full_name, role, is_verified FROM users WHERE LOWER(email) = LOWER(:email) LIMIT 1');
+        $findUser = $pdo->prepare(
+            'SELECT id, email, full_name, role, is_verified FROM users WHERE LOWER(email) = LOWER(:email) LIMIT 1'
+        );
         $findUser->execute([':email' => $googleEmail]);
         $existingGoogleUser = $findUser->fetch(PDO::FETCH_ASSOC);
 
@@ -195,28 +436,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['google_register_btn']
             if (strtolower(trim((string)($existingGoogleUser['role'] ?? ''))) !== 'customer') {
                 $jsonResponse(false, 'This email belongs to a staff or administrator account. Please use the appropriate login page.', null, 403);
             }
-
-            $verifiedValue = $existingGoogleUser['is_verified'] ?? false;
-            $isAlreadyVerified = in_array($verifiedValue, [true, 1, '1', 't', 'true', 'TRUE'], true);
-            if ($isAlreadyVerified) {
+            if (registerDbBooleanTrue($existingGoogleUser['is_verified'] ?? false)) {
                 $jsonResponse(false, 'An account with this Google email already exists. Please use the Login page instead.', 'login.php', 409);
             }
 
             $googleUserId = (int)$existingGoogleUser['id'];
             $mailDisplayName = trim((string)($existingGoogleUser['full_name'] ?? '')) ?: $googleName;
-            $saveGoogleOtp = $pdo->prepare('UPDATE users SET otp_code = :otp, is_verified = 0, email_verified = 0 WHERE id = :id');
+            $saveGoogleOtp = $pdo->prepare(
+                "UPDATE users
+                 SET otp_code = :otp, is_verified = FALSE, email_verified = FALSE
+                 WHERE id = :id
+                   AND LOWER(TRIM(COALESCE(role, ''))) = 'customer'
+                   AND COALESCE(is_verified, FALSE) = FALSE"
+            );
             $saveGoogleOtp->execute([':otp' => $googleOtp, ':id' => $googleUserId]);
+            if ($saveGoogleOtp->rowCount() !== 1) {
+                $jsonResponse(false, 'This account has changed. Please refresh and try again.', null, 409);
+            }
         } else {
             $randomPassword = password_hash(bin2hex(random_bytes(16)), PASSWORD_DEFAULT);
-            $insertGoogleUser = $pdo->prepare('
-                INSERT INTO users (
+            if (!is_string($randomPassword) || $randomPassword === '') {
+                throw new RuntimeException('Unable to create a secure account password.');
+            }
+            $insertGoogleUser = $pdo->prepare(
+                'INSERT INTO users (
                     full_name, contact_number, email, password, role, position,
                     user_category, otp_code, is_verified, email_verified
                 ) VALUES (
                     :full_name, :contact_number, :email, :password, :role, :position,
-                    :user_category, :otp, 0, 0
-                ) RETURNING id
-            ');
+                    :user_category, :otp, FALSE, FALSE
+                ) RETURNING id'
+            );
             $insertGoogleUser->execute([
                 ':full_name' => $googleName,
                 ':contact_number' => 'Not Provided',
@@ -225,9 +475,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['google_register_btn']
                 ':role' => 'customer',
                 ':position' => 'Customer',
                 ':user_category' => 'Pet Owner',
-                ':otp' => $googleOtp
+                ':otp' => $googleOtp,
             ]);
             $googleUserId = (int)$insertGoogleUser->fetchColumn();
+            if ($googleUserId < 1) {
+                throw new RuntimeException('Google registration did not return a user ID.');
+            }
             $googleIsNewUser = true;
             $mailDisplayName = $googleName;
         }
@@ -241,7 +494,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['google_register_btn']
             'Your Google account was authenticated. Enter this code on the registration page to finish creating your account.'
         );
 
-        // Only show the OTP screen after PHPMailer confirms the initial send.
         $_SESSION['temp_email'] = $googleEmail;
         $_SESSION['register_otp_last_sent'] = time();
         $_SESSION['register_otp_resends'] = 0;
@@ -251,10 +503,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['google_register_btn']
         if ($googleUserId > 0) {
             try {
                 if ($googleIsNewUser) {
-                    $cleanupGoogleUser = $pdo->prepare('DELETE FROM users WHERE id = :id AND is_verified = 0 AND otp_code = :otp');
+                    $cleanupGoogleUser = $pdo->prepare(
+                        'DELETE FROM users WHERE id = :id AND is_verified = FALSE AND otp_code = :otp'
+                    );
                     $cleanupGoogleUser->execute([':id' => $googleUserId, ':otp' => $googleOtp]);
                 } else {
-                    $clearGoogleOtp = $pdo->prepare('UPDATE users SET otp_code = NULL WHERE id = :id AND otp_code = :otp');
+                    $clearGoogleOtp = $pdo->prepare(
+                        'UPDATE users SET otp_code = NULL WHERE id = :id AND otp_code = :otp AND is_verified = FALSE'
+                    );
                     $clearGoogleOtp->execute([':id' => $googleUserId, ':otp' => $googleOtp]);
                 }
             } catch (Throwable $cleanupGoogleError) {
@@ -266,52 +522,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['google_register_btn']
     }
 }
 
-
-// ============================================================
-// VERIFY OTP
-
-
-// ============================================================
-
-
-// ============================================================
-// RESEND REGISTRATION OTP
-// Works for regular registration and Google registration.
-// Uses a 30-second cooldown and limits each challenge to 3 resends.
-// ============================================================
-if (isset($_POST['resend_register_otp_btn'])) {
-    $submittedCsrf = (string)($_POST['csrf_token'] ?? '');
+// RESEND OTP: 30-second cooldown and at most three resends per session challenge.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['resend_register_otp_btn'])) {
+    $submittedCsrf = registerPostString('csrf_token');
     if ($submittedCsrf === '' || !hash_equals($register_csrf_token, $submittedCsrf)) {
         http_response_code(403);
         exit('Invalid security token. Please refresh the page and try again.');
     }
 
-    $email = strtolower(trim((string)($_SESSION['temp_email'] ?? '')));
-    if ($email === '') {
-        echo "<script>alert('Your registration session expired. Please register again.'); window.location='register.php';</script>";
+    $email = strtolower(trim(is_string($_SESSION['temp_email'] ?? null) ? $_SESSION['temp_email'] : ''));
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        unset($_SESSION['temp_email'], $_SESSION['register_otp_last_sent'], $_SESSION['register_otp_resends']);
+        registerAlert('Your registration session expired. Please register again.', 'register.php');
         exit;
     }
 
-    $lastSentAt = (int)($_SESSION['register_otp_last_sent'] ?? 0);
-    if ($lastSentAt > 0 && (time() - $lastSentAt) < 30) {
-        $waitSeconds = 30 - (time() - $lastSentAt);
-        echo "<script>alert('Please wait {$waitSeconds} seconds before requesting another code.'); window.location='register.php';</script>";
+    $lastSentAt = max(0, (int)($_SESSION['register_otp_last_sent'] ?? 0));
+    $elapsed = time() - $lastSentAt;
+    if ($lastSentAt > 0 && $elapsed < 30) {
+        registerAlert('Please wait ' . (30 - $elapsed) . ' seconds before requesting another code.', 'register.php');
         exit;
     }
-
     if ((int)($_SESSION['register_otp_resends'] ?? 0) >= 3) {
-        echo "<script>alert('You have reached the resend limit. Please start registration again to request a new code.'); window.location='register.php';</script>";
+        registerAlert('You have reached the resend limit. Please start registration again to request a new code.', 'register.php');
         exit;
     }
-
-    $smtpEmail = trim((string)SMTP_EMAIL);
-    $smtpPassword = preg_replace('/\s+/', '', (string)SMTP_PASS);
-    if ($smtpEmail === '' || $smtpPassword === '') {
-        echo "<script>alert('Email verification is not configured. Please try again later.'); window.location='register.php';</script>";
+    if (trim((string)SMTP_EMAIL) === '' || preg_replace('/\s+/', '', (string)SMTP_PASS) === '') {
+        registerAlert('Email verification is not configured. Please try again later.', 'register.php');
         exit;
     }
 
     $newOtp = (string)random_int(100000, 999999);
+    $user = null;
+    $previousOtp = null;
     try {
         $userStmt = $pdo->prepare(
             'SELECT id, full_name, role, is_verified, otp_code FROM users WHERE LOWER(email) = LOWER(:email) LIMIT 1'
@@ -321,21 +564,27 @@ if (isset($_POST['resend_register_otp_btn'])) {
 
         if (!$user || strtolower(trim((string)($user['role'] ?? ''))) !== 'customer') {
             unset($_SESSION['temp_email'], $_SESSION['register_otp_last_sent'], $_SESSION['register_otp_resends']);
-            echo "<script>alert('Registration account not found. Please register again.'); window.location='register.php';</script>";
+            registerAlert('Registration account not found. Please register again.', 'register.php');
             exit;
         }
-
-        $verifiedValue = $user['is_verified'] ?? false;
-        $isVerified = in_array($verifiedValue, [true, 1, '1', 't', 'true', 'TRUE'], true);
-        if ($isVerified) {
+        if (registerDbBooleanTrue($user['is_verified'] ?? false)) {
             unset($_SESSION['temp_email'], $_SESSION['register_otp_last_sent'], $_SESSION['register_otp_resends']);
-            echo "<script>alert('This account is already verified. Please log in.'); window.location='login.php';</script>";
+            registerAlert('This account is already verified. Please log in.', 'login.php');
             exit;
         }
 
         $previousOtp = $user['otp_code'] ?? null;
-        $updateOtp = $pdo->prepare('UPDATE users SET otp_code = :otp, is_verified = 0, email_verified = 0 WHERE id = :id');
+        $updateOtp = $pdo->prepare(
+            "UPDATE users
+             SET otp_code = :otp, is_verified = FALSE, email_verified = FALSE
+             WHERE id = :id
+               AND LOWER(TRIM(COALESCE(role, ''))) = 'customer'
+               AND COALESCE(is_verified, FALSE) = FALSE"
+        );
         $updateOtp->execute([':otp' => $newOtp, ':id' => $user['id']]);
+        if ($updateOtp->rowCount() !== 1) {
+            throw new RuntimeException('Registration verification challenge is no longer active.');
+        }
 
         sendRegistrationOtpEmail(
             $email,
@@ -348,15 +597,16 @@ if (isset($_POST['resend_register_otp_btn'])) {
 
         $_SESSION['register_otp_last_sent'] = time();
         $_SESSION['register_otp_resends'] = (int)($_SESSION['register_otp_resends'] ?? 0) + 1;
-        echo "<script>alert('A new verification code has been sent. Check your inbox and spam folder.'); window.location='register.php';</script>";
+        registerAlert('A new verification code has been sent. Check your inbox and spam folder.', 'register.php');
         exit;
     } catch (Throwable $e) {
         try {
-            // Restore the previous code if the replacement email could not be sent.
             if (isset($user['id'])) {
-                $restoreOtp = $pdo->prepare('UPDATE users SET otp_code = :previous_otp WHERE id = :id AND otp_code = :new_otp');
+                $restoreOtp = $pdo->prepare(
+                    'UPDATE users SET otp_code = :previous_otp WHERE id = :id AND otp_code = :new_otp AND is_verified = FALSE'
+                );
                 $restoreOtp->execute([
-                    ':previous_otp' => $previousOtp ?? null,
+                    ':previous_otp' => $previousOtp,
                     ':id' => $user['id'],
                     ':new_otp' => $newOtp,
                 ]);
@@ -365,738 +615,223 @@ if (isset($_POST['resend_register_otp_btn'])) {
             error_log('Registration resend OTP restore failed: ' . $cleanupError->getMessage());
         }
         error_log('Registration OTP resend failed: ' . $e->getMessage());
-        echo "<script>alert('Could not send a new verification code. Please try again later.'); window.location='register.php';</script>";
+        registerAlert('Could not send a new verification code. Please try again later.', 'register.php');
         exit;
     }
 }
 
-
-if (isset($_POST['verify_btn'])) {
-
-
-    $submitted_csrf = $_POST['csrf_token'] ?? '';
-
-    if (!is_string($submitted_csrf) || !hash_equals($register_csrf_token, $submitted_csrf)) {
-
+// VERIFY OTP: atomic UPDATE prevents the same OTP from being consumed twice.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['verify_btn'])) {
+    $submittedCsrf = registerPostString('csrf_token');
+    if ($submittedCsrf === '' || !hash_equals($register_csrf_token, $submittedCsrf)) {
         http_response_code(403);
-
         exit('Invalid security token. Please refresh the page and try again.');
-
     }
 
-
-    if (!isset($_SESSION['temp_email'])) {
-
-
-        echo "<script>
-
-
-                alert('Session expired. Please register again.');
-
-
-                window.location='register.php';
-
-
-              </script>";
-
-
-        exit();
-
-
-    }
-
-
-    $email = $_SESSION['temp_email'];
-
-
-    $entered_otp = trim((string)($_POST['otp_code'] ?? ''));
-
-    if (!preg_match('/^[0-9]{6}$/', $entered_otp)) {
-
-        echo "<script>alert('Please enter the 6-digit verification code.');</script>";
-
-    } else {
-
-
-    $stmt = $pdo->prepare("
-
-
-        SELECT *
-
-
-        FROM users
-
-
-        WHERE email = :email
-
-
-          AND otp_code = :otp
-
-
-        LIMIT 1
-
-
-    ");
-
-
-    $stmt->execute([
-
-
-        ':email' => $email,
-
-
-        ':otp' => $entered_otp
-
-
-    ]);
-
-
-    $user_data = $stmt->fetch();
-
-
-    if ($user_data) {
-
-
-        $update = $pdo->prepare("
-
-
-            UPDATE users
-
-
-            SET is_verified = 1,
-
-
-                email_verified = 1,
-
-
-                otp_code = NULL
-
-
-            WHERE email = :email
-
-
-        ");
-
-
-        $update->execute([
-
-
-            ':email' => $email
-
-
-        ]);
-
-
+    $email = $_SESSION['temp_email'] ?? '';
+    if (!is_string($email) || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
         unset($_SESSION['temp_email'], $_SESSION['register_otp_last_sent'], $_SESSION['register_otp_resends']);
+        registerAlert('Session expired. Please register again.', 'register.php');
+        exit;
+    }
 
-
-        $_SESSION['logged_in'] = true;
-
-
-        $_SESSION['user_id'] = $user_data['id'];
-
-
-        $_SESSION['user_name'] = $user_data['full_name'];
-
-
-        $_SESSION['role'] = $user_data['role'];
-
-
-        $_SESSION['position'] = $user_data['position'];
-
-
-        echo "<script>
-
-
-                alert('Account verified successfully! Logging you in...');
-
-
-                window.location='index.php';
-
-
-              </script>";
-
-
-        exit();
-
-
+    $enteredOtp = trim(registerPostString('otp_code'));
+    if (!preg_match('/^[0-9]{6}$/', $enteredOtp)) {
+        registerAlert('Please enter the 6-digit verification code.');
     } else {
-
-
-        echo "<script>
-
-
-                alert('Invalid Verification Code. Please try again.');
-
-
-              </script>";
-
-
-    }
-
-
-    }
-
-
-}
-
-
-// ============================================================
-
-
-// REGISTRATION LOGIC
-
-
-// ============================================================
-
-
-if (isset($_POST['register_btn'])) {
-
-
-    $submitted_csrf = $_POST['csrf_token'] ?? '';
-
-    if (!is_string($submitted_csrf) || !hash_equals($register_csrf_token, $submitted_csrf)) {
-
-        http_response_code(403);
-
-        exit('Invalid security token. Please refresh the page and try again.');
-
-    }
-
-
-    $full_name = trim($_POST['full_name'] ?? '');
-
-
-    $contact = trim($_POST['contact'] ?? '');
-
-
-    $email = trim($_POST['email'] ?? '');
-
-
-    $user_category = trim($_POST['user_category'] ?? '');
-
-
-    $password = $_POST['password'] ?? '';
-
-
-    $confirm_password = $_POST['confirm_password'] ?? '';
-
-
-    // ========================================================
-
-
-    // VALIDATIONS
-
-
-    // ========================================================
-
-
-    if (!preg_match("/^[a-zA-Z\s]*$/", $full_name)) {
-
-
-        echo "<script>
-
-
-                alert('Invalid name. Only letters and spaces are allowed.');
-
-
-              </script>";
-
-
-    } elseif (!preg_match("/^09[0-9]{9}$/", $contact)) {
-
-
-        echo "<script>
-
-
-                alert('Invalid contact number. Must start with 09 and be exactly 11 digits (e.g., 09123456789).');
-
-
-              </script>";
-
-
-    } elseif (!preg_match(
-
-
-        "/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.(com|net|ph)$/i",
-
-
-        $email
-
-
-    )) {
-
-
-        echo "<script>
-
-
-                alert('Invalid email. Please use a complete email address.');
-
-
-              </script>";
-
-
-    } elseif (!preg_match("/^(?=.*[A-Z]).{8,}$/", $password)) {
-
-
-        echo "<script>
-
-
-                alert('Password must be at least 8 characters long and include at least 1 uppercase letter.');
-
-
-              </script>";
-
-
-    } elseif ($password !== $confirm_password) {
-
-
-        echo "<script>
-
-
-                alert('Passwords do not match.');
-
-
-              </script>";
-
-
-    } elseif (!isset($_POST['terms_agree'])) {
-
-
-        echo "<script>
-
-
-                alert('Please agree to the terms and conditions.');
-
-
-              </script>";
-
-
-    } else {
-
-
-        // ====================================================
-
-
-        // CHECK EMAIL
-
-
-        // ====================================================
-
-
-        $check_stmt = $pdo->prepare("
-
-
-            SELECT id, is_verified
-
-
-            FROM users
-
-
-            WHERE LOWER(email) = LOWER(:email)
-
-
-            LIMIT 1
-
-
-        ");
-
-
-        $check_stmt->execute([
-
-
-            ':email' => $email
-
-
-        ]);
-
-
-        $existing_user = $check_stmt->fetch();
-
-
-        // A verified account cannot be registered again.
-
-
-        $verified_value = $existing_user['is_verified'] ?? false;
-
-        $existing_is_verified = in_array($verified_value, [true, 1, '1', 't', 'true', 'TRUE'], true);
-
-
-        if ($existing_user && $existing_is_verified) {
-
-
-            echo "<script>
-
-
-                    alert('Email is already registered.');
-
-
-                    window.location='register.php';
-
-
-                  </script>";
-
-
-            exit();
-
-
-        }
-
-
-        $hashed_password = password_hash($password, PASSWORD_DEFAULT);
-
-
-        $role = 'customer';
-
-
-        $position = 'Customer';
-
-
-        $otp = random_int(100000, 999999);
-
-
         try {
-
-
-            // =================================================
-
-
-            // CREATE OR REFRESH AN UNVERIFIED ACCOUNT
-
-
-            // =================================================
-
-
-            if ($existing_user) {
-
-
-                $account_stmt = $pdo->prepare("
-
-
-                    UPDATE users
-
-
-                    SET full_name = :full_name,
-
-
-                        contact_number = :contact,
-
-
-                        password = :password,
-
-
-                        role = :role,
-
-
-                        position = :position,
-
-
-                        user_category = :user_category,
-
-
-                        otp_code = :otp,
-
-
-                        is_verified = 0,
-
-
-                        email_verified = 0
-
-
-                    WHERE id = :id
-
-
-                ");
-
-
-                $account_stmt->execute([
-
-
-                    ':full_name' => $full_name,
-
-
-                    ':contact' => $contact,
-
-
-                    ':password' => $hashed_password,
-
-
-                    ':role' => $role,
-
-
-                    ':position' => $position,
-
-
-                    ':user_category' => $user_category,
-
-
-                    ':otp' => $otp,
-
-
-                    ':id' => $existing_user['id']
-
-
-                ]);
-
-
-            } else {
-
-
-                $account_stmt = $pdo->prepare("
-
-
-                    INSERT INTO users (
-
-
-                        full_name,
-
-
-                        contact_number,
-
-
-                        email,
-
-
-                        password,
-
-
-                        role,
-
-
-                        position,
-
-
-                        user_category,
-
-
-                        otp_code,
-
-
-                        is_verified
-
-
-                    )
-
-
-                    VALUES (
-
-
-                        :full_name,
-
-
-                        :contact,
-
-
-                        :email,
-
-
-                        :password,
-
-
-                        :role,
-
-
-                        :position,
-
-
-                        :user_category,
-
-
-                        :otp,
-
-
-                        0
-
-
-                    )
-
-
-                ");
-
-
-                $account_stmt->execute([
-
-
-                    ':full_name' => $full_name,
-
-
-                    ':contact' => $contact,
-
-
-                    ':email' => $email,
-
-
-                    ':password' => $hashed_password,
-
-
-                    ':role' => $role,
-
-
-                    ':position' => $position,
-
-
-                    ':user_category' => $user_category,
-
-
-                    ':otp' => $otp
-
-
-                ]);
-
-
+            $verifyStmt = $pdo->prepare(
+                "UPDATE users
+                 SET is_verified = TRUE,
+                     email_verified = TRUE,
+                     otp_code = NULL
+                 WHERE LOWER(email) = LOWER(:email)
+                   AND otp_code = :otp
+                   AND LOWER(TRIM(COALESCE(role, ''))) = 'customer'
+                   AND COALESCE(is_verified, FALSE) = FALSE
+                 RETURNING id, full_name, position"
+            );
+            $verifyStmt->execute([':email' => $email, ':otp' => $enteredOtp]);
+            $userData = $verifyStmt->fetch(PDO::FETCH_ASSOC);
+
+            if ($userData) {
+                if (session_status() === PHP_SESSION_ACTIVE) {
+                    session_regenerate_id(true);
+                }
+                unset(
+                    $_SESSION['temp_email'],
+                    $_SESSION['register_otp_last_sent'],
+                    $_SESSION['register_otp_resends'],
+                    $_SESSION['register_csrf_token']
+                );
+                $_SESSION['logged_in'] = true;
+                $_SESSION['user_id'] = (int)$userData['id'];
+                $_SESSION['user_name'] = (string)($userData['full_name'] ?? 'Customer');
+                $_SESSION['role'] = 'customer';
+                $_SESSION['position'] = (string)($userData['position'] ?? 'Customer');
+                registerAlert('Account verified successfully! Logging you in...', 'index.php');
+                exit;
             }
 
+            registerAlert('Invalid or already-used verification code. Please try again.');
+        } catch (PDOException $e) {
+            error_log('Registration OTP verification failed: ' . $e->getMessage());
+            registerAlert('Unable to verify the account right now. Please try again later.');
+        }
+    }
+}
 
-            // =================================================
+// REGULAR CUSTOMER REGISTRATION.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['register_btn'])) {
+    $submittedCsrf = registerPostString('csrf_token');
+    if ($submittedCsrf === '' || !hash_equals($register_csrf_token, $submittedCsrf)) {
+        http_response_code(403);
+        exit('Invalid security token. Please refresh the page and try again.');
+    }
 
+    $fullName = trim(registerPostString('full_name'));
+    $contact = trim(registerPostString('contact'));
+    $email = strtolower(trim(registerPostString('email')));
+    $userCategory = trim(registerPostString('user_category'));
+    $password = registerPostString('password');
+    $confirmPassword = registerPostString('confirm_password');
 
-            // SEND OTP VIA GMAIL / PHPMailer
+    $nameLength = registerStringLength($fullName);
+    $validName = $nameLength >= 2 && $nameLength <= 150 &&
+        (bool)preg_match('/^[\p{L}\p{M}][\p{L}\p{M} .\x{27}\x{2019}\-]*$/u', $fullName);
 
-
-            // =================================================
-
-
-            sendRegistrationOtpEmail(
-                $email,
-                $full_name,
-                (string)$otp,
-                "Verify Your Account - Boogie's Pet Care",
-                "Welcome to Boogie's Pet Care!",
-                'Thank you for registering. To activate your account, please enter the 6-digit verification code below.'
+    if (!$validName) {
+        registerAlert('Please enter a valid full name (letters, spaces, apostrophes, periods, or hyphens only; maximum 150 characters).');
+    } elseif (!preg_match('/^09[0-9]{9}$/', $contact)) {
+        registerAlert('Invalid contact number. Must start with 09 and be exactly 11 digits (e.g., 09123456789).');
+    } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL) || strlen($email) > 254) {
+        registerAlert('Invalid email. Please use a complete email address.');
+    } elseif (!in_array($userCategory, ['Pet Owner', 'Pet Breeder'], true)) {
+        registerAlert('Please select a valid registration category.');
+    } elseif (!preg_match('/^(?=.*[A-Z]).{8,}$/', $password)) {
+        registerAlert('Password must be at least 8 characters long and include at least 1 uppercase letter.');
+    } elseif ($password !== $confirmPassword) {
+        registerAlert('Passwords do not match.');
+    } elseif (!isset($_POST['terms_agree'])) {
+        registerAlert('Please agree to the terms and conditions.');
+    } else {
+        try {
+            $checkStmt = $pdo->prepare(
+                'SELECT id, role, is_verified FROM users WHERE LOWER(email) = LOWER(:email) LIMIT 1'
             );
+            $checkStmt->execute([':email' => $email]);
+            $existingUser = $checkStmt->fetch(PDO::FETCH_ASSOC);
 
-
-            // Only create the OTP session after a successful email send.
-
-
-            $_SESSION['temp_email'] = $email;
-            $_SESSION['register_otp_last_sent'] = time();
-            $_SESSION['register_otp_resends'] = 0;
-
-
-            echo "<script>
-
-
-                    alert('Account created! We have sent a verification code to your email.');
-
-
-                    window.location='register.php';
-
-
-                  </script>";
-
-
-            exit();
-
-
-        } catch (Throwable $e) {
-
-
-            // Keep the real error in the server log instead of exposing SMTP details publicly.
-
-
-            error_log('Registration OTP error: ' . $e->getMessage());
-
-
-            // A failed send should not leave a blocked/unusable account.
-
-
-            try {
-
-
-                if ($existing_user) {
-
-
-                    $clear_otp = $pdo->prepare("
-
-
-                        UPDATE users
-
-
-                        SET otp_code = NULL
-
-
-                        WHERE id = :id
-
-
-                    ");
-
-
-                    $clear_otp->execute([
-
-
-                        ':id' => $existing_user['id']
-
-
-                    ]);
-
-
-                } else {
-
-
-                    $delete_user = $pdo->prepare("
-
-
-                        DELETE FROM users
-
-
-                        WHERE email = :email
-
-
-                          AND is_verified = 0
-
-
-                    ");
-
-
-                    $delete_user->execute([
-
-
-                        ':email' => $email
-
-
-                    ]);
-
-
+            if ($existingUser && strtolower(trim((string)($existingUser['role'] ?? ''))) !== 'customer') {
+                registerAlert('This email belongs to a staff or administrator account. Please use the appropriate login page.');
+            } elseif ($existingUser && registerDbBooleanTrue($existingUser['is_verified'] ?? false)) {
+                registerAlert('Email is already registered. Please use the Login page.', 'login.php');
+                exit;
+            } else {
+                $hashedPassword = password_hash($password, PASSWORD_DEFAULT);
+                if (!is_string($hashedPassword) || $hashedPassword === '') {
+                    throw new RuntimeException('Unable to securely hash the account password.');
                 }
 
+                $otp = (string)random_int(100000, 999999);
+                $existingUserId = $existingUser ? (int)$existingUser['id'] : 0;
+                $newUserId = 0;
 
-            } catch (Throwable $cleanup_error) {
+                if ($existingUserId > 0) {
+                    $accountStmt = $pdo->prepare(
+                        "UPDATE users
+                         SET full_name = :full_name,
+                             contact_number = :contact,
+                             password = :password,
+                             role = 'customer',
+                             position = 'Customer',
+                             user_category = :user_category,
+                             otp_code = :otp,
+                             is_verified = FALSE,
+                             email_verified = FALSE
+                         WHERE id = :id
+                           AND LOWER(TRIM(COALESCE(role, ''))) = 'customer'
+                           AND COALESCE(is_verified, FALSE) = FALSE"
+                    );
+                    $accountStmt->execute([
+                        ':full_name' => $fullName,
+                        ':contact' => $contact,
+                        ':password' => $hashedPassword,
+                        ':user_category' => $userCategory,
+                        ':otp' => $otp,
+                        ':id' => $existingUserId,
+                    ]);
+                    if ($accountStmt->rowCount() !== 1) {
+                        throw new RuntimeException('The unverified customer account changed during registration.');
+                    }
+                } else {
+                    $accountStmt = $pdo->prepare(
+                        'INSERT INTO users (
+                            full_name, contact_number, email, password, role, position,
+                            user_category, otp_code, is_verified, email_verified
+                         ) VALUES (
+                            :full_name, :contact, :email, :password, :role, :position,
+                            :user_category, :otp, FALSE, FALSE
+                         ) RETURNING id'
+                    );
+                    $accountStmt->execute([
+                        ':full_name' => $fullName,
+                        ':contact' => $contact,
+                        ':email' => $email,
+                        ':password' => $hashedPassword,
+                        ':role' => 'customer',
+                        ':position' => 'Customer',
+                        ':user_category' => $userCategory,
+                        ':otp' => $otp,
+                    ]);
+                    $newUserId = (int)$accountStmt->fetchColumn();
+                    if ($newUserId < 1) {
+                        throw new RuntimeException('Registration did not return a user ID.');
+                    }
+                }
 
+                try {
+                    sendRegistrationOtpEmail(
+                        $email,
+                        $fullName,
+                        $otp,
+                        "Verify Your Account - Boogie's Pet Care",
+                        "Welcome to Boogie's Pet Care!",
+                        'Thank you for registering. To activate your account, please enter the 6-digit verification code below.'
+                    );
+                } catch (Throwable $mailError) {
+                    // Only roll back this request's OTP; do not overwrite another newer challenge.
+                    try {
+                        if ($newUserId > 0) {
+                            $deleteUser = $pdo->prepare(
+                                'DELETE FROM users WHERE id = :id AND is_verified = FALSE AND otp_code = :otp'
+                            );
+                            $deleteUser->execute([':id' => $newUserId, ':otp' => $otp]);
+                        } elseif ($existingUserId > 0) {
+                            $clearOtp = $pdo->prepare(
+                                'UPDATE users SET otp_code = NULL WHERE id = :id AND is_verified = FALSE AND otp_code = :otp'
+                            );
+                            $clearOtp->execute([':id' => $existingUserId, ':otp' => $otp]);
+                        }
+                    } catch (Throwable $cleanupError) {
+                        error_log('Registration cleanup error: ' . $cleanupError->getMessage());
+                    }
+                    throw $mailError;
+                }
 
-                error_log('Registration cleanup error: ' . $cleanup_error->getMessage());
-
-
+                $_SESSION['temp_email'] = $email;
+                $_SESSION['register_otp_last_sent'] = time();
+                $_SESSION['register_otp_resends'] = 0;
+                registerAlert('Account created! We have sent a verification code to your email.', 'register.php');
+                exit;
             }
-
-
+        } catch (Throwable $e) {
+            error_log('Registration OTP error: ' . $e->getMessage());
             unset($_SESSION['temp_email'], $_SESSION['register_otp_last_sent'], $_SESSION['register_otp_resends']);
-
-
-            echo "<script>
-
-
-                    alert('We could not send the verification code. Please check the Gmail App Password/SMTP settings and try again.');
-
-
-                    window.location='register.php';
-
-
-                  </script>";
-
-
-            exit();
-
-
+            registerAlert('We could not complete registration or send the verification code. Please try again later.');
         }
-
-
     }
-
-
 }
-
-
 ?>
 
 
@@ -1685,7 +1420,7 @@ if (isset($_POST['register_btn'])) {
                 <div class="form-group">
 
 
-                    <input type="text" name="otp_code" class="otp-input" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" required placeholder="000000" oninput="this.value = this.value.replace(/[^0-9]/g, '')">
+                    <input type="text" name="otp_code" class="otp-input" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" required placeholder="000000" oninput="this.value = this.value.replace(/[^0-9]/g, '').slice(0, 6)">
 
 
                 </div>
@@ -1737,7 +1472,7 @@ if (isset($_POST['register_btn'])) {
                     <label>Full Name <span>*</span></label>
 
 
-                    <input type="text" name="full_name" placeholder="Enter your full name" required>
+                    <input type="text" name="full_name" placeholder="Enter your full name" required maxlength="150" autocomplete="name">
 
 
                 </div>
@@ -1761,7 +1496,7 @@ if (isset($_POST['register_btn'])) {
                     <label>Email Address <span>*</span></label>
 
 
-                    <input type="email" name="email" autocomplete="email" placeholder="Enter your email" required>
+                    <input type="email" name="email" autocomplete="email" placeholder="Enter your email" required maxlength="254">
 
 
                 </div>
@@ -1975,14 +1710,22 @@ if (isset($_POST['register_btn'])) {
         }
 
 
-        async function authenticateWithBackend(name, email) {
+        async function authenticateWithBackend(firebaseUser) {
+
+            if (!firebaseUser || typeof firebaseUser.getIdToken !== "function") {
+                throw new Error("Google authentication did not return a valid Firebase user. Please try again.");
+            }
+
+            const idToken = await firebaseUser.getIdToken(true);
+            if (!idToken || typeof idToken !== "string") {
+                throw new Error("Could not retrieve the Google verification token. Please try again.");
+            }
 
             const registerCsrfToken = <?php echo json_encode($register_csrf_token, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
             const formBody = new URLSearchParams({
                 google_register_btn: "1",
                 csrf_token: registerCsrfToken,
-                full_name: name || "",
-                email: email || ""
+                id_token: idToken
             });
 
             const response = await fetch("register.php", {
@@ -2051,7 +1794,7 @@ if (isset($_POST['register_btn'])) {
 
                     }
 
-                    await authenticateWithBackend(user.displayName || "", user.email);
+                    await authenticateWithBackend(user);
 
                 } catch (error) {
 

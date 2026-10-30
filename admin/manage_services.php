@@ -36,6 +36,70 @@ $profile_img_path = '';
 $first_name = 'Administrator';
 $admin_notifications = [];
 $unread_count = 0;
+$profile_img_src = '';
+
+/**
+ * Resolve profile images saved by either the Admin or shared Staff upload flow.
+ * Admin uploads are stored under admin/uploads; shared uploads are under /uploads.
+ */
+function resolveManageServicesProfileImage(string $storedPath): string
+{
+    $storedPath = trim($storedPath);
+    if ($storedPath === '' || preg_match('/[\x00-\x1F\x7F]/', $storedPath)) {
+        return '';
+    }
+
+    // Preserve valid external HTTPS/HTTP image URLs, but reject other schemes.
+    if (preg_match('~^https?://~i', $storedPath)) {
+        $scheme = strtolower((string)parse_url($storedPath, PHP_URL_SCHEME));
+        return in_array($scheme, ['http', 'https'], true) && filter_var($storedPath, FILTER_VALIDATE_URL)
+            ? $storedPath
+            : '';
+    }
+
+    $normalized = str_replace('\\', '/', $storedPath);
+    $normalized = ltrim($normalized, '/');
+
+    // Accept the known stored formats without permitting arbitrary traversal.
+    $normalized = preg_replace('~^(?:(?:\.\./)+)?admin/~i', '', $normalized);
+    $normalized = preg_replace('~^(?:(?:\.\./)+)?uploads/~i', '', $normalized);
+    if ($normalized === '' || preg_match('~(^|/)\.\.?(/|$)|:|[?#]~', $normalized)) {
+        return '';
+    }
+
+    $relativeParts = array_values(array_filter(explode('/', $normalized), 'strlen'));
+    if (!$relativeParts) {
+        return '';
+    }
+    $relativePath = implode(DIRECTORY_SEPARATOR, $relativeParts);
+
+    $uploadLocations = [
+        ['directory' => __DIR__ . '/uploads', 'url_prefix' => 'uploads/'],
+        ['directory' => __DIR__ . '/../uploads', 'url_prefix' => '../uploads/'],
+    ];
+
+    foreach ($uploadLocations as $location) {
+        $basePath = realpath($location['directory']);
+        if ($basePath === false) {
+            continue;
+        }
+
+        $imagePath = realpath($basePath . DIRECTORY_SEPARATOR . $relativePath);
+        if ($imagePath === false || !is_file($imagePath)) {
+            continue;
+        }
+
+        $basePrefix = rtrim($basePath, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+        if (strpos($imagePath, $basePrefix) !== 0) {
+            continue;
+        }
+
+        $encodedPath = implode('/', array_map('rawurlencode', $relativeParts));
+        return $location['url_prefix'] . $encodedPath;
+    }
+
+    return '';
+}
 
 if (isset($_SESSION['user_id'])) {
     try {
@@ -61,13 +125,21 @@ if (isset($_SESSION['user_id'])) {
     }
 }
 
+$profile_img_src = resolveManageServicesProfileImage($profile_img_path);
+
 try {
-    $admin_notif_stmt = $pdo->prepare(
-        'SELECT id, message, created_at FROM admin_notifications WHERE is_read = 0 ORDER BY created_at DESC'
+    // Load only the newest 20 notifications while retaining the full unread count.
+    $admin_notif_stmt = $pdo->query(
+        'SELECT id, message, created_at, COUNT(*) OVER() AS total_unread
+         FROM admin_notifications
+         WHERE is_read = 0
+         ORDER BY created_at DESC, id DESC
+         LIMIT 20'
     );
-    $admin_notif_stmt->execute();
     $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
-    $unread_count = count($admin_notifications);
+    $unread_count = !empty($admin_notifications)
+        ? (int)$admin_notifications[0]['total_unread']
+        : 0;
 } catch (PDOException $e) {
     error_log('Manage services notification lookup failed: ' . $e->getMessage());
     $admin_notifications = [];
@@ -176,7 +248,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 // Fetch services for the table.
 $services = [];
 try {
-    $services_stmt = $pdo->query('SELECT * FROM services_pricelist ORDER BY category ASC, id ASC');
+    $services_stmt = $pdo->query('SELECT id, category, service_name, price, is_available FROM services_pricelist ORDER BY category ASC, id ASC');
     $services = $services_stmt->fetchAll(PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
     error_log('Fetch services error: ' . $e->getMessage());
@@ -580,9 +652,9 @@ try {
 
                     <span class="admin-tag"><?php echo strtoupper($_SESSION['role'] ?? 'ADMIN'); ?></span>
 
-                    <?php if (!empty($profile_img_path) && file_exists($profile_img_path)): ?>
+                    <?php if ($profile_img_src !== ''): ?>
 
-                        <img src="<?php echo htmlspecialchars($profile_img_path, ENT_QUOTES, 'UTF-8'); ?>" class="top-avatar" alt="Profile Picture">
+                        <img src="<?php echo htmlspecialchars($profile_img_src, ENT_QUOTES, 'UTF-8'); ?>" class="top-avatar" alt="Profile Picture">
 
                     <?php else: ?>
 
@@ -890,47 +962,41 @@ try {
 
         }
 
+        let adminNotifRequestInFlight = false;
+
         function fetchAdminNotifs() {
 
+            // Avoid background traffic and overlapping requests.
+            if (document.hidden || adminNotifRequestInFlight) return;
+            adminNotifRequestInFlight = true;
+
             fetch('get_admin_notifs.php', {
-
                 method: 'GET',
-
                 cache: 'no-store',
-
                 credentials: 'same-origin'
-
             })
-
             .then(function(response) {
-
                 if (!response.ok) {
-
-                    throw new Error(
-
-                        'Notification request failed: HTTP ' + response.status
-
-                    );
-
+                    throw new Error('Notification request failed: HTTP ' + response.status);
                 }
-
                 return response.json();
-
             })
-
             .then(renderAdminNotifications)
-
             .catch(function(error) {
-
                 console.error('Error fetching admin notifications:', error);
-
+            })
+            .finally(function() {
+                adminNotifRequestInFlight = false;
             });
 
         }
 
-        fetchAdminNotifs();
-
-        setInterval(fetchAdminNotifs, 3000);
+        // The initial notification list is already rendered by PHP.
+        // Refresh every 15 seconds instead of every 3 seconds.
+        window.setInterval(fetchAdminNotifs, 15000);
+        document.addEventListener('visibilitychange', function() {
+            if (!document.hidden) fetchAdminNotifs();
+        });
 
 // --- MODAL LOGIC ---
 

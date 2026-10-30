@@ -1,194 +1,201 @@
 <?php
+declare(strict_types=1);
+
 require_once __DIR__ . '/../shared_session_bootstrap.php';
-require_once '../db_supabase.php';
 
-// --- SECURITY CHECK ---
-// This page is for veterinary-team accounts only.
-$current_role = isset($_SESSION['role']) ? strtolower(trim((string)$_SESSION['role'])) : '';
-$vet_roles = ['vet', 'veterinarian', 'vet assistant', 'vet_assistant', 'vet nurse', 'vet_nurse'];
-$is_vet = isset($_SESSION['logged_in'])
-    && $_SESSION['logged_in'] === true
-    && in_array($current_role, $vet_roles, true);
+/* -------------------------------------------------------------------------
+   AUTHENTICATION — VETERINARY TEAM ONLY
+   Accept both session flags used by the Staff login flow.
+   ------------------------------------------------------------------------- */
+$roleRaw = strtolower(trim((string)($_SESSION['role'] ?? '')));
+$roleNormalized = preg_replace('/[_-]+/', ' ', $roleRaw);
+$roleAliases = [
+    'vet' => 'veterinarian',
+    'veterinary' => 'veterinarian',
+    'veterinarian' => 'veterinarian',
+    'vet assistant' => 'vet_assistant',
+    'veterinary assistant' => 'vet_assistant',
+    'vet nurse' => 'vet_nurse',
+    'veterinary nurse' => 'vet_nurse',
+];
+$currentRole = $roleAliases[$roleNormalized] ?? $roleRaw;
+$vetRoles = ['veterinarian', 'vet_assistant', 'vet_nurse'];
+$sessionLoggedIn = in_array($_SESSION['logged_in'] ?? null, [true, 1, '1'], true)
+    || in_array($_SESSION['staff_logged_in'] ?? null, [true, 1, '1'], true);
+$userId = (int)($_SESSION['user_id'] ?? $_SESSION['staff_id'] ?? 0);
 
-if (!$is_vet) {
-    header("Location: stafflogin.php");
-    exit();
-}
-
-// CSRF token for state-changing actions.
-if (empty($_SESSION['tasks_csrf'])) {
-    $_SESSION['tasks_csrf'] = bin2hex(random_bytes(32));
-}
-$tasks_csrf = $_SESSION['tasks_csrf'];
-
-// SET CORRECT TIMEZONE FOR PHILIPPINES
-date_default_timezone_set('Asia/Manila');
-
-$staff_name = $_SESSION['staff_name'] ?? 'Doctor';
-
-// --- FETCH STAFF PROFILE IMAGE & FULL NAME ---
-$profile_img_path = "";
-$full_display_name = $staff_name;
-
-if (isset($_SESSION['user_id']) || isset($_SESSION['staff_id'])) {
-    $uid = $_SESSION['user_id'] ?? $_SESSION['staff_id'];
-
-    try {
-        // Idinagdag ang full_name para makuha ang buong pangalan
-        $get_staff = $pdo->prepare("
-            SELECT full_name, profile_image
-            FROM users
-            WHERE id = :uid
-            LIMIT 1
-        ");
-
-        $get_staff->execute([
-            ':uid' => (int)$uid
-        ]);
-
-        $staff_data = $get_staff->fetch(PDO::FETCH_ASSOC);
-
-        if ($staff_data) {
-            $profile_img_path = $staff_data['profile_image'] ?? '';
-
-            if (!empty($staff_data['full_name'])) {
-                $full_display_name = $staff_data['full_name'];
-            }
-        }
-    } catch (PDOException $e) {
-        error_log("Staff profile query failed: " . $e->getMessage());
-    }
-}
-
-// Linisin ang pangalan para sa Avatar Initial (Tatanggalin ang "Dr. " at comma)
-$clean_name = trim(str_replace('Dr. ', '', $full_display_name), " ,");
-$first_letter = strtoupper(substr($clean_name, 0, 1));
-
-// Siguraduhing may "Dr. " na nakadikit sa buong pangalan para formal
-$display_with_title = (stripos($full_display_name, 'Dr.') === false)
-    ? 'Dr. ' . $full_display_name
-    : $full_display_name;
-
-// Mobile top bar: show first name only to prevent crowding.
-$mobile_name_source = trim(preg_replace('/^\s*(?:Dr\.?|Dra\.?|Doc\.?)\s+/i', '', (string)$display_with_title));
-$first_name_only = trim((string)(preg_split('/\s+/', $mobile_name_source)[0] ?? ''));
-
-
-// Notifications are intentionally not read from admin_notifications here.
-// That table and its polling endpoint belong to the Admin side; a staff-specific
-// notification table/schema was not available to verify safely.
-$staff_notifications = [];
-$unread_count = 0;
-
-// Profile image paths may be stored as a URL or as a path relative to the project root.
-$profile_img_src = '';
-$profile_img_is_remote = false;
-if (is_string($profile_img_path) && trim($profile_img_path) !== '') {
-    $profile_img_path = trim($profile_img_path);
-    $parsed_img_url = filter_var($profile_img_path, FILTER_VALIDATE_URL) ? parse_url($profile_img_path) : false;
-    $profile_img_is_remote = is_array($parsed_img_url)
-        && isset($parsed_img_url['scheme'])
-        && in_array(strtolower($parsed_img_url['scheme']), ['http', 'https'], true);
-
-    if ($profile_img_is_remote) {
-        $profile_img_src = $profile_img_path;
-    } else {
-        $normalized_img_path = str_replace('\\', '/', $profile_img_path);
-        $clean_img_path = preg_replace('#^(?:\./|\.\./)+#', '', ltrim($normalized_img_path, '/'));
-        $candidate_paths = [
-            __DIR__ . '/' . ltrim($normalized_img_path, '/'),
-            dirname(__DIR__) . '/' . $clean_img_path,
-        ];
-        foreach ($candidate_paths as $candidate_path) {
-            if (is_file($candidate_path)) {
-                if (strpos($normalized_img_path, '/') === 0) {
-                    $profile_img_src = $normalized_img_path;
-                } elseif (strpos($normalized_img_path, '../') === 0) {
-                    $profile_img_src = $normalized_img_path;
-                } else {
-                    $profile_img_src = '../' . $clean_img_path;
-                }
-                break;
-            }
-        }
-    }
-}
-
-// --- TASK LOGIC (Automated from Appointments - SINGLE VET CLINIC) ---
-
-// MARK AS COMPLETED
-// Use POST + CSRF and verify that the appointment is a confirmed vet service.
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['complete_task'])) {
-    $id = filter_input(INPUT_POST, 'appointment_id', FILTER_VALIDATE_INT);
-    $csrf = $_POST['csrf_token'] ?? '';
-
-    if (!is_string($csrf) || !$id || !hash_equals($tasks_csrf, $csrf)) {
-        http_response_code(400);
-        exit('Invalid request.');
-    }
-
-    try {
-        $complete_stmt = $pdo->prepare("
-            UPDATE appointments
-            SET booking_status = 'Completed'
-            WHERE id = :id
-              AND booking_status = 'Confirmed'
-              AND service LIKE 'Vet Services%'
-        ");
-
-        $complete_stmt->execute([
-            ':id' => $id
-        ]);
-    } catch (PDOException $e) {
-        error_log("Task completion update failed: " . $e->getMessage());
-    }
-
-    header("Location: tasks.php");
+if (!$sessionLoggedIn || !in_array($currentRole, $vetRoles, true) || $userId <= 0) {
+    header('Location: stafflogin.php');
     exit;
 }
 
-// FETCH CONFIRMED AND COMPLETED APPOINTMENTS FOR VET SERVICES
+// Philippine time and private page caching.
+date_default_timezone_set('Asia/Manila');
+header('Cache-Control: private, no-store, max-age=0');
+header('Pragma: no-cache');
+
+// CSRF token for the task-completion action.
+if (empty($_SESSION['tasks_csrf']) || !is_string($_SESSION['tasks_csrf'])) {
+    $_SESSION['tasks_csrf'] = bin2hex(random_bytes(32));
+}
+$tasksCsrf = $_SESSION['tasks_csrf'];
+
+// Keep the variable names expected by the existing page markup.
+$tasks_csrf = $tasksCsrf;
+
+// Open the database only after the user has passed the authentication checks.
+require_once __DIR__ . '/../db_supabase.php';
+
+/* -------------------------------------------------------------------------
+   COMPLETE TASK — ONLY A CONFIRMED VETERINARY APPOINTMENT CAN BE COMPLETED
+   ------------------------------------------------------------------------- */
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && isset($_POST['complete_task'])) {
+    $rawAppointmentId = $_POST['appointment_id'] ?? null;
+    $appointmentId = is_scalar($rawAppointmentId)
+        ? filter_var((string)$rawAppointmentId, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]])
+        : false;
+    $submittedCsrf = $_POST['csrf_token'] ?? '';
+
+    if ($appointmentId === false || !is_string($submittedCsrf) || $submittedCsrf === '' || !hash_equals($tasksCsrf, $submittedCsrf)) {
+        http_response_code(400);
+        exit('Invalid request. Please refresh the page and try again.');
+    }
+
+    try {
+        $completeStmt = $pdo->prepare("
+            UPDATE appointments
+            SET booking_status = 'Completed'
+            WHERE id = :appointment_id
+              AND booking_status = 'Confirmed'
+              AND service LIKE 'Vet Services%'
+        ");
+        $completeStmt->execute([':appointment_id' => $appointmentId]);
+    } catch (PDOException $e) {
+        error_log('Task completion update failed: ' . $e->getMessage());
+    }
+
+    // PRG prevents accidental duplicate submissions when the page is refreshed.
+    header('Location: tasks.php', true, 303);
+    exit;
+}
+
+/* -------------------------------------------------------------------------
+   STAFF PROFILE
+   ------------------------------------------------------------------------- */
+$staffName = trim((string)($_SESSION['staff_name'] ?? $_SESSION['user_name'] ?? 'Doctor'));
+$fullDisplayName = $staffName !== '' ? $staffName : 'Doctor';
+$profileImgPath = '';
+$profileImgSrc = '';
+
 try {
-    $tasks_stmt = $pdo->prepare("
+    $staffStmt = $pdo->prepare("
+        SELECT full_name, profile_image
+        FROM users
+        WHERE id = :user_id
+        LIMIT 1
+    ");
+    $staffStmt->execute([':user_id' => $userId]);
+    $staffData = $staffStmt->fetch(PDO::FETCH_ASSOC);
+
+    if ($staffData) {
+        $profileImgPath = trim((string)($staffData['profile_image'] ?? ''));
+        $databaseName = trim((string)($staffData['full_name'] ?? ''));
+        if ($databaseName !== '') {
+            $fullDisplayName = $databaseName;
+        }
+    }
+} catch (PDOException $e) {
+    error_log('Staff profile query failed: ' . $e->getMessage());
+}
+
+// Resolve only HTTP(S) URLs or files kept inside the known project upload area.
+if ($profileImgPath !== '') {
+    $parsedImageUrl = filter_var($profileImgPath, FILTER_VALIDATE_URL) ? parse_url($profileImgPath) : false;
+    $imageScheme = is_array($parsedImageUrl) ? strtolower((string)($parsedImageUrl['scheme'] ?? '')) : '';
+
+    if (in_array($imageScheme, ['http', 'https'], true)) {
+        $profileImgSrc = $profileImgPath;
+    } else {
+        $normalizedImagePath = str_replace('\\', '/', $profileImgPath);
+        $relativeImagePath = preg_replace('#^(?:(?:\.\./)|(?:\./))+#', '', ltrim($normalizedImagePath, '/'));
+        $hasTraversal = preg_match('#(?:^|/)\.\.(?:/|$)#', (string)$relativeImagePath) === 1;
+
+        if (!$hasTraversal && is_string($relativeImagePath) && $relativeImagePath !== '') {
+            $projectRoot = dirname(__DIR__);
+            $allowedPrefixes = ['uploads/', 'admin/uploads/', 'staff/uploads/'];
+            $isAllowedUpload = false;
+            foreach ($allowedPrefixes as $prefix) {
+                if (str_starts_with($relativeImagePath, $prefix)) {
+                    $isAllowedUpload = true;
+                    break;
+                }
+            }
+
+            if ($isAllowedUpload && is_file($projectRoot . '/' . $relativeImagePath)) {
+                $profileImgSrc = '../' . implode('/', array_map('rawurlencode', explode('/', $relativeImagePath)));
+            }
+        }
+    }
+}
+
+$nameWithoutTitle = trim((string)preg_replace('/^\s*(?:Dr\.?|Dra\.?|Doc\.?)\s+/i', '', $fullDisplayName));
+$firstLetter = strtoupper(substr($nameWithoutTitle !== '' ? $nameWithoutTitle : 'D', 0, 1));
+$displayWithTitle = (stripos($fullDisplayName, 'Dr.') === false)
+    ? 'Dr. ' . $fullDisplayName
+    : $fullDisplayName;
+$mobileNameSource = trim((string)preg_replace('/^\s*(?:Dr\.?|Dra\.?|Doc\.?)\s+/i', '', $displayWithTitle));
+$firstNameOnly = trim((string)(preg_split('/\s+/', $mobileNameSource)[0] ?? ''));
+
+// Compatibility aliases used by the existing HTML template.
+$profile_img_src = $profileImgSrc;
+$first_letter = $firstLetter;
+$display_with_title = $displayWithTitle;
+$first_name_only = $firstNameOnly;
+
+// Staff notification storage is not connected on this page; do not read Admin notifications.
+$unread_count = 0;
+
+/* -------------------------------------------------------------------------
+   VETERINARY TASK QUEUE
+   The page displays only these appointment fields, so avoid fetching a.*.
+   ------------------------------------------------------------------------- */
+$tasks = [];
+try {
+    $tasksStmt = $pdo->query("
         SELECT
-            a.*,
+            a.id,
+            a.service,
+            a.booking_status,
+            a.appointment_date,
+            a.appointment_time,
             p.name AS pet_name
         FROM appointments a
-        LEFT JOIN pets p
-            ON a.pet_id = p.id
+        LEFT JOIN pets p ON p.id = a.pet_id
         WHERE a.booking_status IN ('Confirmed', 'Completed')
           AND a.service LIKE 'Vet Services%'
         ORDER BY
-            CASE
-                WHEN a.booking_status = 'Completed' THEN 1
-                ELSE 0
-            END,
+            CASE WHEN a.booking_status = 'Completed' THEN 1 ELSE 0 END,
             a.appointment_date ASC,
-            a.appointment_time ASC
+            a.appointment_time ASC,
+            a.id ASC
     ");
-
-    $tasks_stmt->execute();
-    $tasks = $tasks_stmt->fetchAll(PDO::FETCH_ASSOC);
+    $tasks = $tasksStmt->fetchAll(PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
-    error_log("Tasks query failed: " . $e->getMessage());
-    $tasks = [];
+    error_log('Tasks query failed: ' . $e->getMessage());
 }
 
-// PROGRESS CALCULATION
 $total_tasks = count($tasks);
-$completed_tasks = count(
-    array_filter(
-        $tasks,
-        function ($t) {
-            return ($t['booking_status'] ?? '') === 'Completed';
-        }
-    )
-);
-
-$progress = ($total_tasks > 0)
-    ? ($completed_tasks / $total_tasks) * 100
-    : 0;
+$completed_tasks = 0;
+foreach ($tasks as $taskRow) {
+    if (($taskRow['booking_status'] ?? '') === 'Completed') {
+        $completed_tasks++;
+    }
+}
+$progress = $total_tasks > 0
+    ? round(($completed_tasks / $total_tasks) * 100, 2)
+    : 0.0;
 ?>
+
 
 <!DOCTYPE html>
 <html lang="en">
