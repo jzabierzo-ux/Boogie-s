@@ -357,7 +357,7 @@ $isNewUser = false;
 $previousOtp = null;
 $previousOtpCaptured = false;
 $mailName = $fullName;
-$pdo = null;
+
 
 try {
     require_once __DIR__ . '/../db_supabase.php';
