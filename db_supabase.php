@@ -22,5 +22,8 @@ try {
         ]
     );
 } catch (PDOException $e) {
-    die("Database connection failed: " . $e->getMessage());
+    error_log('Database connection failed: ' . $e->getMessage());
+
+    http_response_code(503);
+    exit('Database service is temporarily unavailable. Please try again later.');
 }

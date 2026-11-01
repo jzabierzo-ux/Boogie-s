@@ -1,11 +1,13 @@
-# Environment / Secrets
+
+# Environment files and secrets
 .env
 .env.*
+**/.env
+**/.env.*
 !.env.example
 
 # Dependencies
 node_modules/
-vendor/
 
 # Logs
 *.log
@@ -22,5 +24,6 @@ Thumbs.db
 
 # Local secrets
 includes/secrets.php
-.vercel
-.env*
+
+# Vercel local configuration
+.vercel/

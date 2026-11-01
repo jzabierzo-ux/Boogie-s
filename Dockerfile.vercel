@@ -2,7 +2,7 @@
 
 WORKDIR /app
 
-RUN install-php-extensions pdo_pgsql
+RUN install-php-extensions pdo_pgsql curl
 
 RUN cp $PHP_INI_DIR/php.ini-production $PHP_INI_DIR/php.ini
 

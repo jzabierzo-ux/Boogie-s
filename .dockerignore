@@ -1,0 +1,29 @@
+
+# Git and Vercel
+.git/
+.vercel/
+
+# Environment files and secrets
+.env
+.env.*
+**/.env
+**/.env.*
+
+# Dependencies and development files
+node_modules/
+**/node_modules/
+.idea/
+
+# Logs and temporary files
+*.log
+firebase-debug.log
+.DS_Store
+Thumbs.db
+*.zip
+
+# Local secrets
+includes/secrets.php
+
+# Uploaded customer files
+uploads/
+admin/uploads/
