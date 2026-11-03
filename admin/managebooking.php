@@ -2,6 +2,7 @@
 require_once __DIR__ . '/../shared_session_bootstrap.php';
 require_once __DIR__ . '/../db_supabase.php';
 require_once __DIR__ . '/../includes/iprog_sms.php';
+require_once __DIR__ . '/../includes/clinic_reschedule.php';
 
 // Set default timezone
 date_default_timezone_set('Asia/Manila');
@@ -176,6 +177,74 @@ function bookingAdminIntervalsOverlap(int $startA, int $endA, int $startB, int $
     return $startA < $endB && $startB < $endA;
 }
 
+
+/** Keep Admin walk-in durations aligned with the customer slot scheduler. */
+function bookingAdminGroomingDurationMinutes(string $service): int
+{
+    $name = strtolower(trim($service));
+    if (strpos($name, 'full grooming package') !== false) return 120;
+    if (strpos($name, 'bath & blow dry') !== false || strpos($name, 'bath and blow dry') !== false) return 90;
+    if (strpos($name, 'basic pet grooming') !== false || strpos($name, 'cat grooming (basic)') !== false) return 60;
+    return 120; // Conservative fallback for an unrecognized Grooming service.
+}
+
+/**
+ * Evaluate simultaneous capacity at every point where an appointment,
+ * adjustment, or Grooming lunch capacity can change.
+ * Intervals are counted only when they are active at the same time; sequential
+ * appointments no longer incorrectly consume multiple simultaneous slots.
+ */
+function bookingAdminWalkinCapacityCheck(
+    int $candidateStart,
+    int $candidateEnd,
+    array $busyIntervals,
+    string $category,
+    int $normalCapacity
+): array {
+    $points = [$candidateStart];
+    foreach ($busyIntervals as $interval) {
+        $start = (int)($interval['start'] ?? 0);
+        $end = (int)($interval['end'] ?? 0);
+        if ($start >= $candidateEnd || $end <= $candidateStart) continue;
+        if ($start > $candidateStart && $start < $candidateEnd) $points[] = $start;
+        if ($end > $candidateStart && $end < $candidateEnd) $points[] = $end;
+    }
+    if ($category === 'Grooming') {
+        foreach ([12 * 60, 13 * 60] as $boundary) {
+            if ($boundary > $candidateStart && $boundary < $candidateEnd) $points[] = $boundary;
+        }
+    }
+    $points = array_values(array_unique($points));
+    sort($points, SORT_NUMERIC);
+
+    $minimumRemaining = $normalCapacity;
+    $minimumCapacity = $normalCapacity;
+    $exceedsCapacity = false;
+    foreach ($points as $point) {
+        if ($point >= $candidateEnd) continue;
+        $active = 0;
+        foreach ($busyIntervals as $interval) {
+            if ((int)($interval['start'] ?? 0) <= $point && (int)($interval['end'] ?? 0) > $point) {
+                $active++;
+            }
+        }
+        $capacity = ($category === 'Grooming' && $point >= 12 * 60 && $point < 13 * 60)
+            ? 1
+            : $normalCapacity;
+        $minimumCapacity = min($minimumCapacity, $capacity);
+        $remaining = max(0, $capacity - $active);
+        $minimumRemaining = min($minimumRemaining, $remaining);
+        if ($active + 1 > $capacity) $exceedsCapacity = true;
+    }
+
+    return [
+        'available' => !$exceedsCapacity,
+        'exceeds_capacity' => $exceedsCapacity,
+        'remaining_slots' => $minimumRemaining,
+        'effective_capacity' => $minimumCapacity,
+    ];
+}
+
 // AJAX endpoint for flexible-time Grooming and Vet walk-ins.
 // Walk-ins may be recorded at any minute during operating hours; they do not
 // have to match the half-hour online appointment start times. Capacity is still
@@ -212,8 +281,23 @@ if (($_GET['ajax'] ?? '') === 'walkin_service_capacity') {
     }
 
     $startMinutes = ((int)$timeObj->format('H') * 60) + (int)$timeObj->format('i');
+    $nowManila = new DateTimeImmutable('now', new DateTimeZone('Asia/Manila'));
+    $todayManila = $nowManila->format('Y-m-d');
+    $nowMinutes = ((int)$nowManila->format('H') * 60) + (int)$nowManila->format('i');
+    if ($selectedDate === $todayManila && $startMinutes < max(0, $nowMinutes - 5)) {
+        echo json_encode([
+            'success' => true,
+            'available' => false,
+            'capacity' => $category === 'Grooming' ? 2 : 1,
+            'remaining_slots' => 0,
+            'label' => $timeObj->format('g:i A'),
+            'reason' => 'This walk-in time has already passed today. Please choose a later time or another date.'
+        ]);
+        exit;
+    }
+
     $durationMinutes = $category === 'Grooming'
-        ? (stripos($specificService, 'Full Grooming Package') !== false ? 120 : 60)
+        ? bookingAdminGroomingDurationMinutes($specificService)
         : 30;
     $endMinutes = $startMinutes + $durationMinutes;
     $timeLabel = $timeObj->format('g:i A');
@@ -232,12 +316,7 @@ if (($_GET['ajax'] ?? '') === 'walkin_service_capacity') {
             'reason' => 'This service would finish after closing time. Choose an earlier walk-in time.']);
         exit;
     }
-    if ($category === 'Vet Services' && in_array((int)$dateObj->format('N'), [3, 6], true)) {
-        echo json_encode(['success' => true, 'available' => false, 'capacity' => $simultaneousLimit,
-            'remaining_slots' => 0, 'duration_minutes' => $durationMinutes, 'label' => $timeLabel,
-            'reason' => 'The veterinarian is not available on Wednesdays and Saturdays.']);
-        exit;
-    }
+    // Veterinary services are available every operating day, including Wednesday and Saturday.
 
     try {
         $activeStatusSql = "LOWER(BTRIM(COALESCE(booking_status, ''))) NOT IN ('cancelled', 'canceled', 'no-show', 'no show', 'noshow', 'for rescheduling')";
@@ -267,7 +346,7 @@ if (($_GET['ajax'] ?? '') === 'walkin_service_capacity') {
 
         $dailyTotal = 0;
         $categoryCount = 0;
-        $overlaps = 0;
+        $busyIntervals = [];
         foreach ($rows as $row) {
             $storedService = trim((string)($row['service'] ?? ''));
             $storedDate = substr((string)($row['appointment_date'] ?? ''), 0, 10);
@@ -294,10 +373,10 @@ if (($_GET['ajax'] ?? '') === 'walkin_service_capacity') {
             if (!preg_match('/^\d{2}:\d{2}$/', $storedTime)) continue;
             $storedStart = ((int)substr($storedTime, 0, 2) * 60) + (int)substr($storedTime, 3, 2);
             $storedDuration = $category === 'Grooming'
-                ? (stripos($storedService, 'Full Grooming Package') !== false ? 120 : 60)
+                ? bookingAdminGroomingDurationMinutes($storedService)
                 : 30;
             $storedEnd = $storedStart + $storedDuration;
-            if ($startMinutes < $storedEnd && $endMinutes > $storedStart) $overlaps++;
+            $busyIntervals[] = ['start' => $storedStart, 'end' => $storedEnd, 'type' => 'booking'];
         }
 
         $globalDailyLimit = 20;
@@ -308,11 +387,12 @@ if (($_GET['ajax'] ?? '') === 'walkin_service_capacity') {
         $manualBlockedOverlap = false;
         foreach (bookingAdminManualCapacityIntervals($manualAdjustments, $selectedDate, $category, $specificService, $simultaneousLimit) as $manualInterval) {
             if (bookingAdminIntervalsOverlap($startMinutes, $endMinutes, (int)$manualInterval['start'], (int)$manualInterval['end'])) {
-                $overlaps++;
+                $busyIntervals[] = $manualInterval;
                 if (($manualInterval['type'] ?? '') === 'blocked') $manualBlockedOverlap = true;
             }
         }
-        $remaining = max(0, min($simultaneousLimit - $overlaps, $dailyLimit - $categoryCount, $globalDailyLimit - $dailyTotal));
+        $capacityCheck = bookingAdminWalkinCapacityCheck($startMinutes, $endMinutes, $busyIntervals, $category, $simultaneousLimit);
+        $remaining = max(0, min((int)$capacityCheck['remaining_slots'], $dailyLimit - $categoryCount, $globalDailyLimit - $dailyTotal));
         $reason = '';
         if ($dailyTotal >= $globalDailyLimit) {
             $reason = 'The overall daily capacity of 20 pets has been reached. Please choose another date.';
@@ -320,17 +400,17 @@ if (($_GET['ajax'] ?? '') === 'walkin_service_capacity') {
             $reason = $category . ' has reached its daily capacity. Please choose another date.';
         } elseif ($manualBlockedOverlap) {
             $reason = 'This service is blocked by an Admin availability adjustment during this time. Choose another time or ask the Admin to reopen it.';
-        } elseif ($overlaps >= $simultaneousLimit) {
+        } elseif (!$capacityCheck['available']) {
             $reason = $category === 'Grooming'
-                ? 'Both groomers are already busy or unavailable during this time. Choose a different walk-in time.'
+                ? 'Grooming staff are already busy or unavailable during part of this service. Choose a different walk-in time.'
                 : 'Both the doctor and reliever are already busy or unavailable during this time. Choose a different walk-in time.';
         }
 
-        $isAvailable = $remaining > 0;
+        $isAvailable = $capacityCheck['available'] && $remaining > 0;
         echo json_encode([
             'success' => true,
             'available' => $isAvailable,
-            'capacity' => $simultaneousLimit,
+            'capacity' => (int)$capacityCheck['effective_capacity'],
             'remaining_slots' => $isAvailable ? $remaining : 0,
             'daily_capacity' => $dailyLimit,
             'daily_remaining' => max(0, $dailyLimit - $categoryCount),
@@ -355,8 +435,13 @@ if (($_GET['ajax'] ?? '') === 'walkin_boarding_capacity') {
     header('Pragma: no-cache');
 
     $checkin = trim((string)($_GET['date'] ?? ''));
+    $checkinTime = trim((string)($_GET['checkin_time'] ?? ''));
     $checkout = trim((string)($_GET['checkout_date'] ?? ''));
     $checkinDate = DateTimeImmutable::createFromFormat('!Y-m-d', $checkin, new DateTimeZone('Asia/Manila'));
+    $checkinTimeObject = DateTimeImmutable::createFromFormat('!H:i', $checkinTime, new DateTimeZone('Asia/Manila'));
+    $checkinTimeErrors = DateTimeImmutable::getLastErrors();
+    $validCheckinTime = $checkinTimeObject !== false && $checkinTimeObject->format('H:i') === $checkinTime
+        && ($checkinTimeErrors === false || ($checkinTimeErrors['warning_count'] === 0 && $checkinTimeErrors['error_count'] === 0));
     $checkoutDate = DateTimeImmutable::createFromFormat('!Y-m-d', $checkout, new DateTimeZone('Asia/Manila'));
     $checkinErrors = DateTimeImmutable::getLastErrors();
     $checkoutErrors = DateTimeImmutable::getLastErrors();
@@ -365,23 +450,47 @@ if (($_GET['ajax'] ?? '') === 'walkin_boarding_capacity') {
     $validCheckout = $checkoutDate !== false && $checkoutDate->format('Y-m-d') === $checkout
         && ($checkoutErrors === false || ($checkoutErrors['warning_count'] === 0 && $checkoutErrors['error_count'] === 0));
 
-    if (!$validCheckin || !$validCheckout || $checkout <= $checkin) {
+    if (!$validCheckin || !$validCheckout || !$validCheckinTime || $checkout <= $checkin) {
         http_response_code(400);
-        echo json_encode(['success' => false, 'available' => false, 'error' => 'Choose a valid check-in date and a check-out date at least one day later.']);
+        echo json_encode(['success' => false, 'available' => false, 'error' => 'Choose a valid check-in date, actual check-in time, and a check-out date at least one day later.']);
         exit;
     }
 
     $nowManila = new DateTimeImmutable('now', new DateTimeZone('Asia/Manila'));
     $todayManila = $nowManila->format('Y-m-d');
     $nowMinutes = ((int)$nowManila->format('H') * 60) + (int)$nowManila->format('i');
-    if ($checkin < $todayManila || ($checkin === $todayManila && $nowMinutes >= (9 * 60))) {
+    $checkinMinutes = ((int)$checkinTimeObject->format('H') * 60) + (int)$checkinTimeObject->format('i');
+    if ($checkin < $todayManila) {
         echo json_encode([
             'success' => true,
             'available' => false,
             'capacity' => 6,
             'remaining_rooms' => 0,
             'nights' => (int)$checkinDate->diff($checkoutDate)->days,
-            'reason' => $checkin < $todayManila ? 'The check-in date has already passed.' : 'The 9:00 AM check-in time has already passed today.'
+            'reason' => 'The check-in date has already passed.'
+        ], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+        exit;
+    }
+    if ($checkin === $todayManila && $checkinMinutes < max(0, $nowMinutes - 5)) {
+        echo json_encode([
+            'success' => true,
+            'available' => false,
+            'capacity' => 6,
+            'remaining_rooms' => 0,
+            'nights' => (int)$checkinDate->diff($checkoutDate)->days,
+            'reason' => 'This check-in time has already passed today. Choose the current time or a later time.'
+        ], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+        exit;
+    }
+    if ($checkinMinutes < (9 * 60) || $checkinMinutes >= (18 * 60)
+        || ($checkinMinutes >= (12 * 60) && $checkinMinutes < (13 * 60))) {
+        echo json_encode([
+            'success' => true,
+            'available' => false,
+            'capacity' => 6,
+            'remaining_rooms' => 0,
+            'nights' => (int)$checkinDate->diff($checkoutDate)->days,
+            'reason' => 'Pet Boarding check-in must be during operating hours (9:00 AM–6:00 PM), excluding the 12:00 PM–1:00 PM staff break.'
         ], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
         exit;
     }
@@ -783,6 +892,28 @@ if ($raw_profile_img !== '') {
 }
 
 // Walk-in submissions are handled by process_walkin.php.
+
+// --- CLINIC-INITIATED RESCHEDULING (separate from the customer's one-time allowance) ---
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['clinic_reschedule_action'])) {
+    $postedToken = (string)($_POST['csrf_token'] ?? '');
+    if ($postedToken === '' || !hash_equals($csrf_token, $postedToken)) {
+        $_SESSION['alert_msg'] = 'Security check failed. Refresh the page and try again.';
+    } else {
+        $clinicRescheduleResult = boogieClinicReschedule(
+            $pdo,
+            (int)($_POST['id'] ?? 0),
+            trim((string)($_POST['clinic_reschedule_date'] ?? '')),
+            trim((string)($_POST['clinic_reschedule_time'] ?? '')),
+            trim((string)($_POST['clinic_reschedule_reason'] ?? '')),
+            $current_role
+        );
+        $_SESSION['alert_msg'] = (string)($clinicRescheduleResult['message'] ?? 'Unable to process the clinic-initiated reschedule.');
+    }
+
+    $clinicPortal = $is_admin ? 'admin' : 'staff';
+    header('Location: managebooking.php?portal=' . rawurlencode($clinicPortal));
+    exit();
+}
 
 // --- LOGIC: UPDATE STATUS WITH NOTIFICATIONS, PAYMENT & SMS ---
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['booking_action'])) {
@@ -1672,6 +1803,7 @@ if ($is_admin) {
         .btn-icon-cancel { background: #ef4444; } 
         .btn-icon-noshow { background: #f97316; }
         .btn-icon-reschedule { background: #0ea5e9; } 
+        .btn-icon-clinic-reschedule { background: #7c3aed; }
         
         .btn-verify-gcash { background: #10b981; color: white; padding: 6px 12px; border-radius: 6px; text-decoration: none; font-size: 12px; font-weight: bold; display: inline-flex; align-items: center; gap: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); transition: 0.2s; }
         .btn-verify-gcash:hover { background: #059669; transform: translateY(-2px); box-shadow: 0 4px 8px rgba(0,0,0,0.15); }
@@ -2157,10 +2289,15 @@ if ($is_admin) {
             <?php if ($is_admin): ?>
             <section class="availability-panel" id="availability-management" aria-labelledby="availability-management-title">
                 <h2 id="availability-management-title"><i class="fas fa-sliders-h" style="margin-right:8px;color:#d6a900;"></i>Slot &amp; Room Availability</h2>
-                <p class="availability-intro">
-                    Record walk-ins not yet entered in the system as <strong>Occupied</strong>. Use <strong>Capacity Reduced</strong> when a staff member takes emergency leave or a room is temporarily unavailable, and <strong>Blocked</strong> when no capacity should be offered.
-                    For Vet Services, two staff are normally available (doctor + reliever): select Vet Services, choose <strong>All services in category</strong>, enter the date/time, then set Capacity Reduced × 1 if one staff member is away. Use Blocked if both are unavailable. For Pet Boarding, leave times blank to apply a room adjustment to each full day. Removing an adjustment releases only the capacity it reserved; appointments remain counted.
-                </p>
+                <div class="availability-intro">
+                    <p style="margin:0;">Use <strong>Occupied</strong> for walk-ins not yet recorded, <strong>Capacity Reduced</strong> when capacity is limited, and <strong>Blocked</strong> when no capacity is available.</p>
+                    <ul style="margin:8px 0 8px 20px;padding:0;">
+                        <li><strong>Grooming:</strong> 2 slots. Reduce × 1 if one groomer is unavailable; use Blocked if both are unavailable.</li>
+                        <li><strong>Vet Services:</strong> 2 staff. Reduce × 1 if one is unavailable; use Blocked if both are unavailable.</li>
+                        <li><strong>Pet Boarding:</strong> Leave both time fields blank to apply room adjustments for the entire day.</li>
+                    </ul>
+                    <p style="margin:0;">Select <strong>All services in category</strong> to apply an adjustment to every service in the selected category. Removing an adjustment releases only its reserved capacity; existing appointments remain counted.</p>
+                </div>
                 <?php if (!empty($_SESSION['availability_flash']) && is_array($_SESSION['availability_flash'])): ?>
                     <?php $availabilityFlash = $_SESSION['availability_flash']; unset($_SESSION['availability_flash']); ?>
                     <div class="availability-flash <?php echo (($availabilityFlash['type'] ?? '') === 'success') ? 'success' : 'error'; ?>" role="status">
@@ -2449,10 +2586,26 @@ if ($is_admin) {
                                                         <?php renderBookingActionForm('Confirmed', $bookingId, 'btn-icon btn-icon-confirm', '<i class="fas fa-check"></i>', 'Confirm booking', 'Confirm this booking? Payment status will not be changed by this action.', $csrf_token); ?>
                                                         <?php renderBookingActionForm('Cancelled', $bookingId, 'btn-icon btn-icon-cancel', '<i class="fas fa-times"></i>', 'Cancel booking', 'Are you sure you want to cancel this booking?', $csrf_token); ?>
                                                     <?php elseif (strtolower((string)$display_status) === 'confirmed'): ?>
+                                                        <button type="button" class="btn-icon btn-icon-clinic-reschedule" title="Reschedule due to clinic/staff unavailability" onclick="openClinicRescheduleModal(this)"
+                                                            data-id="<?php echo $bookingId; ?>"
+                                                            data-service="<?php echo htmlspecialchars((string)($row['service'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>"
+                                                            data-pet="<?php echo htmlspecialchars((string)($row['pet_display_name'] ?? 'Pet'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>"
+                                                            data-date="<?php echo htmlspecialchars(substr((string)($row['appointment_date'] ?? ''), 0, 10), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>"
+                                                            data-time="<?php echo htmlspecialchars(substr((string)($row['appointment_time'] ?? ''), 0, 5), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
+                                                            <i class="fas fa-calendar-plus"></i>
+                                                        </button>
                                                         <?php renderBookingActionForm('Completed', $bookingId, 'btn-icon btn-icon-confirm', '<i class="fas fa-check-double"></i>', 'Mark service completed', 'Mark this service as completed? This will not mark the payment as Paid.', $csrf_token); ?>
                                                         <?php renderBookingActionForm('Cancelled', $bookingId, 'btn-icon btn-icon-cancel', '<i class="fas fa-times"></i>', 'Cancel booking', 'Are you sure you want to cancel this confirmed booking?', $csrf_token); ?>
                                                         <?php renderBookingActionForm('For-Rescheduling', $bookingId, 'btn-icon btn-icon-reschedule', '<i class="fas fa-calendar-days"></i>', 'Allow one-time reschedule', 'Mark this booking for rescheduling? The customer gets one reschedule opportunity within 3 days.', $csrf_token); ?>
                                                     <?php elseif (strtolower((string)$display_status) === 'rescheduled'): ?>
+                                                        <button type="button" class="btn-icon btn-icon-clinic-reschedule" title="Reschedule due to clinic/staff unavailability" onclick="openClinicRescheduleModal(this)"
+                                                            data-id="<?php echo $bookingId; ?>"
+                                                            data-service="<?php echo htmlspecialchars((string)($row['service'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>"
+                                                            data-pet="<?php echo htmlspecialchars((string)($row['pet_display_name'] ?? 'Pet'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>"
+                                                            data-date="<?php echo htmlspecialchars(substr((string)($row['appointment_date'] ?? ''), 0, 10), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>"
+                                                            data-time="<?php echo htmlspecialchars(substr((string)($row['appointment_time'] ?? ''), 0, 5), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
+                                                            <i class="fas fa-calendar-plus"></i>
+                                                        </button>
                                                         <?php renderBookingActionForm('Completed', $bookingId, 'btn-icon btn-icon-confirm', '<i class="fas fa-check-double"></i>', 'Mark service completed', 'Mark this service as completed?', $csrf_token); ?>
                                                         <?php renderBookingActionForm('No-Show', $bookingId, 'btn-icon btn-icon-noshow', '<i class="fas fa-user-slash"></i>', 'Mark final no-show', 'Mark as No-Show? Use this only after the one reschedule has been used.', $csrf_token); ?>
                                                     <?php elseif (strtolower((string)$display_status) === 'for rescheduling'): ?>
@@ -2479,6 +2632,59 @@ if ($is_admin) {
             © <?php echo date("Y"); ?> BOOGIE'S PET CARE & SERVICES - DASMARIÑAS BRANCH
         </footer>
     </main>
+
+    <div id="clinicRescheduleModal" class="modal-overlay" style="display:none;">
+        <div class="modal-content" style="width:min(560px,100%);">
+            <div class="modal-header">
+                <div class="warning-icon" style="background:#ede9fe;color:#6d28d9;"><i class="fas fa-calendar-plus"></i></div>
+                <div>
+                    <h2>Clinic-Initiated Reschedule</h2>
+                    <p>Use when the clinic or assigned personnel is unavailable</p>
+                </div>
+            </div>
+            <div class="booking-details-box" style="margin-bottom:18px;">
+                <p>Current booking:</p>
+                <h3 id="clinicRescheduleService">Service</h3>
+                <div class="detail-row">Pet: <span id="clinicReschedulePet" style="color:var(--text-muted);"></span></div>
+                <div class="detail-row">Current schedule: <span id="clinicRescheduleCurrent" style="color:var(--text-muted);"></span></div>
+            </div>
+            <form method="POST" action="managebooking.php" id="clinicRescheduleForm">
+                <input type="hidden" name="clinic_reschedule_action" value="1">
+                <input type="hidden" name="id" id="clinicRescheduleBookingId" value="">
+                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
+                <input type="hidden" name="login_portal" value="<?php echo htmlspecialchars($portal_mode, ENT_QUOTES, 'UTF-8'); ?>">
+                <div class="modal-form-group">
+                    <label for="clinicRescheduleDate">New Date *</label>
+                    <input type="date" name="clinic_reschedule_date" id="clinicRescheduleDate" required min="<?php echo date('Y-m-d'); ?>">
+                </div>
+                <div class="modal-form-group" style="margin-top:12px;">
+                    <label for="clinicRescheduleTime">New Time *</label>
+                    <select name="clinic_reschedule_time" id="clinicRescheduleTime" required>
+                        <option value="">Choose new time</option>
+                        <option value="09:00">9:00 AM — Pet Boarding check-in</option>
+                        <option value="10:00">10:00 AM</option>
+                        <option value="11:00">11:00 AM</option>
+                        <option value="12:00">12:00 PM</option>
+                        <option value="13:00">1:00 PM</option>
+                        <option value="14:00">2:00 PM</option>
+                        <option value="15:00">3:00 PM</option>
+                        <option value="16:00">4:00 PM</option>
+                        <option value="17:00">5:00 PM</option>
+                    </select>
+                    <small id="clinicRescheduleTimeHelp" style="display:block;margin-top:6px;color:#64748b;font-size:11px;">The destination date and time will be checked against existing bookings and active availability adjustments.</small>
+                </div>
+                <div class="modal-form-group" style="margin-top:12px;">
+                    <label for="clinicRescheduleReason">Reason for Rescheduling *</label>
+                    <textarea name="clinic_reschedule_reason" id="clinicRescheduleReason" rows="3" maxlength="250" required placeholder="Example: Assigned groomer is unavailable due to emergency leave."></textarea>
+                </div>
+                <p style="margin:12px 0 0;color:#475569;font-size:12px;line-height:1.5;">This is a clinic-initiated change. The customer's one-time reschedule allowance and existing payment status will remain unchanged.</p>
+                <div class="modal-actions" style="margin-top:20px;">
+                    <button type="button" class="btn-keep" onclick="closeClinicRescheduleModal()">Cancel</button>
+                    <button type="submit" class="btn-confirm-cancel" style="background:#7c3aed;color:#fff;">Save New Schedule</button>
+                </div>
+            </form>
+        </div>
+    </div>
 
     <div id="cancelModal" class="modal-overlay">
         <div class="modal-content">
@@ -2627,12 +2833,12 @@ if ($is_admin) {
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:15px;">
                     <div class="modal-form-group">
                         <label>Date *</label>
-                        <input type="date" name="appointment_date" id="walkinDate" required value="<?php echo date('Y-m-d'); ?>">
+                        <input type="date" name="appointment_date" id="walkinDate" required min="<?php echo date('Y-m-d'); ?>" value="<?php echo date('Y-m-d'); ?>">
                     </div>
                     <div class="modal-form-group">
                         <label>Time *</label>
                         <input type="time" name="appointment_time" id="walkinTime" required step="60" min="09:00" max="17:59" value="<?php echo date('H:i'); ?>">
-                        <small style="display:block;margin-top:6px;color:#64748b;font-size:11px;">Enter the actual walk-in time. Grooming and Vet accept any minute during operating hours; availability is checked using the service duration and existing bookings. Pet Boarding uses the standard 9:00 AM check-in.</small>
+                        <small style="display:block;margin-top:6px;color:#64748b;font-size:11px;">Enter the pet's actual arrival time, not the owner's ETA. Pet Boarding accepts same-day check-in during operating hours, subject to room availability. Grooming, Vet, and Pet Daycare accept actual arrival times to the minute. If the owner is 30–60 minutes late, update this field when the pet arrives; capacity and daycare fees are recalculated from the actual arrival. The 12:00 PM–1:00 PM staff break is observed. A 5-minute entry buffer is allowed.</small>
                     </div>
                 </div>
 
@@ -2641,7 +2847,7 @@ if ($is_admin) {
                     <select name="pickup_time" id="walkinPickupTime" onchange="checkWalkinAvailability(); updateWalkinPrice();">
                         <option value="">Choose expected pickup time</option>
                     </select>
-                    <small style="display:block;margin-top:6px;color:#64748b;font-size:11px;">Pet Daycare includes the first-hour rate. After the first hour, the additional fee is ₱30 per hour, billed in ₱15 half-hour blocks. Pickup must be by 6:00 PM.</small>
+                    <small style="display:block;margin-top:6px;color:#64748b;font-size:11px;">Choose the expected pickup time in 30-minute increments, no later than 6:00 PM. The first-hour rate applies; succeeding time is billed in ₱15 half-hour blocks. If the owner arrives later than the ETA, record the actual drop-off time and choose a revised pickup time.</small>
                 </div>
 
                 <div class="modal-form-group" id="walkinCheckoutGroup" style="display:none;">
@@ -2807,8 +3013,11 @@ if ($is_admin) {
             placeholder.value = '';
             placeholder.textContent = start === null ? 'Choose drop-off time first' : 'Choose expected pickup time';
             select.appendChild(placeholder);
-            if (start !== null && start % 30 === 0 && start >= 9 * 60 && start < 18 * 60 && !(start >= 12 * 60 && start < 13 * 60)) {
-                for (let value = start + 30; value <= 18 * 60; value += 30) {
+            if (start !== null && start >= 9 * 60 && start < 18 * 60 && !(start >= 12 * 60 && start < 13 * 60)) {
+                // Walk-in drop-off records the actual arrival minute. Pickup choices
+                // remain on :00/:30 boundaries, at least 30 minutes after arrival.
+                const firstPickup = Math.ceil((start + 30) / 30) * 30;
+                for (let value = firstPickup; value <= 18 * 60; value += 30) {
                     const option = document.createElement('option');
                     option.value = String(Math.floor(value / 60)).padStart(2, '0') + ':' + String(value % 60).padStart(2, '0');
                     option.textContent = new Date(2000, 0, 1, Math.floor(value / 60), value % 60).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
@@ -2910,6 +3119,7 @@ if ($is_admin) {
 
         let walkinAvailabilityRequestId = 0;
         let walkinAvailabilityState = 'idle';
+        let walkinTimeWasManuallyEdited = false;
 
         function setWalkinCapacityMessage(state, title, message, note) {
             const box = document.getElementById('walkinCapacityBox');
@@ -2966,7 +3176,45 @@ if ($is_admin) {
                 return;
             }
 
+            const manilaNow = getWalkinManilaNow();
+            const nowMinutes = manilaNow.minutes;
+            const selectedTimeMinutes = appointmentTime && /^\d{2}:\d{2}$/.test(appointmentTime)
+                ? (Number(appointmentTime.slice(0, 2)) * 60) + Number(appointmentTime.slice(3, 5))
+                : null;
+
+            if (appointmentDate < manilaNow.date) {
+                walkinAvailabilityState = 'invalid';
+                setWalkinCapacityMessage('full', 'Walk-in Schedule', 'Past dates are not allowed.', 'Please choose today or a future date.');
+                disableSaveWhileChecking();
+                updateWalkinPrice();
+                return;
+            }
+
+            if (appointmentDate === manilaNow.date
+                && selectedTimeMinutes !== null && selectedTimeMinutes < Math.max(0, nowMinutes - 5)) {
+                walkinAvailabilityState = 'invalid';
+                setWalkinCapacityMessage('full', 'Walk-in Time', 'This time has already passed today.', 'Please choose a later time or another date.');
+                disableSaveWhileChecking();
+                updateWalkinPrice();
+                return;
+            }
+
             if (isBoarding) {
+                if (selectedTimeMinutes === null) {
+                    walkinAvailabilityState = 'invalid';
+                    setWalkinCapacityMessage('checking', 'Pet Boarding Check-in', 'Choose the actual check-in time.', 'Walk-in check-in is flexible during operating hours, subject to room availability.');
+                    disableSaveWhileChecking();
+                    updateWalkinPrice();
+                    return;
+                }
+                if (selectedTimeMinutes < 9 * 60 || selectedTimeMinutes >= 18 * 60
+                    || (selectedTimeMinutes >= 12 * 60 && selectedTimeMinutes < 13 * 60)) {
+                    walkinAvailabilityState = 'invalid';
+                    setWalkinCapacityMessage('full', 'Pet Boarding Check-in', 'Check-in must be between 9:00 AM and 6:00 PM, excluding the 12:00 PM–1:00 PM staff break.', 'Choose another check-in time.');
+                    disableSaveWhileChecking();
+                    updateWalkinPrice();
+                    return;
+                }
                 if (!checkOutDate || checkOutDate <= appointmentDate) {
                     walkinAvailabilityState = 'invalid';
                     setWalkinCapacityMessage('checking', 'Room Availability', 'Choose a valid check-in and check-out date.', 'Room capacity is checked for every night from check-in up to, but not including, check-out.');
@@ -2982,6 +3230,7 @@ if ($is_admin) {
                 const query = new URLSearchParams({
                     ajax: 'walkin_boarding_capacity',
                     date: appointmentDate,
+                    checkin_time: appointmentTime,
                     checkout_date: checkOutDate,
                     portal: new URLSearchParams(window.location.search).get('portal') || 'admin'
                 });
@@ -3033,9 +3282,10 @@ if ($is_admin) {
                     category: category,
                     specific_service: service,
                     dropoff_time: appointmentTime,
-                    pickup_time: pickupTime
+                    pickup_time: pickupTime,
+                    walkin: '1'
                 });
-                fetch('../check_slots.php?' + query.toString(), { cache: 'no-store', credentials: 'same-origin' })
+                fetch('../customer/check_slots.php?' + query.toString(), { cache: 'no-store', credentials: 'same-origin' })
                     .then(response => response.json().then(data => ({ ok: response.ok, data })))
                     .then(result => {
                         if (requestId !== walkinAvailabilityRequestId) return;
@@ -3127,7 +3377,7 @@ if ($is_admin) {
                 specific_service: service
             });
 
-            fetch('../check_slots.php?' + query.toString(), { cache: 'no-store', credentials: 'same-origin' })
+            fetch('../customer/check_slots.php?' + query.toString(), { cache: 'no-store', credentials: 'same-origin' })
                 .then(response => response.json().then(data => ({ ok: response.ok, data })))
                 .then(result => {
                     if (requestId !== walkinAvailabilityRequestId) return;
@@ -3273,7 +3523,64 @@ if ($is_admin) {
             saveBtn.style.cursor = capacityAllowsSave ? 'pointer' : 'not-allowed';
         }
 
+        function getWalkinManilaNow() {
+            const parts = new Intl.DateTimeFormat('en-GB', {
+                timeZone: 'Asia/Manila',
+                year: 'numeric', month: '2-digit', day: '2-digit',
+                hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
+            }).formatToParts(new Date());
+            const values = {};
+            parts.forEach(function (part) {
+                if (part.type !== 'literal') values[part.type] = part.value;
+            });
+            const date = values.year + '-' + values.month + '-' + values.day;
+            const time = values.hour + ':' + values.minute;
+            return {
+                date: date,
+                time: time,
+                minutes: (Number(values.hour) * 60) + Number(values.minute)
+            };
+        }
+
+        function updateWalkinDateTimeLimits() {
+            const dateInput = document.getElementById('walkinDate');
+            const timeInput = document.getElementById('walkinTime');
+            if (!dateInput || !timeInput) return null;
+
+            const now = getWalkinManilaNow();
+            dateInput.min = now.date;
+
+            let minimumTime = '09:00';
+            if (dateInput.value === now.date) {
+                // Allow a 5-minute admin-entry buffer because the form may be
+                // completed shortly after the pet physically arrives.
+                let minimumMinutes = Math.max(9 * 60, now.minutes - 5);
+                // New walk-ins cannot start during the 12:00 PM–1:00 PM break.
+                if (now.minutes >= 12 * 60 && now.minutes < 13 * 60) {
+                    minimumMinutes = 13 * 60;
+                }
+                minimumTime = String(Math.floor(minimumMinutes / 60)).padStart(2, '0') + ':' + String(minimumMinutes % 60).padStart(2, '0');
+                if (minimumMinutes >= 18 * 60) minimumTime = '18:00';
+            }
+            timeInput.min = minimumTime;
+            // While the field is untouched, keep it synced to the actual Manila
+            // clock so a long form-filling process does not leave a stale arrival time.
+            if (dateInput.value === now.date && !walkinTimeWasManuallyEdited) {
+                if (now.minutes >= 18 * 60) {
+                    timeInput.value = '';
+                } else if (now.minutes >= 12 * 60 && now.minutes < 13 * 60) {
+                    timeInput.value = '13:00';
+                } else {
+                    timeInput.value = now.time;
+                }
+            } else if (!walkinTimeWasManuallyEdited && (!timeInput.value || timeInput.value > '17:59')) {
+                timeInput.value = minimumTime <= '17:59' ? minimumTime : '';
+            }
+            return { now: now, minimumTime: minimumTime };
+        }
+
         function resetWalkinForm() {
+            walkinTimeWasManuallyEdited = false;
             const form = document.getElementById('walkinForm');
             if (form) form.reset();
             document.getElementById('walkinService').innerHTML = '<option value="">Choose specific service</option>';
@@ -3284,9 +3591,9 @@ if ($is_admin) {
             document.getElementById('walkinSaveBtn').disabled = true;
             document.getElementById('walkinSaveBtn').style.opacity = '.55';
             document.getElementById('walkinSaveBtn').style.cursor = 'not-allowed';
-            const now = new Date();
-            document.getElementById('walkinDate').value = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
-            document.getElementById('walkinTime').value = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
+            const manilaNow = getWalkinManilaNow();
+            document.getElementById('walkinDate').value = manilaNow.date;
+            updateWalkinDateTimeLimits();
             document.getElementById('walkinCheckoutGroup').style.display = 'none';
             document.getElementById('walkinPickupGroup').style.display = 'none';
             document.getElementById('walkinPickupTime').required = false;
@@ -3302,6 +3609,7 @@ if ($is_admin) {
         }
 
         document.getElementById('walkinDate').addEventListener('change', function () {
+            updateWalkinDateTimeLimits();
             const checkout = document.getElementById('walkinCheckoutDate');
             if (this.value) {
                 const parts = this.value.split('-').map(Number);
@@ -3320,15 +3628,68 @@ if ($is_admin) {
             updateWalkinPrice();
         });
 
+        document.getElementById('walkinTime').addEventListener('input', function () {
+            walkinTimeWasManuallyEdited = true;
+        });
+
         document.getElementById('walkinTime').addEventListener('change', function () {
+            walkinTimeWasManuallyEdited = true;
             if (isWalkinDaycareSelected()) populateWalkinDaycarePickupTimes();
             checkWalkinAvailability();
             updateWalkinPrice();
         });
 
+        // If staff takes several minutes to complete the walk-in form and has
+        // not manually changed the arrival time, keep it at the actual current time.
+        setInterval(function () {
+            const modal = document.getElementById('walkinModal');
+            const dateInput = document.getElementById('walkinDate');
+            const timeInput = document.getElementById('walkinTime');
+            if (!modal || modal.style.display !== 'flex' || walkinTimeWasManuallyEdited || !dateInput || !timeInput) return;
+            if (dateInput.value !== getWalkinManilaNow().date) return;
+            const previousTime = timeInput.value;
+            updateWalkinDateTimeLimits();
+            if (timeInput.value !== previousTime) {
+                if (isWalkinDaycareSelected()) populateWalkinDaycarePickupTimes();
+                checkWalkinAvailability();
+                updateWalkinPrice();
+            }
+        }, 30000);
+
         document.getElementById('walkinPickupTime').addEventListener('change', function () {
             checkWalkinAvailability();
             updateWalkinPrice();
+        });
+
+        document.getElementById('walkinForm').addEventListener('submit', function (event) {
+            const selectedDate = document.getElementById('walkinDate').value;
+            const selectedTime = document.getElementById('walkinTime').value;
+            const category = document.getElementById('walkinCategory').value;
+            const service = document.getElementById('walkinService').value.toLowerCase();
+            const isBoarding = category === 'Pet Hotel' && service.includes('boarding');
+            const now = getWalkinManilaNow();
+            const selectedMinutes = /^\d{2}:\d{2}$/.test(selectedTime)
+                ? (Number(selectedTime.slice(0, 2)) * 60) + Number(selectedTime.slice(3, 5))
+                : null;
+            let message = '';
+
+            if (selectedDate < now.date) {
+                message = 'Past dates are not allowed. Please choose today or a future date.';
+            } else if (selectedDate === now.date && selectedMinutes !== null && selectedMinutes < Math.max(0, now.minutes - 5)) {
+                message = 'This walk-in time has already passed today. Please choose the current time or a later time.';
+            } else if (isBoarding && selectedMinutes !== null
+                && (selectedMinutes < 9 * 60 || selectedMinutes >= 18 * 60
+                    || (selectedMinutes >= 12 * 60 && selectedMinutes < 13 * 60))) {
+                message = 'Pet Boarding check-in must be between 9:00 AM and 6:00 PM, excluding the 12:00 PM–1:00 PM staff break.';
+            }
+
+            if (message !== '') {
+                event.preventDefault();
+                walkinAvailabilityState = 'invalid';
+                setWalkinCapacityMessage('full', 'Walk-in Schedule', message, 'The system does not allow backdated walk-in appointments.');
+                const saveButton = document.getElementById('walkinSaveBtn');
+                if (saveButton) saveButton.disabled = true;
+            }
         });
 
         function openWalkinModal() {
@@ -3526,6 +3887,41 @@ if ($is_admin) {
             link.addEventListener('click', function() {
                 if (window.innerWidth <= 900) closeMobileSidebar();
             });
+        });
+
+        function openClinicRescheduleModal(button) {
+            const modal = document.getElementById('clinicRescheduleModal');
+            if (!modal || !button) return;
+            const service = button.dataset.service || '';
+            const isBoarding = service.toLowerCase().includes('pet hotel') && service.toLowerCase().includes('boarding');
+            document.getElementById('clinicRescheduleBookingId').value = button.dataset.id || '';
+            document.getElementById('clinicRescheduleService').textContent = service;
+            document.getElementById('clinicReschedulePet').textContent = button.dataset.pet || 'Pet';
+            document.getElementById('clinicRescheduleCurrent').textContent = (button.dataset.date || '') + ' at ' + (button.dataset.time || '');
+            const dateInput = document.getElementById('clinicRescheduleDate');
+            const timeSelect = document.getElementById('clinicRescheduleTime');
+            const help = document.getElementById('clinicRescheduleTimeHelp');
+            dateInput.value = '';
+            timeSelect.value = '';
+            Array.from(timeSelect.options).forEach(function(option) {
+                if (!option.value) return;
+                option.hidden = isBoarding ? option.value !== '09:00' : option.value === '09:00';
+                option.disabled = option.hidden;
+            });
+            help.textContent = isBoarding
+                ? 'Pet Boarding check-in is fixed at 9:00 AM. The original number of nights will be preserved.'
+                : 'The destination date and time will be checked against existing bookings and active availability adjustments.';
+            document.getElementById('clinicRescheduleReason').value = '';
+            modal.style.display = 'flex';
+        }
+
+        function closeClinicRescheduleModal() {
+            const modal = document.getElementById('clinicRescheduleModal');
+            if (modal) modal.style.display = 'none';
+        }
+
+        document.getElementById('clinicRescheduleModal')?.addEventListener('click', function(event) {
+            if (event.target === this) closeClinicRescheduleModal();
         });
 
         window.fetchAdminNotifs = fetchAdminNotifs;

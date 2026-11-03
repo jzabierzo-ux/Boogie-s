@@ -82,76 +82,214 @@ function staffProfilePostValue(string $key, bool $trim = true): string
 }
 
 
-/** Resolve a stored profile-image value to a browser URL without trusting filesystem paths. */
+/** Return server-side Supabase Storage configuration without exposing credentials to the browser. */
+function staffSupabaseStorageConfig(): ?array
+{
+    $supabaseUrl = trim((string)(getenv('SUPABASE_URL') ?: ''));
+    // Prefer the current Supabase secret key. Keep the legacy service-role key as a fallback.
+    $secretKey = trim((string)(getenv('SUPABASE_SECRET_KEY') ?: ''));
+    $legacyServiceRoleKey = trim((string)(getenv('SUPABASE_SERVICE_ROLE_KEY') ?: ''));
+    $apiKey = $secretKey !== '' ? $secretKey : $legacyServiceRoleKey;
+    $usesLegacyJwt = ($secretKey === '' && $legacyServiceRoleKey !== '');
+    $bucket = trim((string)(getenv('SUPABASE_STORAGE_BUCKET') ?: 'profile-images'));
+
+    if ($supabaseUrl === '' || $apiKey === '' || $bucket === '') {
+        return null;
+    }
+
+    $supabaseUrl = rtrim($supabaseUrl, '/');
+    $parsedUrl = parse_url($supabaseUrl);
+    if (
+        !filter_var($supabaseUrl, FILTER_VALIDATE_URL) ||
+        !is_array($parsedUrl) ||
+        strtolower((string)($parsedUrl['scheme'] ?? '')) !== 'https' ||
+        empty($parsedUrl['host']) ||
+        isset($parsedUrl['user']) ||
+        isset($parsedUrl['pass'])
+    ) {
+        return null;
+    }
+
+    return [
+        'url' => $supabaseUrl,
+        'key' => $apiKey,
+        'uses_legacy_jwt' => $usesLegacyJwt,
+        'bucket' => $bucket
+    ];
+}
+
+/** Upload/delete a profile image directly through the Supabase Storage REST API. */
+function staffSupabaseStorageRequest(string $method, string $objectPath, ?string $filePath = null, ?string $mimeType = null): array
+{
+    $config = staffSupabaseStorageConfig();
+    if ($config === null) {
+        return [
+            'ok' => false,
+            'status' => 0,
+            'body' => '',
+            'error' => 'Supabase Storage is not configured. Add SUPABASE_URL and SUPABASE_SECRET_KEY to the server environment (or the legacy SUPABASE_SERVICE_ROLE_KEY).'
+        ];
+    }
+
+    if (!function_exists('curl_init')) {
+        return ['ok' => false, 'status' => 0, 'body' => '', 'error' => 'The PHP cURL extension is not available.'];
+    }
+
+    $segments = explode('/', trim(str_replace('\\', '/', $objectPath), '/'));
+    if (
+        $objectPath === '' ||
+        in_array('', $segments, true) ||
+        in_array('.', $segments, true) ||
+        in_array('..', $segments, true)
+    ) {
+        return ['ok' => false, 'status' => 0, 'body' => '', 'error' => 'Invalid Storage object path.'];
+    }
+
+    $encodedObjectPath = implode('/', array_map('rawurlencode', $segments));
+    $endpoint = $config['url'] . '/storage/v1/object/' . rawurlencode($config['bucket']) . '/' . $encodedObjectPath;
+    // New sb_secret_* keys are sent as apikey. Legacy service_role JWTs also use Bearer auth.
+    $headers = ['apikey: ' . $config['key']];
+    if (!empty($config['uses_legacy_jwt'])) {
+        $headers[] = 'Authorization: Bearer ' . $config['key'];
+    }
+
+    $method = strtoupper($method);
+    $options = [
+        CURLOPT_URL => $endpoint,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_CUSTOMREQUEST => $method,
+        CURLOPT_HTTPHEADER => $headers,
+        CURLOPT_CONNECTTIMEOUT => 10,
+        CURLOPT_TIMEOUT => 30,
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_SSL_VERIFYHOST => 2,
+        CURLOPT_FOLLOWLOCATION => false
+    ];
+
+    if ($method === 'POST') {
+        if ($filePath === null || !is_file($filePath) || !is_readable($filePath)) {
+            return ['ok' => false, 'status' => 0, 'body' => '', 'error' => 'The temporary uploaded image could not be read.'];
+        }
+
+        $fileContents = file_get_contents($filePath);
+        if (!is_string($fileContents)) {
+            return ['ok' => false, 'status' => 0, 'body' => '', 'error' => 'The temporary uploaded image could not be read.'];
+        }
+
+        $headers[] = 'Content-Type: ' . ($mimeType ?: 'application/octet-stream');
+        $headers[] = 'x-upsert: false';
+        $options[CURLOPT_HTTPHEADER] = $headers;
+        $options[CURLOPT_POSTFIELDS] = $fileContents;
+    } elseif ($method !== 'DELETE') {
+        return ['ok' => false, 'status' => 0, 'body' => '', 'error' => 'Unsupported Storage request.'];
+    }
+
+    $curl = curl_init();
+    if ($curl === false) {
+        return ['ok' => false, 'status' => 0, 'body' => '', 'error' => 'Unable to initialize the Storage connection.'];
+    }
+
+    curl_setopt_array($curl, $options);
+    $responseBody = curl_exec($curl);
+    $curlError = curl_error($curl);
+    $statusCode = (int)curl_getinfo($curl, CURLINFO_HTTP_CODE);
+    curl_close($curl);
+
+    if ($responseBody === false) {
+        error_log('Staff Supabase Storage request failed: ' . $curlError);
+        return ['ok' => false, 'status' => $statusCode, 'body' => '', 'error' => 'Could not connect to Supabase Storage. Please try again.'];
+    }
+
+    $success = ($method === 'POST')
+        ? in_array($statusCode, [200, 201], true)
+        : in_array($statusCode, [200, 204], true);
+
+    if (!$success) {
+        error_log('Staff Supabase Storage request returned HTTP ' . $statusCode . ': ' . substr((string)$responseBody, 0, 500));
+    }
+
+    return [
+        'ok' => $success,
+        'status' => $statusCode,
+        'body' => (string)$responseBody,
+        'error' => $success ? '' : 'Supabase Storage rejected the image request (HTTP ' . $statusCode . '). Check the bucket and server credentials.'
+    ];
+}
+
+/** Build the public browser URL for a staff profile image in the public bucket. */
+function staffSupabaseStoragePublicUrl(string $objectPath): ?string
+{
+    $config = staffSupabaseStorageConfig();
+    if ($config === null) {
+        return null;
+    }
+
+    $segments = explode('/', trim(str_replace('\\', '/', $objectPath), '/'));
+    if ($objectPath === '' || in_array('', $segments, true) || in_array('.', $segments, true) || in_array('..', $segments, true)) {
+        return null;
+    }
+
+    $encodedObjectPath = implode('/', array_map('rawurlencode', $segments));
+    return $config['url'] . '/storage/v1/object/public/' . rawurlencode($config['bucket']) . '/' . $encodedObjectPath;
+}
+
+/** Resolve saved Supabase URLs and older local uploads for backwards compatibility. */
 function resolveStaffProfileImageUrl($storedPath): string
 {
-    $storedPath = trim((string)$storedPath);
-    if ($storedPath === '') {
+    if (!is_string($storedPath) || trim($storedPath) === '') {
         return '';
     }
 
-    if (filter_var($storedPath, FILTER_VALIDATE_URL)) {
-        $scheme = strtolower((string)parse_url($storedPath, PHP_URL_SCHEME));
-        return in_array($scheme, ['http', 'https'], true) ? $storedPath : '';
+    $path = trim(str_replace('\\', '/', $storedPath));
+    if (preg_match('#^https?://#i', $path)) {
+        return filter_var($path, FILTER_VALIDATE_URL) ? $path : '';
     }
 
-    $normalized = str_replace('\\', '/', $storedPath);
-    $filename = basename($normalized);
+    $filename = basename($path);
     if ($filename === '' || $filename === '.' || $filename === '..') {
         return '';
     }
 
-    $filePath = __DIR__ . '/../uploads/' . $filename;
-    if (!is_file($filePath)) {
-        return '';
+    $projectRoot = dirname(__DIR__);
+    $legacyUploadPath = $projectRoot . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . $filename;
+    if (is_file($legacyUploadPath)) {
+        return '../uploads/' . rawurlencode($filename);
     }
 
-    return '../uploads/' . rawurlencode($filename);
+    return '';
 }
 
 $success_msg = "";
 $error_msg = "";
+$new_storage_object = null;
 
 // 2. HANDLE PROFILE PICTURE UPLOAD
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['profile_image'])) {
     $submitted_csrf = staffProfilePostValue('csrf_token', false);
     $upload = $_FILES['profile_image'];
+    $max_upload_size = 2 * 1024 * 1024; // Keep the existing 2MB Staff upload limit.
+    $allowed_mimes = [
+        'image/jpeg' => 'jpg',
+        'image/png' => 'png',
+        'image/gif' => 'gif'
+    ];
 
     if (!hash_equals($csrf_token, $submitted_csrf)) {
         $error_msg = "Invalid request. Please refresh the page and try again.";
-    } elseif (!is_array($upload) || !isset($upload['error'], $upload['size'], $upload['tmp_name'], $upload['name'])
-        || is_array($upload['error']) || is_array($upload['size']) || is_array($upload['tmp_name']) || is_array($upload['name'])) {
+    } elseif (!is_array($upload) || !isset($upload['error'], $upload['size'], $upload['tmp_name'])
+        || is_array($upload['error']) || is_array($upload['size']) || is_array($upload['tmp_name'])) {
         $error_msg = "Invalid image upload request.";
     } elseif ((int)$upload['error'] !== UPLOAD_ERR_OK) {
         $error_msg = ((int)$upload['error'] === UPLOAD_ERR_INI_SIZE || (int)$upload['error'] === UPLOAD_ERR_FORM_SIZE)
             ? "Profile picture must not exceed 2MB."
             : "Failed to upload image. Please try again.";
-    } elseif ((int)$upload['size'] <= 0 || (int)$upload['size'] > 2 * 1024 * 1024) {
+    } elseif ((int)$upload['size'] <= 0 || (int)$upload['size'] > $max_upload_size) {
         $error_msg = "Profile picture must be between 1 byte and 2MB.";
     } elseif (!is_string($upload['tmp_name']) || !is_uploaded_file($upload['tmp_name'])) {
         $error_msg = "Invalid image upload. Please choose the image again.";
     } else {
-        $upload_dir = __DIR__ . '/../uploads/';
         $tmp_name = $upload['tmp_name'];
-        $original_name = (string)$upload['name'];
-        $file_ext = strtolower(pathinfo($original_name, PATHINFO_EXTENSION));
-        $allowed_mimes = [
-            'jpg'  => 'image/jpeg',
-            'jpeg' => 'image/jpeg',
-            'png'  => 'image/png',
-            'gif'  => 'image/gif'
-        ];
-
-        if (!is_dir($upload_dir) && !@mkdir($upload_dir, 0755, true) && !is_dir($upload_dir)) {
-            $error_msg = 'The upload folder is not available. On Vercel, configure persistent Supabase Storage for profile pictures.';
-        } elseif (!is_writable($upload_dir)) {
-            $error_msg = 'The upload folder is not writable. On Vercel, configure persistent Supabase Storage for profile pictures.';
-        }
-
-        $image_info = @getimagesize($tmp_name);
-        $detected_mime = is_array($image_info) ? ($image_info['mime'] ?? '') : '';
         $finfo_mime = '';
-
         if (function_exists('finfo_open')) {
             $finfo = finfo_open(FILEINFO_MIME_TYPE);
             if ($finfo) {
@@ -160,48 +298,51 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['profile_image'])) {
             }
         }
 
-        if ($error_msg === '' && (
-            !isset($allowed_mimes[$file_ext])
-            || $detected_mime !== $allowed_mimes[$file_ext]
-            || $finfo_mime !== $allowed_mimes[$file_ext]
-        )) {
-            $error_msg = "Invalid image file. Only JPG, PNG, and GIF images are allowed.";
-        }
-
-        if ($error_msg === '') {
-            $target_path = '';
-
+        $image_info = @getimagesize($tmp_name);
+        $detected_mime = is_array($image_info) ? (string)($image_info['mime'] ?? '') : '';
+        if (
+            $finfo_mime === '' ||
+            !isset($allowed_mimes[$finfo_mime]) ||
+            $detected_mime !== $finfo_mime
+        ) {
+            $error_msg = "Invalid image file. Only valid JPG, PNG, and GIF images are allowed.";
+        } else {
             try {
-                $new_filename = 'staff_' . $user_id . '_' . bin2hex(random_bytes(8)) . '.' . $file_ext;
-                $target_path = $upload_dir . $new_filename;
-                $public_image_path = '../uploads/' . $new_filename;
+                $extension = $allowed_mimes[$finfo_mime];
+                $new_filename = 'staff_' . $user_id . '_' . bin2hex(random_bytes(12)) . '.' . $extension;
+                $storage_object = 'staff/' . $user_id . '/' . $new_filename;
 
-                if (!move_uploaded_file($tmp_name, $target_path)) {
-                    $error_msg = "Failed to upload image. Please check folder permissions.";
+                // Upload directly to persistent Supabase Storage; do not write to Vercel's filesystem.
+                $storage_result = staffSupabaseStorageRequest('POST', $storage_object, $tmp_name, $finfo_mime);
+                if (!$storage_result['ok']) {
+                    error_log('Staff profile image upload failed: ' . $storage_result['error']);
+                    $error_msg = $storage_result['error'];
                 } else {
-                    $update_img_stmt = $pdo->prepare("
-                        UPDATE users
-                        SET profile_image = :profile_image
-                        WHERE id = :user_id
-                        RETURNING id
-                    ");
-                    $update_img_stmt->execute([
-                        ':profile_image' => $public_image_path,
-                        ':user_id' => $user_id
-                    ]);
-
-                    if (!$update_img_stmt->fetchColumn()) {
-                        @unlink($target_path);
-                        $error_msg = "Unable to save the profile picture for this account.";
+                    $public_image_url = staffSupabaseStoragePublicUrl($storage_object);
+                    if ($public_image_url === null) {
+                        staffSupabaseStorageRequest('DELETE', $storage_object);
+                        $error_msg = 'Unable to create the profile picture URL. Check your Supabase Storage settings.';
                     } else {
-                        $success_msg = "Profile picture updated successfully!";
+                        $update_img_stmt = $pdo->prepare("\n                            UPDATE users\n                            SET profile_image = :profile_image\n                            WHERE id = :user_id\n                            RETURNING id\n                        ");
+                        $update_img_stmt->execute([
+                            ':profile_image' => $public_image_url,
+                            ':user_id' => $user_id
+                        ]);
+
+                        if (!$update_img_stmt->fetchColumn()) {
+                            staffSupabaseStorageRequest('DELETE', $storage_object);
+                            $error_msg = "Unable to save the profile picture for this account.";
+                        } else {
+                            $new_storage_object = null; // The database now references this uploaded object.
+                            $success_msg = "Profile picture updated successfully!";
+                        }
                     }
                 }
             } catch (Throwable $e) {
-                if ($target_path !== '' && is_file($target_path)) {
-                    @unlink($target_path);
+                if (isset($storage_object) && is_string($storage_object) && $storage_object !== '') {
+                    staffSupabaseStorageRequest('DELETE', $storage_object);
                 }
-                error_log("Profile image update failed: " . $e->getMessage());
+                error_log("Staff profile image update failed: " . $e->getMessage());
                 $error_msg = "Unable to save the profile picture. Please try again.";
             }
         }
@@ -2282,7 +2423,7 @@ input, select, textarea, button, img { max-width:100%; }
 
     <aside class="sidebar">
         <div class="sidebar-header">
-            <img src="../bg.png" alt="Boogie's Logo" class="sidebar-logo-img">
+            <img src="../admin/bg.png" alt="Boogie's Logo" class="sidebar-logo-img">
             <h2><?php echo in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true) ? "Boogie's Clinic" : "Boogie's Pet Care"; ?></h2>
         </div>
         <nav class="nav-links">

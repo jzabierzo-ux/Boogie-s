@@ -2102,7 +2102,7 @@ input, select, textarea, button, img { max-width:100%; }
 
     <aside class="sidebar">
         <div class="sidebar-header">
-            <img src="../bg.png" alt="Boogie's Logo" class="sidebar-logo-img">
+            <img src="../admin/bg.png" alt="Boogie's Logo" class="sidebar-logo-img">
             <h2>Boogie's Clinic</h2>
         </div>
         <nav class="nav-links">

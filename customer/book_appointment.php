@@ -887,8 +887,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $error_msg = 'This service does not fit within business hours (9:00 AM–6:00 PM). Please choose an earlier time.';
         } elseif ($selected_start_minutes >= $break_start_minutes && $selected_start_minutes < $break_end_minutes) {
             $error_msg = 'New appointments cannot start between 12:00 PM and 1:00 PM. Services started before lunch may continue through lunch if staff capacity allows.';
-        } elseif ($service_category === 'Vet Services' && in_array((int)date('N', strtotime($appointment_date)), [3, 6], true)) {
-            $error_msg = 'The veterinarian is not available on Wednesdays and Saturdays.';
         }
 
         if (empty($error_msg)) {
@@ -3730,25 +3728,8 @@ if ($error_msg !== '') {
             checkRealTimeAvailability();
         }
 
-        function validateVetDate() {
-            const category = document.getElementById('service_category').value;
-            const dateInput = document.getElementById('appointment_date');
-            
-            if (category === 'Vet Services' && dateInput.value) {
-                const [year, month, dayOfMonth] = dateInput.value.split('-').map(Number);
-                const selectedDate = new Date(year, month - 1, dayOfMonth);
-                const day = selectedDate.getDay(); 
-                
-                if (day === 3 || day === 6) {
-                    alert("Dr. Faith Casayuran is not available on Wednesdays and Saturdays. Please select a different date.");
-                    dateInput.value = '';
-                }
-            }
-        }
-
         if (document.getElementById('appointment_date')) {
             document.getElementById('appointment_date').addEventListener('change', () => {
-                validateVetDate();
                 updateCheckoutDateMinimum();
                 calculatePrice();
                 checkRealTimeAvailability();

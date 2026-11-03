@@ -277,12 +277,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['reschedule_booking'])
         }
 
         if ($service_category === 'Vet Services') {
-            $day_of_week = (int)date('N', strtotime($new_date));
-
-            if ($day_of_week === 3 || $day_of_week === 6) {
-                $setRescheduleError("Dr. Faith Casayuran is not available on Wednesdays and Saturdays.");
-            }
-
             $daily_stmt = $pdo->prepare("
                 SELECT COUNT(*) AS vet_count
                 FROM appointments

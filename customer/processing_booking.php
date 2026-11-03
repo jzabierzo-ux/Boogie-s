@@ -181,13 +181,7 @@ try {
     $uploadDirectory = __DIR__ . '/../uploads';
     $receiptPath = $uploadDirectory . DIRECTORY_SEPARATOR . $receiptFilename;
 
-    // Keep the existing capacity rules and closed days.
-    if ($serviceCategory === 'Vet Services') {
-        $dayOfWeek = (int)$parsedDate->format('w');
-        if ($dayOfWeek === 3 || $dayOfWeek === 6) {
-            throw new CustomerBookingValidationException('Dr. Faith Casayuran is not available on Wednesdays and Saturdays. Please select a valid day.');
-        }
-    }
+    // Veterinary services accept bookings on Wednesday and Saturday, subject to capacity and availability.
 
     // Serialize submissions for the same date/category, so two requests handled
     // by this endpoint cannot both pass the same capacity/time-slot checks.

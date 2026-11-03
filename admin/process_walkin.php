@@ -353,6 +353,50 @@ $pricing_data = [
 
 
 
+/** Match Grooming duration rules used by customer/check_slots.php. */
+function walkinGroomingDurationMinutes(string $service): int
+{
+    $name = strtolower(trim($service));
+    if (strpos($name, 'full grooming package') !== false) return 120;
+    if (strpos($name, 'bath & blow dry') !== false || strpos($name, 'bath and blow dry') !== false) return 90;
+    if (strpos($name, 'basic pet grooming') !== false || strpos($name, 'cat grooming (basic)') !== false) return 60;
+    return 120;
+}
+
+/** Check simultaneous capacity at all interval changes, including Grooming lunch capacity. */
+function walkinCandidateCapacityCheck(int $candidateStart, int $candidateEnd, array $busyIntervals, string $category, int $normalCapacity): array
+{
+    $points = [$candidateStart];
+    foreach ($busyIntervals as $interval) {
+        $start = (int)($interval['start'] ?? 0);
+        $end = (int)($interval['end'] ?? 0);
+        if ($start >= $candidateEnd || $end <= $candidateStart) continue;
+        if ($start > $candidateStart && $start < $candidateEnd) $points[] = $start;
+        if ($end > $candidateStart && $end < $candidateEnd) $points[] = $end;
+    }
+    if ($category === 'Grooming') {
+        foreach ([12 * 60, 13 * 60] as $boundary) {
+            if ($boundary > $candidateStart && $boundary < $candidateEnd) $points[] = $boundary;
+        }
+    }
+    $points = array_values(array_unique($points));
+    sort($points, SORT_NUMERIC);
+
+    $minimumRemaining = $normalCapacity;
+    $exceedsCapacity = false;
+    foreach ($points as $point) {
+        if ($point >= $candidateEnd) continue;
+        $active = 0;
+        foreach ($busyIntervals as $interval) {
+            if ((int)($interval['start'] ?? 0) <= $point && (int)($interval['end'] ?? 0) > $point) $active++;
+        }
+        $capacity = ($category === 'Grooming' && $point >= 12 * 60 && $point < 13 * 60) ? 1 : $normalCapacity;
+        $minimumRemaining = min($minimumRemaining, max(0, $capacity - $active));
+        if ($active + 1 > $capacity) $exceedsCapacity = true;
+    }
+    return ['available' => !$exceedsCapacity, 'remaining_slots' => $minimumRemaining];
+}
+
 function walkinSizeFromWeight(float $weight): string
 
 {
@@ -506,8 +550,8 @@ if ($is_overnight_boarding) {
     if (!$checkout_check || $checkout_check->format('Y-m-d') !== $checkout_date || $checkout_date <= $appointment_date) {
         walkinRedirect('For Pet Boarding, select a valid check-out date at least one day after check-in.');
     }
-    $appointment_time = '09:00';
-    $time_check = DateTime::createFromFormat('!H:i', $appointment_time);
+    // Record the actual walk-in check-in time selected by Admin/Staff.
+    // Overnight room capacity is still reserved for every night of the stay.
     $pickup_time = '';
     $stay_start_for_price = new DateTimeImmutable($appointment_date);
     $stay_end_for_price = new DateTimeImmutable($checkout_date);
@@ -524,9 +568,7 @@ if ($is_overnight_boarding) {
 
     $daycare_start_minutes = ((int)$time_check->format('H') * 60) + (int)$time_check->format('i');
     $daycare_end_minutes = ((int)$pickup_check->format('H') * 60) + (int)$pickup_check->format('i');
-    if (($daycare_start_minutes % 30) !== 0) {
-        walkinRedirect('Pet Daycare drop-off must be on a 30-minute time increment.');
-    }
+    // Walk-in Pet Daycare drop-off records the actual arrival minute; only pickup is half-hour aligned.
     if (($daycare_end_minutes % 30) !== 0 || $daycare_end_minutes <= $daycare_start_minutes || $daycare_end_minutes > 18 * 60) {
         walkinRedirect('Pet Daycare pickup must be later than drop-off, use a half-hour time, and be no later than 6:00 PM.');
     }
@@ -539,21 +581,37 @@ if ($is_overnight_boarding) {
     $pickup_time = '';
 }
 
-if ($appointment_date < date('Y-m-d')) {
+$walkin_now_manila = new DateTimeImmutable('now', new DateTimeZone('Asia/Manila'));
+if ($appointment_date < $walkin_now_manila->format('Y-m-d')) {
     walkinRedirect('Walk-in bookings cannot be created for a past date.');
 }
 
-if (!$is_overnight_boarding) {
-    $start_minutes = ((int)$time_check->format('H') * 60) + (int)$time_check->format('i');
-    if (($start_minutes % 30) !== 0) {
-        walkinRedirect('Please choose an appointment start time on a 30-minute interval.');
+// Re-check the Manila-local clock on the server. Walk-ins record an actual
+// arrival/check-in time, so same-day bookings may use the current minute or later.
+$walkin_selected_minutes = ((int)$time_check->format('H') * 60) + (int)$time_check->format('i');
+$walkin_now_minutes = ((int)$walkin_now_manila->format('H') * 60) + (int)$walkin_now_manila->format('i');
+if ($appointment_date === $walkin_now_manila->format('Y-m-d') && $walkin_selected_minutes < max(0, $walkin_now_minutes - 5)) {
+    walkinRedirect('This walk-in time is more than 5 minutes before the current time. Record the actual arrival time.');
+}
+
+if ($is_overnight_boarding) {
+    // Pet Boarding walk-ins may check in at the actual arrival time, not only at 9:00 AM.
+    if ($walkin_selected_minutes < 9 * 60 || $walkin_selected_minutes >= 18 * 60) {
+        walkinRedirect('Pet Boarding check-in must be during operating hours (9:00 AM–6:00 PM).');
     }
+    if ($walkin_selected_minutes >= 12 * 60 && $walkin_selected_minutes < 13 * 60) {
+        walkinRedirect('Pet Boarding check-in is unavailable during the 12:00 PM–1:00 PM staff break. Please choose another time.');
+    }
+} else {
+    $start_minutes = ((int)$time_check->format('H') * 60) + (int)$time_check->format('i');
+    // Grooming and Vet walk-ins use the actual arrival minute. Pet Daycare
+    // Walk-in Pet Daycare uses the actual drop-off minute and expected pickup interval.
 
     $duration_minutes = $is_daycare
         ? ((int)$daycare_end_minutes - (int)$daycare_start_minutes)
         : ($service_category === 'Grooming'
-            ? (stripos($specific_service, 'Full Grooming Package') !== false ? 120 : 60)
-            : ($service_category === 'Vet Services' ? 30 : 60));
+            ? walkinGroomingDurationMinutes($specific_service)
+            : ($service_category === 'Vet Services' ? 30 : 180));
     if ($start_minutes < 9 * 60 || $start_minutes >= 18 * 60) {
         walkinRedirect('Choose a start time between 9:00 AM and 6:00 PM.');
     }
@@ -563,17 +621,12 @@ if (!$is_overnight_boarding) {
     if ($start_minutes >= $lunch_start_minutes && $start_minutes < $lunch_end_minutes) {
         walkinRedirect('Walk-in drop-off/start times are unavailable during the 12:00 PM–1:00 PM lunch break. Please choose another time.');
     }
-    // Grooming and Vet appointments cannot run into the staff lunch break.
-    // Daycare is a continuous stay, so a pet may remain in care during lunch.
-    if (!$is_daycare && $start_minutes < $lunch_end_minutes && $end_minutes > $lunch_start_minutes) {
-        walkinRedirect('This appointment overlaps the 12:00 PM–1:00 PM lunch break. Please choose another time.');
-    }
+    // Services may continue through lunch if capacity remains available.
+    // Grooming capacity drops to one concurrent groomer from 12:00 PM to 1:00 PM.
     if ($end_minutes > 18 * 60) {
         walkinRedirect('This service would finish after closing time. Please choose an earlier start time.');
     }
-    if ($service_category === 'Vet Services' && in_array((int)date('N', strtotime($appointment_date)), [3, 6], true)) {
-        walkinRedirect('The veterinarian is not available on Wednesdays and Saturdays.');
-    }
+    // Veterinary walk-ins are allowed on Wednesday and Saturday; normal capacity rules still apply.
 }
 
 /** Convert a DB or form time (HH:MM[:SS]) to minutes after midnight. */
@@ -838,7 +891,7 @@ try {
         ]);
         $rows = $existing_stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
         $daily_limits = ['Grooming' => 10, 'Vet Services' => 30, 'Pet Hotel' => 6];
-        $simultaneous_limits = ['Grooming' => 2, 'Vet Services' => 1, 'Pet Hotel' => 6];
+        $simultaneous_limits = ['Grooming' => 2, 'Vet Services' => 2, 'Pet Hotel' => 6];
         // Manual occupied adjustments represent real walk-ins not yet registered
         // as appointments, so include them in both overall and category daily caps.
         $daily_total = count($rows) + walkinManualOccupiedUnitsForDate($manual_adjustments, $appointment_date);
@@ -847,10 +900,10 @@ try {
         $duration = $is_daycare
             ? ((int)$daycare_end_minutes - (int)$daycare_start_minutes)
             : ($service_category === 'Grooming'
-                ? (stripos($specific_service, 'Full Grooming') !== false ? 120 : 60)
-                : ($service_category === 'Vet Services' ? 30 : 60));
+                ? walkinGroomingDurationMinutes($specific_service)
+                : ($service_category === 'Vet Services' ? 30 : 180));
         $end_minutes = $start_minutes + $duration;
-        $overlaps = 0;
+        $busy_intervals = [];
         foreach ($rows as $row) {
             $stored = (string)($row['service'] ?? '');
             if (stripos($stored, $service_category . ' -') !== 0) continue;
@@ -863,8 +916,8 @@ try {
                     $stored_checkout = (new DateTimeImmutable($stored_date))->modify('+1 day')->format('Y-m-d');
                 }
                 if ($stored_date <= $appointment_date && $stored_checkout > $appointment_date) {
-                    // An active boarding reservation occupies a room all day.
-                    $overlaps++;
+                    // An active boarding reservation occupies one room all day.
+                    $busy_intervals[] = ['start' => 0, 'end' => 1440, 'type' => 'booking'];
                 }
                 continue;
             }
@@ -872,31 +925,48 @@ try {
             $stored_time = substr((string)($row['appointment_time'] ?? ''), 0, 5);
             if (!preg_match('/^\d{2}:\d{2}$/', $stored_time)) continue;
             $existing_start = ((int)substr($stored_time, 0, 2) * 60) + (int)substr($stored_time, 3, 2);
-            $existing_duration = stripos($stored, 'Full Grooming Package') !== false ? 120 : ($service_category === 'Vet Services' ? 30 : 60);
-            $existing_end = $existing_start + $existing_duration;
-            if ($service_category === 'Pet Hotel' && stripos($stored, 'daycare') !== false) {
-                $stored_pickup_minutes = walkinAvailabilityTimeToMinutes((string)($row['pickup_time'] ?? ''));
-                if ($stored_pickup_minutes !== null && $stored_pickup_minutes > $existing_start) {
-                    $existing_end = $stored_pickup_minutes;
+            if ($service_category === 'Grooming') {
+                $existing_duration = walkinGroomingDurationMinutes($stored);
+            } elseif ($service_category === 'Vet Services') {
+                $existing_duration = 30;
+            } else {
+                $existing_duration = 180;
+                if (stripos($stored, 'daycare') !== false) {
+                    $stored_pickup_minutes = walkinAvailabilityTimeToMinutes((string)($row['pickup_time'] ?? ''));
+                    if ($stored_pickup_minutes !== null && $stored_pickup_minutes > $existing_start) {
+                        $existing_duration = $stored_pickup_minutes - $existing_start;
+                    }
                 }
             }
-            if ($start_minutes < $existing_end && $end_minutes > $existing_start) $overlaps++;
+            $busy_intervals[] = [
+                'start' => $existing_start,
+                'end' => $existing_start + $existing_duration,
+                'type' => 'booking'
+            ];
         }
 
         $manual_intervals = walkinManualCapacityIntervals(
             $manual_adjustments, $appointment_date, $service_category, $specific_service, $simultaneous_limits[$service_category]
         );
         foreach ($manual_intervals as $manual_interval) {
-            if (walkinIntervalsOverlap($start_minutes, $end_minutes, (int)$manual_interval['start'], (int)$manual_interval['end'])) {
-                $overlaps++;
-            }
+            $busy_intervals[] = $manual_interval;
         }
+        $capacity_check = walkinCandidateCapacityCheck(
+            $start_minutes,
+            $end_minutes,
+            $busy_intervals,
+            $service_category,
+            $simultaneous_limits[$service_category]
+        );
 
         if ($daily_total >= 20) $capacity_error = 'The overall daily capacity of 20 pets has been reached. Please select another date.';
         elseif ($category_count >= $daily_limits[$service_category]) $capacity_error = $service_category . ' has reached its daily capacity. Please select another date.';
-        elseif ($overlaps >= $simultaneous_limits[$service_category]) {
-            $capacity_error = $service_category === 'Grooming' ? 'Both groomers are already booked or unavailable during this time. Please select another time.'
-                : ($service_category === 'Vet Services' ? 'The veterinarian is already booked or unavailable during this time. Please select another time.' : 'No Pet Hotel room is available during this time.');
+        elseif (!$capacity_check['available']) {
+            $capacity_error = $service_category === 'Grooming'
+                ? 'Grooming staff are already busy or unavailable during part of this service. Please choose another time.'
+                : ($service_category === 'Vet Services'
+                    ? 'Both veterinary staff are already busy or unavailable during this time. Please choose another time.'
+                    : 'No Pet Hotel room is available during this time. Please choose another drop-off or pickup time.');
         }
     }
 

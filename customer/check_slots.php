@@ -113,8 +113,7 @@ $opening_minutes = 9 * 60;
 $closing_minutes = 18 * 60;
 $break_start = 12 * 60;
 $break_end = 13 * 60; // One-hour break is an implementation assumption from the available interview details.
-$selected_day_of_week = (int)$date_object->format('N');
-$vet_unavailable_day = ($category === 'Vet Services' && in_array($selected_day_of_week, [3, 6], true));
+// Vet services are available every operating day; slot capacity still controls availability.
 
 /** Convert HH:MM[:SS] to minutes since midnight. */
 function slotTimeToMinutes($time): ?int
@@ -930,9 +929,6 @@ try {
         if ($end > $closing_minutes) {
             $available = false;
             $reason = 'Outside operating hours';
-        } elseif ($vet_unavailable_day) {
-            $available = false;
-            $reason = 'Veterinarian unavailable on Wednesdays and Saturdays';
         } elseif ($start >= $break_start && $start < $break_end) {
             $available = false;
             $reason = 'Staff break (12:00 PM–1:00 PM)';
@@ -995,9 +991,7 @@ try {
     }
 
     $response['is_full'] = ($response['available_slots'] === 0);
-    if ($vet_unavailable_day) {
-        $response['full_reason'] = 'The veterinarian is unavailable on Wednesdays and Saturdays.';
-    } elseif ($total_daily_bookings >= $global_daily_limit) {
+    if ($total_daily_bookings >= $global_daily_limit) {
         $response['full_reason'] = 'Overall daily capacity of 20 pets has been reached.';
     } elseif ($category_daily_bookings >= $daily_limit) {
         $response['full_reason'] = $category . ' daily capacity has been reached.';

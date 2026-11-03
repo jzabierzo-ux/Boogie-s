@@ -32,6 +32,7 @@ $csrf_token = (string)$_SESSION['staff_csrf_token'];
 
 // Only open a database connection after the session and role are verified.
 require_once __DIR__ . '/../db_supabase.php';
+require_once __DIR__ . '/../includes/clinic_reschedule.php';
 
 /** Return SQL fragments for the actual PostgreSQL is_read column type. */
 function staffAppointmentNotificationReadSql(PDO $pdo): array
@@ -204,6 +205,36 @@ if (!in_array($filter_status, $allowed_filters, true)) {
 
 $flash_message = '';
 
+// Clinic-initiated rescheduling is separate from the customer's one-time reschedule.
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && isset($_POST['clinic_reschedule_action'])) {
+    $clinicReturnStatus = trim((string)($_POST['return_status'] ?? 'All'));
+    if (!in_array($clinicReturnStatus, $allowed_filters, true)) {
+        $clinicReturnStatus = 'All';
+    }
+    $postedToken = (string)($_POST['csrf_token'] ?? '');
+    if ($postedToken === '' || !hash_equals($csrf_token, $postedToken)) {
+        $flash_message = 'Security check failed. Please refresh the page and try again.';
+    } else {
+        $clinicRescheduleResult = boogieClinicReschedule(
+            $pdo,
+            (int)($_POST['appointment_id'] ?? 0),
+            trim((string)($_POST['clinic_reschedule_date'] ?? '')),
+            trim((string)($_POST['clinic_reschedule_time'] ?? '')),
+            trim((string)($_POST['clinic_reschedule_reason'] ?? '')),
+            $current_role
+        );
+        $flash_message = (string)($clinicRescheduleResult['message'] ?? 'Unable to process the clinic-initiated reschedule.');
+    }
+
+    $_SESSION['staff_appointment_flash'] = $flash_message;
+    $redirect_url = 'appointments.php';
+    if ($clinicReturnStatus !== 'All') {
+        $redirect_url .= '?status=' . rawurlencode($clinicReturnStatus);
+    }
+    header('Location: ' . $redirect_url, true, 303);
+    exit();
+}
+
 // Handle appointment changes using a transaction so the status update and its
 // customer notification either both succeed or both roll back.
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && isset($_POST['appointment_action'])) {
@@ -291,10 +322,21 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && isset($_POST['appointmen
                             $pet_name = trim((string)($appointment['pet_real_name'] ?? '')) ?: 'Unknown Pet';
                             $service_name = trim((string)($appointment['service'] ?? '')) ?: 'Veterinary';
                             $message = "Your {$service_name} appointment for {$pet_name} has been {$new_status}.";
-                            $notification_insert = $pdo->prepare("INSERT INTO public.notifications (user_id, message, is_read)
-                                VALUES (:user_id, :message, {$notification_read_sql['read_value']})");
+                            $notification_title_map = [
+                                'Confirmed' => 'Appointment Confirmed',
+                                'Completed' => 'Appointment Completed',
+                                'Cancelled' => 'Appointment Cancelled',
+                            ];
+                            $notification_title = $notification_title_map[$new_status] ?? 'Appointment Update';
+
+                            // Match the notification structure used throughout the Admin and Customer portals.
+                            // Include title, type, and created_at so required notification columns are populated.
+                            $notification_insert = $pdo->prepare("INSERT INTO public.notifications
+                                (user_id, title, message, type, is_read, created_at)
+                                VALUES (:user_id, :title, :message, 'booking', {$notification_read_sql['read_value']}, NOW())");
                             $notification_insert->execute([
                                 ':user_id' => $customer_id,
+                                ':title' => $notification_title,
                                 ':message' => $message,
                             ]);
                         }
@@ -2409,13 +2451,25 @@ input, select, textarea, button, img { max-width:100%; }
         opacity: 1 !important;
     }
 }
+    .btn-clinic-reschedule { background:#7c3aed; color:#fff; border:0; border-radius:7px; width:32px; height:32px; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; box-shadow:0 2px 4px rgba(0,0,0,.1); }
+    .btn-clinic-reschedule:hover { background:#6d28d9; transform:translateY(-1px); }
+    .clinic-reschedule-overlay { display:none; position:fixed; inset:0; z-index:3000; background:rgba(0,20,40,.62); align-items:center; justify-content:center; padding:20px; overflow-y:auto; }
+    .clinic-reschedule-card { width:min(540px,100%); max-height:calc(100vh - 40px); overflow-y:auto; background:#fff; border-radius:16px; padding:24px; box-shadow:0 18px 48px rgba(0,0,0,.22); }
+    .clinic-reschedule-card h2 { margin:0 0 6px; color:#001f3f; font-size:20px; }
+    .clinic-reschedule-card p { margin:0 0 16px; color:#64748b; font-size:12px; line-height:1.5; }
+    .clinic-reschedule-card label { display:block; color:#001f3f; font-weight:700; font-size:12px; margin:12px 0 6px; }
+    .clinic-reschedule-card input, .clinic-reschedule-card select, .clinic-reschedule-card textarea { width:100%; padding:11px 12px; border:1px solid #cbd5e1; border-radius:8px; font:inherit; font-size:13px; color:#0f172a; background:#fff; }
+    .clinic-reschedule-actions { display:flex; justify-content:flex-end; gap:10px; margin-top:18px; }
+    .clinic-reschedule-actions button { border:0; border-radius:8px; padding:10px 16px; font-weight:700; cursor:pointer; }
+    .clinic-reschedule-cancel { background:#e2e8f0; color:#334155; }
+    .clinic-reschedule-submit { background:#7c3aed; color:#fff; }
 </style>
 </head>
 <body>
 
     <aside class="sidebar">
         <div class="sidebar-header">
-            <img src="../bg.png" alt="Boogie's Logo" class="sidebar-logo-img">
+            <img src="../admin/bg.png" alt="Boogie's Logo" class="sidebar-logo-img">
             <h2>Boogie's Clinic</h2>
         </div>
         <nav class="nav-links">
@@ -2619,6 +2673,11 @@ input, select, textarea, button, img { max-width:100%; }
                                         echo '<button type="submit" class="btn-icon btn-cancel" title="Cancel Appointment"><i class="fas fa-times"></i></button>';
                                         echo '</form>';
                                     } elseif ($status_lower === 'confirmed') {
+                                        echo '<button type="button" class="btn-clinic-reschedule" title="Reschedule due to clinic/staff unavailability" onclick="openStaffClinicReschedule(this)"'
+                                            . ' data-id="' . (int)$row['id'] . '"'
+                                            . ' data-date="' . htmlspecialchars(substr((string)($row['appointment_date'] ?? ''), 0, 10), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '"'
+                                            . ' data-time="' . htmlspecialchars(substr((string)($row['appointment_time'] ?? ''), 0, 5), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '"'
+                                            . ' data-pet="' . htmlspecialchars((string)($row['pet_name'] ?? 'Pet'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '"><i class="fas fa-calendar-plus"></i></button>';
                                         echo '<form method="POST" action="appointments.php" style="display:inline; margin:0;" onsubmit="return confirm(\'Mark this veterinary service as completed?\');">';
                                         echo '<input type="hidden" name="appointment_action" value="complete">';
                                         echo '<input type="hidden" name="appointment_id" value="' . (int)$row['id'] . '">';
@@ -2626,6 +2685,13 @@ input, select, textarea, button, img { max-width:100%; }
                                         echo '<input type="hidden" name="csrf_token" value="' . htmlspecialchars($csrf_token, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '">';
                                         echo '<button type="submit" class="btn-icon btn-complete" title="Mark as Completed"><i class="fas fa-check-double"></i></button>';
                                         echo '</form>';
+                                    } elseif ($status_lower === 'rescheduled') {
+                                        echo '<button type="button" class="btn-clinic-reschedule" title="Reschedule due to clinic/staff unavailability" onclick="openStaffClinicReschedule(this)"'
+                                            . ' data-id="' . (int)$row['id'] . '"'
+                                            . ' data-date="' . htmlspecialchars(substr((string)($row['appointment_date'] ?? ''), 0, 10), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '"'
+                                            . ' data-time="' . htmlspecialchars(substr((string)($row['appointment_time'] ?? ''), 0, 5), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '"'
+                                            . ' data-pet="' . htmlspecialchars((string)($row['pet_name'] ?? 'Pet'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '"><i class="fas fa-calendar-plus"></i></button>';
+                                        echo '<span style="color:#64748b;font-size:11px;font-weight:600;">Clinic can still adjust schedule</span>';
                                     } else {
                                         echo '<span style="color: #cbd5e1; font-style: italic; font-size: 12px; font-weight:600;">No Actions</span>';
                                     }
@@ -2652,7 +2718,63 @@ input, select, textarea, button, img { max-width:100%; }
         </footer>
     </main>
 
+    <div class="clinic-reschedule-overlay" id="staffClinicRescheduleModal" role="dialog" aria-modal="true" aria-labelledby="staffClinicRescheduleTitle">
+        <div class="clinic-reschedule-card">
+            <h2 id="staffClinicRescheduleTitle"><i class="fas fa-calendar-plus" style="color:#7c3aed;margin-right:7px;"></i>Clinic-Initiated Reschedule</h2>
+            <p>Use this when the veterinarian or clinic is unavailable. This change will not use the customer's one-time reschedule allowance.</p>
+            <div style="padding:12px;border-radius:10px;background:#f8fafc;margin-bottom:14px;font-size:12px;color:#334155;line-height:1.6;">
+                <strong id="staffClinicReschedulePet">Pet</strong><br>
+                Current schedule: <span id="staffClinicRescheduleCurrent"></span>
+            </div>
+            <form method="POST" action="appointments.php" id="staffClinicRescheduleForm">
+                <input type="hidden" name="clinic_reschedule_action" value="1">
+                <input type="hidden" name="appointment_id" id="staffClinicRescheduleId" value="">
+                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
+                <input type="hidden" name="return_status" value="<?php echo htmlspecialchars($filter_status, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
+                <label for="staffClinicRescheduleDate">New Date *</label>
+                <input type="date" name="clinic_reschedule_date" id="staffClinicRescheduleDate" min="<?php echo date('Y-m-d'); ?>" required>
+                <label for="staffClinicRescheduleTime">New Time *</label>
+                <select name="clinic_reschedule_time" id="staffClinicRescheduleTime" required>
+                    <option value="">Choose new time</option>
+                    <option value="10:00">10:00 AM</option>
+                    <option value="11:00">11:00 AM</option>
+                    <option value="12:00">12:00 PM</option>
+                    <option value="13:00">1:00 PM</option>
+                    <option value="14:00">2:00 PM</option>
+                    <option value="15:00">3:00 PM</option>
+                    <option value="16:00">4:00 PM</option>
+                    <option value="17:00">5:00 PM</option>
+                </select>
+                <label for="staffClinicRescheduleReason">Reason *</label>
+                <textarea name="clinic_reschedule_reason" id="staffClinicRescheduleReason" rows="3" maxlength="250" required placeholder="Example: Veterinarian is unavailable due to emergency leave."></textarea>
+                <div class="clinic-reschedule-actions">
+                    <button type="button" class="clinic-reschedule-cancel" onclick="closeStaffClinicReschedule()">Cancel</button>
+                    <button type="submit" class="clinic-reschedule-submit">Save New Schedule</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <script>
+        function openStaffClinicReschedule(button) {
+            const modal = document.getElementById('staffClinicRescheduleModal');
+            if (!modal || !button) return;
+            document.getElementById('staffClinicRescheduleId').value = button.dataset.id || '';
+            document.getElementById('staffClinicReschedulePet').textContent = button.dataset.pet || 'Pet';
+            document.getElementById('staffClinicRescheduleCurrent').textContent = (button.dataset.date || '') + ' at ' + (button.dataset.time || '');
+            document.getElementById('staffClinicRescheduleDate').value = '';
+            document.getElementById('staffClinicRescheduleReason').value = '';
+            document.getElementById('staffClinicRescheduleTime').value = '';
+            modal.style.display = 'flex';
+        }
+        function closeStaffClinicReschedule() {
+            const modal = document.getElementById('staffClinicRescheduleModal');
+            if (modal) modal.style.display = 'none';
+        }
+        document.getElementById('staffClinicRescheduleModal')?.addEventListener('click', function(event) {
+            if (event.target === this) closeStaffClinicReschedule();
+        });
+
         // --- Notification & Profile Toggle Logic ---
 
         // --- Consistent mobile sidebar ---

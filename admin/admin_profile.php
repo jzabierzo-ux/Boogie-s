@@ -32,7 +32,158 @@ if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
 $csrf_token = $_SESSION['csrf_token'];
 $message = '';
 $user_data = [];
-$new_uploaded_path = null;
+$new_storage_object = null;
+
+/** Return the server-side Supabase Storage configuration. Never expose the service key to the browser. */
+function boogiesSupabaseStorageConfig(): ?array
+{
+    $supabaseUrl = trim((string)(getenv('SUPABASE_URL') ?: ''));
+    // Prefer the current Supabase secret key. The legacy service_role JWT remains supported.
+    $secretKey = trim((string)(getenv('SUPABASE_SECRET_KEY') ?: ''));
+    $legacyServiceRoleKey = trim((string)(getenv('SUPABASE_SERVICE_ROLE_KEY') ?: ''));
+    $apiKey = $secretKey !== '' ? $secretKey : $legacyServiceRoleKey;
+    $usesLegacyJwt = ($secretKey === '' && $legacyServiceRoleKey !== '');
+    $bucket = trim((string)(getenv('SUPABASE_STORAGE_BUCKET') ?: 'profile-images'));
+
+    if ($supabaseUrl === '' || $apiKey === '' || $bucket === '') {
+        return null;
+    }
+
+    $supabaseUrl = rtrim($supabaseUrl, '/');
+    $parsedUrl = parse_url($supabaseUrl);
+    if (
+        !filter_var($supabaseUrl, FILTER_VALIDATE_URL) ||
+        !is_array($parsedUrl) ||
+        strtolower((string)($parsedUrl['scheme'] ?? '')) !== 'https' ||
+        empty($parsedUrl['host']) ||
+        isset($parsedUrl['user']) ||
+        isset($parsedUrl['pass'])
+    ) {
+        return null;
+    }
+
+    return [
+        'url' => $supabaseUrl,
+        'key' => $apiKey,
+        'uses_legacy_jwt' => $usesLegacyJwt,
+        'bucket' => $bucket
+    ];
+}
+
+/** Send a server-to-server request to Supabase Storage using the service role key. */
+function boogiesSupabaseStorageRequest(string $method, string $objectPath, ?string $filePath = null, ?string $mimeType = null): array
+{
+    $config = boogiesSupabaseStorageConfig();
+    if ($config === null) {
+        return [
+            'ok' => false,
+            'status' => 0,
+            'body' => '',
+            'error' => 'Supabase Storage is not configured. Add SUPABASE_URL and SUPABASE_SECRET_KEY to the server environment (or the legacy SUPABASE_SERVICE_ROLE_KEY).'
+        ];
+    }
+
+    if (!function_exists('curl_init')) {
+        return ['ok' => false, 'status' => 0, 'body' => '', 'error' => 'The PHP cURL extension is not available.'];
+    }
+
+    $segments = explode('/', trim(str_replace('\\', '/', $objectPath), '/'));
+    if (
+        $objectPath === '' ||
+        in_array('', $segments, true) ||
+        in_array('.', $segments, true) ||
+        in_array('..', $segments, true)
+    ) {
+        return ['ok' => false, 'status' => 0, 'body' => '', 'error' => 'Invalid Storage object path.'];
+    }
+
+    $encodedObjectPath = implode('/', array_map('rawurlencode', $segments));
+    $endpoint = $config['url'] . '/storage/v1/object/' . rawurlencode($config['bucket']) . '/' . $encodedObjectPath;
+    // New sb_secret_* keys belong in apikey only. Legacy service_role JWTs also use Bearer auth.
+    $headers = ['apikey: ' . $config['key']];
+    if (!empty($config['uses_legacy_jwt'])) {
+        $headers[] = 'Authorization: Bearer ' . $config['key'];
+    }
+
+    $method = strtoupper($method);
+    $options = [
+        CURLOPT_URL => $endpoint,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_CUSTOMREQUEST => $method,
+        CURLOPT_HTTPHEADER => $headers,
+        CURLOPT_CONNECTTIMEOUT => 10,
+        CURLOPT_TIMEOUT => 30,
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_SSL_VERIFYHOST => 2,
+        CURLOPT_FOLLOWLOCATION => false
+    ];
+
+    if ($method === 'POST') {
+        if ($filePath === null || !is_file($filePath) || !is_readable($filePath)) {
+            return ['ok' => false, 'status' => 0, 'body' => '', 'error' => 'The temporary uploaded image could not be read.'];
+        }
+
+        $fileContents = file_get_contents($filePath);
+        if (!is_string($fileContents)) {
+            return ['ok' => false, 'status' => 0, 'body' => '', 'error' => 'The temporary uploaded image could not be read.'];
+        }
+
+        $headers[] = 'Content-Type: ' . ($mimeType ?: 'application/octet-stream');
+        $headers[] = 'x-upsert: false';
+        $options[CURLOPT_HTTPHEADER] = $headers;
+        $options[CURLOPT_POSTFIELDS] = $fileContents;
+    } elseif ($method !== 'DELETE') {
+        return ['ok' => false, 'status' => 0, 'body' => '', 'error' => 'Unsupported Storage request.'];
+    }
+
+    $curl = curl_init();
+    if ($curl === false) {
+        return ['ok' => false, 'status' => 0, 'body' => '', 'error' => 'Unable to initialize the Storage connection.'];
+    }
+
+    curl_setopt_array($curl, $options);
+    $responseBody = curl_exec($curl);
+    $curlError = curl_error($curl);
+    $statusCode = (int)curl_getinfo($curl, CURLINFO_HTTP_CODE);
+    curl_close($curl);
+
+    if ($responseBody === false) {
+        error_log('Supabase Storage request failed: ' . $curlError);
+        return ['ok' => false, 'status' => $statusCode, 'body' => '', 'error' => 'Could not connect to Supabase Storage. Please try again.'];
+    }
+
+    $success = ($method === 'POST')
+        ? in_array($statusCode, [200, 201], true)
+        : in_array($statusCode, [200, 204], true);
+
+    if (!$success) {
+        error_log('Supabase Storage request returned HTTP ' . $statusCode . ': ' . substr((string)$responseBody, 0, 500));
+    }
+
+    return [
+        'ok' => $success,
+        'status' => $statusCode,
+        'body' => (string)$responseBody,
+        'error' => $success ? '' : 'Supabase Storage rejected the image request (HTTP ' . $statusCode . '). Check the bucket and server credentials.'
+    ];
+}
+
+/** Build the browser URL for an object in a public Supabase Storage bucket. */
+function boogiesSupabaseStoragePublicUrl(string $objectPath): ?string
+{
+    $config = boogiesSupabaseStorageConfig();
+    if ($config === null) {
+        return null;
+    }
+
+    $segments = explode('/', trim(str_replace('\\', '/', $objectPath), '/'));
+    if ($objectPath === '' || in_array('', $segments, true) || in_array('.', $segments, true) || in_array('..', $segments, true)) {
+        return null;
+    }
+
+    $encodedObjectPath = implode('/', array_map('rawurlencode', $segments));
+    return $config['url'] . '/storage/v1/object/public/' . rawurlencode($config['bucket']) . '/' . $encodedObjectPath;
+}
 
 function boogiesResolveProfileImageUrl($storedPath): ?string
 {
@@ -42,7 +193,7 @@ function boogiesResolveProfileImageUrl($storedPath): ?string
 
     $path = trim(str_replace('\\', '/', $storedPath));
 
-    // Supports a future Supabase Storage public URL, but only http(s) URLs.
+    // Supports a Supabase Storage public URL, but only http(s) URLs.
     if (preg_match('#^https?://#i', $path)) {
         return filter_var($path, FILTER_VALIDATE_URL) ? $path : null;
     }
@@ -162,31 +313,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['update_profile']) ||
                     $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Invalid image type. Only valid JPG, PNG, and GIF files are allowed.</div>';
                     $has_error = true;
                 } else {
-                    $uploadDir = __DIR__ . DIRECTORY_SEPARATOR . 'uploads';
-                    if (!is_dir($uploadDir) && !@mkdir($uploadDir, 0755, true) && !is_dir($uploadDir)) {
-                        $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> The profile image folder could not be created.</div>';
+                    try {
+                        $randomName = 'admin_' . $user_id . '_' . bin2hex(random_bytes(12)) . '.' . $allowedMimes[$mime];
+                    } catch (Throwable $e) {
+                        error_log('Admin profile image filename generation failed: ' . $e->getMessage());
+                        $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Unable to prepare the uploaded image.</div>';
                         $has_error = true;
-                    } elseif (!is_writable($uploadDir)) {
-                        $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> The profile image folder is not writable.</div>';
-                        $has_error = true;
-                    } else {
-                        try {
-                            $randomName = 'admin_' . $user_id . '_' . bin2hex(random_bytes(12)) . '.' . $allowedMimes[$mime];
-                        } catch (Throwable $e) {
-                            error_log('Admin profile image filename generation failed: ' . $e->getMessage());
-                            $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Unable to prepare the uploaded image.</div>';
-                            $has_error = true;
-                            $randomName = '';
-                        }
+                        $randomName = '';
+                    }
 
-                        if (!$has_error) {
-                            $destination = $uploadDir . DIRECTORY_SEPARATOR . $randomName;
-                            if (move_uploaded_file((string)$upload['tmp_name'], $destination)) {
-                                $new_uploaded_path = $destination;
-                                $profile_image = 'uploads/' . $randomName;
-                            } else {
-                                $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Failed to save the uploaded image.</div>';
+                    if (!$has_error) {
+                        // Store profile pictures in Supabase Storage, not the temporary Vercel filesystem.
+                        $storageObject = 'admin/' . $user_id . '/' . $randomName;
+                        $storageResult = boogiesSupabaseStorageRequest(
+                            'POST',
+                            $storageObject,
+                            (string)$upload['tmp_name'],
+                            $mime
+                        );
+
+                        if (!$storageResult['ok']) {
+                            error_log('Admin profile image upload failed: ' . $storageResult['error']);
+                            $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> ' . htmlspecialchars((string)$storageResult['error'], ENT_QUOTES, 'UTF-8') . '</div>';
+                            $has_error = true;
+                        } else {
+                            $publicUrl = boogiesSupabaseStoragePublicUrl($storageObject);
+                            if ($publicUrl === null) {
+                                boogiesSupabaseStorageRequest('DELETE', $storageObject);
+                                $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Unable to create the profile picture URL. Check your Supabase Storage settings.</div>';
                                 $has_error = true;
+                            } else {
+                                $new_storage_object = $storageObject;
+                                $profile_image = $publicUrl;
                             }
                         }
                     }
@@ -214,10 +372,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['update_profile']) ||
                 $user_data['profile_image'] = $profile_image;
                 $_SESSION['user_name'] = $full_name;
                 $message = '<div class="alert alert-success"><i class="fas fa-check-circle"></i> Profile updated successfully!</div>';
-                $new_uploaded_path = null; // Keep the new file after the database update succeeds.
+                $new_storage_object = null; // Keep the new Storage object after the database update succeeds.
             } catch (PDOException $e) {
-                if ($new_uploaded_path && is_file($new_uploaded_path)) {
-                    @unlink($new_uploaded_path);
+                if ($new_storage_object !== null) {
+                    boogiesSupabaseStorageRequest('DELETE', $new_storage_object);
+                    $new_storage_object = null;
                 }
                 error_log('Admin profile update failed: ' . $e->getMessage());
                 $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Error updating profile. Check that the username is unique and the database columns are available.</div>';
