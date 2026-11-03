@@ -421,7 +421,7 @@ try {
                 user_category, otp_code, is_verified, email_verified
              ) VALUES (
                 :full_name, :contact_number, :email, :password, :role, :position,
-                :user_category, :otp, FALSE, FALSE
+                :user_category, :otp, 0, 0
              )
              RETURNING id'
         );
@@ -519,7 +519,7 @@ try {
                     "DELETE FROM users
                      WHERE id = :id
                        AND LOWER(TRIM(role)) = 'customer'
-                       AND is_verified = FALSE
+                      AND is_verified = 0
                        AND otp_code = :otp"
                 );
                 $cleanup->execute([
