@@ -444,10 +444,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['google_register_btn']
             $mailDisplayName = trim((string)($existingGoogleUser['full_name'] ?? '')) ?: $googleName;
             $saveGoogleOtp = $pdo->prepare(
                 "UPDATE users
-                 SET otp_code = :otp, is_verified = FALSE, email_verified = FALSE
+                 SET otp_code = :otp, is_verified = 0, email_verified = 0
                  WHERE id = :id
                    AND LOWER(TRIM(COALESCE(role, ''))) = 'customer'
-                   AND COALESCE(is_verified, FALSE) = FALSE"
+                   AND COALESCE(is_verified, 0) = 0"
             );
             $saveGoogleOtp->execute([':otp' => $googleOtp, ':id' => $googleUserId]);
             if ($saveGoogleOtp->rowCount() !== 1) {
@@ -464,7 +464,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['google_register_btn']
                     user_category, otp_code, is_verified, email_verified
                 ) VALUES (
                     :full_name, :contact_number, :email, :password, :role, :position,
-                    :user_category, :otp, FALSE, FALSE
+                    :user_category, :otp, 0, 0
                 ) RETURNING id'
             );
             $insertGoogleUser->execute([
@@ -504,12 +504,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['google_register_btn']
             try {
                 if ($googleIsNewUser) {
                     $cleanupGoogleUser = $pdo->prepare(
-                        'DELETE FROM users WHERE id = :id AND is_verified = FALSE AND otp_code = :otp'
+                        'DELETE FROM users WHERE id = :id AND is_verified = 0 AND otp_code = :otp'
                     );
                     $cleanupGoogleUser->execute([':id' => $googleUserId, ':otp' => $googleOtp]);
                 } else {
                     $clearGoogleOtp = $pdo->prepare(
-                        'UPDATE users SET otp_code = NULL WHERE id = :id AND otp_code = :otp AND is_verified = FALSE'
+                        'UPDATE users SET otp_code = NULL WHERE id = :id AND otp_code = :otp AND is_verified = 0'
                     );
                     $clearGoogleOtp->execute([':id' => $googleUserId, ':otp' => $googleOtp]);
                 }
@@ -576,10 +576,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['resend_register_otp_b
         $previousOtp = $user['otp_code'] ?? null;
         $updateOtp = $pdo->prepare(
             "UPDATE users
-             SET otp_code = :otp, is_verified = FALSE, email_verified = FALSE
+             SET otp_code = :otp, is_verified = 0, email_verified = 0
              WHERE id = :id
                AND LOWER(TRIM(COALESCE(role, ''))) = 'customer'
-               AND COALESCE(is_verified, FALSE) = FALSE"
+               AND COALESCE(is_verified, 0) = 0"
         );
         $updateOtp->execute([':otp' => $newOtp, ':id' => $user['id']]);
         if ($updateOtp->rowCount() !== 1) {
@@ -603,7 +603,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['resend_register_otp_b
         try {
             if (isset($user['id'])) {
                 $restoreOtp = $pdo->prepare(
-                    'UPDATE users SET otp_code = :previous_otp WHERE id = :id AND otp_code = :new_otp AND is_verified = FALSE'
+                    'UPDATE users SET otp_code = :previous_otp WHERE id = :id AND otp_code = :new_otp AND is_verified = 0'
                 );
                 $restoreOtp->execute([
                     ':previous_otp' => $previousOtp,
@@ -642,13 +642,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['verify_btn'])) {
         try {
             $verifyStmt = $pdo->prepare(
                 "UPDATE users
-                 SET is_verified = TRUE,
-                     email_verified = TRUE,
+                 SET is_verified = 1,
+                     email_verified = 1,
                      otp_code = NULL
                  WHERE LOWER(email) = LOWER(:email)
                    AND otp_code = :otp
                    AND LOWER(TRIM(COALESCE(role, ''))) = 'customer'
-                   AND COALESCE(is_verified, FALSE) = FALSE
+                   AND COALESCE(is_verified, 0) = 0
                  RETURNING id, full_name, position"
             );
             $verifyStmt->execute([':email' => $email, ':otp' => $enteredOtp]);
@@ -747,11 +747,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['register_btn'])) {
                              position = 'Customer',
                              user_category = :user_category,
                              otp_code = :otp,
-                             is_verified = FALSE,
-                             email_verified = FALSE
+                             is_verified = 0,
+                             email_verified = 0
                          WHERE id = :id
                            AND LOWER(TRIM(COALESCE(role, ''))) = 'customer'
-                           AND COALESCE(is_verified, FALSE) = FALSE"
+                           AND COALESCE(is_verified, 0) = 0"
                     );
                     $accountStmt->execute([
                         ':full_name' => $fullName,
@@ -771,7 +771,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['register_btn'])) {
                             user_category, otp_code, is_verified, email_verified
                          ) VALUES (
                             :full_name, :contact, :email, :password, :role, :position,
-                            :user_category, :otp, FALSE, FALSE
+                            :user_category, :otp, 0, 0
                          ) RETURNING id'
                     );
                     $accountStmt->execute([
@@ -804,12 +804,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['register_btn'])) {
                     try {
                         if ($newUserId > 0) {
                             $deleteUser = $pdo->prepare(
-                                'DELETE FROM users WHERE id = :id AND is_verified = FALSE AND otp_code = :otp'
+                                'DELETE FROM users WHERE id = :id AND is_verified = 0 AND otp_code = :otp'
                             );
                             $deleteUser->execute([':id' => $newUserId, ':otp' => $otp]);
                         } elseif ($existingUserId > 0) {
                             $clearOtp = $pdo->prepare(
-                                'UPDATE users SET otp_code = NULL WHERE id = :id AND is_verified = FALSE AND otp_code = :otp'
+                                'UPDATE users SET otp_code = NULL WHERE id = :id AND is_verified = 0 AND otp_code = :otp'
                             );
                             $clearOtp->execute([':id' => $existingUserId, ':otp' => $otp]);
                         }
