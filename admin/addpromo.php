@@ -67,6 +67,151 @@ function addPromoProfileImageUrl($storedPath): string
     return '';
 }
 
+
+/** Return the server-side Supabase Storage configuration for promo images. */
+function addPromoStorageConfig(): ?array
+{
+    $supabaseUrl = trim((string)(getenv('SUPABASE_URL') ?: ''));
+    // Prefer the current Supabase secret key; support the legacy service_role JWT as fallback.
+    $secretKey = trim((string)(getenv('SUPABASE_SECRET_KEY') ?: ''));
+    $legacyServiceRoleKey = trim((string)(getenv('SUPABASE_SERVICE_ROLE_KEY') ?: ''));
+    $apiKey = $secretKey !== '' ? $secretKey : $legacyServiceRoleKey;
+    $usesLegacyJwt = ($secretKey === '' && $legacyServiceRoleKey !== '');
+    $bucket = 'promos';
+
+    if ($supabaseUrl === '' || $apiKey === '' || preg_match('/[\\r\\n]/', $apiKey)) {
+        return null;
+    }
+
+    $supabaseUrl = rtrim($supabaseUrl, '/');
+    $parsedUrl = parse_url($supabaseUrl);
+    if (
+        !filter_var($supabaseUrl, FILTER_VALIDATE_URL) ||
+        !is_array($parsedUrl) ||
+        strtolower((string)($parsedUrl['scheme'] ?? '')) !== 'https' ||
+        empty($parsedUrl['host']) ||
+        isset($parsedUrl['user']) ||
+        isset($parsedUrl['pass'])
+    ) {
+        return null;
+    }
+
+    return [
+        'url' => $supabaseUrl,
+        'key' => $apiKey,
+        'uses_legacy_jwt' => $usesLegacyJwt,
+        'bucket' => $bucket
+    ];
+}
+
+/** Upload or delete a promo image using server-side credentials only. */
+function addPromoStorageRequest(string $method, string $objectPath, ?string $filePath = null, ?string $mimeType = null): array
+{
+    $config = addPromoStorageConfig();
+    if ($config === null) {
+        return ['ok' => false, 'status' => 0, 'body' => '', 'error' => 'Supabase Storage is not configured. Check SUPABASE_URL and the server-side Supabase key in Vercel.'];
+    }
+
+    if (!function_exists('curl_init')) {
+        return ['ok' => false, 'status' => 0, 'body' => '', 'error' => 'The PHP cURL extension is not available.'];
+    }
+
+    $objectPath = trim(str_replace('\\', '/', $objectPath), '/');
+    $segments = explode('/', $objectPath);
+    if ($objectPath === '' || in_array('', $segments, true) || in_array('.', $segments, true) || in_array('..', $segments, true)) {
+        return ['ok' => false, 'status' => 0, 'body' => '', 'error' => 'Invalid Storage object path.'];
+    }
+
+    $encodedObjectPath = implode('/', array_map('rawurlencode', $segments));
+    $endpoint = $config['url'] . '/storage/v1/object/' . rawurlencode($config['bucket']) . '/' . $encodedObjectPath;
+    $method = strtoupper($method);
+
+    // New sb_secret_* keys use the apikey header. Legacy service_role JWTs also use Bearer auth.
+    $headers = ['apikey: ' . $config['key']];
+    if (!empty($config['uses_legacy_jwt'])) {
+        $headers[] = 'Authorization: Bearer ' . $config['key'];
+    }
+
+    $options = [
+        CURLOPT_URL => $endpoint,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_CUSTOMREQUEST => $method,
+        CURLOPT_HTTPHEADER => $headers,
+        CURLOPT_CONNECTTIMEOUT => 10,
+        CURLOPT_TIMEOUT => 30,
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_SSL_VERIFYHOST => 2,
+        CURLOPT_FOLLOWLOCATION => false
+    ];
+
+    if ($method === 'POST') {
+        if ($filePath === null || !is_file($filePath) || !is_readable($filePath)) {
+            return ['ok' => false, 'status' => 0, 'body' => '', 'error' => 'The temporary uploaded image could not be read.'];
+        }
+
+        $fileContents = file_get_contents($filePath);
+        if (!is_string($fileContents)) {
+            return ['ok' => false, 'status' => 0, 'body' => '', 'error' => 'The temporary uploaded image could not be read.'];
+        }
+
+        $headers[] = 'Content-Type: ' . ($mimeType ?: 'application/octet-stream');
+        $headers[] = 'x-upsert: false';
+        $options[CURLOPT_HTTPHEADER] = $headers;
+        $options[CURLOPT_POSTFIELDS] = $fileContents;
+    } elseif ($method !== 'DELETE') {
+        return ['ok' => false, 'status' => 0, 'body' => '', 'error' => 'Unsupported Storage request.'];
+    }
+
+    $curl = curl_init();
+    if ($curl === false) {
+        return ['ok' => false, 'status' => 0, 'body' => '', 'error' => 'Unable to initialize the Storage connection.'];
+    }
+
+    curl_setopt_array($curl, $options);
+    $responseBody = curl_exec($curl);
+    $curlError = curl_error($curl);
+    $statusCode = (int)curl_getinfo($curl, CURLINFO_HTTP_CODE);
+    curl_close($curl);
+
+    if ($responseBody === false) {
+        error_log('Promo Supabase Storage request failed: ' . $curlError);
+        return ['ok' => false, 'status' => $statusCode, 'body' => '', 'error' => 'Could not connect to Supabase Storage. Please try again.'];
+    }
+
+    $success = ($method === 'POST')
+        ? in_array($statusCode, [200, 201], true)
+        : in_array($statusCode, [200, 204], true);
+
+    if (!$success) {
+        error_log('Promo Supabase Storage request returned HTTP ' . $statusCode . ': ' . substr((string)$responseBody, 0, 500));
+    }
+
+    return [
+        'ok' => $success,
+        'status' => $statusCode,
+        'body' => (string)$responseBody,
+        'error' => $success ? '' : 'Supabase Storage rejected the image request (HTTP ' . $statusCode . '). Check the promos bucket and server credentials.'
+    ];
+}
+
+/** Build the public browser URL for an image in the dedicated promos bucket. */
+function addPromoStoragePublicUrl(string $objectPath): ?string
+{
+    $config = addPromoStorageConfig();
+    if ($config === null) {
+        return null;
+    }
+
+    $objectPath = trim(str_replace('\\', '/', $objectPath), '/');
+    $segments = explode('/', $objectPath);
+    if ($objectPath === '' || in_array('', $segments, true) || in_array('.', $segments, true) || in_array('..', $segments, true)) {
+        return null;
+    }
+
+    $encodedObjectPath = implode('/', array_map('rawurlencode', $segments));
+    return $config['url'] . '/storage/v1/object/public/' . rawurlencode($config['bucket']) . '/' . $encodedObjectPath;
+}
+
 // CSRF protection for promotion creation.
 if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
@@ -170,7 +315,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $expiry_date = trim((string)($_POST['expiry_date'] ?? ''));
         $status = trim((string)($_POST['status'] ?? ''));
         $image_url = null;
-        $uploaded_file_path = null;
+        $uploaded_object_path = null;
         $today = date('Y-m-d');
 
         // Validate all text and option fields before accepting an upload.
@@ -222,25 +367,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if (!isset($allowed_mimes[$mime]) || $image_mime !== $mime) {
                     $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Please upload a valid JPG, PNG, or WEBP image.</div>";
                 } else {
-                    $upload_dir = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'promos' . DIRECTORY_SEPARATOR;
-                    if (!is_dir($upload_dir) && !@mkdir($upload_dir, 0755, true) && !is_dir($upload_dir)) {
-                        $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Unable to prepare the promo upload folder. Check the project folder permissions.</div>";
-                    } elseif (!is_writable($upload_dir)) {
-                        $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Promo upload folder is not writable. Check the project folder permissions.</div>";
-                    } else {
-                        try {
-                            $random_name = bin2hex(random_bytes(16)) . '.' . $allowed_mimes[$mime];
-                            $destination = $upload_dir . $random_name;
-                            if (move_uploaded_file($upload['tmp_name'], $destination)) {
-                                $uploaded_file_path = $destination;
-                                $image_url = 'uploads/promos/' . $random_name;
+                    try {
+                        $random_name = bin2hex(random_bytes(16)) . '.' . $allowed_mimes[$mime];
+                        $storage_result = addPromoStorageRequest('POST', $random_name, $upload['tmp_name'], $mime);
+
+                        if (empty($storage_result['ok'])) {
+                            error_log('Create promo Storage upload failed: ' . (string)($storage_result['error'] ?? 'Unknown Storage error'));
+                            $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Unable to upload the promo image to cloud storage. Please try again or check the Supabase Storage setup.</div>";
+                        } else {
+                            $public_url = addPromoStoragePublicUrl($random_name);
+                            if (!is_string($public_url) || $public_url === '') {
+                                // Avoid leaving an object behind if its public URL cannot be built.
+                                addPromoStorageRequest('DELETE', $random_name);
+                                $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> The promo image was uploaded, but its public URL could not be created. Please check the Supabase project URL.</div>";
                             } else {
-                                $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Unable to save the uploaded image. Please try again.</div>";
+                                $uploaded_object_path = $random_name;
+                                $image_url = $public_url;
                             }
-                        } catch (Throwable $e) {
-                            error_log('Create promo image upload error: ' . $e->getMessage());
-                            $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Unable to securely process the image. Please try again.</div>";
                         }
+                    } catch (Throwable $e) {
+                        error_log('Create promo image upload error: ' . $e->getMessage());
+                        $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Unable to securely process the image. Please try again.</div>";
                     }
                 }
             }
@@ -270,8 +417,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
                 $csrf_token = $_SESSION['csrf_token'];
             } catch (PDOException $e) {
-                if ($uploaded_file_path !== null && is_file($uploaded_file_path)) {
-                    @unlink($uploaded_file_path);
+                if ($uploaded_object_path !== null) {
+                    $cleanup_result = addPromoStorageRequest('DELETE', $uploaded_object_path);
+                    if (empty($cleanup_result['ok'])) {
+                        error_log('Create promo Storage cleanup failed for the unlinked uploaded object.');
+                    }
                 }
                 error_log('Create promo database error: ' . $e->getMessage());
                 $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Unable to save the promo. Please check the application error log.</div>";

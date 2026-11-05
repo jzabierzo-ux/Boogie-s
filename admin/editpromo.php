@@ -91,6 +91,191 @@ function editPromoDeleteLocalImage($storedUrl): void
     }
 }
 
+/** Read the dedicated Supabase Storage configuration for promotion images. */
+function editPromoStorageConfig(): ?array
+{
+    $supabaseUrl = trim((string)(getenv('SUPABASE_URL') ?: ''));
+    $secretKey = trim((string)(getenv('SUPABASE_SECRET_KEY') ?: ''));
+    $legacyServiceRoleKey = trim((string)(getenv('SUPABASE_SERVICE_ROLE_KEY') ?: ''));
+    $apiKey = $secretKey !== '' ? $secretKey : $legacyServiceRoleKey;
+    $usesLegacyJwt = ($secretKey === '' && $legacyServiceRoleKey !== '');
+
+    if ($supabaseUrl === '' || $apiKey === '' || preg_match('/[\\r\\n]/', $apiKey)) {
+        return null;
+    }
+
+    $supabaseUrl = rtrim($supabaseUrl, '/');
+    $parsedUrl = parse_url($supabaseUrl);
+    if (
+        !filter_var($supabaseUrl, FILTER_VALIDATE_URL) ||
+        !is_array($parsedUrl) ||
+        strtolower((string)($parsedUrl['scheme'] ?? '')) !== 'https' ||
+        empty($parsedUrl['host']) ||
+        isset($parsedUrl['user']) ||
+        isset($parsedUrl['pass'])
+    ) {
+        return null;
+    }
+
+    return [
+        'url' => $supabaseUrl,
+        'key' => $apiKey,
+        'uses_legacy_jwt' => $usesLegacyJwt,
+        'bucket' => 'promos'
+    ];
+}
+
+/** Upload or delete one promotion image using server-side credentials only. */
+function editPromoStorageRequest(string $method, string $objectPath, ?string $filePath = null, ?string $mimeType = null): array
+{
+    $config = editPromoStorageConfig();
+    if ($config === null) {
+        return ['ok' => false, 'status' => 0, 'error' => 'Supabase Storage is not configured. Check the Vercel environment variables.'];
+    }
+    if (!function_exists('curl_init')) {
+        return ['ok' => false, 'status' => 0, 'error' => 'The PHP cURL extension is not available.'];
+    }
+
+    $objectPath = trim(str_replace('\\', '/', $objectPath), '/');
+    $segments = explode('/', $objectPath);
+    if ($objectPath === '' || in_array('', $segments, true) || in_array('.', $segments, true) || in_array('..', $segments, true)) {
+        return ['ok' => false, 'status' => 0, 'error' => 'Invalid Storage object path.'];
+    }
+
+    $encodedObjectPath = implode('/', array_map('rawurlencode', $segments));
+    $endpoint = $config['url'] . '/storage/v1/object/' . rawurlencode($config['bucket']) . '/' . $encodedObjectPath;
+    $method = strtoupper($method);
+
+    $headers = ['apikey: ' . $config['key']];
+    if (!empty($config['uses_legacy_jwt'])) {
+        $headers[] = 'Authorization: Bearer ' . $config['key'];
+    }
+
+    $options = [
+        CURLOPT_URL => $endpoint,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_CUSTOMREQUEST => $method,
+        CURLOPT_HTTPHEADER => $headers,
+        CURLOPT_CONNECTTIMEOUT => 10,
+        CURLOPT_TIMEOUT => 30,
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_SSL_VERIFYHOST => 2,
+        CURLOPT_FOLLOWLOCATION => false
+    ];
+
+    if ($method === 'POST') {
+        if ($filePath === null || !is_file($filePath) || !is_readable($filePath)) {
+            return ['ok' => false, 'status' => 0, 'error' => 'The temporary uploaded image could not be read.'];
+        }
+        $contents = file_get_contents($filePath);
+        if (!is_string($contents)) {
+            return ['ok' => false, 'status' => 0, 'error' => 'The temporary uploaded image could not be read.'];
+        }
+        $headers[] = 'Content-Type: ' . ($mimeType ?: 'application/octet-stream');
+        $headers[] = 'x-upsert: false';
+        $options[CURLOPT_HTTPHEADER] = $headers;
+        $options[CURLOPT_POSTFIELDS] = $contents;
+    } elseif ($method !== 'DELETE') {
+        return ['ok' => false, 'status' => 0, 'error' => 'Unsupported Storage request.'];
+    }
+
+    $curl = curl_init();
+    if ($curl === false) {
+        return ['ok' => false, 'status' => 0, 'error' => 'Unable to initialize the Storage connection.'];
+    }
+    curl_setopt_array($curl, $options);
+    $body = curl_exec($curl);
+    $curlError = curl_error($curl);
+    $status = (int)curl_getinfo($curl, CURLINFO_HTTP_CODE);
+    curl_close($curl);
+
+    if ($body === false) {
+        error_log('Edit promo Supabase Storage request failed: ' . $curlError);
+        return ['ok' => false, 'status' => $status, 'error' => 'Could not connect to Supabase Storage. Please try again.'];
+    }
+
+    $ok = ($method === 'POST') ? in_array($status, [200, 201], true) : in_array($status, [200, 204], true);
+    if (!$ok) {
+        error_log('Edit promo Supabase Storage returned HTTP ' . $status . ': ' . substr((string)$body, 0, 500));
+    }
+    return [
+        'ok' => $ok,
+        'status' => $status,
+        'error' => $ok ? '' : 'Supabase Storage rejected the image request (HTTP ' . $status . '). Check the promos bucket permissions and server credentials.'
+    ];
+}
+
+/** Build the public URL saved in promos.image_url for a bucket object. */
+function editPromoStoragePublicUrl(string $objectPath): ?string
+{
+    $config = editPromoStorageConfig();
+    if ($config === null) {
+        return null;
+    }
+    $objectPath = trim(str_replace('\\', '/', $objectPath), '/');
+    $segments = explode('/', $objectPath);
+    if ($objectPath === '' || in_array('', $segments, true) || in_array('.', $segments, true) || in_array('..', $segments, true)) {
+        return null;
+    }
+    $encodedPath = implode('/', array_map('rawurlencode', $segments));
+    return $config['url'] . '/storage/v1/object/public/' . rawurlencode($config['bucket']) . '/' . $encodedPath;
+}
+
+/** Accept only public image URLs belonging to this project's promos bucket. */
+function editPromoStorageObjectFromPublicUrl($storedUrl): ?string
+{
+    if (!is_string($storedUrl) || trim($storedUrl) === '') {
+        return null;
+    }
+    $config = editPromoStorageConfig();
+    if ($config === null) {
+        return null;
+    }
+    $base = parse_url($config['url']);
+    $url = parse_url(trim($storedUrl));
+    if (!is_array($base) || !is_array($url)) {
+        return null;
+    }
+    if (
+        strtolower((string)($url['scheme'] ?? '')) !== 'https' ||
+        strtolower((string)($url['host'] ?? '')) !== strtolower((string)($base['host'] ?? '')) ||
+        (int)($url['port'] ?? 443) !== (int)($base['port'] ?? 443) ||
+        isset($url['user']) || isset($url['pass']) || isset($url['query']) || isset($url['fragment'])
+    ) {
+        return null;
+    }
+
+    $prefix = '/storage/v1/object/public/promos/';
+    $urlPath = (string)($url['path'] ?? '');
+    if (strpos($urlPath, $prefix) !== 0) {
+        return null;
+    }
+    $encodedName = substr($urlPath, strlen($prefix));
+    $objectName = rawurldecode($encodedName);
+    if ($objectName === '' || basename($objectName) !== $objectName || !preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,180}$/', $objectName)) {
+        return null;
+    }
+    return $objectName;
+}
+
+/** Remove a prior image only when it is a known local promo or this project's promo object. */
+function editPromoDeleteOldImage($storedUrl): void
+{
+    $objectPath = editPromoStorageObjectFromPublicUrl($storedUrl);
+    if ($objectPath !== null) {
+        $result = editPromoStorageRequest('DELETE', $objectPath);
+        if (empty($result['ok'])) {
+            error_log('Edit promo could not remove old Supabase Storage image: ' . (string)($result['error'] ?? 'Unknown error'));
+        }
+        return;
+    }
+
+    // Keep legacy local cleanup for older records; never delete unrelated external URLs.
+    if (is_string($storedUrl) && !preg_match('#^https?://#i', trim($storedUrl))) {
+        editPromoDeleteLocalImage($storedUrl);
+    }
+}
+
 // Shared Admin header data.
 $admin_full_name = $_SESSION['user_name'] ?? 'Admin';
 $profile_img_path = '';
@@ -230,7 +415,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         $remove_image = isset($_POST['remove_image']) && $_POST['remove_image'] === '1';
         $new_image_url = $form['image_url'];
-        $new_uploaded_path = null;
+        $new_storage_object = null;
         $old_image_url = $promo['image_url'] ?? null;
 
         $text_length = static function (string $value): int {
@@ -300,32 +485,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if (!is_string($mime) || !isset($allowed_mimes[$mime]) || $image_mime !== $mime) {
                     $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Please upload a valid JPG, PNG, or WEBP image.</div>";
                 } else {
-                    $upload_dir = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'promos' . DIRECTORY_SEPARATOR;
+                    try {
+                        $random_name = bin2hex(random_bytes(16)) . '.' . $allowed_mimes[$mime];
+                    } catch (Throwable $e) {
+                        $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Unable to prepare a secure image filename. Please try again.</div>";
+                    }
 
-                    if (!is_dir($upload_dir) && !@mkdir($upload_dir, 0755, true) && !is_dir($upload_dir)) {
-                        $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Unable to prepare the promo image folder.</div>";
-                    } elseif (!is_writable($upload_dir)) {
-                        $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Promo upload folder is not writable. Check permissions for <strong>uploads/promos</strong>.</div>";
-                    } else {
-                        try {
-                            $random_name = bin2hex(random_bytes(16)) . '.' . $allowed_mimes[$mime];
-                        } catch (Throwable $e) {
-                            $random_name = hash('sha256', uniqid((string)mt_rand(), true) . microtime(true)) . '.' . $allowed_mimes[$mime];
-                        }
-
-                        $destination = $upload_dir . $random_name;
-                        if (move_uploaded_file($upload['tmp_name'], $destination)) {
-                            $new_image_url = 'uploads/promos/' . $random_name;
-                            $new_uploaded_path = $destination;
+                    if ($message === '') {
+                        $storage_result = editPromoStorageRequest('POST', $random_name, (string)$upload['tmp_name'], $mime);
+                        if (empty($storage_result['ok'])) {
+                            $storage_error = (string)($storage_result['error'] ?? 'Storage upload failed.');
+                            $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> " . htmlspecialchars($storage_error, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "</div>";
                         } else {
-                            $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Unable to save the uploaded image.</div>";
+                            $public_url = editPromoStoragePublicUrl($random_name);
+                            if ($public_url === null) {
+                                editPromoStorageRequest('DELETE', $random_name);
+                                $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Unable to create the public promo image URL. Please check the Supabase configuration.</div>";
+                            } else {
+                                $new_image_url = $public_url;
+                                $new_storage_object = $random_name;
+                            }
                         }
                     }
                 }
             }
         }
 
-        if ($message === '' && $remove_image && $new_uploaded_path === null) {
+        if ($message === '' && $remove_image && $new_storage_object === null) {
             $new_image_url = null;
         }
 
@@ -354,18 +540,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ':id' => $promo_id
                 ]);
 
-                // Delete the old local image only after the database update succeeds.
-                // External URLs and paths outside uploads/promos are never removed.
+                // Remove the previous image only after the database update succeeds.
+                // This handles legacy local files and objects in this project's promos bucket.
                 if ($new_image_url !== $old_image_url && !empty($old_image_url)) {
-                    editPromoDeleteLocalImage($old_image_url);
+                    editPromoDeleteOldImage($old_image_url);
                 }
 
                 $form['image_url'] = $new_image_url;
                 $promo['image_url'] = $new_image_url;
                 $message = "<div class='alert success'><i class='fa-solid fa-circle-check'></i> Promotion updated successfully. <a href='managepromo.php'>Back to Promotions</a></div>";
             } catch (PDOException $e) {
-                if ($new_uploaded_path && is_file($new_uploaded_path)) {
-                    @unlink($new_uploaded_path);
+                if ($new_storage_object !== null) {
+                    $cleanup_result = editPromoStorageRequest('DELETE', $new_storage_object);
+                    if (empty($cleanup_result['ok'])) {
+                        error_log('Edit promo cleanup failed for newly uploaded Storage object: ' . (string)($cleanup_result['error'] ?? 'Unknown error'));
+                    }
                 }
 
                 $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Unable to update the promo. Please check the application log for details.</div>";

@@ -25,6 +25,27 @@ if (!defined('SMTP_PASS')) {
     define('SMTP_PASS', getenv('SMTP_PASS') ?: '');
 }
 
+// Registration verification codes expire after 15 minutes and allow at most five attempts.
+if (!defined('BOOGIE_REGISTER_OTP_TTL_SECONDS')) {
+    define('BOOGIE_REGISTER_OTP_TTL_SECONDS', 900);
+}
+if (!defined('BOOGIE_REGISTER_OTP_MAX_ATTEMPTS')) {
+    define('BOOGIE_REGISTER_OTP_MAX_ATTEMPTS', 5);
+}
+
+/** Clear only an active, unverified customer registration OTP. */
+function registerClearPendingCustomerOtp(PDO $pdo, string $email): void
+{
+    $clearOtp = $pdo->prepare(
+        "UPDATE users
+         SET otp_code = NULL
+         WHERE LOWER(email) = LOWER(:email)
+           AND LOWER(TRIM(COALESCE(role, ''))) = 'customer'
+           AND COALESCE(is_verified, 0) = 0"
+    );
+    $clearOtp->execute([':email' => $email]);
+}
+
 /** Read a scalar POST value without array-to-string warnings. */
 function registerPostString(string $key): string
 {
@@ -494,8 +515,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['google_register_btn']
             'Your Google account was authenticated. Enter this code on the registration page to finish creating your account.'
         );
 
+        $otpSentAt = time();
         $_SESSION['temp_email'] = $googleEmail;
-        $_SESSION['register_otp_last_sent'] = time();
+        $_SESSION['register_otp_last_sent'] = $otpSentAt;
+        $_SESSION['register_otp_expires_at'] = $otpSentAt + BOOGIE_REGISTER_OTP_TTL_SECONDS;
+        $_SESSION['register_otp_attempts'] = 0;
         $_SESSION['register_otp_resends'] = 0;
         $jsonResponse(true, 'Verification code sent. Check your inbox and spam folder.', 'register.php');
     } catch (Throwable $googleRegisterError) {
@@ -517,7 +541,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['google_register_btn']
                 error_log('Google registration cleanup failed: ' . $cleanupGoogleError->getMessage());
             }
         }
-        unset($_SESSION['temp_email'], $_SESSION['register_otp_last_sent'], $_SESSION['register_otp_resends']);
+        unset(
+            $_SESSION['temp_email'],
+            $_SESSION['register_otp_last_sent'],
+            $_SESSION['register_otp_expires_at'],
+            $_SESSION['register_otp_attempts'],
+            $_SESSION['register_otp_resends']
+        );
         $jsonResponse(false, 'We could not send the first verification code. Please try again later. If this continues, check the server SMTP settings.', null, 500);
     }
 }
@@ -532,7 +562,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['resend_register_otp_b
 
     $email = strtolower(trim(is_string($_SESSION['temp_email'] ?? null) ? $_SESSION['temp_email'] : ''));
     if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
-        unset($_SESSION['temp_email'], $_SESSION['register_otp_last_sent'], $_SESSION['register_otp_resends']);
+        unset($_SESSION['temp_email'], $_SESSION['register_otp_last_sent'], $_SESSION['register_otp_expires_at'], $_SESSION['register_otp_attempts'], $_SESSION['register_otp_resends']);
         registerAlert('Your registration session expired. Please register again.', 'register.php');
         exit;
     }
@@ -563,12 +593,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['resend_register_otp_b
         $user = $userStmt->fetch(PDO::FETCH_ASSOC);
 
         if (!$user || strtolower(trim((string)($user['role'] ?? ''))) !== 'customer') {
-            unset($_SESSION['temp_email'], $_SESSION['register_otp_last_sent'], $_SESSION['register_otp_resends']);
+            unset($_SESSION['temp_email'], $_SESSION['register_otp_last_sent'], $_SESSION['register_otp_expires_at'], $_SESSION['register_otp_attempts'], $_SESSION['register_otp_resends']);
             registerAlert('Registration account not found. Please register again.', 'register.php');
             exit;
         }
         if (registerDbBooleanTrue($user['is_verified'] ?? false)) {
-            unset($_SESSION['temp_email'], $_SESSION['register_otp_last_sent'], $_SESSION['register_otp_resends']);
+            unset($_SESSION['temp_email'], $_SESSION['register_otp_last_sent'], $_SESSION['register_otp_expires_at'], $_SESSION['register_otp_attempts'], $_SESSION['register_otp_resends']);
             registerAlert('This account is already verified. Please log in.', 'login.php');
             exit;
         }
@@ -595,7 +625,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['resend_register_otp_b
             "Here is your new Boogie's Pet Care account verification code:"
         );
 
-        $_SESSION['register_otp_last_sent'] = time();
+        $otpResentAt = time();
+        $_SESSION['register_otp_last_sent'] = $otpResentAt;
+        $_SESSION['register_otp_expires_at'] = $otpResentAt + BOOGIE_REGISTER_OTP_TTL_SECONDS;
+        $_SESSION['register_otp_attempts'] = 0;
         $_SESSION['register_otp_resends'] = (int)($_SESSION['register_otp_resends'] ?? 0) + 1;
         registerAlert('A new verification code has been sent. Check your inbox and spam folder.', 'register.php');
         exit;
@@ -630,13 +663,65 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['verify_btn'])) {
 
     $email = $_SESSION['temp_email'] ?? '';
     if (!is_string($email) || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
-        unset($_SESSION['temp_email'], $_SESSION['register_otp_last_sent'], $_SESSION['register_otp_resends']);
+        unset(
+            $_SESSION['temp_email'],
+            $_SESSION['register_otp_last_sent'],
+            $_SESSION['register_otp_expires_at'],
+            $_SESSION['register_otp_attempts'],
+            $_SESSION['register_otp_resends']
+        );
         registerAlert('Session expired. Please register again.', 'register.php');
+        exit;
+    }
+
+    $otpExpiresAt = (int)($_SESSION['register_otp_expires_at'] ?? 0);
+    $otpAttempts = max(0, (int)($_SESSION['register_otp_attempts'] ?? 0));
+
+    // Expired or missing challenge timestamps fail closed. Keep the email in
+    // session so the customer can still use the existing Resend Code action.
+    if ($otpExpiresAt <= 0 || $otpExpiresAt <= time()) {
+        try {
+            registerClearPendingCustomerOtp($pdo, $email);
+        } catch (Throwable $cleanupError) {
+            error_log('Expired registration OTP cleanup failed: ' . $cleanupError->getMessage());
+        }
+
+        $_SESSION['register_otp_expires_at'] = 0;
+        if ($otpAttempts < BOOGIE_REGISTER_OTP_MAX_ATTEMPTS) {
+            unset($_SESSION['register_otp_attempts']);
+        }
+
+        $message = ($otpAttempts >= BOOGIE_REGISTER_OTP_MAX_ATTEMPTS)
+            ? 'Too many incorrect verification codes. Please request a new code to continue.'
+            : 'Verification code expired. Please request a new code to continue.';
+        registerAlert($message, 'register.php');
+        exit;
+    }
+
+    if ($otpAttempts >= BOOGIE_REGISTER_OTP_MAX_ATTEMPTS) {
+        try {
+            registerClearPendingCustomerOtp($pdo, $email);
+        } catch (Throwable $cleanupError) {
+            error_log('Registration OTP attempt-limit cleanup failed: ' . $cleanupError->getMessage());
+        }
+        $_SESSION['register_otp_expires_at'] = 0;
+        registerAlert('Too many incorrect verification codes. Please request a new code to continue.', 'register.php');
         exit;
     }
 
     $enteredOtp = trim(registerPostString('otp_code'));
     if (!preg_match('/^[0-9]{6}$/', $enteredOtp)) {
+        $_SESSION['register_otp_attempts'] = $otpAttempts + 1;
+        if ($_SESSION['register_otp_attempts'] >= BOOGIE_REGISTER_OTP_MAX_ATTEMPTS) {
+            try {
+                registerClearPendingCustomerOtp($pdo, $email);
+            } catch (Throwable $cleanupError) {
+                error_log('Registration OTP attempt-limit cleanup failed: ' . $cleanupError->getMessage());
+            }
+            $_SESSION['register_otp_expires_at'] = 0;
+            registerAlert('Too many incorrect verification codes. Please request a new code to continue.', 'register.php');
+            exit;
+        }
         registerAlert('Please enter the 6-digit verification code.');
     } else {
         try {
@@ -661,6 +746,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['verify_btn'])) {
                 unset(
                     $_SESSION['temp_email'],
                     $_SESSION['register_otp_last_sent'],
+                    $_SESSION['register_otp_expires_at'],
+                    $_SESSION['register_otp_attempts'],
                     $_SESSION['register_otp_resends'],
                     $_SESSION['register_csrf_token']
                 );
@@ -673,7 +760,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['verify_btn'])) {
                 exit;
             }
 
-            registerAlert('Invalid or already-used verification code. Please try again.');
+            $_SESSION['register_otp_attempts'] = $otpAttempts + 1;
+            if ($_SESSION['register_otp_attempts'] >= BOOGIE_REGISTER_OTP_MAX_ATTEMPTS) {
+                try {
+                    registerClearPendingCustomerOtp($pdo, $email);
+                } catch (Throwable $cleanupError) {
+                    error_log('Registration OTP attempt-limit cleanup failed: ' . $cleanupError->getMessage());
+                }
+                $_SESSION['register_otp_expires_at'] = 0;
+                registerAlert('Too many incorrect verification codes. Please request a new code to continue.', 'register.php');
+                exit;
+            }
+
+            $remainingAttempts = BOOGIE_REGISTER_OTP_MAX_ATTEMPTS - $_SESSION['register_otp_attempts'];
+            registerAlert('Invalid verification code. ' . $remainingAttempts . ' attempt(s) remaining.');
         } catch (PDOException $e) {
             error_log('Registration OTP verification failed: ' . $e->getMessage());
             registerAlert('Unable to verify the account right now. Please try again later.');
@@ -819,15 +919,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['register_btn'])) {
                     throw $mailError;
                 }
 
+                $otpSentAt = time();
                 $_SESSION['temp_email'] = $email;
-                $_SESSION['register_otp_last_sent'] = time();
+                $_SESSION['register_otp_last_sent'] = $otpSentAt;
+                $_SESSION['register_otp_expires_at'] = $otpSentAt + BOOGIE_REGISTER_OTP_TTL_SECONDS;
+                $_SESSION['register_otp_attempts'] = 0;
                 $_SESSION['register_otp_resends'] = 0;
                 registerAlert('Account created! We have sent a verification code to your email.', 'register.php');
                 exit;
             }
         } catch (Throwable $e) {
             error_log('Registration OTP error: ' . $e->getMessage());
-            unset($_SESSION['temp_email'], $_SESSION['register_otp_last_sent'], $_SESSION['register_otp_resends']);
+            unset($_SESSION['temp_email'], $_SESSION['register_otp_last_sent'], $_SESSION['register_otp_expires_at'], $_SESSION['register_otp_attempts'], $_SESSION['register_otp_resends']);
             registerAlert('We could not complete registration or send the verification code. Please try again later.');
         }
     }

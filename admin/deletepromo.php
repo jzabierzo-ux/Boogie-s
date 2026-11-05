@@ -21,6 +21,138 @@ if (!$is_admin_session) {
     exit();
 }
 
+/** Read the dedicated Supabase Storage settings for promotion images. */
+function deletePromoStorageConfig(): ?array
+{
+    $supabaseUrl = trim((string)(getenv('SUPABASE_URL') ?: ''));
+    $secretKey = trim((string)(getenv('SUPABASE_SECRET_KEY') ?: ''));
+    $legacyServiceRoleKey = trim((string)(getenv('SUPABASE_SERVICE_ROLE_KEY') ?: ''));
+    $apiKey = $secretKey !== '' ? $secretKey : $legacyServiceRoleKey;
+    $usesLegacyJwt = ($secretKey === '' && $legacyServiceRoleKey !== '');
+
+    if ($supabaseUrl === '' || $apiKey === '' || preg_match('/[\\r\\n]/', $apiKey)) {
+        return null;
+    }
+
+    $supabaseUrl = rtrim($supabaseUrl, '/');
+    $parsedUrl = parse_url($supabaseUrl);
+    if (
+        !filter_var($supabaseUrl, FILTER_VALIDATE_URL) ||
+        !is_array($parsedUrl) ||
+        strtolower((string)($parsedUrl['scheme'] ?? '')) !== 'https' ||
+        empty($parsedUrl['host']) ||
+        isset($parsedUrl['user']) ||
+        isset($parsedUrl['pass'])
+    ) {
+        return null;
+    }
+
+    return [
+        'url' => $supabaseUrl,
+        'key' => $apiKey,
+        'uses_legacy_jwt' => $usesLegacyJwt,
+        'bucket' => 'promos'
+    ];
+}
+
+/** Accept only public image URLs belonging to this project's promos bucket. */
+function deletePromoStorageObjectFromPublicUrl($storedUrl): ?string
+{
+    if (!is_string($storedUrl) || trim($storedUrl) === '') {
+        return null;
+    }
+    $config = deletePromoStorageConfig();
+    if ($config === null) {
+        return null;
+    }
+
+    $base = parse_url($config['url']);
+    $url = parse_url(trim($storedUrl));
+    if (!is_array($base) || !is_array($url)) {
+        return null;
+    }
+    if (
+        strtolower((string)($url['scheme'] ?? '')) !== 'https' ||
+        strtolower((string)($url['host'] ?? '')) !== strtolower((string)($base['host'] ?? '')) ||
+        (int)($url['port'] ?? 443) !== (int)($base['port'] ?? 443) ||
+        isset($url['user']) || isset($url['pass']) || isset($url['query']) || isset($url['fragment'])
+    ) {
+        return null;
+    }
+
+    $prefix = '/storage/v1/object/public/promos/';
+    $urlPath = (string)($url['path'] ?? '');
+    if (strpos($urlPath, $prefix) !== 0) {
+        return null;
+    }
+
+    $objectName = rawurldecode(substr($urlPath, strlen($prefix)));
+    if (
+        $objectName === '' ||
+        basename($objectName) !== $objectName ||
+        !preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,180}$/', $objectName)
+    ) {
+        return null;
+    }
+    return $objectName;
+}
+
+/** Delete one known object from the dedicated promos bucket using server credentials. */
+function deletePromoStorageObject(string $objectName): array
+{
+    $config = deletePromoStorageConfig();
+    if ($config === null) {
+        return ['ok' => false, 'status' => 0, 'error' => 'Supabase Storage is not configured.'];
+    }
+    if (!function_exists('curl_init')) {
+        return ['ok' => false, 'status' => 0, 'error' => 'The PHP cURL extension is not available.'];
+    }
+    if (!preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,180}$/', $objectName)) {
+        return ['ok' => false, 'status' => 0, 'error' => 'Invalid Storage object name.'];
+    }
+
+    $endpoint = $config['url'] . '/storage/v1/object/' . rawurlencode($config['bucket']) . '/' . rawurlencode($objectName);
+    $headers = ['apikey: ' . $config['key']];
+    if (!empty($config['uses_legacy_jwt'])) {
+        $headers[] = 'Authorization: Bearer ' . $config['key'];
+    }
+
+    $curl = curl_init();
+    if ($curl === false) {
+        return ['ok' => false, 'status' => 0, 'error' => 'Unable to initialize the Storage connection.'];
+    }
+    curl_setopt_array($curl, [
+        CURLOPT_URL => $endpoint,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_CUSTOMREQUEST => 'DELETE',
+        CURLOPT_HTTPHEADER => $headers,
+        CURLOPT_CONNECTTIMEOUT => 10,
+        CURLOPT_TIMEOUT => 30,
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_SSL_VERIFYHOST => 2,
+        CURLOPT_FOLLOWLOCATION => false
+    ]);
+
+    $body = curl_exec($curl);
+    $curlError = curl_error($curl);
+    $status = (int)curl_getinfo($curl, CURLINFO_HTTP_CODE);
+    curl_close($curl);
+    if ($body === false) {
+        error_log('Delete promo Supabase Storage request failed: ' . $curlError);
+        return ['ok' => false, 'status' => $status, 'error' => 'Could not connect to Supabase Storage.'];
+    }
+
+    $ok = in_array($status, [200, 204], true);
+    if (!$ok) {
+        error_log('Delete promo Supabase Storage returned HTTP ' . $status . ': ' . substr((string)$body, 0, 500));
+    }
+    return [
+        'ok' => $ok,
+        'status' => $status,
+        'error' => $ok ? '' : 'Supabase Storage rejected the delete request (HTTP ' . $status . ').'
+    ];
+}
+
 // This endpoint only accepts form submissions that change data.
 if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
     http_response_code(405);
@@ -60,6 +192,7 @@ if (!isset($pdo) || !($pdo instanceof PDO)) {
 
 $image_url = '';
 $should_delete_image = false;
+$storage_object_to_delete = null;
 
 try {
     $pdo->beginTransaction();
@@ -86,18 +219,29 @@ try {
         throw new RuntimeException('Promotion could not be deleted.');
     }
 
-    // Only consider a generated local promo image. External URLs and paths
-    // outside uploads/promos are never removed from disk.
+    // If this is a public URL from this project's promos bucket, check whether
+    // another promotion still references the same URL before removing the object.
+    $storage_object = deletePromoStorageObjectFromPublicUrl($image_url);
+    if ($storage_object !== null) {
+        $reference_stmt = $pdo->prepare('SELECT 1 FROM promos WHERE image_url = :image_url LIMIT 1');
+        $reference_stmt->execute([':image_url' => $image_url]);
+        if (!$reference_stmt->fetchColumn()) {
+            $storage_object_to_delete = $storage_object;
+        }
+    }
+
+    // Keep backward-compatible cleanup for legacy local promo image paths.
+    // External URLs and paths outside uploads/promos are never removed.
     $normalized_image_url = ltrim(str_replace('\\', '/', $image_url), '/');
     if (
-        $normalized_image_url !== ''
-        && preg_match(
-            '#^uploads/promos/([A-Za-z0-9._-]+\.(?:jpg|jpeg|png|webp))$#i',
+        $storage_object === null &&
+        $normalized_image_url !== '' &&
+        preg_match(
+            '#^uploads/promos/([A-Za-z0-9._-]+\\.(?:jpg|jpeg|png|webp))$#i',
             $normalized_image_url,
             $matches
         )
     ) {
-        // Do not remove an image that is still referenced by another promotion.
         $reference_stmt = $pdo->prepare(
             "SELECT 1 FROM promos WHERE LTRIM(COALESCE(image_url, ''), '/') = :image_path LIMIT 1"
         );
@@ -105,8 +249,18 @@ try {
         $should_delete_image = !$reference_stmt->fetchColumn();
     }
 
-    // Commit the database deletion before attempting filesystem cleanup.
+    // Commit the database deletion before attempting Storage/filesystem cleanup.
     $pdo->commit();
+
+    if ($storage_object_to_delete !== null) {
+        $storage_result = deletePromoStorageObject($storage_object_to_delete);
+        if (empty($storage_result['ok'])) {
+            error_log(
+                'Delete promo: database row was deleted, but its Supabase Storage image could not be removed for promo ID ' .
+                $promo_id . ': ' . (string)($storage_result['error'] ?? 'Unknown Storage error')
+            );
+        }
+    }
 
     if ($should_delete_image && isset($matches[1])) {
         $project_root = dirname(__DIR__);
@@ -130,6 +284,7 @@ try {
             }
         }
     }
+
 } catch (Throwable $e) {
     if ($pdo->inTransaction()) {
         $pdo->rollBack();
