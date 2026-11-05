@@ -1203,7 +1203,13 @@ $today = date('Y-m-d');
             <div class="notif-dropdown" id="notifBox" onclick="event.stopPropagation()">
                 <div class="notif-header">
                     Alerts
-                    <a href="mark_notifications_read.php" id="mark-read-link" class="mark-read-btn" style="display: <?php echo $unread_count > 0 ? 'inline-block' : 'none'; ?>;">Mark all read</a>
+                    <form action="mark_notifications_read.php" method="POST" style="display:inline; margin:0;">
+                        <input type="hidden" name="csrf_token" value="<?php echo addPromoEscape($csrf_token); ?>">
+                        <button type="submit" id="mark-read-link" class="mark-read-btn"
+                            style="display: <?php echo $unread_count > 0 ? 'inline-block' : 'none'; ?>; border:0; background:transparent; padding:0; cursor:pointer; font-family:inherit;">
+                            Mark all read
+                        </button>
+                    </form>
                 </div>
                 <div class="notif-body" id="admin-notif-list">
                     <?php if ($unread_count > 0): ?>

@@ -34,6 +34,13 @@ if (!$is_admin_logged_in) {
 
 
 
+// CSRF token for state-changing actions such as marking notifications as read.
+if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+$csrf_token = $_SESSION['csrf_token'];
+
+
 require_once __DIR__ . '/../db_supabase.php';
 
 date_default_timezone_set('Asia/Manila');
@@ -2603,7 +2610,15 @@ try {
 
 
 
-                            <a href="mark_notifications_read.php" id="mark-read-link" class="mark-read-btn" style="display: <?php echo $unread_count > 0 ? 'inline-block' : 'none'; ?>;">Mark all read</a>
+                            <form action="mark_notifications_read.php" method="POST" style="display: inline; margin: 0;">
+                                <input type="hidden" name="csrf_token" value="<?php echo adminLogEscape($csrf_token); ?>">
+                                <button
+                                    type="submit"
+                                    id="mark-read-link"
+                                    class="mark-read-btn"
+                                    style="display: <?php echo $unread_count > 0 ? 'inline-block' : 'none'; ?>; border: 0; background: transparent; padding: 0; font: inherit; cursor: pointer;"
+                                >Mark all read</button>
+                            </form>
 
 
 

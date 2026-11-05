@@ -6,6 +6,12 @@ if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true || $curren
     header('Location: ../admin_login.php');
     exit();
 }
+// Shared CSRF token required by the POST-only notification read endpoint.
+if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+$csrf_token = $_SESSION['csrf_token'];
+
 require_once '../db_supabase.php';
 $admin_full_name = 'Administrator';
 $profile_img_path = '';
@@ -470,7 +476,10 @@ try {
                     <div class="notif-dropdown" id="notifBox" onclick="event.stopPropagation()">
                         <div class="notif-header">
                             Alerts
-                            <a href="mark_notifications_read.php" id="mark-read-link" class="mark-read-btn" style="display: <?php echo ($unread_count > 0) ? 'inline-block' : 'none'; ?>;">Mark all read</a>
+                            <form action="mark_notifications_read.php" method="POST" id="mark-read-link" style="display: <?php echo ($unread_count > 0) ? 'inline-block' : 'none'; ?>; margin: 0;">
+                                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
+                                <button type="submit" class="mark-read-btn" style="border: 0; background: transparent; padding: 0; margin: 0; cursor: pointer; font: inherit;">Mark all read</button>
+                            </form>
                         </div>
                         <div class="notif-body" id="admin-notif-list">
                             <?php if($unread_count > 0): ?>

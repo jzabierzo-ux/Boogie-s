@@ -242,15 +242,37 @@ $name_parts = preg_split('/\s+/', trim($admin_full_name));
 $first_name = (string)($name_parts[0] ?? 'U');
 $profile_img_src = addPetProfileImageSource($profile_img_path);
 
-// Fetch only the newest 20 notification rows while retaining the full unread count.
+// Load Admin-wide alerts only for Admins. Staff receive only notifications
+// addressed to their own account, matching get_admin_notifs.php.
 $admin_notifications = [];
 $unread_count = 0;
 try {
-    $notif_stmt = $pdo->query(
-        'SELECT id, message, created_at, COUNT(*) OVER() AS total_unread '
-        . 'FROM admin_notifications WHERE is_read = 0 '
-        . 'ORDER BY created_at DESC, id DESC LIMIT 20'
-    );
+    if ($current_role === 'admin') {
+        $notif_stmt = $pdo->query(
+            'SELECT id, message, created_at, COUNT(*) OVER() AS total_unread '
+            . 'FROM admin_notifications WHERE is_read = 0 '
+            . 'ORDER BY created_at DESC, id DESC LIMIT 20'
+        );
+    } else {
+        $notification_user_id = filter_var(
+            $_SESSION['user_id'] ?? null,
+            FILTER_VALIDATE_INT,
+            ['options' => ['min_range' => 1]]
+        );
+
+        if ($notification_user_id === false || $notification_user_id === null) {
+            throw new RuntimeException('A valid user ID is required to load staff notifications.');
+        }
+
+        $notif_stmt = $pdo->prepare(
+            'SELECT id, message, created_at, COUNT(*) OVER() AS total_unread '
+            . 'FROM notifications '
+            . 'WHERE user_id = :user_id AND is_read = 0 '
+            . 'ORDER BY created_at DESC, id DESC LIMIT 20'
+        );
+        $notif_stmt->execute([':user_id' => $notification_user_id]);
+    }
+
     $admin_notifications = $notif_stmt->fetchAll(PDO::FETCH_ASSOC);
     if (!empty($admin_notifications)) {
         $unread_count = (int)$admin_notifications[0]['total_unread'];
@@ -259,7 +281,7 @@ try {
         }
         unset($notification_row);
     }
-} catch (PDOException $e) {
+} catch (Throwable $e) {
     error_log('Add pet notification lookup failed: ' . $e->getMessage());
     $admin_notifications = [];
     $unread_count = 0;
@@ -929,8 +951,15 @@ try {
                     <div class="notif-dropdown" id="notifBox" onclick="event.stopPropagation()">
                         <div class="notif-header">
                             Alerts
-                            <a href="mark_notifications_read.php" id="mark-read-link" class="mark-read-btn" style="display:<?php echo $unread_count > 0 ? 'inline-block' : 'none'; ?>;">Mark all read</a>
-                        </div>
+<form action="mark_notifications_read.php" method="POST" style="display:inline;">
+    <input type="hidden" name="csrf_token" value="<?php echo addPetEscape($csrf_token); ?>">
+    <button
+        type="submit"
+        id="mark-read-link"
+        class="mark-read-btn"
+        style="display:<?php echo $unread_count > 0 ? 'inline-block' : 'none'; ?>; border:0; background:transparent; padding:0; cursor:pointer;"
+    >Mark all read</button>
+</form>                        </div>
                         <div class="notif-body" id="admin-notif-list">
                             <?php if ($admin_notifications): ?>
                                 <?php foreach ($admin_notifications as $notif): ?>

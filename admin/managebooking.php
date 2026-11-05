@@ -2546,10 +2546,14 @@ if ($is_admin) {
                                                     <span style="font-size: 11px; color: #0284c7; font-weight: 700; margin-top: 2px;">
                                                         Ref: <?php echo htmlspecialchars($row['gcash_ref']); ?>
                                                     </span>
-                                                    <?php if (!empty($row['gcash_receipt'])): ?>
-                                                        <a href="../uploads/<?php echo htmlspecialchars(basename((string)$row['gcash_receipt']), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>" target="_blank" style="font-size: 11px; color: var(--brand-blue); font-weight: 600; text-decoration: underline;">
+                                                    <?php if (!empty($row['gcash_receipt']) && $is_admin): ?>
+                                                        <button type="button"
+                                                            class="gcash-receipt-open"
+                                                            data-booking-id="<?php echo (int)$row['id']; ?>"
+                                                            onclick="openGcashReceiptModal(this)"
+                                                            style="display:inline-flex;align-items:center;gap:5px;width:max-content;border:0;padding:0;background:transparent;color:var(--brand-blue);font-size:11px;font-weight:600;text-decoration:underline;cursor:pointer;">
                                                             <i class="fa-solid fa-receipt"></i> View Screenshot
-                                                        </a>
+                                                        </button>
                                                     <?php endif; ?>
                                                 <?php endif; ?>
                                             </div>
@@ -2683,6 +2687,23 @@ if ($is_admin) {
                     <button type="submit" class="btn-confirm-cancel" style="background:#7c3aed;color:#fff;">Save New Schedule</button>
                 </div>
             </form>
+        </div>
+    </div>
+
+    <div id="gcashReceiptModal" class="modal-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="gcashReceiptTitle" onclick="if(event.target===this) closeGcashReceiptModal();">
+        <div class="modal-content" style="width:min(900px,100%);padding:22px;">
+            <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:16px;">
+                <div>
+                    <h2 id="gcashReceiptTitle" style="margin:0 0 4px;color:var(--navy-dark);font-size:18px;font-weight:800;">GCash Payment Receipt</h2>
+                    <p style="margin:0;color:var(--text-muted);font-size:12px;">Private receipt preview — Admin access only.</p>
+                </div>
+                <button type="button" class="btn-keep" onclick="closeGcashReceiptModal()" style="flex:0 0 auto;padding:9px 14px;">Close</button>
+            </div>
+            <div id="gcashReceiptLoading" role="status" style="padding:34px 12px;text-align:center;color:#64748b;font-size:13px;">Loading receipt...</div>
+            <div id="gcashReceiptError" role="alert" style="display:none;padding:28px 12px;text-align:center;color:#b91c1c;background:#fef2f2;border:1px solid #fecaca;border-radius:10px;font-size:13px;">Unable to load this receipt. Please refresh the page or check the receipt storage configuration.</div>
+            <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px;text-align:center;min-height:180px;display:flex;align-items:center;justify-content:center;">
+                <img id="gcashReceiptImage" src="" alt="GCash payment receipt" style="display:none;max-width:100%;max-height:70vh;width:auto;height:auto;object-fit:contain;border-radius:6px;">
+            </div>
         </div>
     </div>
 
@@ -3887,6 +3908,52 @@ if ($is_admin) {
             link.addEventListener('click', function() {
                 if (window.innerWidth <= 900) closeMobileSidebar();
             });
+        });
+
+        function openGcashReceiptModal(button) {
+            const bookingId = Number(button && button.dataset ? button.dataset.bookingId : 0);
+            const modal = document.getElementById('gcashReceiptModal');
+            const image = document.getElementById('gcashReceiptImage');
+            const loading = document.getElementById('gcashReceiptLoading');
+            const error = document.getElementById('gcashReceiptError');
+
+            if (!Number.isSafeInteger(bookingId) || bookingId <= 0 || !modal || !image || !loading || !error) {
+                return;
+            }
+
+            image.onload = function () {
+                loading.style.display = 'none';
+                error.style.display = 'none';
+                image.style.display = 'block';
+            };
+            image.onerror = function () {
+                loading.style.display = 'none';
+                image.style.display = 'none';
+                error.style.display = 'block';
+            };
+
+            loading.style.display = 'block';
+            error.style.display = 'none';
+            image.style.display = 'none';
+            image.removeAttribute('src');
+            modal.style.display = 'flex';
+            image.src = 'view_gcash_receipt.php?booking_id=' + encodeURIComponent(String(bookingId));
+        }
+
+        function closeGcashReceiptModal() {
+            const modal = document.getElementById('gcashReceiptModal');
+            const image = document.getElementById('gcashReceiptImage');
+            if (image) {
+                image.onload = null;
+                image.onerror = null;
+                image.removeAttribute('src');
+                image.style.display = 'none';
+            }
+            if (modal) modal.style.display = 'none';
+        }
+
+        document.addEventListener('keydown', function (event) {
+            if (event.key === 'Escape') closeGcashReceiptModal();
         });
 
         function openClinicRescheduleModal(button) {

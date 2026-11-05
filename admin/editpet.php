@@ -72,6 +72,13 @@ if (empty($_SESSION['editpet_csrf_token']) || !is_string($_SESSION['editpet_csrf
     $_SESSION['editpet_csrf_token'] = bin2hex(random_bytes(32));
 }
 
+// Shared CSRF token for the Admin notification read action.
+// mark_notifications_read.php validates this session token on POST.
+if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+$notification_csrf_token = $_SESSION['csrf_token'];
+
 function editpet_post_string(string $key): string
 {
     $value = $_POST[$key] ?? '';
@@ -608,7 +615,10 @@ if ($is_admin) {
                     <div class="notif-dropdown" id="notifBox" onclick="event.stopPropagation()">
                         <div class="notif-header">
                             Alerts
-                            <a href="mark_notifications_read.php" id="mark-read-link" class="mark-read-btn" style="display:<?php echo $unread_count > 0 ? 'inline-block' : 'none'; ?>;">Mark all read</a>
+                            <form action="mark_notifications_read.php" method="POST" style="display:inline; margin:0;">
+                                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($notification_csrf_token, ENT_QUOTES, 'UTF-8'); ?>">
+                                <button type="submit" id="mark-read-link" class="mark-read-btn" style="display:<?php echo $unread_count > 0 ? 'inline-block' : 'none'; ?>; border:0; background:transparent; padding:0; cursor:pointer;">Mark all read</button>
+                            </form>
                         </div>
                         <div class="notif-body" id="admin-notif-list">
                             <?php if ($unread_count > 0): ?>

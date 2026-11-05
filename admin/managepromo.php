@@ -1958,7 +1958,10 @@ try {
 
 
 
-                            <a href="mark_notifications_read.php" id="mark-read-link" class="mark-read-btn" style="display: <?php echo ($unread_count > 0) ? 'inline-block' : 'none'; ?>;">Mark all read</a>
+                            <form action="mark_notifications_read.php" method="POST" id="mark-read-link" style="display: <?php echo ($unread_count > 0) ? 'inline-block' : 'none'; ?>; margin: 0;">
+                                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars((string)$_SESSION['csrf_token'], ENT_QUOTES, 'UTF-8'); ?>">
+                                <button type="submit" class="mark-read-btn" style="border: 0; background: transparent; padding: 0; margin: 0; cursor: pointer; font-family: inherit;">Mark all read</button>
+                            </form>
 
 
 

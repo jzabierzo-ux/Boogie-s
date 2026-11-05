@@ -16,11 +16,17 @@ if (
 require_once __DIR__ . '/../db_supabase.php';
 date_default_timezone_set('Asia/Manila');
 
-// CSRF token for promo edits.
+// CSRF token for promo edits. Keep this separate from the shared notification token.
 if (empty($_SESSION['edit_promo_csrf']) || !is_string($_SESSION['edit_promo_csrf'])) {
     $_SESSION['edit_promo_csrf'] = bin2hex(random_bytes(32));
 }
 $csrf_token = $_SESSION['edit_promo_csrf'];
+
+// Shared CSRF token required by admin/mark_notifications_read.php.
+if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+$notification_csrf_token = $_SESSION['csrf_token'];
 
 /**
  * Resolve only known local profile upload paths, while allowing valid HTTPS
@@ -1769,7 +1775,13 @@ $profile_img_src = editPromoResolveProfileImageUrl($profile_img_path);
             <i class="fa-solid fa-bell"></i>
             <span id="admin-notif-badge" class="notif-badge" style="display: <?php echo $unread_count > 0 ? 'inline-flex' : 'none'; ?>;"><?php echo $unread_count; ?></span>
             <div class="notif-dropdown" id="notifBox" onclick="event.stopPropagation()">
-                <div class="notif-header">Alerts <a href="mark_notifications_read.php" id="mark-read-link" class="mark-read-btn" style="display: <?php echo $unread_count > 0 ? 'inline-block' : 'none'; ?>;">Mark all read</a></div>
+                <div class="notif-header">
+                    Alerts
+                    <form action="mark_notifications_read.php" method="POST" id="mark-read-link" style="display: <?php echo $unread_count > 0 ? 'inline-block' : 'none'; ?>; margin: 0;">
+                        <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($notification_csrf_token, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
+                        <button type="submit" class="mark-read-btn" style="border: 0; padding: 0; background: transparent; font: inherit; cursor: pointer;">Mark all read</button>
+                    </form>
+                </div>
                 <div class="notif-body" id="admin-notif-list">
                     <?php if ($unread_count > 0): ?>
                         <?php foreach ($admin_notifications as $notif): ?>

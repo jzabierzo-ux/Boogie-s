@@ -614,7 +614,10 @@ try {
 
                             Alerts
 
-                            <a href="mark_notifications_read.php" id="mark-read-link" class="mark-read-btn" style="display: <?php echo ($unread_count > 0) ? 'inline-block' : 'none'; ?>;">Mark all read</a>
+                            <form method="POST" action="mark_notifications_read.php" style="display:inline; margin:0;">
+                                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token, ENT_QUOTES, 'UTF-8'); ?>">
+                                <button type="submit" id="mark-read-link" class="mark-read-btn" style="display: <?php echo ($unread_count > 0) ? 'inline-block' : 'none'; ?>; border:0; background:transparent; padding:0; cursor:pointer; font:inherit;">Mark all read</button>
+                            </form>
 
                         </div>
 

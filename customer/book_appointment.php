@@ -14,6 +14,134 @@ function bookingRequestString(array $source, string $key): string
     return is_string($value) || is_numeric($value) ? trim((string)$value) : '';
 }
 
+
+/** Return private GCash receipt Storage configuration without exposing secrets to the browser. */
+function bookingReceiptStorageConfig(): ?array
+{
+    $supabaseUrl = trim((string)(getenv('SUPABASE_URL') ?: ''));
+    $secretKey = trim((string)(getenv('SUPABASE_SECRET_KEY') ?: ''));
+    $legacyServiceRoleKey = trim((string)(getenv('SUPABASE_SERVICE_ROLE_KEY') ?: ''));
+    $apiKey = $secretKey !== '' ? $secretKey : $legacyServiceRoleKey;
+    $usesLegacyJwt = ($secretKey === '' && $legacyServiceRoleKey !== '');
+    $bucket = trim((string)(getenv('SUPABASE_RECEIPT_BUCKET') ?: 'gcash-receipts-private'));
+
+    if ($supabaseUrl === '' || $apiKey === '' || $bucket === '') {
+        return null;
+    }
+
+    $supabaseUrl = rtrim($supabaseUrl, '/');
+    $parsedUrl = parse_url($supabaseUrl);
+    if (
+        !filter_var($supabaseUrl, FILTER_VALIDATE_URL) ||
+        !is_array($parsedUrl) ||
+        strtolower((string)($parsedUrl['scheme'] ?? '')) !== 'https' ||
+        empty($parsedUrl['host']) ||
+        isset($parsedUrl['user']) ||
+        isset($parsedUrl['pass']) ||
+        !preg_match('/^[a-z0-9][a-z0-9_-]{1,61}[a-z0-9]$/i', $bucket)
+    ) {
+        return null;
+    }
+
+    return [
+        'url' => $supabaseUrl,
+        'key' => $apiKey,
+        'uses_legacy_jwt' => $usesLegacyJwt,
+        'bucket' => $bucket,
+    ];
+}
+
+/** Upload or remove one private GCash receipt using server-to-server Supabase Storage requests. */
+function bookingReceiptStorageRequest(string $method, string $objectPath, ?string $filePath = null, ?string $mimeType = null): array
+{
+    $config = bookingReceiptStorageConfig();
+    if ($config === null) {
+        return ['ok' => false, 'status' => 0, 'error' => 'Private receipt storage is not configured.'];
+    }
+    if (!function_exists('curl_init')) {
+        return ['ok' => false, 'status' => 0, 'error' => 'The PHP cURL extension is not available.'];
+    }
+
+    $normalizedPath = trim(str_replace('\\', '/', $objectPath), '/');
+    $segments = explode('/', $normalizedPath);
+    if (
+        $normalizedPath === '' ||
+        in_array('', $segments, true) ||
+        in_array('.', $segments, true) ||
+        in_array('..', $segments, true) ||
+        preg_match('/[\x00-\x1F\x7F]/', $normalizedPath)
+    ) {
+        return ['ok' => false, 'status' => 0, 'error' => 'Invalid private receipt object path.'];
+    }
+
+    $method = strtoupper($method);
+    if (!in_array($method, ['POST', 'DELETE'], true)) {
+        return ['ok' => false, 'status' => 0, 'error' => 'Unsupported private receipt storage request.'];
+    }
+
+    $encodedPath = implode('/', array_map('rawurlencode', $segments));
+    $endpoint = $config['url'] . '/storage/v1/object/' . rawurlencode($config['bucket']) . '/' . $encodedPath;
+    $headers = ['apikey: ' . $config['key']];
+    // New sb_secret_* API keys are sent as apikey only. Legacy service_role JWTs also use Bearer auth.
+    if (!empty($config['uses_legacy_jwt'])) {
+        $headers[] = 'Authorization: Bearer ' . $config['key'];
+    }
+
+    $options = [
+        CURLOPT_URL => $endpoint,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_CUSTOMREQUEST => $method,
+        CURLOPT_HTTPHEADER => $headers,
+        CURLOPT_CONNECTTIMEOUT => 10,
+        CURLOPT_TIMEOUT => 30,
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_SSL_VERIFYHOST => 2,
+        CURLOPT_FOLLOWLOCATION => false,
+    ];
+
+    if ($method === 'POST') {
+        if ($filePath === null || !is_file($filePath) || !is_readable($filePath)) {
+            return ['ok' => false, 'status' => 0, 'error' => 'The temporary receipt image could not be read.'];
+        }
+        $fileContents = file_get_contents($filePath);
+        if (!is_string($fileContents)) {
+            return ['ok' => false, 'status' => 0, 'error' => 'The temporary receipt image could not be read.'];
+        }
+        $headers[] = 'Content-Type: ' . ($mimeType ?: 'application/octet-stream');
+        $headers[] = 'x-upsert: false';
+        $options[CURLOPT_HTTPHEADER] = $headers;
+        $options[CURLOPT_POSTFIELDS] = $fileContents;
+    }
+
+    $curl = curl_init();
+    if ($curl === false) {
+        return ['ok' => false, 'status' => 0, 'error' => 'Unable to initialize private receipt storage.'];
+    }
+    curl_setopt_array($curl, $options);
+    $responseBody = curl_exec($curl);
+    $curlError = curl_error($curl);
+    $statusCode = (int)curl_getinfo($curl, CURLINFO_HTTP_CODE);
+    curl_close($curl);
+
+    if ($responseBody === false) {
+        error_log('Private GCash receipt Storage request failed: ' . $curlError);
+        return ['ok' => false, 'status' => $statusCode, 'error' => 'Could not connect to private receipt storage.'];
+    }
+
+    $success = ($method === 'POST')
+        ? in_array($statusCode, [200, 201], true)
+        : in_array($statusCode, [200, 204], true);
+    if (!$success) {
+        error_log('Private GCash receipt Storage request returned HTTP ' . $statusCode . ': ' . substr((string)$responseBody, 0, 500));
+    }
+
+    return [
+        'ok' => $success,
+        'status' => $statusCode,
+        'error' => $success ? '' : 'Private receipt storage rejected the request (HTTP ' . $statusCode . ').',
+    ];
+}
+
 $bookingManilaTimezone = new DateTimeZone('Asia/Manila');
 $minimumOnlineBookingDate = (new DateTimeImmutable('tomorrow', $bookingManilaTimezone))->format('Y-m-d');
 
@@ -858,6 +986,53 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
+    // Upload the receipt before opening the capacity transaction.
+    // This avoids holding date-level advisory locks while waiting on Supabase Storage.
+    // --- GCASH RECEIPT UPLOAD HANDLING (REQUIRED) ---
+    if (empty($error_msg)) {
+        $receipt_file = $_FILES['gcash_receipt'] ?? null;
+        if (!is_array($receipt_file) || ($receipt_file['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
+            $error_msg = 'Please upload a screenshot of your GCash receipt.';
+        } elseif (($receipt_file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+            $error_msg = 'Error uploading receipt image. Please try again.';
+        } else {
+            $tmp_path = (string)($receipt_file['tmp_name'] ?? '');
+            $file_size = (int)($receipt_file['size'] ?? 0);
+            $extension = strtolower(pathinfo((string)($receipt_file['name'] ?? ''), PATHINFO_EXTENSION));
+            $allowed_mimes = ['jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg', 'png' => 'image/png'];
+            $detected_mime = '';
+            if ($tmp_path !== '' && is_uploaded_file($tmp_path) && class_exists('finfo')) {
+                $file_info = new finfo(FILEINFO_MIME_TYPE);
+                $detected_mime = (string)$file_info->file($tmp_path);
+            }
+            $image_info = ($tmp_path !== '' && is_uploaded_file($tmp_path)) ? @getimagesize($tmp_path) : false;
+
+            if ($file_size <= 0 || $file_size > 5 * 1024 * 1024) {
+                $error_msg = 'Receipt image must be no larger than 5 MB.';
+            } elseif (!isset($allowed_mimes[$extension]) || $detected_mime !== $allowed_mimes[$extension] || $image_info === false) {
+                $error_msg = 'Invalid receipt image. Only genuine JPG and PNG images are allowed.';
+            } else {
+                // Store new receipts in the private Supabase bucket. The database field
+                // keeps only the Storage object path, never a public URL or local file path.
+                try {
+                    $yearMonth = date('Y/m');
+                    $receipt_object_path = 'receipts/' . $yearMonth . '/' . bin2hex(random_bytes(18)) . '.' . $extension;
+                    $storage_result = bookingReceiptStorageRequest('POST', $receipt_object_path, $tmp_path, $detected_mime);
+                    if (empty($storage_result['ok'])) {
+                        error_log('GCash receipt upload failed with HTTP ' . (int)($storage_result['status'] ?? 0));
+                        $error_msg = 'Unable to securely store your receipt right now. Please try again later.';
+                    } else {
+                        $receipt_filename = $receipt_object_path;
+                    }
+                } catch (Throwable $upload_error) {
+                    error_log('GCash receipt upload failed: ' . $upload_error->getMessage());
+                    $error_msg = 'Unable to securely store your receipt right now. Please try again later.';
+                }
+            }
+        }
+    }
+
+
     // --- SERVICE DURATION, OPERATING HOURS, STAFF BREAK, AND CAPACITY VALIDATION ---
     // Existing active-status rule retained; all capacity checks are repeated server-side.
     $active_status_sql = "LOWER(BTRIM(COALESCE(booking_status, ''))) NOT IN ('cancelled', 'canceled', 'no-show', 'no show', 'noshow', 'for rescheduling')";
@@ -1124,43 +1299,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
-    // --- GCASH RECEIPT UPLOAD HANDLING (REQUIRED) ---
-    if (empty($error_msg)) {
-        $receipt_file = $_FILES['gcash_receipt'] ?? null;
-        if (!is_array($receipt_file) || ($receipt_file['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
-            $error_msg = 'Please upload a screenshot of your GCash receipt.';
-        } elseif (($receipt_file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
-            $error_msg = 'Error uploading receipt image. Please try again.';
-        } else {
-            $tmp_path = (string)($receipt_file['tmp_name'] ?? '');
-            $file_size = (int)($receipt_file['size'] ?? 0);
-            $extension = strtolower(pathinfo((string)($receipt_file['name'] ?? ''), PATHINFO_EXTENSION));
-            $allowed_mimes = ['jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg', 'png' => 'image/png'];
-            $detected_mime = '';
-            if ($tmp_path !== '' && is_uploaded_file($tmp_path) && class_exists('finfo')) {
-                $file_info = new finfo(FILEINFO_MIME_TYPE);
-                $detected_mime = (string)$file_info->file($tmp_path);
-            }
-            $image_info = ($tmp_path !== '' && is_uploaded_file($tmp_path)) ? @getimagesize($tmp_path) : false;
-
-            if ($file_size <= 0 || $file_size > 5 * 1024 * 1024) {
-                $error_msg = 'Receipt image must be no larger than 5 MB.';
-            } elseif (!isset($allowed_mimes[$extension]) || $detected_mime !== $allowed_mimes[$extension] || $image_info === false) {
-                $error_msg = 'Invalid receipt image. Only genuine JPG and PNG images are allowed.';
-            } else {
-                $upload_dir = __DIR__ . '/../uploads';
-                if (!is_dir($upload_dir) && !@mkdir($upload_dir, 0755, true) && !is_dir($upload_dir)) {
-                    $error_msg = 'Receipt storage is unavailable. Please try again later.';
-                } else {
-                    $receipt_filename = 'receipt_' . time() . '_' . $user_id . '_' . bin2hex(random_bytes(8)) . '.' . $extension;
-                    if (!move_uploaded_file($tmp_path, $upload_dir . '/' . $receipt_filename)) {
-                        $receipt_filename = '';
-                        $error_msg = 'Failed to save the receipt image. Please try again.';
-                    }
-                }
-            }
-        }
-    }
 
     if (empty($error_msg)) {
         try {
@@ -1328,10 +1466,12 @@ if ($error_msg !== '') {
         $pdo->rollBack();
     }
     if (!empty($receipt_filename)) {
-        $orphan_path = __DIR__ . '/../uploads/' . basename($receipt_filename);
-        if (is_file($orphan_path)) {
-            @unlink($orphan_path);
+        // Remove a newly uploaded private object if the booking transaction failed.
+        $cleanup_result = bookingReceiptStorageRequest('DELETE', $receipt_filename);
+        if (empty($cleanup_result['ok'])) {
+            error_log('Unable to remove orphaned private GCash receipt after booking failure.');
         }
+        $receipt_filename = '';
     }
 }
 ?>

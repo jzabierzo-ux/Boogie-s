@@ -56,31 +56,28 @@ $isAdmin = $adminSessionValid;
 
 /*
 |--------------------------------------------------------------------------
-| METHOD AND CSRF VALIDATION
+| POST-ONLY METHOD AND CSRF VALIDATION
 |--------------------------------------------------------------------------
-| A few older Admin pages still use a GET anchor for "Mark all read".
-| Keep that Admin-only compatibility until those pages are migrated to POST.
-| Service Staff must always use POST with the shared session CSRF token.
+| Both Admin and Staff must use a POST request with the shared session
+| CSRF token before notification records can be marked as read.
 */
-$method = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'));
-if ($method === 'GET' && $isAdmin) {
-    // Legacy Admin link compatibility; no GET access is granted to Staff.
-} elseif ($method === 'POST') {
-    $sessionToken = $_SESSION['csrf_token'] ?? '';
-    $postedToken = $_POST['csrf_token'] ?? '';
-
-    if (
-        !is_string($sessionToken) || $sessionToken === '' ||
-        !is_string($postedToken) || $postedToken === '' ||
-        !hash_equals($sessionToken, $postedToken)
-    ) {
-        http_response_code(403);
-        exit('Invalid security token. Please refresh the page and try again.');
-    }
-} else {
+$method = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? ''));
+if ($method !== 'POST') {
     http_response_code(405);
-    header('Allow: POST' . ($isAdmin ? ', GET' : ''));
+    header('Allow: POST');
     exit('Method not allowed.');
+}
+
+$sessionToken = $_SESSION['csrf_token'] ?? '';
+$postedToken = $_POST['csrf_token'] ?? '';
+
+if (
+    !is_string($sessionToken) || $sessionToken === '' ||
+    !is_string($postedToken) || $postedToken === '' ||
+    !hash_equals($sessionToken, $postedToken)
+) {
+    http_response_code(403);
+    exit('Invalid security token. Please refresh the page and try again.');
 }
 
 // shared_session_bootstrap.php normally loads the PDO connection itself.
@@ -165,7 +162,7 @@ try {
     }
 
     // 303 prevents a browser from replaying a successful POST on refresh.
-    header('Location: ' . $redirectTarget, true, $method === 'POST' ? 303 : 302);
+    header('Location: ' . $redirectTarget, true, 303);
     exit();
 } catch (Throwable $e) {
     error_log('Mark notifications read failed: ' . $e->getMessage());
