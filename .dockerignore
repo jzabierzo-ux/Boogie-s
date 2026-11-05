@@ -27,3 +27,7 @@ includes/secrets.php
 # Uploaded customer files
 uploads/
 admin/uploads/
+
+# Exclude internal diagnostic and OAuth setup tools
+check_files.php
+PHPMailer/get_oauth_token.php
