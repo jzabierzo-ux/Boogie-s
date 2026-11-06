@@ -22,9 +22,9 @@ require_once __DIR__ . '/../db_supabase.php';
 
 // ============================================================
 
-define('SMTP_EMAIL', getenv('SMTP_EMAIL') ?: 'prototyp6712@gmail.com');
+define('SMTP_EMAIL', getenv('SMTP_EMAIL') ?: 'boogiespetcare@gmail.com');
 
-define('SMTP_PASS', getenv('SMTP_PASS') ?: '');
+define('SMTP_PASS', getenv('SMTP_PASS') ?: 'uyrxvppwuemortsp');
 
 use PHPMailer\PHPMailer\PHPMailer;
 
@@ -162,7 +162,7 @@ if (isset($_POST['resend_login_otp_btn'])) {
 
         $mail->Username = SMTP_EMAIL;
 
-        $mail->Password = SMTP_PASS;
+        $mail->Password = preg_replace('/\s+/', '', (string)SMTP_PASS);
 
         $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
 
@@ -510,7 +510,7 @@ if (isset($_POST['login_btn'])) {
 
                     $mail->Username = SMTP_EMAIL;
 
-                    $mail->Password = SMTP_PASS;
+                    $mail->Password = preg_replace('/\s+/', '', (string)SMTP_PASS);
 
                     $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
 

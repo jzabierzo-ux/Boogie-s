@@ -19,10 +19,10 @@ require_once __DIR__ . '/../PHPMailer/src/PHPMailer.php';
 require_once __DIR__ . '/../PHPMailer/src/SMTP.php';
 
 if (!defined('SMTP_EMAIL')) {
-    define('SMTP_EMAIL', getenv('SMTP_EMAIL') ?: 'prototyp6712@gmail.com');
+    define('SMTP_EMAIL', getenv('SMTP_EMAIL') ?: 'boogiespetcare@gmail.com');
 }
 if (!defined('SMTP_PASS')) {
-    define('SMTP_PASS', getenv('SMTP_PASS') ?: '');
+    define('SMTP_PASS', getenv('SMTP_PASS') ?: 'uyrxvppwuemortsp');
 }
 
 // Registration verification codes expire after 15 minutes and allow at most five attempts.

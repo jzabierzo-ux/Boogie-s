@@ -337,10 +337,10 @@ if ($lastGoogleOtpSent > 0 && (time() - $lastGoogleOtpSent) < 30) {
 }
 
 if (!defined('SMTP_EMAIL')) {
-    define('SMTP_EMAIL', getenv('SMTP_EMAIL') ?: 'prototyp6712@gmail.com');
+    define('SMTP_EMAIL', getenv('SMTP_EMAIL') ?: 'boogiespetcare@gmail.com');
 }
 if (!defined('SMTP_PASS')) {
-    define('SMTP_PASS', getenv('SMTP_PASS') ?: '');
+    define('SMTP_PASS', getenv('SMTP_PASS') ?: 'uyrxvppwuemortsp');
 }
 
 $smtpEmail = trim((string)SMTP_EMAIL);

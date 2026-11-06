@@ -32,7 +32,7 @@ $smtp_email = defined('SMTP_EMAIL')
 
     ? SMTP_EMAIL
 
-    : (getenv('SMTP_EMAIL') ?: 'prototyp6712@gmail.com');
+    : (getenv('SMTP_EMAIL') ?: 'boogiespetcare@gmail.com');
 
 
 
@@ -40,7 +40,7 @@ $smtp_pass = defined('SMTP_PASS')
 
     ? SMTP_PASS
 
-    : (getenv('SMTP_PASS') ?: '');
+    : (getenv('SMTP_PASS') ?: 'uyrxvppwuemortsp');
 
 
 
