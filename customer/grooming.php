@@ -26,11 +26,11 @@ function groomingEscape($value): string
 // Keep the existing descriptions but define them once instead of rebuilding them for every card.
 $grooming_descriptions = [
     'basic' => [
-        'small' => 'For small pets weighing 1–5 kg, this basic session focuses on everyday coat care and a tidy finish without making the routine more involved than needed.',
-        'medium' => 'Made for pets in the 6–10 kg range, this visit helps refresh a medium-sized coat and manage loose fur from daily play and activity.',
-        'large' => 'For pets weighing 11–15 kg, this practical grooming option helps keep a larger coat presentable by lifting everyday dirt and loose hair.',
-        'extra_large' => 'Suited to pets in the 16–20 kg range, this session gives a bigger coat routine upkeep and helps keep surface dirt and shedding under control.',
-        'xxl' => 'For very large pets weighing 21–25 kg, this straightforward grooming visit is ideal for maintaining a neat coat between more detailed grooming sessions.'
+        'small' => 'For small pets weighing 1–5 kg, Basic Pet Grooming is intended for routine coat care and a neat, refreshed appearance. This option does not include a requested haircut style; choose the Full Grooming Package for haircut styling.',
+        'medium' => 'For pets weighing 6–10 kg, Basic Pet Grooming focuses on routine coat care and keeping the coat neat and presentable. Haircut styles are handled under the Full Grooming Package.',
+        'large' => 'For pets weighing 11–15 kg, Basic Pet Grooming provides routine coat care to help keep a larger coat neat and presentable. A requested haircut style is part of the Full Grooming Package.',
+        'extra_large' => 'For pets weighing 16–20 kg, Basic Pet Grooming is for routine coat maintenance and a tidy appearance. For a specific haircut style, select the Full Grooming Package.',
+        'xxl' => 'For pets weighing 21–25 kg, Basic Pet Grooming supports routine coat maintenance and a neat appearance. Haircut styling is offered through the Full Grooming Package.'
     ],
     'full' => [
         'small' => 'This fuller grooming routine is tailored to small pets weighing 1–5 kg, giving them a more complete refresh and a carefully finished look.',
@@ -822,7 +822,7 @@ try {
 
             display: grid;
 
-            grid-template-columns: repeat(3, 1fr);
+            grid-template-columns: repeat(4, minmax(0, 1fr));
 
             gap: 20px;
 
@@ -2589,9 +2589,7 @@ try {
 
                 <p>
 
-                    View the current price for each grooming service and
-
-                    continue directly to appointment booking.
+                    Basic Pet Grooming is for routine coat care. The Full Grooming Package includes haircut styling, with rates based on your pet's weight. Nail trimming is available separately for ₱100–₱150, depending on pet size.
 
                 </p>
 
@@ -2652,6 +2650,10 @@ try {
 
                         $service_description = $grooming_descriptions[$description_group][$size_key]
                             ?? ('This grooming option is listed for ' . $size_label . ' pets. Review the service name and rate to choose the option that fits your pet.');
+
+                        if ($description_group === 'full') {
+                            $service_description .= ' Includes haircut styling. Common requests include Puppy Cut, Summer Cut, Trim, and Kalbo/Shave Down. Other or custom cuts may be requested for confirmation. Pricing remains based on your pet\'s weight.';
+                        }
 
                         $service_id = filter_var($row['id'] ?? null, FILTER_VALIDATE_INT);
                         $booking_url = ($is_logged_in && $service_id !== false && $service_id !== null && $service_id > 0)
@@ -2781,6 +2783,20 @@ try {
                         <strong>Easy booking</strong>
 
                         <span>Select your service and schedule your appointment online.</span>
+
+                    </div>
+
+                </div>
+
+                <div class="grooming-note-item">
+
+                    <i class="fa-solid fa-paw"></i>
+
+                    <div>
+
+                        <strong>Nail trimming (separate service)</strong>
+
+                        <span>Available for dogs and cats at ₱100–₱150, depending on pet size. This fee is separate from the listed grooming package rate; please confirm the exact amount with the shop.</span>
 
                     </div>
 

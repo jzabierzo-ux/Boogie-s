@@ -329,18 +329,20 @@ function bookingServiceDurationMinutes(string $category, string $serviceName): i
 }
 
 
-/**
- * Generate the online start times for a service-duration-aligned schedule.
+/** Generate online start times that respect the 4:00 PM latest start and 5:00 PM service cutoff.
  * Each work period starts at its own boundary (9:00 AM and 1:00 PM); times
- * then advance by the selected service duration. Capacity validation still
- * checks the entire service interval against existing appointments.
+ * then advance by the selected service duration. Longer services therefore
+ * have an earlier final start time so they can finish by 5:00 PM.
+ * Pet Daycare uses the selected drop-off/pickup interval; overnight boarding
+ * keeps its fixed 9:00 AM check-in.
  */
 function bookingDurationAlignedStartTimes(string $category, string $serviceName): array
 {
     $openingMinutes = 9 * 60;
     $breakStartMinutes = 12 * 60;
     $breakEndMinutes = 13 * 60;
-    $closingMinutes = 18 * 60;
+    $latestStartMinutes = 16 * 60;
+    $serviceCutoffMinutes = 17 * 60;
 
     if ($category === 'Pet Hotel' && bookingIsHotelBoarding($serviceName)) {
         return [$openingMinutes]; // Overnight stays always check in at 9:00 AM.
@@ -348,7 +350,8 @@ function bookingDurationAlignedStartTimes(string $category, string $serviceName)
 
     if ($category === 'Pet Hotel' && bookingIsHotelDaycare($serviceName)) {
         $times = [];
-        foreach ([[$openingMinutes, $breakStartMinutes], [$breakEndMinutes, $closingMinutes]] as [$periodStart, $periodEnd]) {
+        // Include 4:00 PM as the final drop-off; pickup must be no later than 5:00 PM.
+        foreach ([[$openingMinutes, $breakStartMinutes], [$breakEndMinutes, $latestStartMinutes + 30]] as [$periodStart, $periodEnd]) {
             for ($start = $periodStart; $start < $periodEnd; $start += 30) $times[] = $start;
         }
         return $times;
@@ -358,8 +361,12 @@ function bookingDurationAlignedStartTimes(string $category, string $serviceName)
     if ($duration <= 0) return [];
 
     $times = [];
-    foreach ([[$openingMinutes, $breakStartMinutes], [$breakEndMinutes, $closingMinutes]] as [$periodStart, $periodEnd]) {
-        for ($start = $periodStart; $start < $periodEnd && ($start + $duration) <= $closingMinutes; $start += $duration) {
+    foreach ([[$openingMinutes, $breakStartMinutes], [$breakEndMinutes, $latestStartMinutes + 1]] as [$periodStart, $periodEnd]) {
+        for (
+            $start = $periodStart;
+            $start < $periodEnd && $start <= $latestStartMinutes && ($start + $duration) <= $serviceCutoffMinutes;
+            $start += $duration
+        ) {
             $times[] = $start;
         }
     }
@@ -953,8 +960,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $error_msg = 'Please choose an expected pickup time for Pet Daycare.';
         } elseif ($daycare_start_for_price === null || $daycare_end_for_price <= $daycare_start_for_price) {
             $error_msg = 'Expected pickup time must be later than drop-off time.';
-        } elseif ($daycare_end_for_price > 18 * 60) {
-            $error_msg = 'Pet Daycare pickup must be no later than 6:00 PM.';
+        } elseif ($daycare_end_for_price > 17 * 60) {
+            $error_msg = 'Pet Daycare pickup must be no later than 5:00 PM.';
         }
     }
 
@@ -1042,7 +1049,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $selected_pickup_minutes = $is_daycare ? bookingPickupTimeToMinutes($pickup_time) : null;
         $service_duration_minutes = bookingServiceDurationMinutes($service_category, $specific_service);
         $opening_minutes = 9 * 60;
-        $closing_minutes = 18 * 60;
+        $closing_minutes = 18 * 60; // Business closing time remains 6:00 PM.
+        $latest_start_minutes = 16 * 60; // No new online service may start after 4:00 PM.
+        $service_cutoff_minutes = 17 * 60; // Regular services and daycare pickup must finish by 5:00 PM.
         $break_start_minutes = 12 * 60;
         $break_end_minutes = 13 * 60;
         $selected_end_minutes = $is_daycare
@@ -1054,12 +1063,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $error_msg = 'Online bookings must be made at least one calendar day in advance. Please select tomorrow or a later date.';
         } elseif ($selected_start_minutes === null) {
             $error_msg = 'Please select a valid appointment time.';
+        } elseif ($selected_start_minutes > $latest_start_minutes) {
+            $error_msg = 'The latest online booking start time is 4:00 PM. Please choose an earlier time.';
         } elseif ($is_daycare && ($selected_pickup_minutes === null || $selected_pickup_minutes <= $selected_start_minutes)) {
             $error_msg = 'Please choose an expected pickup time later than the drop-off time.';
         } elseif (!in_array($selected_start_minutes, bookingDurationAlignedStartTimes($service_category, $specific_service), true)) {
             $error_msg = 'Please select one of the available start times listed for this service duration.';
-        } elseif ($selected_start_minutes < $opening_minutes || $selected_end_minutes > $closing_minutes) {
-            $error_msg = 'This service does not fit within business hours (9:00 AM–6:00 PM). Please choose an earlier time.';
+        } elseif ($selected_start_minutes < $opening_minutes || $selected_end_minutes > $service_cutoff_minutes) {
+            $error_msg = 'Regular services must finish, and Pet Daycare pets must be picked up, no later than 5:00 PM. Please choose an earlier time.';
         } elseif ($selected_start_minutes >= $break_start_minutes && $selected_start_minutes < $break_end_minutes) {
             $error_msg = 'New appointments cannot start between 12:00 PM and 1:00 PM. Services started before lunch may continue through lunch if staff capacity allows.';
         }
@@ -3157,7 +3168,7 @@ if ($error_msg !== '') {
                     <select name="pickup_time" id="pickup_time">
                         <option value="">Choose drop-off time first</option>
                     </select>
-                    <p style="margin-top:8px;color:#6b7c8f;font-size:10px;line-height:1.5;">Pet Daycare includes the first-hour rate. After the first hour, the additional fee is ₱30 per hour, billed in ₱15 half-hour blocks. Pickup must be by 6:00 PM.</p>
+                    <p style="margin-top:8px;color:#6b7c8f;font-size:10px;line-height:1.5;">Pet Daycare includes the first-hour rate. After the first hour, the additional fee is ₱30 per hour, billed in ₱15 half-hour blocks. Drop-off must be no later than 4:00 PM and pickup must be by 5:00 PM.</p>
                 </div>
 
                 <div class="form-group">
@@ -3774,7 +3785,7 @@ if ($error_msg !== '') {
             const previous = select.value;
             resetTimeOptions('Choose drop-off time');
             const times = [];
-            [[9 * 60, 12 * 60], [13 * 60, 18 * 60]].forEach(([periodStart, periodEnd]) => {
+            [[9 * 60, 12 * 60], [13 * 60, 16 * 60 + 30]].forEach(([periodStart, periodEnd]) => {
                 for (let value = periodStart; value < periodEnd; value += 30) times.push(value);
             });
             times.forEach(value => {
@@ -3799,7 +3810,7 @@ if ($error_msg !== '') {
             placeholder.textContent = start === null ? 'Choose drop-off time first' : 'Choose expected pickup time';
             select.appendChild(placeholder);
             if (start !== null) {
-                for (let value = start + 30; value <= 18 * 60; value += 30) {
+                for (let value = start + 30; value <= 17 * 60; value += 30) {
                     const option = document.createElement('option');
                     option.value = jsMinutesToTime(value);
                     option.textContent = jsMinutesToLabel(value);
@@ -4029,6 +4040,10 @@ if ($error_msg !== '') {
                     data.slots.forEach(slot => {
                         const reason = String(slot.reason || '');
                         const normalizedReason = reason.toLowerCase();
+                        const slotStartMinutes = jsTimeToMinutes(slot.time);
+                        // The latest permitted online start is 4:00 PM, even if the availability API
+                        // still returns a later legacy slot. Server-side validation enforces this too.
+                        if (slotStartMinutes === null || slotStartMinutes > 16 * 60) return;
 
                         // Keep the dropdown focused on start times the customer can reasonably choose.
                         // Hide times outside closing hours, starts during the 12:00 PM–1:00 PM break,
@@ -4077,7 +4092,7 @@ if ($error_msg !== '') {
                         if (isBoarding) {
                             setAvailabilityMessage(`Pet boarding stay: ${durationDisplay}. Standard check-in is 9:00 AM; check-out is 6:00 AM on the selected check-out date.`);
                         } else {
-                            setAvailabilityMessage(`Service duration: ${durationDisplay}. The displayed times show the full reserved service window. New appointments cannot start from 12:00 PM–1:00 PM.`);
+                            setAvailabilityMessage(`Service duration: ${durationDisplay}. The service must finish by 5:00 PM; the latest possible online start is 4:00 PM. Longer services have earlier final start times. New appointments cannot start from 12:00 PM–1:00 PM.`);
                         }
                     }
                 })

@@ -2721,7 +2721,7 @@ input, select, textarea, button, img { max-width:100%; }
     <div class="clinic-reschedule-overlay" id="staffClinicRescheduleModal" role="dialog" aria-modal="true" aria-labelledby="staffClinicRescheduleTitle">
         <div class="clinic-reschedule-card">
             <h2 id="staffClinicRescheduleTitle"><i class="fas fa-calendar-plus" style="color:#7c3aed;margin-right:7px;"></i>Clinic-Initiated Reschedule</h2>
-            <p>Use this when the veterinarian or clinic is unavailable. This change will not use the customer's one-time reschedule allowance.</p>
+            <p>Use this when the veterinarian or clinic is unavailable. This change will not use the customer's one-time reschedule allowance. Regular veterinary rescheduling is available only up to 4:00 PM, and the service must finish by 5:00 PM.</p>
             <div style="padding:12px;border-radius:10px;background:#f8fafc;margin-bottom:14px;font-size:12px;color:#334155;line-height:1.6;">
                 <strong id="staffClinicReschedulePet">Pet</strong><br>
                 Current schedule: <span id="staffClinicRescheduleCurrent"></span>
@@ -2743,7 +2743,6 @@ input, select, textarea, button, img { max-width:100%; }
                     <option value="14:00">2:00 PM</option>
                     <option value="15:00">3:00 PM</option>
                     <option value="16:00">4:00 PM</option>
-                    <option value="17:00">5:00 PM</option>
                 </select>
                 <label for="staffClinicRescheduleReason">Reason *</label>
                 <textarea name="clinic_reschedule_reason" id="staffClinicRescheduleReason" rows="3" maxlength="250" required placeholder="Example: Veterinarian is unavailable due to emergency leave."></textarea>

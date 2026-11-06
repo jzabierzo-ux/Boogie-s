@@ -124,10 +124,88 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['reschedule_booking'])
     $new_date = trim((string)($_POST['reschedule_date'] ?? ''));
     $new_time = trim((string)($_POST['reschedule_time'] ?? ''));
 
-    $allowed_reschedule_times = [
-        '10:00:00', '11:00:00', '12:00:00', '13:00:00',
-        '14:00:00', '15:00:00', '16:00:00', '17:00:00'
-    ];
+    // Rescheduling follows the same duration-aware schedule as new bookings:
+    // opening at 9:00 AM, lunch break 12:00 PM-1:00 PM, latest regular start 4:00 PM,
+    // and regular-service/daycare pickup cutoff at 5:00 PM.
+    $rescheduleTimeToMinutes = static function ($time): ?int {
+        $value = trim((string)($time ?? ''));
+        if (!preg_match('/^(?:0[9]|1[0-6]):(?:00|30):00$/', $value, $matches)) {
+            return null;
+        }
+        return ((int)substr($value, 0, 2) * 60) + (int)substr($value, 3, 2);
+    };
+
+    $reschedulePickupToMinutes = static function ($time): ?int {
+        $value = trim((string)($time ?? ''));
+        if (!preg_match('/^(?:0[9]|1[0-7]):(?:00|30)(?::00)?$/', $value, $matches)) {
+            return null;
+        }
+        return ((int)substr($value, 0, 2) * 60) + (int)substr($value, 3, 2);
+    };
+
+    $rescheduleServiceDuration = static function (string $category, string $serviceName): int {
+        $name = strtolower(trim($serviceName));
+
+        if ($category === 'Grooming') {
+            if (strpos($name, 'full grooming package') !== false || preg_match('/\bfg\b/', $name)) return 120;
+            if (strpos($name, 'bath & blow dry') !== false || strpos($name, 'bath and blow dry') !== false || strpos($name, 'cat bath') !== false) return 90;
+            if (strpos($name, 'basic pet grooming') !== false || strpos($name, 'cat grooming (basic)') !== false) return 60;
+            return 120; // Conservative default for unrecognized grooming labels.
+        }
+
+        if ($category === 'Vet Services') return 30;
+
+        if ($category === 'Pet Hotel') {
+            if (strpos($name, 'daycare') !== false) return 180; // Pickup time controls the actual daycare interval.
+            if (strpos($name, 'boarding') !== false || strpos($name, 'overnight') !== false) return 30;
+            return 180;
+        }
+
+        return 0;
+    };
+
+    $rescheduleAllowedTimes = static function (string $category, string $serviceName) use ($rescheduleServiceDuration): array {
+        $name = strtolower(trim($serviceName));
+        $openingMinutes = 9 * 60;
+        $breakStartMinutes = 12 * 60;
+        $breakEndMinutes = 13 * 60;
+        $latestStartMinutes = 16 * 60;
+        $serviceCutoffMinutes = 17 * 60;
+
+        if ($category === 'Pet Hotel' && (strpos($name, 'boarding') !== false || strpos($name, 'overnight') !== false)) {
+            return ['09:00:00'];
+        }
+
+        if ($category === 'Pet Hotel' && strpos($name, 'daycare') !== false) {
+            $times = [];
+            foreach ([[$openingMinutes, $breakStartMinutes], [$breakEndMinutes, $latestStartMinutes + 30]] as [$periodStart, $periodEnd]) {
+                for ($start = $periodStart; $start < $periodEnd && $start <= $latestStartMinutes; $start += 30) {
+                    $times[] = sprintf('%02d:%02d:00', intdiv($start, 60), $start % 60);
+                }
+            }
+            return array_values(array_unique($times));
+        }
+
+        $duration = $rescheduleServiceDuration($category, $serviceName);
+        if ($duration <= 0) return [];
+
+        $times = [];
+        foreach ([[$openingMinutes, $breakStartMinutes], [$breakEndMinutes, $serviceCutoffMinutes + 1]] as [$periodStart, $periodEnd]) {
+            for (
+                $start = $periodStart;
+                $start < $periodEnd &&
+                $start <= $latestStartMinutes &&
+                ($start + $duration) <= $serviceCutoffMinutes &&
+                // Do not let a regular service overlap the 12:00 PM-1:00 PM break.
+                ($start + $duration) <= $periodEnd;
+                $start += $duration
+            ) {
+                $times[] = sprintf('%02d:%02d:00', intdiv($start, 60), $start % 60);
+            }
+        }
+
+        return array_values(array_unique($times));
+    };
 
     $setRescheduleError = static function ($message) use ($pdo) {
         if ($pdo->inTransaction()) {
@@ -161,10 +239,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['reschedule_booking'])
         ($new_date_errors !== false && ($new_date_errors['warning_count'] > 0 || $new_date_errors['error_count'] > 0))
     ) {
         $setRescheduleError("Please select a valid new date.");
-    }
-
-    if (!in_array($new_time, $allowed_reschedule_times, true)) {
-        $setRescheduleError("Please select a valid appointment time between 10:00 AM and 5:00 PM.");
     }
 
     try {
@@ -225,8 +299,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['reschedule_booking'])
             $setRescheduleError("Please select a future time for the new appointment.");
         }
 
-        if ($new_date === $today && $current_time >= '18:00:00') {
-            $setRescheduleError("Same-day rescheduling is closed after 6:00 PM. Please choose another date.");
+        if ($new_date === $today && $current_time >= '16:00:00') {
+            $setRescheduleError("Same-day rescheduling is closed after 4:00 PM because the latest appointment start time has passed. Please choose another date.");
         }
 
         $stored_service = (string)($appointment['service'] ?? '');
@@ -242,6 +316,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['reschedule_booking'])
 
         if ($service_category === '') {
             $setRescheduleError("Unable to determine the service category for this booking.");
+        }
+
+        // Enforce service-specific reschedule times on the server; hiding a time in the
+        // dropdown alone is not sufficient because requests can be manually altered.
+        $allowed_reschedule_times = $rescheduleAllowedTimes($service_category, $stored_service);
+        if (!in_array($new_time, $allowed_reschedule_times, true)) {
+            $setRescheduleError("Please select a valid time for this service. Regular services must finish by 5:00 PM, and the latest regular appointment start is 4:00 PM.");
+        }
+
+        $new_start_minutes = $rescheduleTimeToMinutes($new_time);
+        if ($new_start_minutes === null) {
+            $setRescheduleError("Please select a valid appointment time.");
+        }
+
+        if ($service_category === 'Pet Hotel' && stripos($stored_service, 'daycare') !== false) {
+            $pickup_minutes = $reschedulePickupToMinutes($appointment['pickup_time'] ?? '');
+            if ($pickup_minutes === null || $pickup_minutes <= $new_start_minutes || $pickup_minutes > (17 * 60)) {
+                $setRescheduleError("Pet Daycare pickup must be later than drop-off and no later than 5:00 PM. Please contact the clinic to update the pickup time before rescheduling.");
+            }
+        } elseif ($service_category !== 'Pet Hotel' || (stripos($stored_service, 'boarding') === false && stripos($stored_service, 'overnight') === false)) {
+            $service_duration = $rescheduleServiceDuration($service_category, $stored_service);
+            if ($service_duration <= 0 || ($new_start_minutes + $service_duration) > (17 * 60)) {
+                $setRescheduleError("This appointment must be scheduled so the service finishes by 5:00 PM.");
+            }
         }
 
         // Use the same transaction lock as new bookings before counting capacity.
@@ -2542,7 +2640,8 @@ try {
                                                 <?php echo $apt_id; ?>,
                                                 '<?php echo addslashes(htmlspecialchars($row['service'])); ?>',
                                                 '<?php echo addslashes(htmlspecialchars($display_pet)); ?>',
-                                                '<?php echo htmlspecialchars(date('Y-m-d', strtotime($row['appointment_date']))); ?>'
+                                                '<?php echo htmlspecialchars(date('Y-m-d', strtotime($row['appointment_date']))); ?>',
+                                                <?php echo htmlspecialchars(json_encode((string)($row['pickup_time'] ?? ''), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT), ENT_QUOTES, 'UTF-8'); ?>
                                             )"
                                         >
                                             <i class="fa-solid fa-calendar-days"></i> Reschedule
@@ -2761,8 +2860,9 @@ try {
 
             <div class="reschedule-help">
                 <strong>Important:</strong> Your original GCash payment stays valid and non-refundable.
-                Choose an available schedule within 3 days after the original appointment. After this reschedule is used,
-                another missed appointment will be treated as a No-Show and the payment will be forfeited.
+                Choose an available schedule within 3 days after the original appointment. Regular services must finish by 5:00 PM;
+                available start times depend on the selected service duration. Pet Daycare pickup must be no later than 5:00 PM.
+                After this reschedule is used, another missed appointment will be treated as a No-Show and the payment will be forfeited.
             </div>
 
             <form method="POST" action="">
@@ -2786,15 +2886,7 @@ try {
                     <div class="modal-form-group">
                         <label>New Time *</label>
                         <select name="reschedule_time" id="rescheduleTime" required>
-                            <option value="">Choose a time</option>
-                            <option value="10:00:00">10:00 AM</option>
-                            <option value="11:00:00">11:00 AM</option>
-                            <option value="12:00:00">12:00 PM</option>
-                            <option value="13:00:00">01:00 PM</option>
-                            <option value="14:00:00">02:00 PM</option>
-                            <option value="15:00:00">03:00 PM</option>
-                            <option value="16:00:00">04:00 PM</option>
-                            <option value="17:00:00">05:00 PM</option>
+                            <option value="">Choose a service first</option>
                         </select>
                     </div>
                 </div>
@@ -2890,12 +2982,102 @@ try {
     </footer>
 
     <script>
-        function openRescheduleModal(id, service, pet, originalDate) {
+        function getRescheduleDurationMinutes(service) {
+            const name = String(service || '').trim().toLowerCase();
+
+            if (name.startsWith('grooming')) {
+                if (name.includes('full grooming package') || /\bfg\b/.test(name)) return 120;
+                if (name.includes('bath & blow dry') || name.includes('bath and blow dry') || name.includes('cat bath')) return 90;
+                if (name.includes('basic pet grooming') || name.includes('cat grooming (basic)')) return 60;
+                return 120;
+            }
+
+            if (name.startsWith('vet services')) return 30;
+            if (name.startsWith('pet hotel')) {
+                if (name.includes('daycare')) return 180;
+                if (name.includes('boarding') || name.includes('overnight')) return 30;
+            }
+
+            return 0;
+        }
+
+        function rescheduleTimeStringToMinutes(time) {
+            const value = String(time || '').trim();
+            const match = value.match(/^([01]\d|2[0-3]):([0-5]\d)(?::[0-5]\d)?$/);
+            if (!match) return null;
+            return (Number(match[1]) * 60) + Number(match[2]);
+        }
+
+        function populateRescheduleTimes(service, pickupTime = '') {
+            const select = document.getElementById('rescheduleTime');
+            const name = String(service || '').trim().toLowerCase();
+            const options = [];
+            const openingMinutes = 9 * 60;
+            const breakStartMinutes = 12 * 60;
+            const breakEndMinutes = 13 * 60;
+            const latestStartMinutes = 16 * 60;
+            const cutoffMinutes = 17 * 60;
+            const pickupMinutes = rescheduleTimeStringToMinutes(pickupTime);
+
+            if (name.startsWith('pet hotel') && (name.includes('boarding') || name.includes('overnight'))) {
+                options.push(9 * 60);
+            } else if (name.startsWith('pet hotel') && name.includes('daycare')) {
+                // Keep the existing pickup time when rescheduling. Only show drop-off
+                // choices earlier than that pickup, with pickup no later than 5:00 PM.
+                if (pickupMinutes !== null && pickupMinutes > openingMinutes && pickupMinutes <= cutoffMinutes) {
+                    for (const [periodStart, periodEnd] of [[openingMinutes, breakStartMinutes], [breakEndMinutes, latestStartMinutes + 30]]) {
+                        for (let start = periodStart; start < periodEnd && start <= latestStartMinutes && start < pickupMinutes; start += 30) {
+                            options.push(start);
+                        }
+                    }
+                }
+            } else {
+                const duration = getRescheduleDurationMinutes(service);
+                if (duration > 0) {
+                    for (const [periodStart, periodEnd] of [[openingMinutes, breakStartMinutes], [breakEndMinutes, cutoffMinutes + 1]]) {
+                        for (
+                            let start = periodStart;
+                            start < periodEnd &&
+                            start <= latestStartMinutes &&
+                            (start + duration) <= cutoffMinutes &&
+                            // A service must finish before its operating period ends.
+                            (start + duration) <= periodEnd;
+                            start += duration
+                        ) {
+                            options.push(start);
+                        }
+                    }
+                }
+            }
+
+            select.innerHTML = '';
+            const placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.textContent = options.length ? 'Choose a time' : 'No reschedule times available';
+            select.appendChild(placeholder);
+
+            options.forEach(minutes => {
+                const hour24 = Math.floor(minutes / 60);
+                const minute = minutes % 60;
+                const value = String(hour24).padStart(2, '0') + ':' + String(minute).padStart(2, '0') + ':00';
+                const hour12 = hour24 % 12 || 12;
+                const suffix = hour24 >= 12 ? 'PM' : 'AM';
+                const label = String(hour12).padStart(2, '0') + ':' + String(minute).padStart(2, '0') + ' ' + suffix;
+                const option = document.createElement('option');
+                option.value = value;
+                option.textContent = label;
+                select.appendChild(option);
+            });
+
+            select.disabled = options.length === 0;
+        }
+
+        function openRescheduleModal(id, service, pet, originalDate, pickupTime = '') {
             document.getElementById('rescheduleAppointmentId').value = id;
             document.getElementById('rescheduleService').innerText = service;
             document.getElementById('reschedulePet').innerText = pet;
             document.getElementById('rescheduleDate').value = '';
-            document.getElementById('rescheduleTime').value = '';
+            populateRescheduleTimes(service, pickupTime);
 
             const dateInput = document.getElementById('rescheduleDate');
             const now = new Date();

@@ -304,16 +304,16 @@ if (($_GET['ajax'] ?? '') === 'walkin_service_capacity') {
     $simultaneousLimit = 2; // Both Grooming and Vet Services have two concurrent staff slots (vet: doctor + reliever).
     $dailyLimit = $category === 'Grooming' ? 10 : 30;
 
-    if ($startMinutes < 9 * 60 || $startMinutes >= 18 * 60 || ($startMinutes >= 12 * 60 && $startMinutes < 13 * 60)) {
+    if ($startMinutes < 9 * 60 || $startMinutes > 16 * 60 || ($startMinutes >= 12 * 60 && $startMinutes < 13 * 60)) {
         echo json_encode(['success' => true, 'available' => false, 'capacity' => $simultaneousLimit,
             'remaining_slots' => 0, 'duration_minutes' => $durationMinutes, 'label' => $timeLabel,
-            'reason' => 'Walk-in time must be during operating hours (9:00 AM–6:00 PM), excluding the 12:00 PM–1:00 PM lunch break.']);
+            'reason' => 'New Grooming and Vet walk-ins must start between 9:00 AM and 4:00 PM, excluding the 12:00 PM–1:00 PM lunch break.']);
         exit;
     }
-    if ($endMinutes > 18 * 60) {
+    if ($endMinutes > 17 * 60) {
         echo json_encode(['success' => true, 'available' => false, 'capacity' => $simultaneousLimit,
             'remaining_slots' => 0, 'duration_minutes' => $durationMinutes, 'label' => $timeLabel,
-            'reason' => 'This service would finish after closing time. Choose an earlier walk-in time.']);
+            'reason' => 'This service must finish no later than 5:00 PM. Choose an earlier walk-in time.']);
         exit;
     }
     // Veterinary services are available every operating day, including Wednesday and Saturday.
@@ -2664,16 +2664,7 @@ if ($is_admin) {
                 <div class="modal-form-group" style="margin-top:12px;">
                     <label for="clinicRescheduleTime">New Time *</label>
                     <select name="clinic_reschedule_time" id="clinicRescheduleTime" required>
-                        <option value="">Choose new time</option>
-                        <option value="09:00">9:00 AM — Pet Boarding check-in</option>
-                        <option value="10:00">10:00 AM</option>
-                        <option value="11:00">11:00 AM</option>
-                        <option value="12:00">12:00 PM</option>
-                        <option value="13:00">1:00 PM</option>
-                        <option value="14:00">2:00 PM</option>
-                        <option value="15:00">3:00 PM</option>
-                        <option value="16:00">4:00 PM</option>
-                        <option value="17:00">5:00 PM</option>
+                        <option value="">Choose a time for this service</option>
                     </select>
                     <small id="clinicRescheduleTimeHelp" style="display:block;margin-top:6px;color:#64748b;font-size:11px;">The destination date and time will be checked against existing bookings and active availability adjustments.</small>
                 </div>
@@ -2858,8 +2849,8 @@ if ($is_admin) {
                     </div>
                     <div class="modal-form-group">
                         <label>Time *</label>
-                        <input type="time" name="appointment_time" id="walkinTime" required step="60" min="09:00" max="17:59" value="<?php echo date('H:i'); ?>">
-                        <small style="display:block;margin-top:6px;color:#64748b;font-size:11px;">Enter the pet's actual arrival time, not the owner's ETA. Pet Boarding accepts same-day check-in during operating hours, subject to room availability. Grooming, Vet, and Pet Daycare accept actual arrival times to the minute. If the owner is 30–60 minutes late, update this field when the pet arrives; capacity and daycare fees are recalculated from the actual arrival. The 12:00 PM–1:00 PM staff break is observed. A 5-minute entry buffer is allowed.</small>
+                        <input type="time" name="appointment_time" id="walkinTime" required step="60" min="09:00" max="16:00" value="<?php echo date('H:i'); ?>">
+                        <small style="display:block;margin-top:6px;color:#64748b;font-size:11px;">Enter the pet's actual arrival time, not the owner's ETA. New Grooming, Vet, and Pet Daycare drop-offs must start no later than 4:00 PM, and regular services/daycare pickup must finish by 5:00 PM. Overnight Pet Boarding check-in remains available during operating hours until 6:00 PM. Update the time when the pet actually arrives; capacity and daycare fees are recalculated from the recorded time. The 12:00 PM–1:00 PM staff break is observed. A 5-minute entry buffer is allowed.</small>
                     </div>
                 </div>
 
@@ -2868,7 +2859,7 @@ if ($is_admin) {
                     <select name="pickup_time" id="walkinPickupTime" onchange="checkWalkinAvailability(); updateWalkinPrice();">
                         <option value="">Choose expected pickup time</option>
                     </select>
-                    <small style="display:block;margin-top:6px;color:#64748b;font-size:11px;">Choose the expected pickup time in 30-minute increments, no later than 6:00 PM. The first-hour rate applies; succeeding time is billed in ₱15 half-hour blocks. If the owner arrives later than the ETA, record the actual drop-off time and choose a revised pickup time.</small>
+                    <small style="display:block;margin-top:6px;color:#64748b;font-size:11px;">Choose the expected pickup time in 30-minute increments, no later than 5:00 PM. Pet Daycare drop-off must be no later than 4:00 PM. The first-hour rate applies; succeeding time is billed in ₱15 half-hour blocks.</small>
                 </div>
 
                 <div class="modal-form-group" id="walkinCheckoutGroup" style="display:none;">
@@ -3034,11 +3025,10 @@ if ($is_admin) {
             placeholder.value = '';
             placeholder.textContent = start === null ? 'Choose drop-off time first' : 'Choose expected pickup time';
             select.appendChild(placeholder);
-            if (start !== null && start >= 9 * 60 && start < 18 * 60 && !(start >= 12 * 60 && start < 13 * 60)) {
-                // Walk-in drop-off records the actual arrival minute. Pickup choices
-                // remain on :00/:30 boundaries, at least 30 minutes after arrival.
+            if (start !== null && start >= 9 * 60 && start <= 16 * 60 && !(start >= 12 * 60 && start < 13 * 60)) {
+                // Walk-in daycare drop-off is no later than 4:00 PM; pickup is no later than 5:00 PM.
                 const firstPickup = Math.ceil((start + 30) / 30) * 30;
-                for (let value = firstPickup; value <= 18 * 60; value += 30) {
+                for (let value = firstPickup; value <= 17 * 60; value += 30) {
                     const option = document.createElement('option');
                     option.value = String(Math.floor(value / 60)).padStart(2, '0') + ':' + String(value % 60).padStart(2, '0');
                     option.textContent = new Date(2000, 0, 1, Math.floor(value / 60), value % 60).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
@@ -3091,6 +3081,17 @@ if ($is_admin) {
                 && service.toLowerCase().includes('boarding');
             const isDaycare = document.getElementById('walkinCategory').value === 'Pet Hotel'
                 && service.toLowerCase().includes('daycare');
+            const timeInput = document.getElementById('walkinTime');
+            if (timeInput) {
+                // Overnight boarding check-in may continue until 5:59 PM; all new regular arrivals stop at 4:00 PM.
+                const latestArrival = isBoarding ? '17:59' : '16:00';
+                timeInput.max = latestArrival;
+                if (timeInput.value && timeInput.value > latestArrival) {
+                    timeInput.value = '';
+                    walkinTimeWasManuallyEdited = false;
+                }
+                updateWalkinDateTimeLimits();
+            }
             const pickupGroup = document.getElementById('walkinPickupGroup');
             const pickupInput = document.getElementById('walkinPickupTime');
             const weightInput = document.getElementById('walkinWeight');
@@ -3179,6 +3180,7 @@ if ($is_admin) {
             const appointmentTime = document.getElementById('walkinTime').value;
             const checkOutDate = document.getElementById('walkinCheckoutDate').value;
             const isBoarding = category === 'Pet Hotel' && service.toLowerCase().includes('boarding');
+            const isDaycare = category === 'Pet Hotel' && service.toLowerCase().includes('daycare');
             const box = document.getElementById('walkinCapacityBox');
             const saveBtn = document.getElementById('walkinSaveBtn');
             const requestId = ++walkinAvailabilityRequestId;
@@ -3215,6 +3217,14 @@ if ($is_admin) {
                 && selectedTimeMinutes !== null && selectedTimeMinutes < Math.max(0, nowMinutes - 5)) {
                 walkinAvailabilityState = 'invalid';
                 setWalkinCapacityMessage('full', 'Walk-in Time', 'This time has already passed today.', 'Please choose a later time or another date.');
+                disableSaveWhileChecking();
+                updateWalkinPrice();
+                return;
+            }
+
+            if (!isBoarding && selectedTimeMinutes !== null && selectedTimeMinutes > 16 * 60) {
+                walkinAvailabilityState = 'invalid';
+                setWalkinCapacityMessage('full', 'Walk-in Schedule', 'New regular services and Pet Daycare drop-offs must start no later than 4:00 PM.', 'Regular services and Pet Daycare pickup must finish by 5:00 PM.');
                 disableSaveWhileChecking();
                 updateWalkinPrice();
                 return;
@@ -3571,6 +3581,7 @@ if ($is_admin) {
             const now = getWalkinManilaNow();
             dateInput.min = now.date;
 
+            const latestAllowed = timeInput.max || '16:00';
             let minimumTime = '09:00';
             if (dateInput.value === now.date) {
                 // Allow a 5-minute admin-entry buffer because the form may be
@@ -3581,21 +3592,20 @@ if ($is_admin) {
                     minimumMinutes = 13 * 60;
                 }
                 minimumTime = String(Math.floor(minimumMinutes / 60)).padStart(2, '0') + ':' + String(minimumMinutes % 60).padStart(2, '0');
-                if (minimumMinutes >= 18 * 60) minimumTime = '18:00';
             }
             timeInput.min = minimumTime;
             // While the field is untouched, keep it synced to the actual Manila
-            // clock so a long form-filling process does not leave a stale arrival time.
+            // clock, but never suggest a new regular arrival after 4:00 PM.
             if (dateInput.value === now.date && !walkinTimeWasManuallyEdited) {
-                if (now.minutes >= 18 * 60) {
+                if (now.minutes > (latestAllowed.slice(0, 2) * 60 + Number(latestAllowed.slice(3, 5)))) {
                     timeInput.value = '';
                 } else if (now.minutes >= 12 * 60 && now.minutes < 13 * 60) {
                     timeInput.value = '13:00';
                 } else {
                     timeInput.value = now.time;
                 }
-            } else if (!walkinTimeWasManuallyEdited && (!timeInput.value || timeInput.value > '17:59')) {
-                timeInput.value = minimumTime <= '17:59' ? minimumTime : '';
+            } else if (!walkinTimeWasManuallyEdited && (!timeInput.value || timeInput.value > latestAllowed)) {
+                timeInput.value = minimumTime <= latestAllowed ? minimumTime : '';
             }
             return { now: now, minimumTime: minimumTime };
         }
@@ -3688,6 +3698,11 @@ if ($is_admin) {
             const category = document.getElementById('walkinCategory').value;
             const service = document.getElementById('walkinService').value.toLowerCase();
             const isBoarding = category === 'Pet Hotel' && service.includes('boarding');
+            const isDaycare = category === 'Pet Hotel' && service.includes('daycare');
+            const pickupTime = document.getElementById('walkinPickupTime').value;
+            const pickupMinutes = /^\d{2}:\d{2}$/.test(pickupTime)
+                ? (Number(pickupTime.slice(0, 2)) * 60) + Number(pickupTime.slice(3, 5))
+                : null;
             const now = getWalkinManilaNow();
             const selectedMinutes = /^\d{2}:\d{2}$/.test(selectedTime)
                 ? (Number(selectedTime.slice(0, 2)) * 60) + Number(selectedTime.slice(3, 5))
@@ -3702,6 +3717,10 @@ if ($is_admin) {
                 && (selectedMinutes < 9 * 60 || selectedMinutes >= 18 * 60
                     || (selectedMinutes >= 12 * 60 && selectedMinutes < 13 * 60))) {
                 message = 'Pet Boarding check-in must be between 9:00 AM and 6:00 PM, excluding the 12:00 PM–1:00 PM staff break.';
+            } else if (!isBoarding && selectedMinutes !== null && selectedMinutes > 16 * 60) {
+                message = 'New regular services and Pet Daycare drop-offs must start no later than 4:00 PM.';
+            } else if (isDaycare && (pickupMinutes === null || pickupMinutes <= selectedMinutes || pickupMinutes > 17 * 60)) {
+                message = 'Pet Daycare pickup must be later than drop-off and no later than 5:00 PM.';
             }
 
             if (message !== '') {
@@ -3960,7 +3979,9 @@ if ($is_admin) {
             const modal = document.getElementById('clinicRescheduleModal');
             if (!modal || !button) return;
             const service = button.dataset.service || '';
-            const isBoarding = service.toLowerCase().includes('pet hotel') && service.toLowerCase().includes('boarding');
+            const serviceLower = service.toLowerCase();
+            const isBoarding = serviceLower.includes('pet hotel') && serviceLower.includes('boarding');
+            const isDaycare = serviceLower.includes('pet hotel') && serviceLower.includes('daycare');
             document.getElementById('clinicRescheduleBookingId').value = button.dataset.id || '';
             document.getElementById('clinicRescheduleService').textContent = service;
             document.getElementById('clinicReschedulePet').textContent = button.dataset.pet || 'Pet';
@@ -3969,15 +3990,48 @@ if ($is_admin) {
             const timeSelect = document.getElementById('clinicRescheduleTime');
             const help = document.getElementById('clinicRescheduleTimeHelp');
             dateInput.value = '';
-            timeSelect.value = '';
-            Array.from(timeSelect.options).forEach(function(option) {
-                if (!option.value) return;
-                option.hidden = isBoarding ? option.value !== '09:00' : option.value === '09:00';
-                option.disabled = option.hidden;
+            timeSelect.innerHTML = '<option value="">Choose a time for this service</option>';
+
+            const allowedMinutes = [];
+            if (isBoarding) {
+                allowedMinutes.push(9 * 60);
+            } else if (isDaycare) {
+                // Daycare drop-off: every 30 minutes through 4:00 PM; pickup remains capped at 5:00 PM.
+                [[9 * 60, 12 * 60], [13 * 60, 16 * 60 + 1]].forEach(function(period) {
+                    for (let value = period[0]; value < period[1] && value <= 16 * 60; value += 30) allowedMinutes.push(value);
+                });
+            } else {
+                let duration = 120;
+                if (serviceLower.startsWith('vet services')) {
+                    duration = 30;
+                } else if (serviceLower.startsWith('grooming')) {
+                    if (serviceLower.includes('full grooming package') || /\bfg\b/.test(serviceLower)) duration = 120;
+                    else if (serviceLower.includes('bath & blow dry') || serviceLower.includes('bath and blow dry') || serviceLower.includes('cat bath')) duration = 90;
+                    else if (serviceLower.includes('basic pet grooming') || serviceLower.includes('cat grooming (basic)')) duration = 60;
+                }
+                [[9 * 60, 12 * 60], [13 * 60, 16 * 60 + 1]].forEach(function(period) {
+                    for (let value = period[0]; value < period[1] && value <= 16 * 60 && value + duration <= 17 * 60; value += duration) {
+                        allowedMinutes.push(value);
+                    }
+                });
+            }
+
+            allowedMinutes.forEach(function(minutes) {
+                const hour = Math.floor(minutes / 60);
+                const minute = minutes % 60;
+                const value = String(hour).padStart(2, '0') + ':' + String(minute).padStart(2, '0');
+                const label = new Date(2000, 0, 1, hour, minute).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+                const option = document.createElement('option');
+                option.value = value;
+                option.textContent = isBoarding ? label + ' — Pet Boarding check-in' : label;
+                timeSelect.appendChild(option);
             });
+
             help.textContent = isBoarding
                 ? 'Pet Boarding check-in is fixed at 9:00 AM. The original number of nights will be preserved.'
-                : 'The destination date and time will be checked against existing bookings and active availability adjustments.';
+                : (isDaycare
+                    ? 'Pet Daycare drop-off must be no later than 4:00 PM, and the existing pickup time must be no later than 5:00 PM.'
+                    : 'Available times depend on the service duration. Regular services must finish by 5:00 PM; no new service may start after 4:00 PM.');
             document.getElementById('clinicRescheduleReason').value = '';
             modal.style.display = 'flex';
         }

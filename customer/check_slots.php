@@ -10,6 +10,9 @@
  *
  * Initial scheduling assumptions based on the client survey/interview and adviser:
  * - Business hours: 09:00-18:00 Asia/Manila.
+ * - New regular-service starts are limited to 16:00 (4:00 PM), and service completion/pickup must be by 17:00 (5:00 PM).
+ * - 18:00 remains the business closing time for existing records and overnight operations.
+ * - Overnight Pet Boarding check-in remains at 09:00 and is handled separately.
  * - New bookings may not START from 12:00-13:00.
  *   Services started before the break may continue through it if staff capacity allows.
  *   Assume one groomer is on lunch, so grooming capacity drops to 1 during the break.
@@ -96,7 +99,7 @@ $advanced_mode = ($specific_service !== '');
 
 $legacy_times = [
     '10:00:00', '11:00:00', '12:00:00', '13:00:00',
-    '14:00:00', '15:00:00', '16:00:00', '17:00:00'
+    '14:00:00', '15:00:00', '16:00:00'
 ];
 
 $global_daily_limit = 20;
@@ -110,7 +113,9 @@ $active_status_sql = "LOWER(BTRIM(COALESCE(booking_status, ''))) NOT IN ('cancel
 $service_prefix = $category . '%';
 
 $opening_minutes = 9 * 60;
-$closing_minutes = 18 * 60;
+$closing_minutes = 18 * 60; // Actual business closing time.
+$latest_start_minutes = 16 * 60; // No new online service may start after 4:00 PM.
+$service_cutoff_minutes = 17 * 60; // Regular services and daycare pickup must finish by 5:00 PM.
 $break_start = 12 * 60;
 $break_end = 13 * 60; // One-hour break is an implementation assumption from the available interview details.
 // Vet services are available every operating day; slot capacity still controls availability.
@@ -137,7 +142,9 @@ function slotRequestedTimeToMinutes($time): ?int
     return slotTimeToMinutes($value);
 }
 
-/** Pickup can be at 6:00 PM, the closing boundary; starts are separately restricted. */
+/** Parse Pet Daycare pickup times, including existing bookings up to the 6:00 PM close.
+ * New online daycare drop-offs are limited to 4:00 PM and pickups to 5:00 PM below.
+ */
 function slotPickupTimeToMinutes($time): ?int
 {
     $minutes = slotRequestedTimeToMinutes($time);
@@ -188,26 +195,42 @@ function slotDurationMinutes(string $category, string $serviceName, bool $reques
  * Morning and afternoon periods have separate anchors so lunch does not shift
  * the afternoon schedule. Pet Boarding uses the separate fixed 9:00 AM check-in.
  */
-function slotDurationAlignedStartMinutes(string $category, string $specificService, int $opening, int $closing, int $breakStart, int $breakEnd): array
-{
+function slotDurationAlignedStartMinutes(
+    string $category,
+    string $specificService,
+    int $opening,
+    int $latestStart,
+    int $serviceCutoff,
+    int $breakStart,
+    int $breakEnd
+): array {
     if ($category === 'Pet Hotel' && slotIsHotelBoarding($specificService)) {
+        // Overnight boarding uses its fixed 9:00 AM check-in and is not subject
+        // to the regular service latest-start rule.
         return [$opening];
     }
 
     if ($category === 'Pet Hotel' && slotIsHotelDaycare($specificService)) {
+        // Drop-off may start through 4:00 PM; the selected pickup must be by 5:00 PM.
         $times = [];
-        foreach ([[$opening, $breakStart], [$breakEnd, $closing]] as [$periodStart, $periodEnd]) {
-            for ($start = $periodStart; $start < $periodEnd; $start += 30) $times[] = $start;
+        foreach ([[$opening, $breakStart], [$breakEnd, $latestStart + 30]] as [$periodStart, $periodEnd]) {
+            for ($start = $periodStart; $start < $periodEnd && $start <= $latestStart; $start += 30) {
+                $times[] = $start;
+            }
         }
-        return $times;
+        return array_values(array_unique($times));
     }
 
     $duration = slotDurationMinutes($category, $specificService, true);
     if ($duration <= 0) return [];
 
     $times = [];
-    foreach ([[$opening, $breakStart], [$breakEnd, $closing]] as [$periodStart, $periodEnd]) {
-        for ($start = $periodStart; $start < $periodEnd && ($start + $duration) <= $closing; $start += $duration) {
+    foreach ([[$opening, $breakStart], [$breakEnd, $latestStart + 1]] as [$periodStart, $periodEnd]) {
+        for (
+            $start = $periodStart;
+            $start < $periodEnd && $start <= $latestStart && ($start + $duration) <= $serviceCutoff;
+            $start += $duration
+        ) {
             $times[] = $start;
         }
     }
@@ -504,21 +527,24 @@ try {
         $opening = 9 * 60;
         $breakStart = 12 * 60;
         $breakEnd = 13 * 60;
-        $closing = 18 * 60;
+        $closing = $service_cutoff_minutes;
         $reason = '';
         $available = true;
         $remaining = 6;
 
-        $valid_starts = slotDurationAlignedStartMinutes('Pet Hotel', $specific_service, $opening, $closing, $breakStart, $breakEnd);
+        $valid_starts = slotDurationAlignedStartMinutes('Pet Hotel', $specific_service, $opening, $latest_start_minutes, $closing, $breakStart, $breakEnd);
         if ($start === null || !in_array($start, $valid_starts, true)) {
             $available = false;
             $reason = 'Please select a valid drop-off time in the available schedule.';
         } elseif ($end === null || $end <= $start) {
             $available = false;
             $reason = 'Expected pickup must be later than drop-off and use a half-hour time.';
+        } elseif ($start > $latest_start_minutes) {
+            $available = false;
+            $reason = 'Pet Daycare drop-off must be no later than 4:00 PM.';
         } elseif ($end > $closing) {
             $available = false;
-            $reason = 'Pet Daycare pickup must be no later than 6:00 PM.';
+            $reason = 'Pet Daycare pickup must be no later than 5:00 PM.';
         } elseif ($start >= $breakStart && $start < $breakEnd) {
             $available = false;
             $reason = 'New Pet Daycare bookings cannot start from 12:00 PM to 1:00 PM.';
@@ -909,7 +935,7 @@ try {
     $today = $now->format('Y-m-d');
     $current_minutes = ((int)$now->format('H') * 60) + (int)$now->format('i');
 
-    foreach (slotDurationAlignedStartMinutes($category, $specific_service, $opening_minutes, $closing_minutes, $break_start, $break_end) as $start) {
+    foreach (slotDurationAlignedStartMinutes($category, $specific_service, $opening_minutes, $latest_start_minutes, $service_cutoff_minutes, $break_start, $break_end) as $start) {
         $end = $start + $duration_minutes;
         $time_value = sprintf('%02d:%02d:00', intdiv($start, 60), $start % 60);
         $end_value = sprintf('%02d:%02d:00', intdiv($end, 60), $end % 60);
@@ -926,9 +952,12 @@ try {
             $capacity_end = $closing_minutes;
         }
 
-        if ($end > $closing_minutes) {
+        if ($start > $latest_start_minutes) {
             $available = false;
-            $reason = 'Outside operating hours';
+            $reason = 'Latest online booking start time is 4:00 PM';
+        } elseif ($end > $service_cutoff_minutes) {
+            $available = false;
+            $reason = 'Service must finish by 5:00 PM';
         } elseif ($start >= $break_start && $start < $break_end) {
             $available = false;
             $reason = 'Staff break (12:00 PM–1:00 PM)';

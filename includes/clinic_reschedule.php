@@ -86,6 +86,63 @@ if (!function_exists('boogieClinicReschedule')) {
                 return $fail('This booking service is not supported for clinic-initiated rescheduling.');
             }
 
+            // Keep clinic-initiated rescheduling aligned with online booking:
+            // 9:00 AM opening, 12:00-1:00 PM lunch break, 4:00 PM latest start,
+            // and 5:00 PM latest completion/pickup for regular services.
+            $timeToMinutes = static function ($value): ?int {
+                $value = trim((string)($value ?? ''));
+                if (!preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/', $value)) {
+                    return null;
+                }
+                return ((int)substr($value, 0, 2) * 60) + (int)substr($value, 3, 2);
+            };
+
+            $serviceDurationFor = static function (string $serviceCategory, string $serviceName): int {
+                $name = strtolower(trim($serviceName));
+                if ($serviceCategory === 'Grooming') {
+                    if (strpos($name, 'full grooming package') !== false || preg_match('/\\bfg\\b/', $name)) return 120;
+                    if (strpos($name, 'bath & blow dry') !== false || strpos($name, 'bath and blow dry') !== false || strpos($name, 'cat bath') !== false) return 90;
+                    if (strpos($name, 'basic pet grooming') !== false || strpos($name, 'cat grooming (basic)') !== false) return 60;
+                    return 120; // Conservative default for an unrecognized grooming service.
+                }
+                if ($serviceCategory === 'Vet Services') return 30;
+                if ($serviceCategory === 'Pet Hotel') return 180;
+                return 0;
+            };
+
+            $clinicAllowedStartTimes = static function (string $serviceCategory, string $serviceName) use ($serviceDurationFor): array {
+                $opening = 9 * 60;
+                $lunchStart = 12 * 60;
+                $lunchEnd = 13 * 60;
+                $latestStart = 16 * 60;
+                $serviceCutoff = 17 * 60;
+                $name = strtolower(trim($serviceName));
+
+                if ($serviceCategory === 'Pet Hotel' && (strpos($name, 'boarding') !== false || strpos($name, 'overnight') !== false)) {
+                    return ['09:00:00'];
+                }
+
+                $times = [];
+                if ($serviceCategory === 'Pet Hotel' && strpos($name, 'daycare') !== false) {
+                    // Daycare drop-off is selectable in 30-minute increments; the saved pickup must be by 5:00 PM.
+                    foreach ([[$opening, $lunchStart], [$lunchEnd, $latestStart + 30]] as [$periodStart, $periodEnd]) {
+                        for ($start = $periodStart; $start < $periodEnd && $start <= $latestStart; $start += 30) {
+                            $times[] = sprintf('%02d:%02d:00', intdiv($start, 60), $start % 60);
+                        }
+                    }
+                    return $times;
+                }
+
+                $duration = $serviceDurationFor($serviceCategory, $serviceName);
+                if ($duration <= 0) return [];
+                foreach ([[$opening, $lunchStart], [$lunchEnd, $latestStart + 1]] as [$periodStart, $periodEnd]) {
+                    for ($start = $periodStart; $start < $periodEnd && $start <= $latestStart && ($start + $duration) <= $serviceCutoff; $start += $duration) {
+                        $times[] = sprintf('%02d:%02d:00', intdiv($start, 60), $start % 60);
+                    }
+                }
+                return array_values(array_unique($times));
+            };
+
             $roleAllowed = in_array($role, ['admin', 'administrator', 'manager', 'receptionist'], true)
                 || ($role === 'groomer' && $category === 'Grooming')
                 || ($role === 'pet_hotel_staff' && $category === 'Pet Hotel')
@@ -101,7 +158,9 @@ if (!function_exists('boogieClinicReschedule')) {
                 return $fail('Only confirmed or already-rescheduled bookings can be moved by the clinic.');
             }
 
-            $isBoarding = $category === 'Pet Hotel' && stripos($service, 'boarding') !== false;
+            $isBoarding = $category === 'Pet Hotel'
+                && (stripos($service, 'boarding') !== false || stripos($service, 'overnight') !== false);
+            $isDaycare = $category === 'Pet Hotel' && stripos($service, 'daycare') !== false;
             if ($isBoarding) {
                 if ($newTime !== '09:00:00') {
                     $pdo->rollBack();
@@ -112,21 +171,26 @@ if (!function_exists('boogieClinicReschedule')) {
                     return $fail('The 9:00 AM Pet Boarding check-in time has already passed today. Choose another date.');
                 }
             } else {
-                $allowedTimes = [
-                    '10:00:00', '11:00:00', '12:00:00', '13:00:00',
-                    '14:00:00', '15:00:00', '16:00:00', '17:00:00'
-                ];
+                $allowedTimes = $clinicAllowedStartTimes($category, $serviceSpecific);
                 if (!in_array($newTime, $allowedTimes, true)) {
                     $pdo->rollBack();
-                    return $fail('Choose an available appointment time between 10:00 AM and 5:00 PM.');
+                    return $fail('Choose an available time for this service. Regular services must finish by 5:00 PM, and no regular appointment may start after 4:00 PM.');
                 }
                 if ($newDateInput === $today && $newTime <= $now->format('H:i:s')) {
                     $pdo->rollBack();
                     return $fail('The new appointment time must still be in the future.');
                 }
+                if ($isDaycare) {
+                    $pickupMinute = $timeToMinutes($booking['pickup_time'] ?? '');
+                    $startMinute = $timeToMinutes($newTime);
+                    if ($pickupMinute === null || $startMinute === null || $pickupMinute <= $startMinute || $pickupMinute > (17 * 60)) {
+                        $pdo->rollBack();
+                        return $fail('Pet Daycare pickup must be later than drop-off and no later than 5:00 PM. Update the pickup time before rescheduling.');
+                    }
+                }
             }
 
-            // Veterinary Services operate on Wednesdays and Saturdays too; availability is determined by capacity, operating hours, and active adjustments below.
+            // Veterinary Services operate on Wednesdays and Saturdays too; availability is determined by capacity, the 5:00 PM service cutoff, and active adjustments below.
 
             $oldDate = substr((string)($booking['appointment_date'] ?? ''), 0, 10);
             $oldTime = substr((string)($booking['appointment_time'] ?? ''), 0, 8);
@@ -162,21 +226,21 @@ if (!function_exists('boogieClinicReschedule')) {
             }
 
             $activeSql = "LOWER(BTRIM(COALESCE(booking_status, ''))) NOT IN ('cancelled', 'canceled', 'no-show', 'no show', 'noshow', 'for rescheduling')";
-            $durationMinutes = 60;
-            if ($category === 'Grooming' && stripos($service, 'Full Grooming Package') !== false) {
-                $durationMinutes = 120;
-            } elseif ($category === 'Vet Services') {
-                $durationMinutes = 30;
-            } elseif ($category === 'Pet Hotel' && !$isBoarding) {
-                $pickup = substr((string)($booking['pickup_time'] ?? ''), 0, 8);
-                if (preg_match('/^\d{2}:\d{2}/', $pickup)) {
-                    $startMinute = ((int)substr($newTime, 0, 2) * 60) + (int)substr($newTime, 3, 2);
-                    $pickupMinute = ((int)substr($pickup, 0, 2) * 60) + (int)substr($pickup, 3, 2);
-                    if ($pickupMinute <= $startMinute) {
-                        $pdo->rollBack();
-                        return $fail('The new daycare start time must be earlier than the expected pickup time.');
-                    }
-                    $durationMinutes = max(30, $pickupMinute - $startMinute);
+            if ($isBoarding) {
+                $durationMinutes = 30; // Boarding capacity is checked by stay dates, not appointment overlap.
+            } elseif ($isDaycare) {
+                $pickupMinute = $timeToMinutes($booking['pickup_time'] ?? '');
+                $startMinute = $timeToMinutes($newTime);
+                if ($pickupMinute === null || $startMinute === null || $pickupMinute <= $startMinute || $pickupMinute > (17 * 60)) {
+                    $pdo->rollBack();
+                    return $fail('Pet Daycare pickup must be later than drop-off and no later than 5:00 PM.');
+                }
+                $durationMinutes = max(30, $pickupMinute - $startMinute);
+            } else {
+                $durationMinutes = $serviceDurationFor($category, $serviceSpecific);
+                if ($durationMinutes <= 0) {
+                    $pdo->rollBack();
+                    return $fail('Unable to determine the duration of this service. Please contact the clinic.');
                 }
             }
 
@@ -214,11 +278,15 @@ if (!function_exists('boogieClinicReschedule')) {
             $overlaps = static function (int $startA, int $endA, int $startB, int $endB): bool {
                 return $startA < $endB && $startB < $endA;
             };
-            $newStartMinute = ((int)substr($newTime, 0, 2) * 60) + (int)substr($newTime, 3, 2);
-            $newEndMinute = $newStartMinute + $durationMinutes;
-            if (!$isBoarding && $newEndMinute > (18 * 60)) {
+            $newStartMinute = $timeToMinutes($newTime);
+            if ($newStartMinute === null) {
                 $pdo->rollBack();
-                return $fail('The selected service would finish after the 6:00 PM closing time. Choose an earlier time.');
+                return $fail('Choose a valid appointment time.');
+            }
+            $newEndMinute = $newStartMinute + $durationMinutes;
+            if (!$isBoarding && $newEndMinute > (17 * 60)) {
+                $pdo->rollBack();
+                return $fail('The selected service or Pet Daycare stay must finish by 5:00 PM. Choose an earlier time.');
             }
 
             if ($isBoarding) {
@@ -336,15 +404,16 @@ if (!function_exists('boogieClinicReschedule')) {
                     if (!preg_match('/^\d{2}:\d{2}$/', $existingTime)) continue;
                     $existingStart = ((int)substr($existingTime, 0, 2) * 60) + (int)substr($existingTime, 3, 2);
                     if ($category === 'Grooming') {
-                        $existingDuration = stripos($existingService, 'Full Grooming Package') !== false ? 120 : 60;
+                        $existingSpecific = preg_replace('/^[^-]+\s*-\s*/', '', $existingService, 1);
+                        $existingSpecific = is_string($existingSpecific) ? trim($existingSpecific) : $existingService;
+                        $existingDuration = $serviceDurationFor('Grooming', $existingSpecific);
                     } elseif ($category === 'Vet Services') {
                         $existingDuration = 30;
                     } else {
-                        $existingPickup = substr((string)($existing['pickup_time'] ?? ''), 0, 5);
-                        $existingPickupMinute = preg_match('/^\d{2}:\d{2}$/', $existingPickup)
-                            ? ((int)substr($existingPickup, 0, 2) * 60) + (int)substr($existingPickup, 3, 2)
-                            : ($existingStart + 60);
-                        $existingDuration = max(60, $existingPickupMinute - $existingStart);
+                        $existingPickupMinute = $timeToMinutes($existing['pickup_time'] ?? '');
+                        $existingDuration = ($existingPickupMinute !== null && $existingPickupMinute > $existingStart)
+                            ? max(30, $existingPickupMinute - $existingStart)
+                            : 180;
                     }
                     $existingEnd = $existingStart + $existingDuration;
                     if ($overlaps($newStartMinute, $newEndMinute, $existingStart, $existingEnd)) $overlapCount++;

@@ -568,9 +568,10 @@ if ($is_overnight_boarding) {
 
     $daycare_start_minutes = ((int)$time_check->format('H') * 60) + (int)$time_check->format('i');
     $daycare_end_minutes = ((int)$pickup_check->format('H') * 60) + (int)$pickup_check->format('i');
-    // Walk-in Pet Daycare drop-off records the actual arrival minute; only pickup is half-hour aligned.
-    if (($daycare_end_minutes % 30) !== 0 || $daycare_end_minutes <= $daycare_start_minutes || $daycare_end_minutes > 18 * 60) {
-        walkinRedirect('Pet Daycare pickup must be later than drop-off, use a half-hour time, and be no later than 6:00 PM.');
+    // Walk-in Pet Daycare records the actual drop-off minute; pickup remains half-hour aligned.
+    // New daycare drop-offs must start by 4:00 PM and pets must be picked up by 5:00 PM.
+    if (($daycare_end_minutes % 30) !== 0 || $daycare_end_minutes <= $daycare_start_minutes || $daycare_end_minutes > 17 * 60) {
+        walkinRedirect('Pet Daycare pickup must be later than drop-off, use a half-hour time, and be no later than 5:00 PM.');
     }
 
     $daycare_duration_minutes = $daycare_end_minutes - $daycare_start_minutes;
@@ -612,8 +613,10 @@ if ($is_overnight_boarding) {
         : ($service_category === 'Grooming'
             ? walkinGroomingDurationMinutes($specific_service)
             : ($service_category === 'Vet Services' ? 30 : 180));
-    if ($start_minutes < 9 * 60 || $start_minutes >= 18 * 60) {
-        walkinRedirect('Choose a start time between 9:00 AM and 6:00 PM.');
+    // New regular-service arrivals and Pet Daycare drop-offs are capped at 4:00 PM.
+    // Overnight boarding is handled separately above and may still check in until 6:00 PM.
+    if ($start_minutes < 9 * 60 || $start_minutes > 16 * 60) {
+        walkinRedirect('New service starts and Pet Daycare drop-offs must be between 9:00 AM and 4:00 PM.');
     }
     $end_minutes = $start_minutes + $duration_minutes;
     $lunch_start_minutes = 12 * 60;
@@ -623,8 +626,9 @@ if ($is_overnight_boarding) {
     }
     // Services may continue through lunch if capacity remains available.
     // Grooming capacity drops to one concurrent groomer from 12:00 PM to 1:00 PM.
-    if ($end_minutes > 18 * 60) {
-        walkinRedirect('This service would finish after closing time. Please choose an earlier start time.');
+    // All regular services and daycare stays must finish by 5:00 PM, before the 6:00 PM business close.
+    if ($end_minutes > 17 * 60) {
+        walkinRedirect('Regular services and Pet Daycare must finish by 5:00 PM. Please choose an earlier start time or pickup time.');
     }
     // Veterinary walk-ins are allowed on Wednesday and Saturday; normal capacity rules still apply.
 }
