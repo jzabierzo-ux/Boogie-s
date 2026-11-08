@@ -24,7 +24,7 @@ require_once __DIR__ . '/../db_supabase.php';
 
 define('SMTP_EMAIL', getenv('SMTP_EMAIL') ?: 'boogiespetcare@gmail.com');
 
-define('SMTP_PASS', getenv('SMTP_PASS') ?: 'uyrxvppwuemortsp');
+define('SMTP_PASS', getenv('SMTP_PASS') ?: '');
 
 use PHPMailer\PHPMailer\PHPMailer;
 
@@ -1770,7 +1770,7 @@ if (isset($_POST['login_btn'])) {
 
             <div class="footer-links">
 
-                <a href="#">
+                <a href="faqs.php" aria-label="Open frequently asked questions and help">
 
                     <i class="fas fa-question-circle"></i> Help
 
