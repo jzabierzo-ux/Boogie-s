@@ -1,0 +1,17 @@
+
+{
+  "rewrites": [
+    {
+      "source": "/admin",
+      "destination": "/admin/admin_login.php"
+    },
+    {
+      "source": "/login",
+      "destination": "/customer/login.php"
+    },
+    {
+      "source": "/staff",
+      "destination": "/staff/stafflogin.php"
+    }
+  ]
+}
