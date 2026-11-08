@@ -348,7 +348,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 <body>
   <main class="page-shell">
     <section class="brand-panel" aria-label="Boogie's Pet Care Services">
-      <a href="../home.php" class="back-home"><i class="fa-solid fa-arrow-left" aria-hidden="true"></i> Back to website</a>
+      <a href="../customer/index.php" class="back-home"><i class="fa-solid fa-arrow-left" aria-hidden="true"></i> Back to website</a>
       <div class="brand-main">
         <div class="brand-logo-wrap" style="grid-area:logo"><img src="../admin/bg.png" class="brand-logo" alt="Boogie's Pet Care Services logo"></div>
         <p class="brand-eyebrow" style="grid-area:eyebrow">Boogie's Pet Care &amp; Services</p>
@@ -391,12 +391,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         </div>
         <button type="submit" class="login-btn">Sign in securely <i class="fa-solid fa-arrow-right-to-bracket" aria-hidden="true"></i></button>
       </form>
-
-      <nav class="form-links" aria-label="Other pages">
-        <a href="../home.php"><i class="fa-solid fa-house" aria-hidden="true"></i> Back to website</a>
-        <a class="customer-link" href="../login.php"><i class="fa-regular fa-user" aria-hidden="true"></i> Customer login</a>
-      </nav>
-      <p class="copyright">&copy; <?php echo date('Y'); ?> Boogie's Pet Care &amp; Services</p>
+<p class="copyright">&copy; <?php echo date('Y'); ?> Boogie's Pet Care &amp; Services</p>
     </section>
   </main>
   <script>
