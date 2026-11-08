@@ -167,7 +167,16 @@ $first_name_only = trim((string)(preg_split('/\s+/', $mobile_name_source)[0] ?? 
    LOAD THE REQUESTED PATIENT RECORD — only columns used by this page.
    ------------------------------------------------------------------------- */
 try {
-    $petStmt = $pdo->prepare("\n        SELECT id, owner_id, owner_name, name, pet_type, breed, gender, age, weight,\n               medical_history, special_needs, status\n        FROM pets\n        WHERE id = :pet_id\n        LIMIT 1\n    ");
+    $petStmt = $pdo->prepare("\n        SELECT
+            p.id, p.owner_id, p.owner_name, p.name, p.pet_type, p.breed,
+            p.gender, p.age, p.weight, p.medical_history, p.special_needs,
+            u.full_name AS linked_owner_name,
+            u.contact_number AS owner_contact
+        FROM pets p
+        LEFT JOIN users u ON u.id = p.owner_id
+        WHERE p.id = :pet_id
+        LIMIT 1
+    ");
     $petStmt->execute([':pet_id' => $pet_id]);
     $row = $petStmt->fetch(PDO::FETCH_ASSOC);
     if (!$row) {
@@ -180,17 +189,29 @@ try {
     exit('Unable to load patient record.');
 }
 
-$p_name = (string)($row['name'] ?? 'Unknown');
-$p_type = (string)($row['pet_type'] ?? 'Unknown');
-$p_breed = (string)($row['breed'] ?? 'Unknown');
-$p_gender = (string)($row['gender'] ?? 'Unknown');
-$p_age = (string)($row['age'] ?? 'Unknown');
-$p_weight = (string)($row['weight'] ?? 'Unknown');
-$o_name = (string)($row['owner_name'] ?? 'Unknown');
+$displayPetValue = static function ($value, string $fallback = 'Not provided'): string {
+    $value = trim((string)($value ?? ''));
+    return ($value === '' || in_array(strtolower($value), ['unknown', 'n/a', 'null', 'not set'], true))
+        ? $fallback
+        : $value;
+};
+
+$p_name = $displayPetValue($row['name'] ?? null, 'Unnamed Pet');
+$p_type = $displayPetValue($row['pet_type'] ?? null);
+$p_breed = $displayPetValue($row['breed'] ?? null);
+$p_gender = $displayPetValue($row['gender'] ?? null);
+$p_age = $displayPetValue($row['age'] ?? null);
+$p_weight = $displayPetValue($row['weight'] ?? null);
+$p_weight_display = ($p_weight !== 'Not provided' && is_numeric($p_weight))
+    ? rtrim(rtrim(number_format((float)$p_weight, 2, '.', ''), '0'), '.') . ' kg'
+    : $p_weight;
+$linked_owner_name = trim((string)($row['linked_owner_name'] ?? ''));
+$stored_owner_name = trim((string)($row['owner_name'] ?? ''));
+$o_name = $displayPetValue($linked_owner_name !== '' ? $linked_owner_name : $stored_owner_name, 'Owner not linked');
+$owner_contact = $displayPetValue($row['owner_contact'] ?? null, 'Contact number not provided');
 $owner_id = (int)($row['owner_id'] ?? 0);
 $med_history = (string)($row['medical_history'] ?? '');
 $special_needs = (string)($row['special_needs'] ?? '');
-$p_status = (string)($row['status'] ?? 'Pending');
 
 /* -------------------------------------------------------------------------
    HANDLE POST ACTIONS WITH CSRF PROTECTION.
@@ -420,13 +441,30 @@ if (($_GET['ajax'] ?? '') === 'notifications') {
             border: 1px solid var(--border); display: flex; align-items: center; gap: 8px;
         }
         .status-badge i { color: var(--brand-yellow); font-size: 16px;}
+        .owner-summary {
+            min-width: 245px;
+            max-width: 320px;
+            padding: 13px 16px;
+            background: #f8fafc;
+            border: 1px solid var(--border);
+            border-left: 4px solid var(--brand-yellow);
+            border-radius: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .owner-summary-label { color: var(--text-muted); font-size: 9px; font-weight: 800; letter-spacing: .6px; }
+        .owner-summary-label i { color: #d19a00; margin-right: 5px; }
+        .owner-summary strong { color: var(--sidebar-navy); font-size: 14px; line-height: 1.4; overflow-wrap: anywhere; }
+        .owner-summary small { color: var(--text-muted); font-size: 11px; overflow-wrap: anywhere; }
+        .owner-summary small i { margin-right: 5px; color: var(--brand-blue); }
 
         /* --- INFO GRID --- */
-        .info-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-bottom: 40px; }
+        .info-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-bottom: 34px; }
         .info-item { background: #f8fafc; padding: 20px; border-radius: 12px; border: 1px solid var(--border); border-left: 4px solid var(--brand-yellow); transition: 0.2s; }
         .info-item:hover { transform: translateY(-3px); box-shadow: 0 6px 12px rgba(0,0,0,0.05); }
         .info-item span { display: block; font-size: 11px; text-transform: uppercase; font-weight: 800; color: var(--text-muted); margin-bottom: 5px; letter-spacing: 0.5px;}
-        .info-item strong { font-size: 18px; color: var(--sidebar-navy); font-weight: 700;}
+        .info-item strong { font-size: 16px; color: var(--sidebar-navy); font-weight: 700; overflow-wrap: anywhere;}
 
         /* --- SECTION TITLES & BOXES --- */
         .section-title { font-size: 18px; font-weight: 800; margin-bottom: 15px; display: flex; align-items: center; gap: 10px; color: var(--sidebar-navy);}
@@ -436,6 +474,41 @@ if (($_GET['ajax'] ?? '') === 'notifications') {
             padding: 25px; color: var(--text-main); font-size: 14px; line-height: 1.6; 
             min-height: 100px; margin-bottom: 35px; white-space: pre-wrap; 
             font-weight: 500; border-left: 4px solid var(--sidebar-navy);
+        }
+
+        /* Owner-entered profile information: visually distinct from vet consultation notes. */
+        .pet-owner-info-note {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            padding: 14px 16px;
+            margin: 4px 0 22px;
+            border: 1px solid #f2df9a;
+            border-left: 4px solid var(--brand-yellow);
+            border-radius: 12px;
+            background: #fffaf0;
+            color: #6b550e;
+            font-size: 12px;
+            line-height: 1.6;
+        }
+        .pet-owner-info-note i {
+            flex: 0 0 auto;
+            margin-top: 2px;
+            color: #b18400;
+            font-size: 17px;
+        }
+        .pet-owner-info-note strong {
+            display: block;
+            margin-bottom: 2px;
+            color: var(--sidebar-navy);
+            font-size: 12px;
+            font-weight: 800;
+        }
+        .section-description {
+            margin: -7px 0 12px;
+            color: var(--text-muted);
+            font-size: 12px;
+            line-height: 1.55;
         }
         
         /* --- FORM STYLES --- */
@@ -461,6 +534,7 @@ if (($_GET['ajax'] ?? '') === 'notifications') {
             .info-grid { grid-template-columns: repeat(2, 1fr); }
             .pet-header { flex-direction: column; gap: 15px; }
             .pet-title p { margin-left: 0; margin-top: 10px;}
+            .owner-summary { width: 100%; max-width: none; min-width: 0; }
         }
         @media (max-width: 600px) {
             .info-grid { grid-template-columns: 1fr; }
@@ -2199,29 +2273,86 @@ input, select, textarea, button, img { max-width:100%; }
                             <div style="background: #f1f5f9; width: 45px; height: 45px; border-radius: 10px; display: flex; align-items: center; justify-content: center;">
                                 <i class="fas fa-paw" style="color: var(--sidebar-navy); font-size: 24px;"></i>
                             </div>
-                            <?php echo htmlspecialchars($p_name); ?>
+                            <?php echo htmlspecialchars($p_name, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
                         </h1>
-                        <p style="margin-left: 60px;"><?php echo htmlspecialchars($p_breed); ?> • <?php echo htmlspecialchars($p_type); ?></p>
+                        <p style="margin-left: 60px;">Pet Profile • <?php echo htmlspecialchars($p_type, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></p>
                     </div>
-                    <div class="status-badge"><i class="fas fa-user-check"></i> Owner: <?php echo htmlspecialchars($o_name); ?></div>
+                    <div class="owner-summary">
+                        <span class="owner-summary-label"><i class="fas fa-user-check"></i> PET OWNER</span>
+                        <strong><?php echo htmlspecialchars($o_name, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></strong>
+                        <small><i class="fas fa-phone"></i> <?php echo htmlspecialchars($owner_contact, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></small>
+                    </div>
                 </div>
 
+                <h3 class="section-title"><i class="fas fa-id-card" style="color: var(--sidebar-navy);"></i> Basic Pet Information</h3>
                 <div class="info-grid">
                     <div class="info-item">
+                        <span>Breed</span>
+                        <strong><?php echo htmlspecialchars($p_breed, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></strong>
+                    </div>
+                    <div class="info-item">
+                        <span>Pet Type</span>
+                        <strong><?php echo htmlspecialchars($p_type, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></strong>
+                    </div>
+                    <div class="info-item">
                         <span>Gender</span>
-                        <strong><?php echo htmlspecialchars($p_gender); ?></strong>
+                        <strong><?php echo htmlspecialchars($p_gender, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></strong>
                     </div>
                     <div class="info-item">
                         <span>Age</span>
-                        <strong><?php echo htmlspecialchars($p_age); ?> yrs</strong>
+                        <strong><?php echo htmlspecialchars($p_age, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?><?php echo $p_age !== 'Not provided' ? ' yrs' : ''; ?></strong>
                     </div>
                     <div class="info-item">
                         <span>Weight</span>
-                        <strong><?php echo htmlspecialchars($p_weight); ?></strong>
+                        <strong><?php echo htmlspecialchars($p_weight_display, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></strong>
                     </div>
-                    
                 </div>
 
+                <div class="pet-owner-info-note" role="note">
+                    <i class="fas fa-shield-dog" aria-hidden="true"></i>
+                    <div>
+                        <strong>Important Pet Health & Handling Information</strong>
+                        Review the information below before examining, grooming, boarding, or handling this pet.
+                        These details may include information provided by the owner. Confirm anything unclear or
+                        potentially outdated with the owner before proceeding.
+                    </div>
+                </div>
+
+                <h3 class="section-title">
+                    <i class="fas fa-notes-medical" style="color: #ef4444;"></i>
+                    Health Information & Medical History
+                </h3>
+                <p class="section-description">
+                    Check for allergies, existing health conditions, current medications, previous surgeries,
+                    and other health concerns. Confirm important medical details with the owner.
+                </p>
+                <div class="text-box">
+                    <?php
+                        if (trim($med_history) === '') {
+                            echo "<span style='color: #94a3b8; font-style: italic;'><i class='fas fa-info-circle'></i> No health information or medical history has been recorded.</span>";
+                        } else {
+                            echo htmlspecialchars($med_history, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+                        }
+                    ?>
+                </div>
+
+                <h3 class="section-title">
+                    <i class="fas fa-clipboard-list" style="color: var(--brand-blue);"></i>
+                    Behavior & Special Care Instructions
+                </h3>
+                <p class="section-description">
+                    Review the pet's temperament, fear triggers, reactions to strangers or other animals,
+                    bite or scratch history, food restrictions, sensitive areas, and preferred handling instructions.
+                </p>
+                <div class="text-box" style="border-left-color: var(--brand-yellow);">
+                    <?php
+                        if (trim($special_needs) === '') {
+                            echo "<span style='color: #94a3b8; font-style: italic;'><i class='fas fa-info-circle'></i> No behavior or special care instructions have been provided.</span>";
+                        } else {
+                            echo htmlspecialchars($special_needs, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+                        }
+                    ?>
+                </div>
                 <h3 class="section-title"><i class="fas fa-stethoscope" style="color: var(--sidebar-navy);"></i> Add Consultation Note</h3>
                 <form method="POST" action="" class="note-form">
                     <input type="hidden" name="action" value="add_note">
@@ -2230,27 +2361,6 @@ input, select, textarea, button, img { max-width:100%; }
                     <button type="submit" name="add_note" class="btn-submit"><i class="fas fa-paper-plane"></i> Send Note to Owner</button>
                 </form>
 
-                <h3 class="section-title"><i class="fas fa-notes-medical" style="color: #ef4444;"></i> Medical History</h3>
-                <div class="text-box">
-                    <?php 
-                        if (empty($med_history)) {
-                            echo "<span style='color: #94a3b8; font-style: italic;'><i class='fas fa-info-circle'></i> No medical history recorded yet.</span>";
-                        } else {
-                            echo htmlspecialchars($med_history); 
-                        }
-                    ?>
-                </div>
-
-                <h3 class="section-title"><i class="fas fa-clipboard-list" style="color: var(--brand-blue);"></i> Special Needs / Care Instructions</h3>
-                <div class="text-box" style="border-left-color: var(--brand-yellow);">
-                    <?php 
-                        if (empty($special_needs)) {
-                            echo "<span style='color: #94a3b8; font-style: italic;'><i class='fas fa-info-circle'></i> No special care instructions provided.</span>";
-                        } else {
-                            echo htmlspecialchars($special_needs); 
-                        }
-                    ?>
-                </div>
             </div>
         </div>
 

@@ -1597,7 +1597,7 @@ try {
         SELECT a.id, a.appointment_date, a.appointment_time, a.appointment_type,
                a.booking_status, a.service, a.service_fee, a.total_price,
                a.payment_method, a.payment_status, a.gcash_ref, a.gcash_receipt,
-               a.pickup_time, a.vet_doctor, p.name AS pet_display_name
+               a.pickup_time, a.vet_doctor, a.remarks, p.name AS pet_display_name
         FROM appointments a
         LEFT JOIN pets p ON a.pet_id = p.id
         $where_clause
@@ -2520,8 +2520,19 @@ if ($is_admin) {
                                         
                                         <td>
                                             <span style="color: #475569; font-weight: 600; font-size: 13px;">
-                                                <?php echo htmlspecialchars($row['service'] ?? 'N/A'); ?>
+                                                <?php echo htmlspecialchars($row['service'] ?? 'N/A', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
                                             </span>
+                                            <?php $customer_booking_notes = trim((string)($row['remarks'] ?? '')); ?>
+                                            <?php if ($customer_booking_notes !== ""): ?>
+                                                <div class="booking-customer-notes" style="margin-top:8px;padding:8px 10px;background:#f8fafc;border:1px solid #e2e8f0;border-left:3px solid #f0c400;border-radius:7px;max-width:340px;max-height:150px;overflow-y:auto;white-space:normal;overflow-wrap:anywhere;">
+                                                    <div style="font-size:10px;font-weight:800;letter-spacing:.4px;text-transform:uppercase;color:#64748b;margin-bottom:4px;">
+                                                        <i class="fa-solid fa-clipboard-list" style="margin-right:4px;"></i> Customer Instructions
+                                                    </div>
+                                                    <div style="font-size:11px;line-height:1.55;color:#334155;">
+                                                        <?php echo nl2br(htmlspecialchars($customer_booking_notes, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')); ?>
+                                                    </div>
+                                                </div>
+                                            <?php endif; ?>
                                         </td>
                                         <td>
                                             <span style="font-weight: 600; color: var(--navy-dark);"><?php echo isset($row['appointment_date']) ? date('M d, Y', strtotime($row['appointment_date'])) : 'N/A'; ?></span><br>

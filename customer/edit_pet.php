@@ -341,6 +341,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $p_age_raw    = $_POST['p_age'] ?? '';
     $p_weight_raw = $_POST['p_weight'] ?? '';
     $p_gender_raw = $_POST['p_gender'] ?? '';
+    $p_medical_history_raw = $_POST['p_medical_history'] ?? '';
+    $p_special_needs_raw = $_POST['p_special_needs'] ?? '';
 
     $p_name   = is_string($p_name_raw) ? trim($p_name_raw) : '';
     $p_type   = is_string($p_type_raw) ? trim($p_type_raw) : '';
@@ -348,6 +350,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $p_age    = is_string($p_age_raw) ? trim($p_age_raw) : '';
     $p_weight = is_string($p_weight_raw) ? trim($p_weight_raw) : '';
     $p_gender = is_string($p_gender_raw) ? trim($p_gender_raw) : '';
+    $p_medical_history = is_string($p_medical_history_raw) ? trim($p_medical_history_raw) : '';
+    $p_special_needs = is_string($p_special_needs_raw) ? trim($p_special_needs_raw) : '';
     $submitted_csrf = $_POST['edit_pet_csrf'] ?? '';
 
     if (
@@ -365,7 +369,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $p_breed === '' || strlen($p_breed) > 100 || preg_match('/[\x00-\x1F\x7F]/', $p_breed) ||
         $p_age === '' || !is_numeric($p_age) || !is_finite((float)$p_age) || (float)$p_age < 0 || (float)$p_age > 100 ||
         $p_weight === '' || !is_numeric($p_weight) || !is_finite((float)$p_weight) || (float)$p_weight < 0 ||
-        !in_array($p_gender, ['Male', 'Female'], true)
+        !in_array($p_gender, ['Male', 'Female'], true) ||
+        strlen($p_medical_history) > 4000 || strlen($p_special_needs) > 4000
     ) {
         $error_msg = "Please check the pet details and make sure all required fields are valid.";
     } else {
@@ -388,7 +393,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                     weight = :weight,
 
-                    gender = :gender
+                    gender = :gender,
+
+                    medical_history = :medical_history,
+
+                    special_needs = :special_needs
 
                 WHERE id = :pet_id
 
@@ -411,6 +420,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ':weight' => $p_weight,
 
                 ':gender' => $p_gender,
+
+                ':medical_history' => $p_medical_history,
+
+                ':special_needs' => $p_special_needs,
 
                 ':pet_id' => $pet_id_post,
 
@@ -2699,6 +2712,43 @@ img, input, select, button{
                 </div>
 
 
+                <div style="margin:10px 0 17px;padding:14px 15px;background:#fff9e6;border:1px solid #f4e3a5;border-radius:11px;">
+                    <div style="color:#6b5200;font-size:11px;font-weight:800;display:flex;align-items:center;gap:7px;">
+                        <i class="fa-solid fa-shield-dog"></i>
+                        Additional Pet Health & Care Information
+                    </div>
+                    <p style="margin-top:5px;color:#776b48;font-size:9px;line-height:1.55;">
+                        Update any health, behavior, or special care details that Boogie's staff should know before handling or providing a service. These fields are optional.
+                    </p>
+                </div>
+
+                <div class="form-group">
+                    <label for="p_medical_history">Health Information (Allergies, Conditions & Medications)</label>
+                    <textarea
+                        id="p_medical_history"
+                        name="p_medical_history"
+                        class="form-control"
+                        rows="4"
+                        maxlength="4000"
+                        style="min-height:120px;resize:vertical;line-height:1.6;"
+                        placeholder="Examples: food or medicine allergies, existing health conditions, current medications, previous surgeries, or other health concerns. Leave blank if none."
+                    ><?php echo htmlspecialchars((string)($pet_data['medical_history'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></textarea>
+                    <div class="field-help">Please include anything that staff or the veterinarian should know about your pet's health.</div>
+                </div>
+
+                <div class="form-group">
+                    <label for="p_special_needs">Behavior & Special Care Instructions</label>
+                    <textarea
+                        id="p_special_needs"
+                        name="p_special_needs"
+                        class="form-control"
+                        rows="4"
+                        maxlength="4000"
+                        style="min-height:120px;resize:vertical;line-height:1.6;"
+                        placeholder="Examples: friendly, shy, anxious, afraid of loud noises, uncomfortable around other pets, sensitive areas, bite or scratch history, feeding restrictions, or preferred handling instructions."
+                    ><?php echo htmlspecialchars((string)($pet_data['special_needs'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></textarea>
+                    <div class="field-help">Mention any behavior, safety concern, food restriction, or special handling reminder that can help keep your pet and our staff safe.</div>
+                </div>
 
                 <div class="form-note">
 

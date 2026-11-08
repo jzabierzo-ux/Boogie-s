@@ -254,7 +254,7 @@ $profile_img_src = editPetResolveProfileImageUrl($profile_img_path);
 try {
     $pet_stmt = $pdo->prepare("
         SELECT p.id, p.owner_id, p.owner_name, p.name, p.pet_type, p.breed,
-               p.gender, p.age, p.weight,
+               p.gender, p.age, p.weight, p.medical_history, p.special_needs,
                COALESCE(NULLIF(TRIM(p.owner_name), ''), u.full_name) AS owner_display
         FROM pets p
         LEFT JOIN users u ON u.id = p.owner_id
@@ -306,6 +306,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $p_gender = editpet_post_string('gender');
         $p_age = editpet_post_string('age');
         $p_weight = editpet_post_string('weight');
+        $p_medical_history = editpet_post_string('medical_history');
+        $p_special_needs = editpet_post_string('special_needs');
+
+        $medical_history_length = function_exists('mb_strlen')
+            ? mb_strlen($p_medical_history, 'UTF-8')
+            : strlen($p_medical_history);
+        $special_needs_length = function_exists('mb_strlen')
+            ? mb_strlen($p_special_needs, 'UTF-8')
+            : strlen($p_special_needs);
 
         $validation_error = '';
         if ($p_name === '' || $p_type === '' || $p_gender === '') {
@@ -316,6 +325,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $validation_error = 'Please select a valid pet gender.';
         } elseif (strlen($p_age) > 30 || strlen($p_weight) > 60) {
             $validation_error = 'Age or weight value is too long.';
+        } elseif ($medical_history_length > 4000 || $special_needs_length > 4000) {
+            $validation_error = 'Medical history and special care instructions must be 4,000 characters or fewer each.';
         }
 
         $new_owner_id = (int)($row['owner_id'] ?? 0);
@@ -360,6 +371,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             gender = :gender,
                             age = :age,
                             weight = :weight,
+                            medical_history = :medical_history,
+                            special_needs = :special_needs,
                             owner_id = :owner_id,
                             owner_name = :owner_name
                         WHERE id = :pet_id
@@ -371,6 +384,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         ':gender' => $p_gender,
                         ':age' => $p_age,
                         ':weight' => $p_weight,
+                        ':medical_history' => $p_medical_history,
+                        ':special_needs' => $p_special_needs,
                         ':owner_id' => $new_owner_id,
                         ':owner_name' => $new_owner_name,
                         ':pet_id' => $pet_id,
@@ -384,7 +399,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             breed = :breed,
                             gender = :gender,
                             age = :age,
-                            weight = :weight
+                            weight = :weight,
+                            medical_history = :medical_history,
+                            special_needs = :special_needs
                         WHERE id = :pet_id
                     ";
                     $update_params = [
@@ -394,6 +411,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         ':gender' => $p_gender,
                         ':age' => $p_age,
                         ':weight' => $p_weight,
+                        ':medical_history' => $p_medical_history,
+                        ':special_needs' => $p_special_needs,
                         ':pet_id' => $pet_id,
                     ];
                 }
@@ -407,6 +426,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $row['gender'] = $p_gender;
                 $row['age'] = $p_age;
                 $row['weight'] = $p_weight;
+                $row['medical_history'] = $p_medical_history;
+                $row['special_needs'] = $p_special_needs;
                 if ($can_transfer_owner) {
                     $row['owner_id'] = $new_owner_id;
                     $row['owner_name'] = $new_owner_name;
@@ -707,6 +728,18 @@ if ($is_admin) {
                             <input type="text" inputmode="decimal" name="weight" value="<?php echo htmlspecialchars($row['weight'] ?? '', ENT_QUOTES, 'UTF-8'); ?>" placeholder="e.g. 5kg">
                         </div>
 
+                        <div class="form-group full-width">
+                            <label for="medical_history">Medical History / Health Information</label>
+                            <textarea id="medical_history" name="medical_history" rows="4" maxlength="4000" placeholder="Enter allergies, existing health conditions, current medications, previous surgeries, or other medical concerns..."><?php echo htmlspecialchars((string)($row['medical_history'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></textarea>
+                            <small class="owner-note" style="color:#64748b;font-size:11px;margin-top:6px;display:block;line-height:1.5;">Add important health details that staff should know before handling or providing services to this pet.</small>
+                        </div>
+
+                        <div class="form-group full-width">
+                            <label for="special_needs">Behavior &amp; Special Care Instructions</label>
+                            <textarea id="special_needs" name="special_needs" rows="4" maxlength="4000" placeholder="Enter temperament, fears, bite/scratch history, food restrictions, handling instructions, or other special care needs..."><?php echo htmlspecialchars((string)($row['special_needs'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></textarea>
+                            <small class="owner-note" style="color:#64748b;font-size:11px;margin-top:6px;display:block;line-height:1.5;">Include behavior notes and any special instructions to help staff care for the pet safely.</small>
+                        </div>
+
                         <?php if ($can_transfer_owner): ?>
                         <div class="form-group full-width">
                             <label>Owner Name (Transfer Ownership)</label>
@@ -720,7 +753,7 @@ if ($is_admin) {
                             </select>
                             <small class="owner-note" style="color:#0369a1;font-size:11px;margin-top:6px;display:flex;align-items:center;gap:5px;font-weight:500;">
                                 <i class="fas fa-exchange-alt" style="color:#0284c7;"></i>
-                                You can reassign this pet to a different customer. Medical history transfers automatically.
+                                You can reassign this pet to a different customer. The pet's medical history and special care instructions stay with the pet record.
                             </small>
                         </div>
                         <?php else: ?>

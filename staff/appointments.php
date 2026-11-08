@@ -420,6 +420,7 @@ try {
             a.appointment_date::text AS appointment_date,
             a.appointment_time::text AS appointment_time,
             a.booking_status,
+            a.remarks,
             p.name AS pet_name
         FROM public.appointments a
         LEFT JOIN public.pets p ON p.id = a.pet_id
@@ -2453,6 +2454,20 @@ input, select, textarea, button, img { max-width:100%; }
 }
     .btn-clinic-reschedule { background:#7c3aed; color:#fff; border:0; border-radius:7px; width:32px; height:32px; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; box-shadow:0 2px 4px rgba(0,0,0,.1); }
     .btn-clinic-reschedule:hover { background:#6d28d9; transform:translateY(-1px); }
+    .btn-view-details { background:#e0f2fe; color:#0369a1; border:0; }
+    .btn-view-details:hover { background:#0284c7; color:#fff; }
+    .vet-details-meta { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin:14px 0; }
+    .vet-details-meta > div, .vet-detail-item { min-width:0; padding:12px; border:1px solid #e2e8f0; border-radius:10px; background:#f8fafc; }
+    .vet-details-meta span { display:block; margin-bottom:4px; color:#64748b; font-size:10px; font-weight:800; text-transform:uppercase; letter-spacing:.4px; }
+    .vet-details-meta strong { display:block; color:#001f3f; font-size:13px; overflow-wrap:anywhere; }
+    .vet-detail-item { margin-top:10px; background:#fff; }
+    .vet-detail-item h3 { margin:0 0 7px; color:#001f3f; font-size:12px; font-weight:800; }
+    .vet-detail-item p { margin:0; color:#334155; font-size:13px; line-height:1.6; white-space:pre-wrap; overflow-wrap:anywhere; }
+    .vet-detail-item.is-empty p { color:#94a3b8; font-style:italic; }
+    @media (max-width:560px) {
+        .clinic-reschedule-card { padding:18px; }
+        .vet-details-meta { grid-template-columns:1fr; gap:8px; }
+    }
     .clinic-reschedule-overlay { display:none; position:fixed; inset:0; z-index:3000; background:rgba(0,20,40,.62); align-items:center; justify-content:center; padding:20px; overflow-y:auto; }
     .clinic-reschedule-card { width:min(540px,100%); max-height:calc(100vh - 40px); overflow-y:auto; background:#fff; border-radius:16px; padding:24px; box-shadow:0 18px 48px rgba(0,0,0,.22); }
     .clinic-reschedule-card h2 { margin:0 0 6px; color:#001f3f; font-size:20px; }
@@ -2644,6 +2659,12 @@ input, select, textarea, button, img { max-width:100%; }
                                     $formatted_time = $time_timestamp !== false ? date('g:i A', $time_timestamp) : '';
                                     $service_display = htmlspecialchars((string)($row['service'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
                                     $pet_display = htmlspecialchars((string)($row['pet_name'] ?? 'Unknown Pet'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+                                    $remarks_raw = (string)($row['remarks'] ?? '');
+                                    $remarks_attr = htmlspecialchars($remarks_raw, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+                                    $pet_attr = htmlspecialchars((string)($row['pet_name'] ?? 'Unknown Pet'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+                                    $service_attr = htmlspecialchars((string)($row['service'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+                                    $date_attr = htmlspecialchars($date_display, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+                                    $time_attr = htmlspecialchars($formatted_time, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 
                                     echo '<tr>';
                                     echo '<td><strong style="color: var(--sidebar-navy); display:block;">' . htmlspecialchars($date_display, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</strong>';
@@ -2655,6 +2676,12 @@ input, select, textarea, button, img { max-width:100%; }
                                     echo '<td style="font-weight:700; color: var(--sidebar-navy);">' . $pet_display . '</td>';
                                     echo '<td><span class="status-pill ' . $status_class . '">' . $status_display . '</span></td>';
                                     echo '<td><div class="action-group">';
+                                    echo '<button type="button" class="btn-icon btn-view-details" title="View Customer Details" aria-label="View Customer Details" onclick="openVetAppointmentDetails(this)"'
+                                        . ' data-pet="' . $pet_attr . '"'
+                                        . ' data-service="' . $service_attr . '"'
+                                        . ' data-date="' . $date_attr . '"'
+                                        . ' data-time="' . $time_attr . '"'
+                                        . ' data-remarks="' . $remarks_attr . '"><i class="fas fa-file-medical"></i></button>';
 
                                     if ($status_lower === 'pending') {
                                         echo '<form method="POST" action="appointments.php" style="display:inline; margin:0;" onsubmit="return confirm(\'Confirm this appointment?\');">';
@@ -2754,7 +2781,110 @@ input, select, textarea, button, img { max-width:100%; }
         </div>
     </div>
 
+    <div class="clinic-reschedule-overlay" id="vetAppointmentDetailsModal" role="dialog" aria-modal="true" aria-labelledby="vetAppointmentDetailsTitle">
+        <div class="clinic-reschedule-card">
+            <h2 id="vetAppointmentDetailsTitle"><i class="fas fa-file-medical" style="color:#0369a1;margin-right:7px;"></i>Customer Appointment Details</h2>
+            <p>Review the information submitted by the customer for this veterinary appointment.</p>
+
+            <div class="vet-details-meta">
+                <div><span>Pet Name</span><strong id="vetDetailPet">—</strong></div>
+                <div><span>Service</span><strong id="vetDetailService">—</strong></div>
+                <div><span>Schedule</span><strong id="vetDetailSchedule">—</strong></div>
+            </div>
+
+            <div class="vet-detail-item" id="vetDetailReasonWrap">
+                <h3>Reason for Visit</h3>
+                <p id="vetDetailReason">Not provided.</p>
+            </div>
+            <div class="vet-detail-item" id="vetDetailSymptomsWrap">
+                <h3>Symptoms / Health Concerns</h3>
+                <p id="vetDetailSymptoms">Not provided.</p>
+            </div>
+            <div class="vet-detail-item" id="vetDetailTreatmentWrap">
+                <h3>Previous Treatments / Medications</h3>
+                <p id="vetDetailTreatment">Not provided.</p>
+            </div>
+            <div class="vet-detail-item" id="vetDetailOtherWrap" style="display:none;">
+                <h3>Additional Remarks / Special Instructions</h3>
+                <p id="vetDetailOther"></p>
+            </div>
+
+            <div class="clinic-reschedule-actions">
+                <button type="button" class="clinic-reschedule-cancel" onclick="closeVetAppointmentDetails()">Close</button>
+            </div>
+        </div>
+    </div>
+
     <script>
+        function openVetAppointmentDetails(button) {
+            const modal = document.getElementById('vetAppointmentDetailsModal');
+            if (!modal || !button) return;
+
+            const remarks = button.getAttribute('data-remarks') || '';
+            const markers = [
+                { label: 'Vet Reason for Visit:', target: 'vetDetailReason' },
+                { label: 'Vet Symptoms / Health Concerns:', target: 'vetDetailSymptoms' },
+                { label: 'Vet Previous Treatments / Medications:', target: 'vetDetailTreatment' }
+            ];
+            const positions = markers.map(function (item) {
+                return remarks.indexOf(item.label);
+            });
+
+            markers.forEach(function (item, index) {
+                let value = '';
+                const markerPosition = positions[index];
+
+                if (markerPosition !== -1) {
+                    const valueStart = markerPosition + item.label.length;
+                    let valueEnd = remarks.length;
+
+                    positions.forEach(function (otherPosition) {
+                        if (otherPosition > markerPosition && otherPosition < valueEnd) {
+                            valueEnd = otherPosition;
+                        }
+                    });
+
+                    value = remarks.slice(valueStart, valueEnd).replace(/^\s+|\s+$/g, '');
+                }
+
+                const target = document.getElementById(item.target);
+                const wrapper = target ? target.closest('.vet-detail-item') : null;
+                if (target) {
+                    target.textContent = value || 'Not provided.';
+                }
+                if (wrapper) {
+                    wrapper.classList.toggle('is-empty', value === '');
+                }
+            });
+
+            let otherRemarks = remarks;
+            const foundPositions = positions.filter(function (position) { return position !== -1; });
+            if (foundPositions.length > 0) {
+                otherRemarks = remarks.slice(0, Math.min.apply(null, foundPositions)).trim();
+            }
+            const otherWrap = document.getElementById('vetDetailOtherWrap');
+            const otherTarget = document.getElementById('vetDetailOther');
+            if (otherTarget) otherTarget.textContent = otherRemarks;
+            if (otherWrap) otherWrap.style.display = otherRemarks !== '' ? 'block' : 'none';
+
+            document.getElementById('vetDetailPet').textContent = button.dataset.pet || 'Unknown Pet';
+            document.getElementById('vetDetailService').textContent = button.dataset.service || 'Veterinary Service';
+            const scheduleDate = button.dataset.date || '';
+            const scheduleTime = button.dataset.time || '';
+            document.getElementById('vetDetailSchedule').textContent = [scheduleDate, scheduleTime].filter(Boolean).join(' • ') || 'Not available';
+
+            modal.style.display = 'flex';
+        }
+
+        function closeVetAppointmentDetails() {
+            const modal = document.getElementById('vetAppointmentDetailsModal');
+            if (modal) modal.style.display = 'none';
+        }
+
+        document.getElementById('vetAppointmentDetailsModal')?.addEventListener('click', function (event) {
+            if (event.target === this) closeVetAppointmentDetails();
+        });
+
         function openStaffClinicReschedule(button) {
             const modal = document.getElementById('staffClinicRescheduleModal');
             if (!modal || !button) return;

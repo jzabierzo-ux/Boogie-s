@@ -27,3 +27,5 @@ includes/secrets.php
 
 # Vercel local configuration
 .vercel/
+.vercel
+.env*

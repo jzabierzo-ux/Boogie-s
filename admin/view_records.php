@@ -77,23 +77,30 @@ require_once __DIR__ . '/../db_supabase.php';
 
 // --- 3. FETCH PET DATA ---
 try {
-    // Select only the fields displayed or used by this page.
-    $pet_query = '
+    // Join the customer account to retrieve the current owner name and contact details.
+    // Keep pets.owner_name as a fallback for older records.
+    $pet_query = <<<'SQL'
         SELECT
-            name,
-            pet_type,
-            breed,
-            gender,
-            age,
-            weight,
-            owner_name,
-            medical_history,
-            special_needs,
-            status
-        FROM pets
-        WHERE id = :pet_id
+            p.name,
+            p.pet_type,
+            p.breed,
+            p.gender,
+            p.age,
+            p.weight,
+            COALESCE(
+                NULLIF(BTRIM(u.full_name), ''),
+                NULLIF(BTRIM(p.owner_name), ''),
+                'Unknown'
+            ) AS owner_display_name,
+            COALESCE(NULLIF(BTRIM(u.contact_number), ''), 'Not Provided') AS owner_contact,
+            p.medical_history,
+            p.special_needs,
+            p.status
+        FROM pets p
+        LEFT JOIN users u ON u.id = p.owner_id
+        WHERE p.id = :pet_id
         LIMIT 1
-    ';
+    SQL;
     $pet_stmt = $pdo->prepare($pet_query);
     $pet_stmt->execute([':pet_id' => $pet_id]);
     $row = $pet_stmt->fetch(PDO::FETCH_ASSOC);
@@ -109,15 +116,32 @@ if (!$row) {
 }
 
 // Map the pet data with safe display defaults.
-$p_name = $row['name'] ?? 'Unknown';
-$p_type = $row['pet_type'] ?? 'Unknown';
-$p_breed = $row['breed'] ?? 'Unknown';
-$p_gender = $row['gender'] ?? 'Unknown';
-$p_age = $row['age'] ?? 'Unknown';
-$p_weight = $row['weight'] ?? 'Unknown';
-$o_name = $row['owner_name'] ?? 'Unknown';
-$med_history = $row['medical_history'] ?? 'No medical history recorded.';
-$special_needs = $row['special_needs'] ?? 'No special care instructions provided.';
+$display_value = static function ($value, string $fallback = 'N/A'): string {
+    $value = trim((string)($value ?? ''));
+    return ($value === '' || strcasecmp($value, 'n/a') === 0) ? $fallback : $value;
+};
+
+$p_name = $display_value($row['name'] ?? null, 'Unknown');
+$p_type = $display_value($row['pet_type'] ?? null);
+$p_breed = $display_value($row['breed'] ?? null);
+$p_gender = $display_value($row['gender'] ?? null);
+$p_age_raw = $display_value($row['age'] ?? null);
+$p_age = $p_age_raw;
+if ($p_age_raw !== 'N/A' && is_numeric($p_age_raw)) {
+    $p_age = $p_age_raw . ((float)$p_age_raw === 1.0 ? ' year old' : ' years old');
+}
+$p_weight = $display_value($row['weight'] ?? null);
+$o_name = $display_value($row['owner_display_name'] ?? null, 'Unknown');
+$o_contact = $display_value($row['owner_contact'] ?? null, 'Not Provided');
+
+$med_history = trim((string)($row['medical_history'] ?? ''));
+if ($med_history === '') {
+    $med_history = 'No medical history recorded.';
+}
+$special_needs = trim((string)($row['special_needs'] ?? ''));
+if ($special_needs === '') {
+    $special_needs = 'No special care instructions provided.';
+}
 $p_status = $row['status'] ?? 'Pending';
 
 // --- 4. FETCH APPOINTMENT & TRANSACTION HISTORY ---
@@ -251,15 +275,21 @@ try {
         .pet-title p { color: var(--text-muted); font-size: 15px; font-weight: 500;}
 
 
+        .owner-summary { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+
         .status-badge { background: #f1f5f9; color: var(--navy-dark); padding: 8px 16px; border-radius: 8px; font-weight: 700; font-size: 13px; border: 1px solid var(--border); display: flex; align-items: center; gap: 8px;}
 
 
 
         .status-badge i { color: var(--brand-yellow); font-size: 16px;}
 
+        .owner-contact { color: var(--text-muted); font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 7px; }
+
+        .owner-contact i { color: var(--navy-dark); }
 
 
-        .info-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-bottom: 35px; }
+
+        .info-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; margin-bottom: 35px; }
 
 
 
@@ -467,9 +497,36 @@ try {
 
 
 
-            .status-badge {
+            .owner-summary {
+
+
+
 
                 width: 100%;
+
+
+
+
+                align-items: stretch;
+
+
+
+
+            }
+
+
+
+
+
+            .status-badge {
+
+
+
+
+                width: 100%;
+
+
+
 
                 justify-content: center;
 
@@ -487,7 +544,31 @@ try {
 
 
 
+            .owner-contact {
+
+
+
+
+                justify-content: center;
+
+
+
+
+                font-size: 10px;
+
+
+
+
+            }
+
+
+
+
+
             .info-grid {
+
+
+
 
                 grid-template-columns: repeat(2, minmax(0, 1fr));
 
@@ -783,7 +864,7 @@ try {
 
 
 
-                    <p style="margin-left: 60px;"><?php echo htmlspecialchars((string)$p_breed, ENT_QUOTES, 'UTF-8'); ?> &bull; <?php echo htmlspecialchars((string)$p_type, ENT_QUOTES, 'UTF-8'); ?></p>
+                    <p style="margin-left: 60px;">Complete Pet Profile</p>
 
 
 
@@ -791,7 +872,10 @@ try {
 
 
 
-                <div class="status-badge"><i class="fas fa-user-check"></i> Owner: <?php echo htmlspecialchars((string)$o_name, ENT_QUOTES, 'UTF-8'); ?></div>
+                <div class="owner-summary">
+                    <div class="status-badge"><i class="fas fa-user-check"></i> Owner: <?php echo htmlspecialchars((string)$o_name, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></div>
+                    <div class="owner-contact"><i class="fas fa-phone"></i> <?php echo htmlspecialchars((string)$o_contact, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></div>
+                </div>
 
 
 
@@ -799,42 +883,35 @@ try {
 
 
             <div class="info-grid">
-
-
+                <div class="info-item">
+                    <span>Pet Type</span>
+                    <strong><?php echo htmlspecialchars((string)$p_type, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></strong>
+                </div>
 
                 <div class="info-item">
+                    <span>Breed</span>
+                    <strong><?php echo htmlspecialchars((string)$p_breed, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></strong>
+                </div>
 
-
-
+                <div class="info-item">
                     <span>Gender</span>
-
-
-
-                    <strong><?php echo htmlspecialchars((string)$p_gender, ENT_QUOTES, 'UTF-8'); ?></strong>
-
-
-
+                    <strong><?php echo htmlspecialchars((string)$p_gender, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></strong>
                 </div>
 
-
-
                 <div class="info-item">
-
                     <span>Age</span>
-
-                    <strong><?php echo htmlspecialchars((string)$p_age, ENT_QUOTES, 'UTF-8'); ?> yrs</strong>
-
+                    <strong><?php echo htmlspecialchars((string)$p_age, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></strong>
                 </div>
 
                 <div class="info-item">
-
                     <span>Weight</span>
-
-                    <strong><?php echo htmlspecialchars((string)$p_weight, ENT_QUOTES, 'UTF-8'); ?></strong>
-
+                    <strong><?php echo htmlspecialchars((string)$p_weight, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></strong>
                 </div>
 
-
+                <div class="info-item">
+                    <span>Pet ID</span>
+                    <strong>#<?php echo (int)$pet_id; ?></strong>
+                </div>
             </div>
 
             <h3 class="section-title"><i class="fas fa-notes-medical" style="color: #ef4444;"></i> Medical History / Alerts</h3>

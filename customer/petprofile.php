@@ -490,11 +490,20 @@ if (isset($_POST['add_pet'])) {
 
     $gender = trim($_POST['gender'] ?? '');
 
+    // Optional customer-provided health and care information.
+    $medical_history_input = $_POST['medical_history'] ?? '';
+    $special_needs_input = $_POST['special_needs'] ?? '';
+    if (!is_string($medical_history_input) || !is_string($special_needs_input)) {
+        http_response_code(400);
+        exit('Invalid pet care information.');
+    }
+    $medical_history = trim($medical_history_input);
+    $special_needs = trim($special_needs_input);
 
-
-
-
-
+    if (strlen($medical_history) > 4000 || strlen($special_needs) > 4000) {
+        http_response_code(400);
+        exit('Pet care information must not exceed 4,000 characters per field.');
+    }
 
     if ($pet_name === '' || $pet_type === '' || $breed === '' || $age === '' || $weight === '' || $gender === '') {
 
@@ -560,13 +569,9 @@ if (isset($_POST['add_pet'])) {
 
                 age,
                 weight,
-
-
-
                 gender,
-
-
-
+                medical_history,
+                special_needs,
                 created_at
 
 
@@ -601,6 +606,8 @@ if (isset($_POST['add_pet'])) {
 
 
                 :gender,
+                :medical_history,
+                :special_needs,
 
 
 
@@ -646,7 +653,9 @@ if (isset($_POST['add_pet'])) {
 
 
 
-            ':gender' => $gender
+            ':gender' => $gender,
+            ':medical_history' => $medical_history,
+            ':special_needs' => $special_needs
 
 
 
@@ -7422,7 +7431,49 @@ main{
 
 
 
-                    <div class="modal-actions">
+                    <div style="grid-column:1/-1;margin:8px 0 12px;padding:13px 14px;background:#fff9e6;border:1px solid #f4e3a5;border-radius:11px;">
+                            <div style="color:#6b5200;font-size:11px;font-weight:800;display:flex;align-items:center;gap:7px;">
+                                <i class="fa-solid fa-shield-dog"></i>
+                                Additional Pet Health & Care Information
+                            </div>
+                            <p style="margin-top:5px;color:#776b48;font-size:9px;line-height:1.55;">
+                                Help our staff understand your pet's health, behavior, and special care needs before handling or providing a service. These fields are optional.
+                            </p>
+                        </div>
+
+                        <div class="form-group" style="grid-column:1/-1;">
+                            <label for="medical_history">Health Information (Allergies, Conditions & Medications)</label>
+                            <textarea
+                                id="medical_history"
+                                name="medical_history"
+                                class="form-control"
+                                rows="4"
+                                maxlength="4000"
+                                style="min-height:105px;resize:vertical;"
+                                placeholder="Examples: food or medicine allergies, existing health conditions, current medications, previous surgeries, or other health concerns. Leave blank if none."
+                            ></textarea>
+                            <small style="display:block;margin-top:5px;color:var(--text-muted);font-size:9px;line-height:1.5;">
+                                Please include anything that staff or the veterinarian should know about your pet's health.
+                            </small>
+                        </div>
+
+                        <div class="form-group" style="grid-column:1/-1;">
+                            <label for="special_needs">Behavior & Special Care Instructions</label>
+                            <textarea
+                                id="special_needs"
+                                name="special_needs"
+                                class="form-control"
+                                rows="4"
+                                maxlength="4000"
+                                style="min-height:105px;resize:vertical;"
+                                placeholder="Examples: friendly, shy, anxious, afraid of loud noises, uncomfortable around other pets, sensitive areas, bite or scratch history, feeding restrictions, or preferred handling instructions."
+                            ></textarea>
+                            <small style="display:block;margin-top:5px;color:var(--text-muted);font-size:9px;line-height:1.5;">
+                                Mention any behavior, safety concern, food restriction, or special handling reminder that can help keep your pet and our staff safe.
+                            </small>
+                        </div>
+
+                        <div class="modal-actions">
 
 
 

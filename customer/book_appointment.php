@@ -780,12 +780,54 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $service_category = bookingRequestString($_POST, 'service_category');
     $specific_service = bookingRequestString($_POST, 'specific_service');
     $haircut_style = bookingRequestString($_POST, 'haircut_style');
+    $custom_cut_description = bookingRequestString($_POST, 'custom_cut_description');
+    $vet_reason_for_visit = bookingRequestString($_POST, 'vet_reason_for_visit');
+    $vet_symptoms = bookingRequestString($_POST, 'vet_symptoms');
+    $vet_previous_treatment = bookingRequestString($_POST, 'vet_previous_treatment');
 
     $appointment_date = bookingRequestString($_POST, 'appointment_date');
     $appointment_time = bookingRequestString($_POST, 'appointment_time');
     $pickup_time = bookingRequestString($_POST, 'pickup_time');
     $checkout_date = bookingRequestString($_POST, 'checkout_date');
     $remarks = bookingRequestString($_POST, 'remarks');
+
+    $is_full_grooming_package = ($service_category === 'Grooming' && $specific_service === 'Full Grooming Package');
+    $is_custom_cut_booking = ($is_full_grooming_package && $haircut_style === 'Custom Cut');
+    $is_vet_booking = ($service_category === 'Vet Services');
+
+    // Ignore conditional fields when their matching service is not selected.
+    if (!$is_full_grooming_package) {
+        $haircut_style = '';
+        $custom_cut_description = '';
+    } elseif (!$is_custom_cut_booking) {
+        $custom_cut_description = '';
+    }
+
+    if (!$is_vet_booking) {
+        $vet_reason_for_visit = '';
+        $vet_symptoms = '';
+        $vet_previous_treatment = '';
+    }
+
+    // Keep the existing appointments.remarks schema. Store the additional
+    // customer details as clearly labeled sections so Admin/Staff can read them.
+    $booking_remark_parts = [];
+    if ($remarks !== '') {
+        $booking_remark_parts[] = $remarks;
+    }
+    if ($is_custom_cut_booking && $custom_cut_description !== '') {
+        $booking_remark_parts[] = "Custom Cut Description:\n" . $custom_cut_description;
+    }
+    if ($is_vet_booking && $vet_reason_for_visit !== '') {
+        $booking_remark_parts[] = "Vet Reason for Visit:\n" . $vet_reason_for_visit;
+    }
+    if ($is_vet_booking && $vet_symptoms !== '') {
+        $booking_remark_parts[] = "Vet Symptoms / Health Concerns:\n" . $vet_symptoms;
+    }
+    if ($is_vet_booking && $vet_previous_treatment !== '') {
+        $booking_remark_parts[] = "Vet Previous Treatments / Medications:\n" . $vet_previous_treatment;
+    }
+    $remarks = implode("\n\n", $booking_remark_parts);
 
     $is_overnight_boarding = ($service_category === 'Pet Hotel' && bookingIsHotelBoarding($specific_service));
     $is_daycare = ($service_category === 'Pet Hotel' && bookingIsHotelDaycare($specific_service));
@@ -838,7 +880,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             : ['Small (1-10kg)', 'Medium (11-20kg)', 'Large (21-50kg)'])
         : ['Small (1-5kg)', 'Medium (6-10kg)', 'Large (11-15kg)', 'Extra Large (16-20kg)', 'XXL Large (21-25kg)'];
     $allowed_categories = ['Grooming', 'Vet Services', 'Pet Hotel'];
-    $allowed_haircuts = ['Puppy Cut', 'Summer Cut', 'Shave Down', 'Bear Cut', 'Poodle Cut'];
+    $allowed_haircuts = ['Puppy Cut', 'Summer Cut', 'Shave Down', 'Bear Cut', 'Poodle Cut', 'Custom Cut'];
 
     if (empty($error_msg) && !in_array($pet_type, $allowed_pet_types, true)) {
         $error_msg = 'Please select a valid pet type.';
@@ -854,8 +896,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $error_msg = 'GCash reference number is too long.';
     } elseif (empty($error_msg) && !preg_match('/^[A-Za-z0-9 -]{4,100}$/', $gcash_ref)) {
         $error_msg = 'Please enter a valid GCash reference number.';
+    } elseif (empty($error_msg) && strlen($custom_cut_description) > 400) {
+        $error_msg = 'Custom Cut description must be 400 characters or fewer.';
+    } elseif (empty($error_msg) && strlen($vet_reason_for_visit) > 200) {
+        $error_msg = 'Reason for Visit must be 200 characters or fewer.';
+    } elseif (empty($error_msg) && strlen($vet_symptoms) > 250) {
+        $error_msg = 'Symptoms / Health Concerns must be 250 characters or fewer.';
+    } elseif (empty($error_msg) && strlen($vet_previous_treatment) > 150) {
+        $error_msg = 'Previous Treatments / Medications must be 150 characters or fewer.';
     } elseif (empty($error_msg) && strlen($remarks) > 1000) {
-        $error_msg = 'Remarks must be 1,000 characters or fewer.';
+        $error_msg = 'Combined booking notes and service details must be 1,000 characters or fewer. Please shorten the information and try again.';
     }
 
     // --- SERVER-SIDE PRICE RECALCULATION ---
@@ -937,8 +987,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (empty($error_msg) && $service_fee <= 0) {
         $error_msg = 'The selected service and pet size are not valid. Please choose the service again.';
     }
-    if (empty($error_msg) && $specific_service === 'Full Grooming Package' && !in_array($haircut_style, $allowed_haircuts, true)) {
+    if (empty($error_msg) && $is_full_grooming_package && !in_array($haircut_style, $allowed_haircuts, true)) {
         $error_msg = 'Please choose a valid haircut style for the Full Grooming Package.';
+    } elseif (empty($error_msg) && $is_custom_cut_booking && $custom_cut_description === '') {
+        $error_msg = 'Please describe the haircut you want for your Custom Cut request.';
     }
 
     $date_obj = DateTimeImmutable::createFromFormat('!Y-m-d', $appointment_date);
@@ -3130,16 +3182,41 @@ if ($error_msg !== '') {
                     <i class="fa-solid fa-user-doctor"></i> Available Veterinary Staff: <strong>Doctor and Reliever</strong>
                 </div>
 
+                <div class="hidden" id="vetVisitDetailsContainer">
+                    <p style="margin:0 0 12px;color:#6b7c8f;font-size:11px;line-height:1.6;">
+                        You may share your pet's concern before the appointment. The veterinarian will assess your pet during the visit.
+                    </p>
+                    <div class="form-group">
+                        <label for="vet_reason_for_visit">Reason for Visit (Optional)</label>
+                        <textarea name="vet_reason_for_visit" id="vet_reason_for_visit" maxlength="200" rows="2" placeholder="What would you like the veterinarian to check? (e.g., routine consultation, vaccination, or a concern)"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label for="vet_symptoms">Symptoms / Health Concerns (Optional)</label>
+                        <textarea name="vet_symptoms" id="vet_symptoms" maxlength="250" rows="3" placeholder="Describe any symptoms or changes you have noticed, and when they started."></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label for="vet_previous_treatment">Previous Treatments / Medications (Optional)</label>
+                        <textarea name="vet_previous_treatment" id="vet_previous_treatment" maxlength="150" rows="2" placeholder="Mention any recent treatment or medication, if applicable."></textarea>
+                    </div>
+                </div>
+
                 <div class="form-group hidden" id="haircutContainer">
-                    <label>Desired Haircut Style *</label>
-                    <select name="haircut_style" id="haircut_style">
+                    <label for="haircut_style">Desired Haircut Style *</label>
+                    <select name="haircut_style" id="haircut_style" onchange="updateCustomCutDescription()">
                         <option value="">Select Style</option>
                         <option value="Puppy Cut">Puppy Cut</option>
                         <option value="Summer Cut">Summer Cut</option>
                         <option value="Shave Down">Shave Down</option>
                         <option value="Bear Cut">Bear Cut</option>
                         <option value="Poodle Cut">Poodle Cut</option>
+                        <option value="Custom Cut">Custom Cut</option>
                     </select>
+                </div>
+
+                <div class="form-group hidden" id="customCutDescriptionContainer">
+                    <label for="custom_cut_description">Describe Your Custom Cut *</label>
+                    <textarea name="custom_cut_description" id="custom_cut_description" maxlength="400" rows="3" placeholder="Describe the haircut you prefer, such as the desired fur length, face shape, or areas to trim."></textarea>
+                    <p style="margin-top:7px;color:#6b7c8f;font-size:10px;line-height:1.5;">The grooming team will review your request. The final style may depend on your pet's coat condition and the groomer's assessment.</p>
                 </div>
 
                 <div class="form-row">
@@ -3172,8 +3249,8 @@ if ($error_msg !== '') {
                 </div>
 
                 <div class="form-group">
-                    <label>Remarks / Special Instructions (Optional)</label>
-                    <textarea name="remarks" placeholder="Any allergies, behaviors, or specific requests?"></textarea>
+                    <label>Additional Remarks / Special Instructions (Optional)</label>
+                    <textarea name="remarks" placeholder="Any other allergies, behaviors, or specific requests?"></textarea>
                 </div>
 
                 <div class="price-display" id="priceDisplay">
@@ -3861,18 +3938,52 @@ if ($error_msg !== '') {
             if (checkoutInput.value && checkoutInput.value < minDate) checkoutInput.value = '';
         }
 
+        function updateCustomCutDescription() {
+            const category = document.getElementById('service_category')?.value || '';
+            const specificService = document.getElementById('specific_service')?.value || '';
+            const haircutSelect = document.getElementById('haircut_style');
+            const descriptionContainer = document.getElementById('customCutDescriptionContainer');
+            const descriptionInput = document.getElementById('custom_cut_description');
+            if (!haircutSelect || !descriptionContainer || !descriptionInput) return;
+
+            const showDescription = category === 'Grooming'
+                && specificService === 'Full Grooming Package'
+                && haircutSelect.value === 'Custom Cut';
+
+            descriptionContainer.classList.toggle('hidden', !showDescription);
+            descriptionInput.required = showDescription;
+            if (!showDescription) descriptionInput.value = '';
+        }
+
         function handleServiceChange() {
+            const category = document.getElementById('service_category').value;
             const specificService = document.getElementById('specific_service').value;
             const haircutContainer = document.getElementById('haircutContainer');
             const haircutSelect = document.getElementById('haircut_style');
+            const vetVisitDetailsContainer = document.getElementById('vetVisitDetailsContainer');
 
-            if (specificService === 'Full Grooming Package') {
+            const isFullGroomingPackage = category === 'Grooming' && specificService === 'Full Grooming Package';
+            if (isFullGroomingPackage) {
                 haircutContainer.classList.remove('hidden');
                 haircutSelect.required = true;
             } else {
                 haircutContainer.classList.add('hidden');
                 haircutSelect.required = false;
+                haircutSelect.value = '';
             }
+
+            const isVetBooking = category === 'Vet Services';
+            if (vetVisitDetailsContainer) {
+                vetVisitDetailsContainer.classList.toggle('hidden', !isVetBooking);
+            }
+            if (!isVetBooking) {
+                ['vet_reason_for_visit', 'vet_symptoms', 'vet_previous_treatment'].forEach((fieldId) => {
+                    const field = document.getElementById(fieldId);
+                    if (field) field.value = '';
+                });
+            }
+
+            updateCustomCutDescription();
             updatePetSizeOptions();
             updateBoardingFields();
             calculatePrice();

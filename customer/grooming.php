@@ -2589,7 +2589,7 @@ try {
 
                 <p>
 
-                    Basic Pet Grooming is for routine coat care. The Full Grooming Package includes haircut styling, with rates based on your pet's weight. Nail trimming is available separately for ₱100–₱150, depending on pet size.
+                    Basic Pet Grooming is for routine coat care. The Full Grooming Package includes haircut styling and accepts custom cut requests, subject to confirmation by the grooming team. Rates are based on your pet's weight. Nail trimming is available separately for ₱100–₱150, depending on pet size.
 
                 </p>
 
@@ -2652,7 +2652,7 @@ try {
                             ?? ('This grooming option is listed for ' . $size_label . ' pets. Review the service name and rate to choose the option that fits your pet.');
 
                         if ($description_group === 'full') {
-                            $service_description .= ' Includes haircut styling. Common requests include Puppy Cut, Summer Cut, Trim, and Kalbo/Shave Down. Other or custom cuts may be requested for confirmation. Pricing remains based on your pet\'s weight.';
+                            $service_description .= ' Includes haircut styling. Common choices include Puppy Cut, Summer Cut, Trim, and Kalbo/Shave Down. You may also request a custom cut; the grooming team will review your preferred style and confirm if it can be accommodated. Pricing is based on your pet\'s weight.';
                         }
 
                         $service_id = filter_var($row['id'] ?? null, FILTER_VALIDATE_INT);

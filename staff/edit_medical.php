@@ -154,10 +154,13 @@ if ($pet_id === false || $pet_id === null) {
 }
 $pet_id = (int)$pet_id;
 
-// Load only the fields displayed or edited on this page.
+// Load the complete pet profile and owner-provided care information.
 try {
     $stmt = $pdo->prepare(
-        'SELECT id, name, medical_history, special_needs FROM pets WHERE id = :id LIMIT 1'
+        'SELECT id, name, pet_type, breed, gender, age, weight, medical_history, special_needs
+         FROM pets
+         WHERE id = :id
+         LIMIT 1'
     );
     $stmt->execute([':id' => $pet_id]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -171,6 +174,18 @@ if (!$row) {
     http_response_code(404);
     exit('Patient not found.');
 }
+
+// Values shown in the form. Blank database values remain blank so staff can fill them in.
+$petFields = [
+    'name' => (string)($row['name'] ?? ''),
+    'pet_type' => (string)($row['pet_type'] ?? ''),
+    'breed' => (string)($row['breed'] ?? ''),
+    'gender' => (string)($row['gender'] ?? ''),
+    'age' => (string)($row['age'] ?? ''),
+    'weight' => (string)($row['weight'] ?? ''),
+    'medical_history' => (string)($row['medical_history'] ?? ''),
+    'special_needs' => (string)($row['special_needs'] ?? ''),
+];
 
 $error_msg = '';
 $success_msg = '';
@@ -204,52 +219,94 @@ if ($method === 'POST') {
         exit('Invalid security token. Please refresh the page and try again.');
     }
 
-    $history_input = $_POST['medical_history'] ?? '';
-    $needs_input = $_POST['special_needs'] ?? '';
-    if (!is_string($history_input) || !is_string($needs_input)) {
-        http_response_code(400);
-        exit('Invalid medical record data.');
+    // Read all editable values as strings before validation.
+    $postedFields = [
+        'name' => $_POST['pet_name'] ?? '',
+        'pet_type' => $_POST['pet_type'] ?? '',
+        'breed' => $_POST['breed'] ?? '',
+        'gender' => $_POST['gender'] ?? '',
+        'age' => $_POST['age'] ?? '',
+        'weight' => $_POST['weight'] ?? '',
+        'medical_history' => $_POST['medical_history'] ?? '',
+        'special_needs' => $_POST['special_needs'] ?? '',
+    ];
+
+    foreach ($postedFields as $fieldValue) {
+        if (!is_string($fieldValue)) {
+            http_response_code(400);
+            exit('Invalid pet profile data.');
+        }
     }
 
-    $updated_history = trim($history_input);
-    $updated_needs = trim($needs_input);
+    $petFields = array_map(static fn($value) => trim($value), $postedFields);
 
-    // Retain entered text if the database update fails so the user can retry.
-    $med_history = $updated_history;
-    $special_needs = $updated_needs;
+    // Breed, age, and weight may be left blank when the owner has not supplied them.
+    // Weight is text-compatible to preserve existing values such as "Medium (6-10kg)".
+    $validPetTypes = ['Dog', 'Cat', 'Other'];
+    $validGenders = ['Male', 'Female', 'Unknown'];
 
-    try {
-        $update_stmt = $pdo->prepare(
-            'UPDATE pets
-             SET medical_history = :medical_history,
-                 special_needs = :special_needs
-             WHERE id = :id
-             RETURNING id'
-        );
-        $update_stmt->execute([
-            ':medical_history' => $updated_history,
-            ':special_needs' => $updated_needs,
-            ':id' => $pet_id,
-        ]);
+    if ($petFields['name'] === '' || strlen($petFields['name']) > 120) {
+        $error_msg = 'Pet name is required and must not exceed 120 characters.';
+    } elseif (!in_array($petFields['pet_type'], $validPetTypes, true)) {
+        $error_msg = 'Please select a valid pet type.';
+    } elseif (!in_array($petFields['gender'], $validGenders, true)) {
+        $error_msg = 'Please select a valid gender.';
+    } elseif (strlen($petFields['breed']) > 120) {
+        $error_msg = 'Breed must not exceed 120 characters.';
+    } elseif (strlen($petFields['age']) > 40 || ($petFields['age'] !== '' && (!is_numeric($petFields['age']) || (float)$petFields['age'] < 0))) {
+        $error_msg = 'Age must be a valid number of years, or left blank if unknown.';
+    } elseif (strlen($petFields['weight']) > 60) {
+        $error_msg = 'Weight / size must not exceed 60 characters.';
+    } elseif (strlen($petFields['medical_history']) > 10000 || strlen($petFields['special_needs']) > 10000) {
+        $error_msg = 'Health and care information must not exceed 10,000 characters per field.';
+    }
 
-        $updated_pet_id = $update_stmt->fetchColumn();
-        if ($updated_pet_id === false) {
-            http_response_code(404);
-            exit('Patient not found. The medical record was not updated.');
+    if ($error_msg === '') {
+        try {
+            $update_stmt = $pdo->prepare(
+                'UPDATE pets
+                 SET name = :name,
+                     pet_type = :pet_type,
+                     breed = :breed,
+                     gender = :gender,
+                     age = :age,
+                     weight = :weight,
+                     medical_history = :medical_history,
+                     special_needs = :special_needs
+                 WHERE id = :id
+                 RETURNING id'
+            );
+            $update_stmt->execute([
+                ':name' => $petFields['name'],
+                ':pet_type' => $petFields['pet_type'],
+                ':breed' => $petFields['breed'] !== '' ? $petFields['breed'] : null,
+                ':gender' => $petFields['gender'],
+                ':age' => $petFields['age'] !== '' ? $petFields['age'] : null,
+                ':weight' => $petFields['weight'] !== '' ? $petFields['weight'] : null,
+                ':medical_history' => $petFields['medical_history'] !== '' ? $petFields['medical_history'] : null,
+                ':special_needs' => $petFields['special_needs'] !== '' ? $petFields['special_needs'] : null,
+                ':id' => $pet_id,
+            ]);
+
+            $updated_pet_id = $update_stmt->fetchColumn();
+            if ($updated_pet_id === false) {
+                http_response_code(404);
+                exit('Patient not found. The pet profile was not updated.');
+            }
+
+            $_SESSION['medical_record_flash'] = 'Pet profile and medical information updated successfully.';
+            header('Location: view_records.php?id=' . $pet_id, true, 303);
+            exit();
+        } catch (PDOException $e) {
+            error_log('Pet profile and medical record update failed: ' . $e->getMessage());
+            $error_msg = 'Unable to save the pet profile right now. Please check the information and try again.';
         }
-
-        $_SESSION['medical_record_flash'] = 'Medical records updated successfully.';
-        header('Location: view_records.php?id=' . $pet_id, true, 303);
-        exit();
-    } catch (PDOException $e) {
-        error_log('Medical record update failed: ' . $e->getMessage());
-        $error_msg = 'Unable to save medical records right now. Please try again.';
     }
 }
 
-$p_name = (string)($row['name'] ?? 'Unknown');
-$med_history = $med_history ?? (string)($row['medical_history'] ?? '');
-$special_needs = $special_needs ?? (string)($row['special_needs'] ?? '');
+$p_name = $petFields['name'];
+$med_history = $petFields['medical_history'];
+$special_needs = $petFields['special_needs'];
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -348,6 +405,15 @@ $special_needs = $special_needs ?? (string)($row['special_needs'] ?? '');
         .form-group label { display: block; font-weight: 700; margin-bottom: 10px; color: var(--sidebar-navy); font-size: 15px; }
         .form-group textarea { width: 100%; padding: 15px; border: 2px solid var(--border); border-radius: 10px; outline: none; font-size: 14px; resize: vertical; min-height: 200px; line-height: 1.6; background: #f8fafc; transition: 0.2s; }
         .form-group textarea:focus { border-color: var(--sidebar-navy); background: #fff; }
+        .edit-section-title { color: var(--sidebar-navy); font-size: 17px; font-weight: 800; margin: 8px 0 5px; display: flex; align-items: center; gap: 9px; }
+        .edit-section-title i { color: #d5a900; }
+        .edit-section-help, .field-help { display: block; color: var(--text-muted); font-size: 12px; line-height: 1.6; margin: 0 0 18px; }
+        .edit-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 18px; margin-bottom: 8px; }
+        .edit-form-grid .form-group { min-width: 0; }
+        .form-group input, .form-group select { width: 100%; min-height: 48px; padding: 12px 14px; border: 2px solid var(--border); border-radius: 10px; outline: none; font-size: 14px; color: var(--text-main); background: #f8fafc; transition: .2s; }
+        .form-group input:focus, .form-group select:focus { border-color: var(--sidebar-navy); background: #fff; }
+        .form-group .field-help { margin: -2px 0 10px; font-size: 11px; }
+        .required-mark { color: #dc2626; }
 
         .btn-submit { background: var(--brand-yellow); color: var(--sidebar-navy); border: none; padding: 14px 30px; border-radius: 8px; cursor: pointer; font-weight: 800; font-size: 15px; transition: 0.2s; width: 100%; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
         .btn-submit:hover { transform: translateY(-2px); box-shadow: 0 6px 12px rgba(0,0,0,0.1); }
@@ -375,6 +441,9 @@ $special_needs = $special_needs ?? (string)($row['special_needs'] ?? '');
         }
 
         @media (max-width: 680px) {
+            .edit-form-grid { grid-template-columns: 1fr; gap: 0; }
+            .edit-section-title { font-size: 15px; }
+            .edit-section-help, .field-help { font-size: 11px; }
             body {
                 display: block;
                 overflow-x: hidden;
@@ -2103,7 +2172,7 @@ input, select, textarea, button, img { max-width:100%; }
                     <div style="background: #f1f5f9; width: 45px; height: 45px; border-radius: 10px; display: flex; align-items: center; justify-content: center;">
                         <i class="fas fa-edit" style="color: var(--sidebar-navy);"></i>
                     </div>
-                    Edit Medical Profile: <?php echo htmlspecialchars($p_name, ENT_QUOTES, 'UTF-8'); ?>
+                    Edit Pet & Medical Profile: <?php echo htmlspecialchars($p_name, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
                 </div>
 
                 <?php if ($success_msg !== ''): ?>
@@ -2119,17 +2188,63 @@ input, select, textarea, button, img { max-width:100%; }
 
                 <form method="POST" action="">
                     <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token, ENT_QUOTES, 'UTF-8'); ?>">
-                    <div class="form-group">
-                        <label><i class="fas fa-notes-medical" style="color: #ef4444;"></i> Full Medical History</label>
-                        <textarea name="medical_history" placeholder="Enter complete medical history..."><?php echo htmlspecialchars($med_history, ENT_QUOTES, 'UTF-8'); ?></textarea>
+
+                    <h3 class="edit-section-title"><i class="fas fa-paw"></i> Basic Pet Information</h3>
+                    <p class="edit-section-help">Update the pet's basic details. Leave Breed, Age, or Weight / Size blank only when the information is not known.</p>
+
+                    <div class="edit-form-grid">
+                        <div class="form-group">
+                            <label for="pet_name">Pet Name <span class="required-mark">*</span></label>
+                            <input class="form-control" type="text" id="pet_name" name="pet_name" maxlength="120" required value="<?php echo htmlspecialchars($petFields['name'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="pet_type">Pet Type <span class="required-mark">*</span></label>
+                            <select class="form-control" id="pet_type" name="pet_type" required>
+                                <option value="Dog" <?php echo $petFields['pet_type'] === 'Dog' ? 'selected' : ''; ?>>Dog</option>
+                                <option value="Cat" <?php echo $petFields['pet_type'] === 'Cat' ? 'selected' : ''; ?>>Cat</option>
+                                <option value="Other" <?php echo $petFields['pet_type'] === 'Other' ? 'selected' : ''; ?>>Other</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="breed">Breed</label>
+                            <input class="form-control" type="text" id="breed" name="breed" maxlength="120" placeholder="e.g., Shih Tzu, Aspin, Persian" value="<?php echo htmlspecialchars($petFields['breed'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="gender">Gender <span class="required-mark">*</span></label>
+                            <select class="form-control" id="gender" name="gender" required>
+                                <option value="Male" <?php echo $petFields['gender'] === 'Male' ? 'selected' : ''; ?>>Male</option>
+                                <option value="Female" <?php echo $petFields['gender'] === 'Female' ? 'selected' : ''; ?>>Female</option>
+                                <option value="Unknown" <?php echo $petFields['gender'] === 'Unknown' ? 'selected' : ''; ?>>Unknown</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="age">Age (Years)</label>
+                            <input class="form-control" type="number" id="age" name="age" min="0" max="100" step="0.1" inputmode="decimal" placeholder="e.g., 2 or 0.5" value="<?php echo htmlspecialchars($petFields['age'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="weight">Weight / Size</label>
+                            <input class="form-control" type="text" id="weight" name="weight" maxlength="60" placeholder="e.g., 8 kg or Medium (6-10kg)" value="<?php echo htmlspecialchars($petFields['weight'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
+                        </div>
                     </div>
 
                     <div class="form-group">
-                        <label><i class="fas fa-clipboard-list" style="color: var(--brand-blue);"></i> Special Needs / Care Instructions</label>
-                        <textarea name="special_needs" placeholder="E.g., Allergies, daily maintenance..."><?php echo htmlspecialchars($special_needs, ENT_QUOTES, 'UTF-8'); ?></textarea>
+                        <label for="medical_history"><i class="fas fa-notes-medical" style="color: #ef4444;"></i> Health Information & Medical History</label>
+                        <small class="field-help">Include allergies, existing health conditions, current medications, previous surgeries, vaccination concerns, or other health information shared by the owner.</small>
+                        <textarea id="medical_history" name="medical_history" maxlength="10000" placeholder="Example: Allergic to chicken; currently taking medication; had surgery in 2024; has a history of skin irritation..."><?php echo htmlspecialchars($med_history, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></textarea>
                     </div>
 
-                    <button type="submit" name="update_medical" class="btn-submit">Save Medical Records</button>
+                    <div class="form-group">
+                        <label for="special_needs"><i class="fas fa-clipboard-list" style="color: var(--brand-blue);"></i> Behavior & Special Care Instructions</label>
+                        <small class="field-help">Include temperament, fear triggers, reactions to strangers or other animals, bite / scratch history, food restrictions, sensitive areas, and preferred handling instructions.</small>
+                        <textarea id="special_needs" name="special_needs" maxlength="10000" placeholder="Example: Nervous around unfamiliar people; afraid of loud sounds; do not approach suddenly; must be fed separately from other pets..."><?php echo htmlspecialchars($special_needs, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></textarea>
+                    </div>
+
+                    <button type="submit" name="update_medical" class="btn-submit"><i class="fas fa-save" aria-hidden="true"></i> Save Pet & Medical Information</button>
                 </form>
             </div>
         </div>

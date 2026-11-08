@@ -230,7 +230,103 @@ $success_msg = (string)($_SESSION['managepet_flash_success'] ?? '');
 
 unset($_SESSION['managepet_flash_success']);
 
-$error_msg = '';
+$error_msg = (string)($_SESSION['managepet_flash_error'] ?? '');
+unset($_SESSION['managepet_flash_error']);
+
+// --- ADMIN-ONLY DELETE PET LOGIC ---
+// A pet with appointment history cannot be hard-deleted. This protects the
+// booking and transaction history connected to that pet.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_pet'])) {
+
+    if (!$is_admin) {
+        http_response_code(403);
+        exit('Access denied. Only Admin can delete pet profiles.');
+    }
+
+    $submitted_token = $_POST['csrf_token'] ?? '';
+    if (!is_string($submitted_token) || !hash_equals($_SESSION['managepet_csrf_token'], $submitted_token)) {
+        http_response_code(403);
+        exit('Security check failed. Please refresh the page and try again.');
+    }
+
+    $raw_delete_id = $_POST['pet_id'] ?? '';
+    $delete_pet_id = is_string($raw_delete_id)
+        ? filter_var($raw_delete_id, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]])
+        : false;
+
+    if ($delete_pet_id === false || $delete_pet_id === null) {
+        $_SESSION['managepet_flash_error'] = 'Invalid pet selected. Please try again.';
+    } else {
+        try {
+            $pdo->beginTransaction();
+
+            // Lock the pet row while checking linked appointments and deleting.
+            $pet_lock_stmt = $pdo->prepare('SELECT id, name FROM pets WHERE id = :pet_id FOR UPDATE');
+            $pet_lock_stmt->execute([':pet_id' => (int)$delete_pet_id]);
+            $pet_to_delete = $pet_lock_stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$pet_to_delete) {
+                $pdo->rollBack();
+                $_SESSION['managepet_flash_error'] = 'Pet record not found. It may have already been deleted.';
+            } else {
+                $appointment_count_stmt = $pdo->prepare('SELECT COUNT(*) FROM appointments WHERE pet_id = :pet_id');
+                $appointment_count_stmt->execute([':pet_id' => (int)$delete_pet_id]);
+                $linked_appointment_count = (int)$appointment_count_stmt->fetchColumn();
+
+                if ($linked_appointment_count > 0) {
+                    $pdo->rollBack();
+                    $_SESSION['managepet_flash_error'] = 'This pet cannot be deleted because it has linked appointment history. The booking records were kept safe.';
+                } else {
+                    $delete_stmt = $pdo->prepare('DELETE FROM pets WHERE id = :pet_id');
+                    $delete_stmt->execute([':pet_id' => (int)$delete_pet_id]);
+
+                    if ($delete_stmt->rowCount() !== 1) {
+                        throw new RuntimeException('Pet record was not deleted.');
+                    }
+
+                    $pdo->commit();
+                    $deleted_pet_name = trim((string)($pet_to_delete['name'] ?? ''));
+                    $_SESSION['managepet_flash_success'] = sprintf(
+                        'Pet "%s" was successfully deleted.',
+                        $deleted_pet_name !== '' ? $deleted_pet_name : 'record'
+                    );
+                }
+            }
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            error_log('Manage Pet delete error: ' . $e->getMessage());
+            $_SESSION['managepet_flash_error'] = 'Unable to delete this pet. It may have other linked records, so no data was removed.';
+        }
+    }
+
+    // Retain the current list filters and page after the POST/Redirect/GET cycle.
+    $delete_redirect_params = [];
+    $current_gender_filter = $_GET['gender'] ?? '';
+    if (is_string($current_gender_filter) && in_array($current_gender_filter, ['Male', 'Female'], true)) {
+        $delete_redirect_params['gender'] = $current_gender_filter;
+    }
+    $current_search_filter = $_GET['search'] ?? '';
+    if (is_string($current_search_filter) && trim($current_search_filter) !== '') {
+        $delete_redirect_params['search'] = trim($current_search_filter);
+    }
+    $current_breed_filter = $_GET['breed'] ?? '';
+    if (is_string($current_breed_filter) && trim($current_breed_filter) !== '') {
+        $delete_redirect_params['breed'] = trim($current_breed_filter);
+    }
+    $current_page_filter = filter_var($_GET['page'] ?? 1, FILTER_VALIDATE_INT);
+    if ($current_page_filter !== false && $current_page_filter > 1) {
+        $delete_redirect_params['page'] = $current_page_filter;
+    }
+
+    $delete_redirect_url = 'managepet.php';
+    if (!empty($delete_redirect_params)) {
+        $delete_redirect_url .= '?' . http_build_query($delete_redirect_params);
+    }
+    header('Location: ' . $delete_redirect_url, true, 303);
+    exit();
+}
 
 // --- ADD NEW PET LOGIC ---
 
@@ -256,9 +352,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_pet'])) {
 
         $pet_breed = is_string($_POST['pet_breed'] ?? null) ? trim($_POST['pet_breed']) : '';
 
+        $pet_age = is_string($_POST['pet_age'] ?? null) ? trim($_POST['pet_age']) : '';
+
         $pet_gender = is_string($_POST['pet_gender'] ?? null) ? trim($_POST['pet_gender']) : '';
 
         $pet_weight = is_string($_POST['pet_weight'] ?? null) ? trim($_POST['pet_weight']) : '';
+
+        $medical_history_raw = $_POST['medical_history'] ?? '';
+        $special_needs_raw = $_POST['special_needs'] ?? '';
+        $care_fields_are_strings = is_string($medical_history_raw) && is_string($special_needs_raw);
+        $medical_history = $care_fields_are_strings ? trim($medical_history_raw) : '';
+        $special_needs = $care_fields_are_strings ? trim($special_needs_raw) : '';
 
         $allowed_pet_types = ['Dog', 'Cat'];
 
@@ -283,14 +387,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_pet'])) {
         $breed_length = function_exists('mb_strlen') ? mb_strlen($pet_breed, 'UTF-8') : strlen($pet_breed);
 
         $has_control_chars = (bool)preg_match('/[\x00-\x1F\x7F]/', $pet_name);
+        $has_breed_control_chars = (bool)preg_match('/[\x00-\x1F\x7F]/', $pet_breed);
+        $age_is_valid = $pet_age !== '' && is_numeric($pet_age) && is_finite((float)$pet_age)
+            && (float)$pet_age >= 0 && (float)$pet_age <= 100;
 
-        if (!is_int($owner_id) || $owner_id < 1 || $pet_name === '' || $pet_type === '' || $pet_gender === '' || $pet_weight === '') {
+        if (!is_int($owner_id) || $owner_id < 1 || $pet_name === '' || $pet_type === '' || $pet_breed === '' || $pet_age === '' || $pet_gender === '' || $pet_weight === '') {
 
             $error_msg = 'Please complete all required pet fields.';
 
-        } elseif ($name_length > 100 || $breed_length > 100 || $has_control_chars) {
+        } elseif (!$care_fields_are_strings) {
 
-            $error_msg = 'Pet name and breed must be 100 characters or fewer. Remove any invalid control characters from the pet name.';
+            $error_msg = 'Invalid pet health or care information.';
+
+        } elseif (strlen($medical_history) > 4000 || strlen($special_needs) > 4000) {
+
+            $error_msg = 'Health and special care information must not exceed 4,000 characters per field.';
+
+        } elseif ($name_length > 100 || $breed_length > 100 || $has_control_chars || $has_breed_control_chars) {
+
+            $error_msg = 'Pet name and breed must be 100 characters or fewer and must not contain invalid control characters.';
+
+        } elseif (!$age_is_valid) {
+
+            $error_msg = 'Please enter a valid pet age from 0 to 100 years.';
 
         } elseif (!in_array($pet_type, $allowed_pet_types, true) || !in_array($pet_gender, $allowed_genders, true) || !in_array($pet_weight, $allowed_weights, true)) {
 
@@ -328,9 +447,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_pet'])) {
 
                     $insert_stmt = $pdo->prepare("
 
-                        INSERT INTO pets (owner_id, name, pet_type, breed, gender, weight)
-
-                        VALUES (:owner_id, :name, :pet_type, :breed, :gender, :weight)
+                        INSERT INTO pets (
+                            owner_id, name, pet_type, breed, age, gender, weight,
+                            medical_history, special_needs
+                        )
+                        VALUES (
+                            :owner_id, :name, :pet_type, :breed, :age, :gender, :weight,
+                            :medical_history, :special_needs
+                        )
 
                     ");
 
@@ -344,9 +468,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_pet'])) {
 
                         ':breed' => $pet_breed,
 
+                        ':age' => $pet_age,
+
                         ':gender' => $pet_gender,
 
                         ':weight' => $pet_weight,
+
+                        ':medical_history' => $medical_history,
+
+                        ':special_needs' => $special_needs,
 
                     ]);
 
@@ -401,18 +531,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_pet'])) {
 // We query the pets table directly and gracefully handle database errors.
 
 $total_pets = $male_pets = $female_pets = 0;
-
 $breeds = [];
-
 $pets_list = [];
-
 $total_filtered_pets = 0;
 $showing_count = 0;
 $showing_start = 0;
 $showing_end = 0;
 $page_size = 20;
 
-$filter_gender = (isset($_GET['gender']) && is_string($_GET['gender'])) ? $_GET['gender'] : '';
+$filter_gender = (isset($_GET['gender']) && is_string($_GET['gender'])) ? trim($_GET['gender']) : '';
 $filter_gender = in_array($filter_gender, ['Male', 'Female'], true) ? $filter_gender : '';
 $search = (isset($_GET['search']) && is_string($_GET['search'])) ? trim($_GET['search']) : '';
 $filter_breed = (isset($_GET['breed']) && is_string($_GET['breed'])) ? trim($_GET['breed']) : '';
@@ -421,8 +548,7 @@ $current_page = ($requested_page !== false && $requested_page > 0) ? $requested_
 $total_pages = 1;
 
 try {
-
-    // 4. FETCH ALL PET STATISTICS IN ONE AGGREGATE QUERY
+    // Keep the original Admin summary cards: total, male, and female pets.
     $stats_stmt = $pdo->query("SELECT
             COUNT(*) AS total,
             COUNT(*) FILTER (WHERE gender = 'Male') AS male,
@@ -433,47 +559,58 @@ try {
     $male_pets = (int)($stats['male'] ?? 0);
     $female_pets = (int)($stats['female'] ?? 0);
 
-    // 5. FETCH BREEDS FOR THE FILTER
+    // Breed values are used by the optional breed filter in the toolbar.
     $breeds_stmt = $pdo->query("SELECT DISTINCT breed
         FROM pets
         WHERE breed IS NOT NULL
-          AND breed <> ''
+          AND TRIM(CAST(breed AS TEXT)) <> ''
         ORDER BY breed ASC");
     $breeds = $breeds_stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    // 6. SERVER-SIDE SEARCH, BREED/GENDER FILTERING, AND PAGINATION
-    // Search pet name, breed, owner ID, and gender (Male/Female).
+    // Search and filters include pet details plus the linked customer's name/contact.
     $where_parts = ['1 = 1'];
     $pets_params = [];
 
     if ($filter_gender !== '') {
-        $where_parts[] = 'gender = :gender';
+        $where_parts[] = 'p.gender = :gender';
         $pets_params[':gender'] = $filter_gender;
     }
 
     if ($filter_breed !== '') {
-        $where_parts[] = "LOWER(COALESCE(breed, '')) = LOWER(:breed)";
+        $where_parts[] = "LOWER(COALESCE(p.breed, '')) = LOWER(:breed)";
         $pets_params[':breed'] = $filter_breed;
     }
 
     if ($search !== '') {
         $where_parts[] = "(
-            COALESCE(name, '') ILIKE :search_name
-            OR COALESCE(breed, '') ILIKE :search_breed
-            OR CAST(owner_id AS TEXT) ILIKE :search_owner
-            OR LOWER(COALESCE(gender, '')) LIKE :search_gender
+            COALESCE(p.name, '') ILIKE :search_name
+            OR COALESCE(p.pet_type, '') ILIKE :search_type
+            OR COALESCE(p.breed, '') ILIKE :search_breed
+            OR COALESCE(p.gender, '') ILIKE :search_gender
+            OR COALESCE(CAST(p.age AS TEXT), '') ILIKE :search_age
+            OR COALESCE(CAST(p.weight AS TEXT), '') ILIKE :search_weight
+            OR COALESCE(p.owner_name, '') ILIKE :search_owner_name
+            OR COALESCE(u.full_name, '') ILIKE :search_account_owner
+            OR COALESCE(u.contact_number, '') ILIKE :search_contact
+            OR CAST(p.owner_id AS TEXT) ILIKE :search_owner_id
         )";
         $search_like = '%' . $search . '%';
         $pets_params[':search_name'] = $search_like;
+        $pets_params[':search_type'] = $search_like;
         $pets_params[':search_breed'] = $search_like;
-        $pets_params[':search_owner'] = $search_like;
-        // Prefix matching avoids matching "Female" when the user searches "male".
-        $pets_params[':search_gender'] = strtolower($search) . '%';
+        $pets_params[':search_gender'] = $search_like;
+        $pets_params[':search_age'] = $search_like;
+        $pets_params[':search_weight'] = $search_like;
+        $pets_params[':search_owner_name'] = $search_like;
+        $pets_params[':search_account_owner'] = $search_like;
+        $pets_params[':search_contact'] = $search_like;
+        $pets_params[':search_owner_id'] = $search_like;
     }
 
     $pets_where_sql = implode(' AND ', $where_parts);
+    $pets_from_sql = ' FROM pets p LEFT JOIN users u ON u.id = p.owner_id';
 
-    $count_stmt = $pdo->prepare("SELECT COUNT(*) FROM pets WHERE {$pets_where_sql}");
+    $count_stmt = $pdo->prepare("SELECT COUNT(*){$pets_from_sql} WHERE {$pets_where_sql}");
     $count_stmt->execute($pets_params);
     $total_filtered_pets = (int)$count_stmt->fetchColumn();
 
@@ -483,11 +620,12 @@ try {
     }
     $offset = ($current_page - 1) * $page_size;
 
-    // Only the columns displayed or used by the page are selected.
-    $pets_stmt = $pdo->prepare("SELECT id, owner_id, name, breed, gender
-        FROM pets
+    $pets_stmt = $pdo->prepare("SELECT
+            p.id, p.owner_id, p.name, p.pet_type, p.breed, p.gender, p.age, p.weight,
+            p.owner_name, u.full_name AS account_owner_name, u.contact_number AS owner_contact
+        {$pets_from_sql}
         WHERE {$pets_where_sql}
-        ORDER BY id DESC
+        ORDER BY p.id DESC
         LIMIT :limit OFFSET :offset");
     foreach ($pets_params as $param_name => $param_value) {
         $pets_stmt->bindValue($param_name, $param_value, PDO::PARAM_STR);
@@ -500,19 +638,11 @@ try {
     $showing_count = count($pets_list);
     $showing_start = $showing_count > 0 ? $offset + 1 : 0;
     $showing_end = $showing_count > 0 ? $offset + $showing_count : 0;
-
-} catch (PDOException $e) {
-
-    $total_pets = 0;
-
-    $male_pets = 0;
-
-    $female_pets = 0;
-
+} catch (Throwable $e) {
+    error_log('Manage Pet listing/statistics error: ' . $e->getMessage());
+    $total_pets = $male_pets = $female_pets = 0;
     $breeds = [];
-
     $pets_list = [];
-
     $total_filtered_pets = 0;
     $showing_count = 0;
     $showing_start = 0;
@@ -521,11 +651,8 @@ try {
     $total_pages = 1;
 
     if ($error_msg === '') {
-
-        $error_msg = "Unable to load pet data from the database.";
-
+        $error_msg = 'Unable to load pet data from the database.';
     }
-
 }
 
 // --- FETCH NOTIFICATIONS FOR THE SIGNED-IN ADMIN OR SERVICE STAFF ---
@@ -815,9 +942,9 @@ if ($filter_breed !== '') {
 
         .form-group label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 8px; color: var(--text-main); }
 
-        .form-group input, .form-group select { width: 100%; padding: 10px 15px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 14px; outline: none; background: #f9fafb; font-family: 'Poppins', sans-serif;}
+        .form-group input, .form-group select, .form-group textarea { width: 100%; padding: 10px 15px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 14px; outline: none; background: #f9fafb; font-family: 'Poppins', sans-serif;}
 
-        .form-group input:focus, .form-group select:focus { border-color: var(--brand-yellow); background: var(--white);}
+        .form-group input:focus, .form-group select:focus, .form-group textarea:focus { border-color: var(--brand-yellow); background: var(--white);}
 
         .btn-submit-modal { width: 100%; background: var(--navy-dark); color: var(--brand-yellow); border: none; padding: 12px; border-radius: 8px; font-size: 15px; font-weight: 600; cursor: pointer; transition: 0.3s; margin-top: 10px;}
 
@@ -825,6 +952,7 @@ if ($filter_breed !== '') {
 
         /* --- TABLE STYLING --- */
 
+        .pet-table-wrapper { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
         .pet-table { width: 100%; border-collapse: collapse; background: var(--white); border-radius: 16px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.03); }
 
         .pet-table th { background: #f8fafc; padding: 15px 20px; font-size: 12px; text-transform: uppercase; color: #64748b; font-weight: 700; text-align: left; border-bottom: 2px solid #edf2f7;}
@@ -860,6 +988,10 @@ if ($filter_breed !== '') {
         .btn-view { color: var(--navy-dark); }
 
         .btn-view:hover { color: var(--brand-yellow); }
+
+        .delete-pet-form { display: inline; margin: 0; }
+        .action-link.btn-delete { border: 0; padding: 0; background: transparent; color: #dc2626; cursor: pointer; font: inherit; font-size: 16px; }
+        .action-link.btn-delete:hover { color: #991b1b !important; }
 
         /* --- RESPONSIVE ADMIN LAYOUT --- */
 
@@ -1573,210 +1705,149 @@ if ($filter_breed !== '') {
         </header>
 
         <div class="container">
-
             <div class="page-header">
-
                 <h1>Pet Profiles</h1>
-
                 <p>View and manage all registered pet profiles and their medical history.</p>
-
             </div>
 
-            <?php if(!empty($success_msg)): ?>
-
+            <?php if (!empty($success_msg)): ?>
                 <div style="background: #dcfce7; color: #166534; padding: 12px 20px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #bbf7d0; font-size: 14px; font-weight: 500;">
-
                     <i class="fas fa-check-circle"></i> <?php echo htmlspecialchars($success_msg, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
-
                 </div>
-
             <?php endif; ?>
 
-            <?php if(!empty($error_msg)): ?>
-
+            <?php if (!empty($error_msg)): ?>
                 <div style="background: #fee2e2; color: #991b1b; padding: 12px 20px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #fecaca; font-size: 14px; font-weight: 500;">
-
                     <i class="fas fa-exclamation-circle"></i> <?php echo htmlspecialchars($error_msg, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
-
                 </div>
-
             <?php endif; ?>
 
+            <!-- Original Admin summary cards are retained. -->
             <div class="status-grid">
-
-                <div class="status-card total" onclick="window.location.href='managepet.php'">
-
+                <div class="status-card total" onclick="window.location.href='managepet.php'" role="button" tabindex="0">
                     <i class="fas fa-paw"></i>
-
                     <span class="label">Total Pets</span>
-
                     <div class="count"><?php echo $total_pets; ?></div>
-
                 </div>
-
-                <div class="status-card male" onclick="window.location.href='managepet.php?gender=Male'">
-
+                <div class="status-card male" onclick="window.location.href='managepet.php?gender=Male'" role="button" tabindex="0">
                     <i class="fas fa-mars"></i>
-
                     <span class="label">Male Pets</span>
-
                     <div class="count"><?php echo $male_pets; ?></div>
-
                 </div>
-
-                <div class="status-card female" onclick="window.location.href='managepet.php?gender=Female'">
-
+                <div class="status-card female" onclick="window.location.href='managepet.php?gender=Female'" role="button" tabindex="0">
                     <i class="fas fa-venus"></i>
-
                     <span class="label">Female Pets</span>
-
                     <div class="count"><?php echo $female_pets; ?></div>
-
                 </div>
-
             </div>
 
+            <!-- Original Admin toolbar and filter appearance are retained. -->
             <form method="GET" action="managepet.php" class="filter-container" id="petFilterForm">
-
                 <div class="filter-group">
-
                     <i class="fas fa-search"></i>
-
                     <?php if ($filter_gender !== ''): ?>
                         <input type="hidden" name="gender" value="<?php echo htmlspecialchars($filter_gender, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
                     <?php endif; ?>
-
-                    <input type="text" id="petSearch" name="search" class="search-input" value="<?php echo htmlspecialchars($search, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>" placeholder="Search by pet name, breed, gender, or owner ID..." autocomplete="off">
-
+                    <input type="text" id="petSearch" name="search" class="search-input"
+                           value="<?php echo htmlspecialchars($search, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>"
+                           placeholder="Search by pet name, type, breed, age, or owner ID..." autocomplete="off">
                     <select id="breedFilter" name="breed" class="breed-select">
-
                         <option value="">All Breeds</option>
-
-                        <?php if (!empty($breeds)): ?>
-
-                            <?php foreach($breeds as $breed): ?>
-                                <?php $breed_value = (string)($breed['breed'] ?? ''); ?>
+                        <?php foreach ($breeds as $breed): ?>
+                            <?php $breed_value = trim((string)($breed['breed'] ?? '')); ?>
+                            <?php if ($breed_value !== ''): ?>
                                 <option value="<?php echo htmlspecialchars($breed_value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>" <?php echo (strcasecmp($filter_breed, $breed_value) === 0) ? 'selected' : ''; ?>>
                                     <?php echo htmlspecialchars($breed_value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
                                 </option>
-                            <?php endforeach; ?>
-
-                        <?php endif; ?>
-
+                            <?php endif; ?>
+                        <?php endforeach; ?>
                     </select>
-
                     <span class="result-count" id="showingCountText">Showing <?php echo $showing_start; ?>–<?php echo $showing_end; ?> of <?php echo $total_filtered_pets; ?> pets</span>
-
                 </div>
-
                 <div class="filter-actions">
-
                     <button type="button" class="btn-add" onclick="openPetModal()"><i class="fas fa-plus"></i> Add New Pet</button>
-
                 </div>
-
             </form>
 
             <?php if (!empty($pets_list)): ?>
-
                 <div class="pet-table-wrapper">
-
                     <table class="pet-table" id="petsTable">
-
-                    <thead>
-
-                        <tr>
-
-                            <th>Pet Name</th>
-
-                            <th>Breed</th>
-
-                            <th>Gender</th>
-
-                            <th>Owner ID</th>
-
-                            <th style="text-align: center;">Actions</th>
-
-                        </tr>
-
-                    </thead>
-
-                    <tbody>
-
-                        <?php foreach($pets_list as $pet): ?>
-
-                        <tr class="pet-row" data-breed="<?php echo htmlspecialchars((string)($pet['breed'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
-
-                            <td>
-
-                                <div style="display: flex; align-items: center; gap: 12px;">
-
-                                    <div style="width: 35px; height: 35px; background: #f1f5f9; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: var(--navy-dark);">
-
-                                        <i class="fas fa-paw"></i>
-
-                                    </div>
-
-                                    <div style="font-weight: 700; color: var(--navy-dark);"><?php echo htmlspecialchars((string)($pet['name'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></div>
-
-                                </div>
-
-                            </td>
-
-                            <td style="color: var(--text-muted); font-weight: 500;"><?php echo htmlspecialchars((string)($pet['breed'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></td>
-
-                            <td>
-
-                                <?php if($pet['gender'] == 'Male'): ?>
-
-                                    <span class="gender-badge gender-male"><i class="fas fa-mars"></i> Male</span>
-
-                                <?php else: ?>
-
-                                    <span class="gender-badge gender-female"><i class="fas fa-venus"></i> Female</span>
-
-                                <?php endif; ?>
-
-                            </td>
-
-                            <td style="color: var(--text-muted); font-weight: 600;">#<?php echo $pet['owner_id']; ?></td>
-
-                            <td style="text-align: center;">
-
-                                <a href="view_records.php?id=<?php echo $pet['id']; ?>" class="action-link btn-view" title="View Records">
-
-                                    <i class="fas fa-file-medical"></i>
-
-                                </a>
-
-                                <a href="editpet.php?id=<?php echo $pet['id']; ?>" class="action-link" title="Edit">
-
-                                    <i class="fas fa-edit"></i>
-
-                                </a>
-
-                            </td>
-
-                        </tr>
-
-                        <?php endforeach; ?>
-
-                    </tbody>
-
+                        <thead>
+                            <tr>
+                                <th>Pet Name</th>
+                                <th>Type</th>
+                                <th>Breed</th>
+                                <th>Age</th>
+                                <th>Gender</th>
+                                <th>Weight</th>
+                                <th>Owner ID</th>
+                                <th style="text-align: center;">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($pets_list as $pet): ?>
+                                <?php
+                                    $pet_id = (int)($pet['id'] ?? 0);
+                                    $pet_name_display = trim((string)($pet['name'] ?? '')) ?: 'Unnamed';
+                                    $pet_type_display = trim((string)($pet['pet_type'] ?? '')) ?: 'N/A';
+                                    $pet_breed_display = trim((string)($pet['breed'] ?? '')) ?: 'N/A';
+                                    $pet_age_display = trim((string)($pet['age'] ?? '')) ?: 'N/A';
+                                    $pet_gender_display = trim((string)($pet['gender'] ?? '')) ?: 'N/A';
+                                    $pet_weight_display = trim((string)($pet['weight'] ?? '')) ?: 'N/A';
+                                    $pet_owner_id = (int)($pet['owner_id'] ?? 0);
+                                ?>
+                                <tr>
+                                    <td>
+                                        <div style="display: flex; align-items: center; gap: 12px;">
+                                            <div style="width: 35px; height: 35px; background: #f1f5f9; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: var(--navy-dark);">
+                                                <i class="fas fa-paw"></i>
+                                            </div>
+                                            <div style="font-weight: 700; color: var(--navy-dark);">
+                                                <?php echo htmlspecialchars($pet_name_display, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
+                                            </div>
+                                        </div>
+                                    </td>
+                                    <td><?php echo htmlspecialchars($pet_type_display, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></td>
+                                    <td style="color: var(--text-muted); font-weight: 500;"><?php echo htmlspecialchars($pet_breed_display, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></td>
+                                    <td><?php echo htmlspecialchars($pet_age_display, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></td>
+                                    <td>
+                                        <?php if ($pet_gender_display === 'Male'): ?>
+                                            <span class="gender-badge gender-male"><i class="fas fa-mars"></i> Male</span>
+                                        <?php elseif ($pet_gender_display === 'Female'): ?>
+                                            <span class="gender-badge gender-female"><i class="fas fa-venus"></i> Female</span>
+                                        <?php else: ?>
+                                            <span><?php echo htmlspecialchars($pet_gender_display, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></span>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td><?php echo htmlspecialchars($pet_weight_display, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></td>
+                                    <td style="color: var(--text-muted); font-weight: 600;">#<?php echo $pet_owner_id > 0 ? $pet_owner_id : 'N/A'; ?></td>
+                                    <td style="text-align: center; white-space: nowrap;">
+                                        <a href="view_records.php?id=<?php echo $pet_id; ?>" class="action-link btn-view" title="View Records" aria-label="View records for <?php echo htmlspecialchars($pet_name_display, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
+                                            <i class="fas fa-file-medical"></i>
+                                        </a>
+                                        <a href="editpet.php?id=<?php echo $pet_id; ?>" class="action-link" title="Edit" aria-label="Edit <?php echo htmlspecialchars($pet_name_display, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
+                                            <i class="fas fa-edit"></i>
+                                        </a>
+                                        <?php if ($is_admin): ?>
+                                            <form method="POST" action="" class="delete-pet-form" onsubmit="return confirm('Are you sure you want to permanently delete this pet profile? Pets with appointment history cannot be deleted.');">
+                                                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['managepet_csrf_token'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
+                                                <input type="hidden" name="pet_id" value="<?php echo $pet_id; ?>">
+                                                <button type="submit" name="delete_pet" value="1" class="action-link btn-delete" title="Delete Pet" aria-label="Delete <?php echo htmlspecialchars($pet_name_display, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
+                                                    <i class="fas fa-trash-alt"></i>
+                                                </button>
+                                            </form>
+                                        <?php endif; ?>
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
+                        </tbody>
                     </table>
-
                 </div>
-
             <?php else: ?>
-
                 <div class="empty-state">
-
                     <i class="fas fa-dog"></i>
-
                     <p style="font-weight: 500;">No pet profiles found for this view.</p>
-
                 </div>
-
             <?php endif; ?>
 
             <?php if ($total_pages > 1): ?>
@@ -1786,9 +1857,7 @@ if ($filter_breed !== '') {
                     <?php else: ?>
                         <span class="page-link disabled">&laquo; Previous</span>
                     <?php endif; ?>
-
                     <span class="page-indicator">Page <?php echo $current_page; ?> of <?php echo $total_pages; ?></span>
-
                     <?php if ($current_page < $total_pages): ?>
                         <a class="page-link" href="?<?php echo htmlspecialchars(http_build_query(array_merge($pet_page_params, ['page' => $current_page + 1])), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">Next &raquo;</a>
                     <?php else: ?>
@@ -1796,15 +1865,11 @@ if ($filter_breed !== '') {
                     <?php endif; ?>
                 </nav>
             <?php endif; ?>
-
         </div>
 
         <footer>
-
-            © <?php echo date("Y"); ?> BOOGIE'S PET CARE & SERVICES - DASMARIÑAS BRANCH
-
+            © <?php echo date('Y'); ?> BOOGIE'S PET CARE & SERVICES - DASMARIÑAS BRANCH
         </footer>
-
     </main>
 
     <div id="addPetModal" class="modal">
@@ -1875,34 +1940,61 @@ if ($filter_breed !== '') {
 
                     <div class="form-group">
 
-                        <label>Breed</label>
+                        <label for="pet_breed">Breed *</label>
 
-                        <input type="text" name="pet_breed" placeholder="e.g. Shih Tzu" maxlength="100">
+                        <input type="text" id="pet_breed" name="pet_breed" placeholder="e.g. Shih Tzu" maxlength="100" required>
 
                     </div>
 
                     <div class="form-group">
 
-                        <label>Size / Weight *</label>
+                        <label for="pet_age">Age (years) *</label>
 
-                        <select name="pet_weight" required>
-
-                            <option value="">Select Size</option>
-
-                            <option value="Small (1-5kg)">Small (1-5kg)</option>
-
-                            <option value="Medium (6-10kg)">Medium (6-10kg)</option>
-
-                            <option value="Large (11-15kg)">Large (11-15kg)</option>
-
-                            <option value="Extra Large (16-20kg)">Extra Large (16-20kg)</option>
-
-                            <option value="XXL Large (21-25kg)">XXL Large (21-25kg)</option>
-
-                        </select>
+                        <input type="number" id="pet_age" name="pet_age" min="0" max="100" step="0.1" inputmode="decimal" placeholder="e.g. 2" required>
 
                     </div>
 
+                </div>
+
+                <div class="form-group">
+
+                    <label for="pet_weight">Size / Weight *</label>
+
+                    <select id="pet_weight" name="pet_weight" required>
+
+                        <option value="">Select Size</option>
+
+                        <option value="Small (1-5kg)">Small (1-5kg)</option>
+
+                        <option value="Medium (6-10kg)">Medium (6-10kg)</option>
+
+                        <option value="Large (11-15kg)">Large (11-15kg)</option>
+
+                        <option value="Extra Large (16-20kg)">Extra Large (16-20kg)</option>
+
+                        <option value="XXL Large (21-25kg)">XXL Large (21-25kg)</option>
+
+                    </select>
+
+                </div>
+
+                <div style="margin: 8px 0 12px; padding: 13px 14px; background: #fff9e6; border: 1px solid #f4e3a5; border-radius: 11px;">
+                    <div style="color: #6b5200; font-size: 12px; font-weight: 800;">
+                        <i class="fas fa-paw"></i> Additional Pet Health & Care Information
+                    </div>
+                    <p style="margin-top: 5px; color: #776b48; font-size: 11px; line-height: 1.55;">
+                        These fields are optional. Add any health concerns, behavior details, or special handling instructions that staff and the veterinarian should know.
+                    </p>
+                </div>
+
+                <div class="form-group">
+                    <label for="medical_history">Health Information (Allergies, Conditions & Medications)</label>
+                    <textarea id="medical_history" name="medical_history" rows="4" maxlength="4000" placeholder="Examples: food or medicine allergies, existing health conditions, current medications, previous surgeries, or other health concerns. Leave blank if none."></textarea>
+                </div>
+
+                <div class="form-group">
+                    <label for="special_needs">Behavior & Special Care Instructions</label>
+                    <textarea id="special_needs" name="special_needs" rows="4" maxlength="4000" placeholder="Examples: friendly, shy, anxious, afraid of loud noises, uncomfortable around other pets, bite or scratch history, food restrictions, or preferred handling instructions."></textarea>
                 </div>
 
                 <button type="submit" name="add_pet" class="btn-submit-modal">Register Pet</button>

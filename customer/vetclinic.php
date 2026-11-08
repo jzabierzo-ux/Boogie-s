@@ -901,11 +901,11 @@ try {
 
             border-radius: 20px;
 
-            padding: 22px 26px;
+            padding: 24px 26px;
 
             display: grid;
 
-            grid-template-columns: repeat(3, 1fr);
+            grid-template-columns: repeat(3, minmax(0, 1fr));
 
             gap: 20px;
 
@@ -913,7 +913,24 @@ try {
 
         }
 
+        .care-strip-heading,
+        .vet-prep-note {
+            grid-column: 1 / -1;
+        }
 
+        .care-strip-heading h3 {
+            color: #fff;
+            font-size: 18px;
+            font-weight: 800;
+            line-height: 1.3;
+            margin-bottom: 5px;
+        }
+
+        .care-strip-heading p {
+            color: #c8d3df;
+            font-size: 11px;
+            line-height: 1.6;
+        }
 
         .care-item {
 
@@ -969,6 +986,14 @@ try {
 
             margin-top: 2px;
 
+        }
+
+        .vet-prep-note {
+            color: #c8d3df;
+            font-size: 10px;
+            line-height: 1.6;
+            padding-top: 12px;
+            border-top: 1px solid rgba(255,255,255,.15);
         }
 
 
@@ -2762,9 +2787,8 @@ try {
 
                 <p>
 
-                    Choose a service below to check its current price and continue
-
-                    directly to appointment booking.
+                    Review each veterinary service, its description, and the listed fee for your pet's size.
+                    The veterinarian will review your pet's history and confirm the appropriate care before proceeding.
 
                 </p>
 
@@ -2788,6 +2812,19 @@ try {
                         $service_price = is_numeric($row['price'] ?? null) ? (float)$row['price'] : null;
                         $service_id = filter_var($row['id'] ?? null, FILTER_VALIDATE_INT);
                         $size_key = '';
+                        $is_deworming_service = strpos($category_lower, 'deworm') !== false || strpos($service_name_lower, 'deworm') !== false;
+                        $deworming_range_key = '';
+                        $deworming_range_label = '';
+
+                        // Prefer the exact weight interval stored in the service name/size.
+                        // This supports the clinic's decimal-based brackets (for example,
+                        // 10.1 to 15 kg) without incorrectly relabeling them as 11–15 kg.
+                        if ($is_deworming_service && preg_match('/(\d+(?:\.\d+)?)\s*(?:-|–|to)\s*(\d+(?:\.\d+)?)\s*kg/i', $size_source, $weight_matches)) {
+                            $weight_start = rtrim(rtrim(number_format((float)$weight_matches[1], 1, '.', ''), '0'), '.');
+                            $weight_end = rtrim(rtrim(number_format((float)$weight_matches[2], 1, '.', ''), '0'), '.');
+                            $deworming_range_key = $weight_start . '-' . $weight_end;
+                            $deworming_range_label = $weight_start . '–' . $weight_end . ' kg';
+                        }
 
                         // Detect weight brackets when they are included in the service label.
                         if (preg_match('/xxl|21\s*(?:-|–|to)\s*25\s*kg|21\s*to\s*25/', $size_source)) {
@@ -2809,7 +2846,9 @@ try {
                             'xl' => 'Extra Large (16–20 kg)',
                             'xxl' => 'XXL Large (21–25 kg)',
                         ];
-                        $size_label = $size_labels[$size_key] ?? '';
+                        $size_label = $deworming_range_label !== ''
+                            ? $deworming_range_label
+                            : ($size_labels[$size_key] ?? '');
                         $description = '';
 
                         // Write descriptions by exact service type and weight bracket so
@@ -2888,7 +2927,7 @@ try {
                             // service_name/pet_size/size. For those deworming records,
                             // infer the displayed price bracket from the existing clinic
                             // price bands so the correct size-specific description is used.
-                            if ($size_key === '') {
+                            if ($size_key === '' && $deworming_range_key === '') {
                                 $deworming_price = $service_price ?? 0.0;
                                 $price_size_map = [
                                     200 => 'small',
@@ -2913,6 +2952,19 @@ try {
                                 'xxl' => 'This rate is for the XXL Large (21–25 kg) bracket. Bring your pet’s treatment record, if available, so the vet can review previous deworming and advise about follow-up timing.',
                             ];
 
+                            // Descriptions for exact decimal-based weight bands shown in the
+                            // clinic pricelist. Keep each interval aligned with its displayed label.
+                            $deworming_range_descriptions = [
+                                '1-5' => 'For pets weighing 1–5 kg, share the date of the last deworming dose, if known, and mention any changes in appetite or digestion. The veterinarian can review the history and explain any follow-up that may be needed.',
+                                '5.1-10' => 'For pets weighing 5.1–10 kg, bring the previous deworming record if available and tell the veterinarian when the last dose was given. This helps the clinic review your pet’s treatment history and current needs.',
+                                '10.1-15' => 'For pets weighing 10.1–15 kg, share the date of the last deworming dose, if known, and any recent changes in appetite, digestion, or stool. The veterinarian can review these details and advise on follow-up.',
+                                '15.1-20' => 'For pets weighing 15.1–20 kg, provide details of previous parasite treatment and any concerns you have noticed. The veterinarian will review your pet’s history and current condition before discussing next steps.',
+                                '20.1-25' => 'For pets weighing 20.1–25 kg, bring your pet’s deworming record, if available, and mention any recent changes in appetite or digestion. This gives the veterinarian useful information when reviewing previous treatment and follow-up needs.',
+                                '25.1-30' => 'For pets weighing 25.1–30 kg, tell the veterinarian the date of the last deworming dose, if known, and share any previous treatment details. The clinic can use this information to review your pet’s history and discuss appropriate follow-up.',
+                                '30.1-35' => 'For pets weighing 30.1–35 kg, share any recent changes in appetite, digestion, stool, or activity, along with your pet’s previous deworming history. The veterinarian can assess these details during the visit.',
+                                '35.1-60' => 'For pets weighing 35.1–60 kg, provide information about previous parasite treatments, the last dose date if known, and any health concerns you have noticed. The veterinarian will review your pet’s condition and explain the appropriate next steps.'
+                            ];
+
                             // Keep even unlabelled/custom-priced deworming entries distinct.
                             $deworming_other_descriptions = [
                                 'Use this deworming appointment to review your pet’s previous parasite treatment and ask the veterinarian which signs should prompt a follow-up.',
@@ -2922,8 +2974,13 @@ try {
                                 'Keep your pet’s parasite-care record current with this deworming visit; the veterinarian can explain when the next review may be appropriate.',
                             ];
 
-                            $description = $deworming_descriptions[$size_key]
-                                ?? $deworming_other_descriptions[($deworming_index - 1) % count($deworming_other_descriptions)];
+                            if ($deworming_range_key !== '') {
+                                $description = $deworming_range_descriptions[$deworming_range_key]
+                                    ?? ('For pets weighing ' . $deworming_range_label . ', share any previous deworming records and recent health concerns so the veterinarian can review the appropriate follow-up.');
+                            } else {
+                                $description = $deworming_descriptions[$size_key]
+                                    ?? $deworming_other_descriptions[($deworming_index - 1) % count($deworming_other_descriptions)];
+                            }
 
                         } elseif (strpos($category_lower, 'consultation') !== false || strpos($service_name_lower, 'consult') !== false) {
                             $consultation_descriptions = [
@@ -3110,17 +3167,22 @@ try {
 
 
 
-            <div class="care-strip">
+            <div class="care-strip" aria-labelledby="vet-prep-title">
+
+                <div class="care-strip-heading">
+                    <h3 id="vet-prep-title">Before Your Vet Appointment</h3>
+                    <p>A few details about your pet can help the veterinary team understand your concerns during the visit.</p>
+                </div>
 
                 <div class="care-item">
 
-                    <i class="fa-solid fa-heart-pulse"></i>
+                    <i class="fa-solid fa-folder-open" aria-hidden="true"></i>
 
                     <div>
 
-                        <strong>Health-focused care</strong>
+                        <strong>Bring Pet Records</strong>
 
-                        <span>Services designed around your pet's well-being.</span>
+                        <span>Bring vaccination cards or previous medical records, if available.</span>
 
                     </div>
 
@@ -3130,13 +3192,13 @@ try {
 
                 <div class="care-item">
 
-                    <i class="fa-solid fa-syringe"></i>
+                    <i class="fa-solid fa-notes-medical" aria-hidden="true"></i>
 
                     <div>
 
-                        <strong>Preventive services</strong>
+                        <strong>Share Recent Observations</strong>
 
-                        <span>Support your pet with routine health care.</span>
+                        <span>Note when a concern started and any changes in appetite, activity, or behavior.</span>
 
                     </div>
 
@@ -3146,17 +3208,19 @@ try {
 
                 <div class="care-item">
 
-                    <i class="fa-solid fa-calendar-check"></i>
+                    <i class="fa-solid fa-pills" aria-hidden="true"></i>
 
                     <div>
 
-                        <strong>Easy appointment booking</strong>
+                        <strong>Mention Medicines and Treatments</strong>
 
-                        <span>Choose your service and schedule online.</span>
+                        <span>Tell the veterinarian about current medicines, supplements, or recent treatments.</span>
 
                     </div>
 
                 </div>
+
+                <p class="vet-prep-note">These are general reminders only. The veterinarian will confirm any service-specific preparation or follow-up based on your pet's condition.</p>
 
             </div>
 

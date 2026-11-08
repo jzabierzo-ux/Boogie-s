@@ -206,7 +206,7 @@ if (!in_array($filter_type, ['Dog', 'Cat', 'Other'], true)) {
 
         .container { padding: 35px 40px; flex-grow: 1; }
 
-        .stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-bottom: 30px; }
+        .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-bottom: 30px; }
         
         .stat-card { 
             background: var(--white); 
@@ -237,6 +237,13 @@ if (!in_array($filter_type, ['Dog', 'Cat', 'Other'], true)) {
         
         .c-cat { border-left: 4px solid #f43f5e; }
         .c-cat i { color: #f43f5e; }
+        .c-other { border-left: 4px solid #8b5cf6; }
+        .c-other i { color: #8b5cf6; }
+
+        .patient-name-cell { min-width: 150px; }
+        .owner-cell { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; }
+        .owner-contact { color: var(--text-muted); font-size: 11px; font-weight: 500; white-space: nowrap; }
+        .pet-value-muted { color: var(--text-muted); }
 
         .card { background: var(--white); border-radius: 20px; border: 1px solid var(--border); overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.02); margin-bottom: 20px;}
         .table-controls { padding: 20px 25px; border-bottom: 1px solid #f8faff; display: flex; align-items: center; justify-content: space-between; background: #f8fafc;}
@@ -1206,8 +1213,11 @@ button, input, select, textarea {
     .table-responsive tbody td:nth-child(1)::before { content: 'Patient'; }
     .table-responsive tbody td:nth-child(2)::before { content: 'Type'; }
     .table-responsive tbody td:nth-child(3)::before { content: 'Breed'; }
-    .table-responsive tbody td:nth-child(4)::before { content: 'Owner'; }
-    .table-responsive tbody td:nth-child(5)::before { content: 'Actions'; }
+    .table-responsive tbody td:nth-child(4)::before { content: 'Gender'; }
+    .table-responsive tbody td:nth-child(5)::before { content: 'Age'; }
+    .table-responsive tbody td:nth-child(6)::before { content: 'Weight'; }
+    .table-responsive tbody td:nth-child(7)::before { content: 'Owner / Contact'; }
+    .table-responsive tbody td:nth-child(8)::before { content: 'Actions'; }
 
     .table-responsive tbody td > * {
         min-width: 0 !important;
@@ -2203,13 +2213,18 @@ input, select, textarea, button, img { max-width:100%; }
                     <h3>Cats</h3>
                     <p><?php echo $cats; ?></p>
                 </div>
+                <div class="stat-card c-other" onclick="window.location.href='pets.php?type=Other'">
+                    <i class="fas fa-paw"></i>
+                    <h3>Other Pets</h3>
+                    <p><?php echo $others; ?></p>
+                </div>
             </div>
 
             <div class="card">
                 <div class="table-controls">
                     <div class="search-wrapper">
                         <i class="fas fa-search"></i>
-                        <input type="text" id="searchInput" placeholder="Search patients by name, breed, or type...">
+                        <input type="text" id="searchInput" placeholder="Search by pet name, type, breed, gender, owner, or contact...">
                     </div>
                     <?php if($filter_type !== ''): ?>
                         <div style="font-size: 13px; font-weight: 700; color: var(--brand-blue); background: #eff6ff; padding: 8px 16px; border-radius: 8px;">
@@ -2226,7 +2241,10 @@ input, select, textarea, button, img { max-width:100%; }
                                 <th>Patient Name</th>
                                 <th>Type</th>
                                 <th>Breed</th>
-                                <th>Owner</th>
+                                <th>Gender</th>
+                                <th>Age</th>
+                                <th>Weight</th>
+                                <th>Owner / Contact</th>
                                 <th>Actions</th>
                             </tr>
                         </thead>
@@ -2234,20 +2252,23 @@ input, select, textarea, button, img { max-width:100%; }
                             <?php
                             // --- TABLE FILTER LOGIC ---
                             // $filter_type was validated before the page markup.
-                            // Fetch only columns displayed on this page.
-                            $pet_columns = 'id, name, pet_type, breed, owner_name, owner_id';
+                            // Pet attributes are pulled from the existing pets table; owner contact comes from users.
+                            $pet_columns = 'p.id, p.name, p.pet_type, p.breed, p.gender, p.age, p.weight,
+                                            p.owner_name, p.owner_id,
+                                            u.full_name AS account_owner_name, u.contact_number AS owner_contact';
+                            $pet_from = ' FROM pets p LEFT JOIN users u ON u.id = p.owner_id';
                             try {
                                 if ($filter_type === 'Dog' || $filter_type === 'Cat') {
                                     $stmt_pets = $pdo->prepare(
-                                        "SELECT {$pet_columns} FROM pets WHERE pet_type = :pet_type ORDER BY id DESC"
+                                        "SELECT {$pet_columns}{$pet_from} WHERE p.pet_type = :pet_type ORDER BY p.id DESC"
                                     );
                                     $stmt_pets->execute([':pet_type' => $filter_type]);
                                 } elseif ($filter_type === 'Other') {
                                     $stmt_pets = $pdo->query(
-                                        "SELECT {$pet_columns} FROM pets WHERE pet_type NOT IN ('Dog', 'Cat') ORDER BY id DESC"
+                                        "SELECT {$pet_columns}{$pet_from} WHERE COALESCE(p.pet_type, '') NOT IN ('Dog', 'Cat') ORDER BY p.id DESC"
                                     );
                                 } else {
-                                    $stmt_pets = $pdo->query("SELECT {$pet_columns} FROM pets ORDER BY id DESC");
+                                    $stmt_pets = $pdo->query("SELECT {$pet_columns}{$pet_from} ORDER BY p.id DESC");
                                 }
                                 $rows = $stmt_pets ? $stmt_pets->fetchAll(PDO::FETCH_ASSOC) : [];
                             } catch (Throwable $e) {
@@ -2257,24 +2278,39 @@ input, select, textarea, button, img { max-width:100%; }
 
                             if (!empty($rows)) {
                                 foreach ($rows as $row) {
-                                    $p_name = $row['name'] ?? 'Unnamed';
-                                    $p_type = $row['pet_type'] ?? 'Pet';
-                                    $p_breed = $row['breed'] ?? 'N/A';
-                                    $o_name = $row['owner_name'] ?? 'ID: ' . ($row['owner_id'] ?? 'N/A');
-
+                                    $pet_id = (int)($row['id'] ?? 0);
+                                    $p_name = trim((string)($row['name'] ?? '')) ?: 'Unnamed';
+                                    $p_type = trim((string)($row['pet_type'] ?? '')) ?: 'N/A';
+                                    $p_breed = trim((string)($row['breed'] ?? '')) ?: 'N/A';
+                                    $p_gender = trim((string)($row['gender'] ?? '')) ?: 'N/A';
+                                    $p_age = trim((string)($row['age'] ?? '')) ?: 'N/A';
+                                    $p_weight = trim((string)($row['weight'] ?? '')) ?: 'N/A';
+                                    $owner_from_pet = trim((string)($row['owner_name'] ?? ''));
+                                    $owner_from_account = trim((string)($row['account_owner_name'] ?? ''));
+                                    $o_name = $owner_from_pet !== '' ? $owner_from_pet : ($owner_from_account !== '' ? $owner_from_account : 'ID: ' . ($row['owner_id'] ?? 'N/A'));
+                                    $o_contact = trim((string)($row['owner_contact'] ?? ''));
                                     echo "<tr>";
-                                    echo "<td style='font-weight:700; color: var(--sidebar-navy);'><i class='fas fa-paw' style='color:#cbd5e0; margin-right:10px;'></i>" . htmlspecialchars((string)$p_name, ENT_QUOTES, 'UTF-8') . "</td>";
-                                    echo "<td>" . htmlspecialchars((string)$p_type, ENT_QUOTES, 'UTF-8') . "</td>";
-                                    echo "<td>" . htmlspecialchars((string)$p_breed, ENT_QUOTES, 'UTF-8') . "</td>";
-                                    echo "<td><span class='owner-tag'>" . htmlspecialchars((string)$o_name, ENT_QUOTES, 'UTF-8') . "</span></td>";
+                                    echo "<td class='patient-name-cell' style='font-weight:700; color: var(--sidebar-navy);'><i class='fas fa-paw' style='color:#cbd5e0; margin-right:10px;'></i>" . htmlspecialchars($p_name, ENT_QUOTES, 'UTF-8') . "</td>";
+                                    echo "<td>" . htmlspecialchars($p_type, ENT_QUOTES, 'UTF-8') . "</td>";
+                                    echo "<td>" . htmlspecialchars($p_breed, ENT_QUOTES, 'UTF-8') . "</td>";
+                                    echo "<td>" . htmlspecialchars($p_gender, ENT_QUOTES, 'UTF-8') . "</td>";
+                                    echo "<td>" . htmlspecialchars($p_age, ENT_QUOTES, 'UTF-8') . "</td>";
+                                    echo "<td>" . htmlspecialchars($p_weight, ENT_QUOTES, 'UTF-8') . "</td>";
+                                    echo "<td><div class='owner-cell'><span class='owner-tag'>" . htmlspecialchars($o_name, ENT_QUOTES, 'UTF-8') . "</span>";
+                                    if ($o_contact !== '') {
+                                        echo "<span class='owner-contact'><i class='fas fa-phone' aria-hidden='true'></i> " . htmlspecialchars($o_contact, ENT_QUOTES, 'UTF-8') . "</span>";
+                                    } else {
+                                        echo "<span class='owner-contact pet-value-muted'>No contact number</span>";
+                                    }
+                                    echo "</div></td>";
 
                                     echo "<td>
                                             <div class='action-links'>
-                                                <a href='view_records.php?id=" . urlencode($row['id']) . "' class='btn-icon btn-view' title='View Medical Records'>
+                                                <a href='view_records.php?id=" . urlencode((string)$pet_id) . "' class='btn-icon btn-view' title='View Medical Records' aria-label='View medical records for " . htmlspecialchars($p_name, ENT_QUOTES, 'UTF-8') . "'>
                                                     <i class='fas fa-notes-medical'></i>
                                                 </a>
 
-                                                <a href='delete_pet.php?id=" . urlencode($row['id']) . "' class='btn-icon btn-delete' title='Delete Patient' onclick='return confirm(\"Are you sure you want to permanently delete this patient?\");'>
+                                                <a href='delete_pet.php?id=" . urlencode((string)$pet_id) . "' class='btn-icon btn-delete' title='Delete Patient' aria-label='Delete " . htmlspecialchars($p_name, ENT_QUOTES, 'UTF-8') . "' onclick='return confirm(\"Are you sure you want to permanently delete this patient?\");'>
                                                     <i class='fas fa-trash-alt'></i>
                                                 </a>
                                             </div>
@@ -2282,7 +2318,7 @@ input, select, textarea, button, img { max-width:100%; }
                                     echo "</tr>";
                                 }
                             } else {
-                                echo "<tr><td colspan='5' style='text-align:center; padding: 60px 30px; color: var(--text-muted);'>
+                                echo "<tr><td colspan='8' style='text-align:center; padding: 60px 30px; color: var(--text-muted);'>
                                     <i class='fas fa-search' style='font-size:40px; opacity:0.3; margin-bottom:15px; display:block;'></i>
                                     <span style='font-weight:500;'>No patients found for this category.</span>
                                 </td></tr>";
@@ -2311,7 +2347,7 @@ input, select, textarea, button, img { max-width:100%; }
                 const searchTerm = searchBox.value.trim().toLowerCase();
 
                 tableRows.forEach(function(row) {
-                    if (row.cells[0] && row.cells[0].colSpan === 5) return;
+                    if (row.cells[0] && row.cells[0].colSpan === 8) return;
                     row.style.display = row.textContent.toLowerCase().includes(searchTerm) ? "" : "none";
                 });
             });
