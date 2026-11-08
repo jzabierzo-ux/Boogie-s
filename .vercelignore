@@ -1,2 +1,3 @@
-﻿check_files.php
+check_files.php
 PHPMailer/get_oauth_token.php
+firebase-debug.log
