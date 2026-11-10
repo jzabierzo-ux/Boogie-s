@@ -1,14 +1,10 @@
 <?php
 require_once __DIR__ . '/../shared_session_bootstrap.php';
 
-// This page is part of the Admin portal. Keep Admin and Staff login separate.
+// This page is part of the Admin portal. Require a distinct Admin session.
 $current_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
-if (
-    !isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true ||
-    $current_role !== 'admin'
-) {
-    header('Location: ../admin_login.php');
-    exit();
+if ($current_role === 'administrator') {
+    $current_role = 'admin';
 }
 
 $user_id = filter_var(
@@ -16,10 +12,25 @@ $user_id = filter_var(
     FILTER_VALIDATE_INT,
     ['options' => ['min_range' => 1]]
 );
-if (!$user_id) {
-    header('Location: ../admin_login.php');
-    exit();
+
+$is_admin_session =
+    ($_SESSION['logged_in'] ?? false) === true &&
+    ($_SESSION['admin_logged_in'] ?? false) === true &&
+    ($_SESSION['staff_logged_in'] ?? false) !== true &&
+    $current_role === 'admin' &&
+    $user_id !== false &&
+    $user_id !== null;
+
+if (!$is_admin_session) {
+    if (($_SESSION['logged_in'] ?? false) !== true) {
+        header('Location: /admin/admin_login.php', true, 303);
+        exit();
+    }
+
+    http_response_code(403);
+    exit('Access denied. Admin only.');
 }
+
 $user_id = (int)$user_id;
 
 // Open the database connection only after Admin authorization succeeds.
@@ -33,6 +44,13 @@ $csrf_token = $_SESSION['csrf_token'];
 $message = '';
 $user_data = [];
 $new_storage_object = null;
+
+/** Read a scalar POST value without turning submitted arrays into the word "Array". */
+function adminProfilePostString(string $key): string
+{
+    $value = $_POST[$key] ?? '';
+    return is_string($value) ? $value : '';
+}
 
 /** Return the server-side Supabase Storage configuration. Never expose the service key to the browser. */
 function boogiesSupabaseStorageConfig(): ?array
@@ -235,16 +253,16 @@ try {
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['update_profile']) || isset($_POST['update_password']))) {
-    $submittedToken = $_POST['csrf_token'] ?? '';
-    if (!is_string($submittedToken) || !hash_equals($csrf_token, $submittedToken)) {
+    $submittedToken = adminProfilePostString('csrf_token');
+    if ($csrf_token === '' || $submittedToken === '' || !hash_equals($csrf_token, $submittedToken)) {
         http_response_code(403);
         $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Invalid or expired security token. Refresh the page and try again.</div>';
     } elseif (empty($user_data)) {
         $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> The user profile could not be loaded.</div>';
     } elseif (isset($_POST['update_profile'])) {
-        $full_name = trim((string)($_POST['full_name'] ?? ''));
-        $username = trim((string)($_POST['username'] ?? ''));
-        $contact_number = trim((string)($_POST['contact_number'] ?? ''));
+        $full_name = trim(adminProfilePostString('full_name'));
+        $username = trim(adminProfilePostString('username'));
+        $contact_number = trim(adminProfilePostString('contact_number'));
         $profile_image = (string)($user_data['profile_image'] ?? '');
         $has_error = false;
 
@@ -383,11 +401,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['update_profile']) ||
             }
         }
     } elseif (isset($_POST['update_password'])) {
-        $current_password = (string)($_POST['current_password'] ?? '');
-        $new_password = (string)($_POST['new_password'] ?? '');
-        $confirm_password = (string)($_POST['confirm_password'] ?? '');
+        // Passwords are not trimmed: intentional leading/trailing spaces remain valid.
+        $current_password = adminProfilePostString('current_password');
+        $new_password = adminProfilePostString('new_password');
+        $confirm_password = adminProfilePostString('confirm_password');
 
-        if (!password_verify($current_password, (string)($user_data['password'] ?? ''))) {
+        if ($current_password === '' || strlen($current_password) > 4096) {
+            $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Enter a valid current password.</div>';
+        } elseif (!password_verify($current_password, (string)($user_data['password'] ?? ''))) {
             $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Incorrect current password.</div>';
         } elseif (strlen($new_password) < 8) {
             $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> The new password must be at least 8 characters.</div>';
@@ -398,11 +419,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['update_profile']) ||
         } else {
             try {
                 $hashed_new_password = password_hash($new_password, PASSWORD_DEFAULT);
+                if (!is_string($hashed_new_password) || $hashed_new_password === '') {
+                    throw new RuntimeException('Admin password hashing failed.');
+                }
+
                 $update_pass_stmt = $pdo->prepare('UPDATE users SET password = :password WHERE id = :id');
                 $update_pass_stmt->execute([':password' => $hashed_new_password, ':id' => $user_id]);
                 $user_data['password'] = $hashed_new_password;
+                // Rotate the current session identifier after a credential change.
+                if (!session_regenerate_id(true)) {
+                    error_log('Admin profile password changed, but session ID rotation failed.');
+                }
                 $message = '<div class="alert alert-success"><i class="fas fa-check-circle"></i> Password successfully updated!</div>';
-            } catch (PDOException $e) {
+            } catch (Throwable $e) {
                 error_log('Admin password update failed: ' . $e->getMessage());
                 $message = '<div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> Failed to update password.</div>';
             }
@@ -415,9 +444,9 @@ $display_name_raw = (string)($user_data['full_name'] ?? 'User');
 $display_username_raw = (string)($user_data['username'] ?? 'No Username');
 $display_phone_raw = (string)($user_data['contact_number'] ?? '');
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_profile']) && strpos($message, 'alert-error') !== false) {
-    $display_name_raw = trim((string)($_POST['full_name'] ?? $display_name_raw));
-    $display_username_raw = trim((string)($_POST['username'] ?? $display_username_raw));
-    $display_phone_raw = trim((string)($_POST['contact_number'] ?? $display_phone_raw));
+    $display_name_raw = trim(adminProfilePostString('full_name')) ?: $display_name_raw;
+    $display_username_raw = trim(adminProfilePostString('username')) ?: $display_username_raw;
+    $display_phone_raw = trim(adminProfilePostString('contact_number'));
 }
 $display_name = htmlspecialchars($display_name_raw, ENT_QUOTES, 'UTF-8');
 $display_username = htmlspecialchars($display_username_raw, ENT_QUOTES, 'UTF-8');
@@ -434,10 +463,30 @@ $first_name = trim(explode(' ', $admin_full_name)[0] ?? 'A', ',');
 $admin_notifications = [];
 $unread_count = 0;
 try {
-    $admin_notif_stmt = $pdo->prepare(
+    // Match the existing PostgreSQL column type (boolean, numeric, or text).
+    $readTypeStmt = $pdo->prepare("SELECT data_type
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'admin_notifications'
+          AND column_name = 'is_read'
+        LIMIT 1");
+    $readTypeStmt->execute();
+    $readDataType = strtolower(trim((string)$readTypeStmt->fetchColumn()));
+
+    if ($readDataType === 'boolean') {
+        $unreadPredicate = 'COALESCE(is_read, FALSE) = FALSE';
+    } elseif (in_array($readDataType, ['smallint', 'integer', 'bigint', 'numeric', 'decimal', 'real', 'double precision'], true)) {
+        $unreadPredicate = '(is_read = 0 OR is_read IS NULL)';
+    } elseif (in_array($readDataType, ['text', 'character varying', 'character'], true)) {
+        $unreadPredicate = "(is_read IS NULL OR LOWER(BTRIM(CAST(is_read AS TEXT))) IN ('0', 'false', 'f', 'no', 'unread', ''))";
+    } else {
+        throw new RuntimeException('Unsupported admin_notifications.is_read column type.');
+    }
+
+    $admin_notif_stmt = $pdo->query(
         'SELECT id, message, created_at, COUNT(*) OVER() AS total_unread
-         FROM admin_notifications
-         WHERE is_read = 0
+         FROM public.admin_notifications
+         WHERE ' . $unreadPredicate . '
          ORDER BY created_at DESC NULLS LAST, id DESC
          LIMIT 20'
     );

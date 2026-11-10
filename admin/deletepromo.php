@@ -3,22 +3,27 @@
 // loads db_supabase.php, making the PDO connection available in this scope.
 require_once __DIR__ . '/../shared_session_bootstrap.php';
 
-// Admin-only authorization. Keep legacy Admin role naming compatible while
-// requiring the separate Admin-session marker set by admin_login.php.
+// Strict Admin-only authorization. The role and dedicated session marker
+// must both match; a Staff session must never execute this destructive endpoint.
 $raw_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
 $current_role = ($raw_role === 'administrator') ? 'admin' : $raw_role;
+$user_id = filter_var(
+    $_SESSION['user_id'] ?? null,
+    FILTER_VALIDATE_INT,
+    ['options' => ['min_range' => 1]]
+);
 $is_admin_session = (
     ($_SESSION['logged_in'] ?? false) === true
     && ($_SESSION['admin_logged_in'] ?? false) === true
+    && ($_SESSION['staff_logged_in'] ?? false) !== true
     && $current_role === 'admin'
-    && isset($_SESSION['user_id'])
-    && is_numeric($_SESSION['user_id'])
-    && (int)$_SESSION['user_id'] > 0
+    && $user_id !== false
+    && $user_id !== null
 );
 
 if (!$is_admin_session) {
-    header('Location: ../admin_login.php');
-    exit();
+    http_response_code(403);
+    exit('Access denied. Admin privileges are required.');
 }
 
 /** Read the dedicated Supabase Storage settings for promotion images. */

@@ -1,8 +1,18 @@
 <?php
 require_once __DIR__ . '/../shared_session_bootstrap.php';
 
+date_default_timezone_set('Asia/Manila');
+header('Cache-Control: private, no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
+header('Expires: 0');
+header('X-Content-Type-Options: nosniff');
+header('X-Frame-Options: DENY');
+header('Referrer-Policy: no-referrer');
+
 /* -------------------------------------------------------------------------
    AUTHENTICATION AND VETERINARY ROLE ACCESS
+   This endpoint requires an exclusive Staff session. An Admin session,
+   or a session with both portal flags active, is never accepted here.
    ------------------------------------------------------------------------- */
 $current_role_raw = strtolower(trim((string)($_SESSION['role'] ?? '')));
 $role_aliases = [
@@ -20,10 +30,18 @@ $role_aliases = [
 ];
 $current_role = $role_aliases[$current_role_raw] ?? $current_role_raw;
 
-$session_logged_in = in_array($_SESSION['logged_in'] ?? null, [true, 1, '1'], true)
-    || in_array($_SESSION['staff_logged_in'] ?? null, [true, 1, '1'], true);
+// Accept only explicit true/1 session flag representations for compatibility
+// with existing PHP sessions; do not use loose truthiness.
+$is_logged_in = in_array($_SESSION['logged_in'] ?? null, [true, 1, '1'], true);
+$is_staff_portal = in_array($_SESSION['staff_logged_in'] ?? null, [true, 1, '1'], true);
+$is_admin_portal = in_array($_SESSION['admin_logged_in'] ?? null, [true, 1, '1'], true);
 
-if (!$session_logged_in) {
+if ($is_admin_portal) {
+    http_response_code(403);
+    exit('Access denied. An Admin session cannot access the veterinary Staff dashboard.');
+}
+
+if (!$is_logged_in || !$is_staff_portal) {
     header('Location: stafflogin.php');
     exit();
 }
@@ -33,16 +51,36 @@ if (!in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], tru
     exit('Access denied. This dashboard is for veterinary personnel only.');
 }
 
-$user_id = (int)($_SESSION['user_id'] ?? $_SESSION['staff_id'] ?? 0);
-if ($user_id <= 0) {
-    header('Location: stafflogin.php');
-    exit();
+$validated_user_id = filter_var(
+    $_SESSION['user_id'] ?? null,
+    FILTER_VALIDATE_INT,
+    ['options' => ['min_range' => 1]]
+);
+if ($validated_user_id === false || $validated_user_id === null) {
+    http_response_code(403);
+    exit('Access denied. The Staff account session is invalid. Please sign in again.');
 }
+$user_id = (int)$validated_user_id;
 
-// Connect only after the veterinary session and account ID are validated.
+// Connect only after the exclusive Staff session, role, and account ID are validated.
 require_once __DIR__ . '/../db_supabase.php';
-date_default_timezone_set('Asia/Manila');
-header('Cache-Control: private, no-store, max-age=0');
+
+// Re-check the account role against the database so a stale or mismatched
+// session cannot keep veterinary access after the account role is changed.
+try {
+    $accountRoleStmt = $pdo->prepare('SELECT role FROM users WHERE id = :user_id LIMIT 1');
+    $accountRoleStmt->execute([':user_id' => $user_id]);
+    $databaseRoleRaw = strtolower(trim((string)$accountRoleStmt->fetchColumn()));
+    $databaseRole = $role_aliases[$databaseRoleRaw] ?? $databaseRoleRaw;
+    if ($databaseRole === '' || $databaseRole !== $current_role) {
+        http_response_code(403);
+        exit('Access denied. The Staff account role no longer matches this session. Please sign in again.');
+    }
+} catch (Throwable $e) {
+    error_log('Veterinary dashboard account-role verification failed: ' . $e->getMessage());
+    http_response_code(503);
+    exit('Unable to verify the Staff account right now. Please try again.');
+}
 
 $role_labels = [
     'veterinarian' => 'Veterinarian',
@@ -51,10 +89,14 @@ $role_labels = [
 ];
 $role_label = $role_labels[$current_role] ?? 'Veterinary Staff';
 
-if (empty($_SESSION['staff_dashboard_csrf'])) {
+if (
+    !isset($_SESSION['staff_dashboard_csrf'])
+    || !is_string($_SESSION['staff_dashboard_csrf'])
+    || !preg_match('/^[a-f0-9]{64}$/i', $_SESSION['staff_dashboard_csrf'])
+) {
     $_SESSION['staff_dashboard_csrf'] = bin2hex(random_bytes(32));
 }
-$csrf_token = (string)$_SESSION['staff_dashboard_csrf'];
+$csrf_token = $_SESSION['staff_dashboard_csrf'];
 
 /* -------------------------------------------------------------------------
    PROFILE IMAGE PATH RESOLUTION
@@ -107,12 +149,64 @@ function resolveStaffDashboardImageUrl($storedPath): string
 /* -------------------------------------------------------------------------
    STAFF-OWNED NOTIFICATIONS
    These come from notifications.user_id, not admin_notifications.
+   Detect is_read's PostgreSQL type so the dashboard works with boolean,
+   numeric, and legacy text columns without weakening user ownership checks.
    ------------------------------------------------------------------------- */
-function loadStaffDashboardNotifications(PDO $pdo, int $userId): array
+function getStaffDashboardNotificationReadState(PDO $pdo): array
+{
+    $typeStmt = $pdo->prepare("
+        SELECT data_type
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'notifications'
+          AND column_name = 'is_read'
+        LIMIT 1
+    ");
+    $typeStmt->execute();
+    $columnType = strtolower(trim((string)$typeStmt->fetchColumn()));
+
+    if ($columnType === 'boolean') {
+        return [
+            'unread_predicate' => 'COALESCE(is_read, FALSE) = FALSE',
+            'read_value' => 'TRUE'
+        ];
+    }
+
+    if (in_array($columnType, ['smallint', 'integer', 'bigint', 'numeric', 'decimal', 'real', 'double precision'], true)) {
+        return [
+            'unread_predicate' => '(is_read = 0 OR is_read IS NULL)',
+            'read_value' => '1'
+        ];
+    }
+
+    if (in_array($columnType, ['text', 'character varying', 'character'], true)) {
+        return [
+            'unread_predicate' => "(is_read IS NULL OR LOWER(BTRIM(CAST(is_read AS TEXT))) IN ('0', 'false', 'f', 'no', 'unread', ''))",
+            'read_value' => "'1'"
+        ];
+    }
+
+    throw new RuntimeException('Unsupported or missing notifications.is_read column type.');
+}
+
+$notification_read_state = null;
+try {
+    $notification_read_state = getStaffDashboardNotificationReadState($pdo);
+} catch (Throwable $e) {
+    error_log('Veterinary dashboard notification schema check failed: ' . $e->getMessage());
+}
+
+function loadStaffDashboardNotifications(PDO $pdo, int $userId, ?array $readState): array
 {
     if ($userId <= 0) {
         return [0, []];
     }
+    if (!is_array($readState) || empty($readState['unread_predicate'])) {
+        throw new RuntimeException('Notification read-state configuration is unavailable.');
+    }
+
+    // This SQL fragment is selected only from the fixed type map above.
+    $unreadPredicate = $readState['unread_predicate'];
 
     // Window count returns the full unread total with the 20 newest rows
     // in one database round-trip.
@@ -121,7 +215,7 @@ function loadStaffDashboardNotifications(PDO $pdo, int $userId): array
                COUNT(*) OVER() AS total_unread
         FROM notifications
         WHERE user_id = :user_id
-          AND is_read = 0
+          AND {$unreadPredicate}
         ORDER BY created_at DESC, id DESC
         LIMIT 20
     ");
@@ -190,8 +284,9 @@ function renderStaffDashboardNotifications(array $notifications): string
 /* -------------------------------------------------------------------------
    MARK ONLY THIS USER'S NOTIFICATIONS AS READ (POST + CSRF)
    ------------------------------------------------------------------------- */
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (($_POST['action'] ?? '') !== 'mark_notifications_read') {
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
+    $postedAction = $_POST['action'] ?? '';
+    if (!is_string($postedAction) || $postedAction !== 'mark_notifications_read') {
         http_response_code(405);
         header('Allow: GET, POST');
         exit('Method not allowed.');
@@ -207,16 +302,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         http_response_code(403);
         exit('Unable to identify the staff account.');
     }
+    if (!is_array($notification_read_state) || empty($notification_read_state['unread_predicate']) || !isset($notification_read_state['read_value'])) {
+        http_response_code(503);
+        exit('Notification service is temporarily unavailable.');
+    }
 
     try {
+        // Both SQL fragments come from the fixed PostgreSQL type map above.
         $markReadStmt = $pdo->prepare("
             UPDATE notifications
-            SET is_read = 1
+            SET is_read = {$notification_read_state['read_value']}
             WHERE user_id = :user_id
-              AND is_read = 0
+              AND {$notification_read_state['unread_predicate']}
         ");
         $markReadStmt->execute([':user_id' => $user_id]);
-    } catch (PDOException $e) {
+    } catch (Throwable $e) {
         error_log('Staff dashboard mark-notifications-read failed: ' . $e->getMessage());
         http_response_code(500);
         exit('Unable to update notifications right now.');
@@ -229,19 +329,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 /* -------------------------------------------------------------------------
    SAME-FILE AJAX ENDPOINT FOR THE STAFF NOTIFICATION DROPDOWN
    ------------------------------------------------------------------------- */
-if (($_GET['ajax'] ?? '') === 'notifications') {
+if (isset($_GET['ajax']) && is_string($_GET['ajax']) && $_GET['ajax'] === 'notifications') {
     header('Content-Type: application/json; charset=utf-8');
     header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
     header('Pragma: no-cache');
 
     try {
-        [$ajaxUnreadCount, $ajaxNotifications] = loadStaffDashboardNotifications($pdo, $user_id);
+        [$ajaxUnreadCount, $ajaxNotifications] = loadStaffDashboardNotifications($pdo, $user_id, $notification_read_state);
         echo json_encode([
             'success' => true,
             'unread' => $ajaxUnreadCount,
             'html' => renderStaffDashboardNotifications($ajaxNotifications)
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    } catch (PDOException $e) {
+    } catch (Throwable $e) {
         error_log('Staff dashboard notification poll failed: ' . $e->getMessage());
         http_response_code(500);
         echo json_encode([
@@ -299,8 +399,8 @@ $first_name_only = trim((string)(preg_split('/\s+/', $mobile_name_source)[0] ?? 
 $staff_notifications = [];
 $unread_count = 0;
 try {
-    [$unread_count, $staff_notifications] = loadStaffDashboardNotifications($pdo, $user_id);
-} catch (PDOException $e) {
+    [$unread_count, $staff_notifications] = loadStaffDashboardNotifications($pdo, $user_id, $notification_read_state);
+} catch (Throwable $e) {
     error_log('Staff dashboard notifications query failed: ' . $e->getMessage());
 }
 $staff_notification_html = renderStaffDashboardNotifications($staff_notifications);
@@ -2338,7 +2438,7 @@ input, select, textarea, button, img { max-width:100%; }
                 <div class="schedule-list">
                     <?php if (!empty($today_schedule)): ?>
                         <?php foreach($today_schedule as $appt): 
-                            $status = $appt['booking_status'] ?? 'Pending';
+                            $status = is_string($appt['booking_status'] ?? null) ? $appt['booking_status'] : 'Pending';
                             $s_class = 'st-pending';
                             if (strtolower($status) == 'confirmed') $s_class = 'st-confirmed';
                             elseif (strtolower($status) == 'completed') $s_class = 'st-completed';

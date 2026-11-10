@@ -1,13 +1,10 @@
 <?php
 require_once __DIR__ . '/../shared_session_bootstrap.php';
-require_once __DIR__ . '/../db_supabase.php';
-require_once __DIR__ . '/../includes/iprog_sms.php';
-require_once __DIR__ . '/../includes/clinic_reschedule.php';
 
-// Set default timezone
+// Set the local timezone used by booking dates and times.
 date_default_timezone_set('Asia/Manila');
 
-// --- ROLE-BASED SECURITY CHECK ---
+// --- STRICT ADMIN / STAFF SESSION AUTHORIZATION ---
 $raw_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
 $role_aliases = [
     'administrator' => 'admin',
@@ -27,55 +24,96 @@ $role_aliases = [
     'pet_hotel_staff_attendant' => 'pet_hotel_staff',
     'vet' => 'veterinarian',
     'veterinary' => 'veterinarian',
+    'veterinary assistant' => 'vet_assistant',
+    'vet assistant' => 'vet_assistant',
+    'veterinary_assistant' => 'vet_assistant',
+    'veterinary nurse' => 'vet_nurse',
+    'vet nurse' => 'vet_nurse',
+    'veterinary_nurse' => 'vet_nurse',
     // Keep legacy labels explicit until existing accounts are reviewed.
     'staff' => 'groomer',
-    'supervisor' => 'receptionist'
+    'supervisor' => 'receptionist',
 ];
 $current_role = $role_aliases[$raw_role] ?? $raw_role;
-$is_admin = $current_role === 'admin';
-$requested_portal = strtolower(trim((string)($_POST['login_portal'] ?? $_GET['portal'] ?? 'admin')));
-$admin_session_valid = (
-    ($_SESSION['logged_in'] ?? false) === true
-    && ($_SESSION['admin_logged_in'] ?? false) === true
-    && $current_role === 'admin'
-    && (int)($_SESSION['user_id'] ?? 0) > 0
+if ($current_role !== '') {
+    $_SESSION['role'] = $current_role;
+}
+
+$requestedPortalValue = $_POST['login_portal'] ?? $_GET['portal'] ?? 'admin';
+$requested_portal = is_string($requestedPortalValue)
+    ? strtolower(trim($requestedPortalValue))
+    : 'admin';
+$requested_portal = in_array($requested_portal, ['admin', 'staff'], true)
+    ? $requested_portal
+    : 'admin';
+
+$loggedIn = ($_SESSION['logged_in'] ?? false) === true;
+$adminPortalFlag = ($_SESSION['admin_logged_in'] ?? false) === true;
+$staffPortalFlag = ($_SESSION['staff_logged_in'] ?? false) === true;
+$sessionUserId = filter_var(
+    $_SESSION['user_id'] ?? null,
+    FILTER_VALIDATE_INT,
+    ['options' => ['min_range' => 1]]
 );
+$validSessionUserId = $sessionUserId !== false && $sessionUserId !== null;
+
 $staff_booking_roles = ['manager', 'receptionist', 'groomer', 'pet_hotel_staff'];
+$veterinary_roles = ['veterinarian', 'vet_assistant', 'vet_nurse'];
+
+// A browser session must belong to exactly one portal at a time.
+if ($loggedIn && $adminPortalFlag && $staffPortalFlag) {
+    http_response_code(403);
+    exit('Conflicting Admin and Staff sessions. Please log out and sign in again.');
+}
+
+// Veterinary users use their own portal and must not enter booking management.
+if ($loggedIn && $staffPortalFlag && !$adminPortalFlag && $validSessionUserId
+    && in_array($current_role, $veterinary_roles, true)) {
+    header('Location: ../staff/staffdashboard.php', true, 303);
+    exit();
+}
+
+$admin_session_valid = (
+    $loggedIn
+    && $adminPortalFlag
+    && !$staffPortalFlag
+    && $current_role === 'admin'
+    && $validSessionUserId
+);
 $staff_session_valid = (
-    ($_SESSION['logged_in'] ?? false) === true
-    && ($_SESSION['staff_logged_in'] ?? false) === true
+    $loggedIn
+    && $staffPortalFlag
+    && !$adminPortalFlag
     && in_array($current_role, $staff_booking_roles, true)
-    && (int)($_SESSION['user_id'] ?? 0) > 0
+    && $validSessionUserId
 );
 
 if (!$admin_session_valid && !$staff_session_valid) {
-    if ($requested_portal === 'staff') {
-        header('Location: ../staff/stafflogin.php');
-    } else {
-        header('Location: admin_login.php');
-    }
+    $staffIdentity = in_array($current_role, array_merge($staff_booking_roles, $veterinary_roles), true);
+    $loginTarget = ($requested_portal === 'staff' || $staffIdentity)
+        ? '../staff/stafflogin.php'
+        : 'admin_login.php';
+    header('Location: ' . $loginTarget, true, 303);
     exit();
 }
 
-if ($current_role === 'admin' && !$admin_session_valid) {
-    header('Location: admin_login.php');
-    exit();
-}
-
-// Veterinary roles use their dedicated portal.
-if (
-    $staff_session_valid === false
-    && in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)
-) {
-    header('Location: ../staff/staffdashboard.php');
-    exit();
-}
-
+$is_admin = $admin_session_valid;
+$is_service_staff = in_array($current_role, ['groomer', 'pet_hotel_staff'], true);
 $booking_page_roles = ['admin', 'manager', 'receptionist', 'groomer', 'pet_hotel_staff'];
 if (!in_array($current_role, $booking_page_roles, true)) {
     http_response_code(403);
     exit('Access denied. This role cannot access booking management.');
 }
+
+// Do not load the database, SMS provider, or booking helpers before access is verified.
+require_once __DIR__ . '/../db_supabase.php';
+require_once __DIR__ . '/../includes/iprog_sms.php';
+require_once __DIR__ . '/../includes/clinic_reschedule.php';
+
+// Prevent sensitive booking and customer details from being cached by browsers or proxies.
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
+header('X-Content-Type-Options: nosniff');
 
 /** Load active Admin availability adjustments intersecting [startDate, endDateExclusive). */
 function bookingAdminLoadAvailabilityAdjustments(PDO $pdo, string $startDate, string $endDateExclusive): array
@@ -604,8 +642,6 @@ if (($_GET['ajax'] ?? '') === 'walkin_boarding_capacity') {
     exit;
 }
 
-$is_admin = $admin_session_valid;
-$is_service_staff = in_array($current_role, ['groomer', 'pet_hotel_staff'], true);
 $show_notifications = $is_admin || $is_service_staff;
 $portal_mode = $is_admin ? 'admin' : 'staff';
 
@@ -624,8 +660,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['availability_adjustme
         exit('Access denied. Only Admin can change slot and room availability.');
     }
 
-    $availabilityPostedToken = $_POST['csrf_token'] ?? '';
-    if (!is_string($availabilityPostedToken) || !hash_equals($csrf_token, $availabilityPostedToken)) {
+    $availabilityPostedToken = $_POST['csrf_token'] ?? null;
+    if (!is_string($availabilityPostedToken) || $availabilityPostedToken === ''
+        || $csrf_token === '' || !hash_equals($csrf_token, $availabilityPostedToken)) {
         $_SESSION['availability_flash'] = ['type' => 'error', 'message' => 'Invalid or expired security token. Refresh the page and try again.'];
         header('Location: managebooking.php#availability-management');
         exit();
@@ -895,16 +932,23 @@ if ($raw_profile_img !== '') {
 
 // --- CLINIC-INITIATED RESCHEDULING (separate from the customer's one-time allowance) ---
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['clinic_reschedule_action'])) {
-    $postedToken = (string)($_POST['csrf_token'] ?? '');
-    if ($postedToken === '' || !hash_equals($csrf_token, $postedToken)) {
-        $_SESSION['alert_msg'] = 'Security check failed. Refresh the page and try again.';
+    $postedToken = $_POST['csrf_token'] ?? null;
+    $clinicAppointmentId = filter_var(
+        $_POST['id'] ?? null,
+        FILTER_VALIDATE_INT,
+        ['options' => ['min_range' => 1]]
+    );
+    if (!is_string($postedToken) || $postedToken === '' || $csrf_token === ''
+        || !hash_equals($csrf_token, $postedToken)
+        || $clinicAppointmentId === false || $clinicAppointmentId === null) {
+        $_SESSION['alert_msg'] = 'Security check failed or the selected booking is invalid. Refresh the page and try again.';
     } else {
         $clinicRescheduleResult = boogieClinicReschedule(
             $pdo,
-            (int)($_POST['id'] ?? 0),
-            trim((string)($_POST['clinic_reschedule_date'] ?? '')),
-            trim((string)($_POST['clinic_reschedule_time'] ?? '')),
-            trim((string)($_POST['clinic_reschedule_reason'] ?? '')),
+            (int)$clinicAppointmentId,
+            is_string($_POST['clinic_reschedule_date'] ?? null) ? trim($_POST['clinic_reschedule_date']) : '',
+            is_string($_POST['clinic_reschedule_time'] ?? null) ? trim($_POST['clinic_reschedule_time']) : '',
+            is_string($_POST['clinic_reschedule_reason'] ?? null) ? trim($_POST['clinic_reschedule_reason']) : '',
             $current_role
         );
         $_SESSION['alert_msg'] = (string)($clinicRescheduleResult['message'] ?? 'Unable to process the clinic-initiated reschedule.');
@@ -917,24 +961,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['clinic_reschedule_act
 
 // --- LOGIC: UPDATE STATUS WITH NOTIFICATIONS, PAYMENT & SMS ---
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['booking_action'])) {
-    $posted_token = (string)($_POST['csrf_token'] ?? '');
-    if (!hash_equals($csrf_token, $posted_token)) {
+    $posted_token = $_POST['csrf_token'] ?? null;
+    if (!is_string($posted_token) || $posted_token === ''
+        || $csrf_token === '' || !hash_equals($csrf_token, $posted_token)) {
         http_response_code(403);
         exit('Invalid or expired request token. Refresh the page and try again.');
     }
 
-    $id = (int)($_POST['id'] ?? 0);
-    $requested_status = (string)($_POST['action'] ?? '');
+    $validatedBookingId = filter_var(
+        $_POST['id'] ?? null,
+        FILTER_VALIDATE_INT,
+        ['options' => ['min_range' => 1]]
+    );
+    $actionValue = $_POST['action'] ?? null;
+    $requested_status = is_string($actionValue) ? trim($actionValue) : '';
 
     // Allow only the actions used by this page.
     $allowed_actions = ['pay', 'verify_gcash', 'notify_gcash', 'Completed', 'Confirmed', 'Cancelled', 'No-Show', 'For-Rescheduling'];
 
-    if ($id <= 0 || !in_array($requested_status, $allowed_actions, true)) {
+    if ($validatedBookingId === false || $validatedBookingId === null || !in_array($requested_status, $allowed_actions, true)) {
         $_SESSION['alert_msg'] = "Invalid booking action.";
         header("Location: managebooking.php");
         exit();
     }
 
+    $id = (int)$validatedBookingId;
     $new_status = $requested_status;
 
     try {
@@ -1548,7 +1599,8 @@ try {
 }
 
 // --- DETERMINE FILTER STATUS FROM URL ---
-$status_input = strtolower(trim((string)($_GET['status'] ?? 'all')));
+$statusValue = $_GET['status'] ?? 'all';
+$status_input = is_string($statusValue) ? strtolower(trim($statusValue)) : 'all';
 $status_aliases = [
     'all' => 'All',
     'active' => 'Active',

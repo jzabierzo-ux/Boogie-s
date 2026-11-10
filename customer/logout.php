@@ -1,15 +1,20 @@
 <?php
 // Log out the current user even if the database or audit logging is unavailable.
 if (session_status() !== PHP_SESSION_ACTIVE) {
-    require_once __DIR__ . '/../shared_session_bootstrap.php';
+    // logout.php is in the project root, alongside this bootstrap file.
+    require_once __DIR__ . '/shared_session_bootstrap.php';
 }
 
-// Preserve only the values needed for routing and the admin audit log.
+// Preserve only the values needed for routing and the audit log before clearing the session.
 $rawUserId = $_SESSION['user_id'] ?? null;
 $validatedUserId = filter_var($rawUserId, FILTER_VALIDATE_INT);
 $userId = ($validatedUserId !== false && $validatedUserId !== null && $validatedUserId > 0)
-    ? $validatedUserId
+    ? (int)$validatedUserId
     : null;
+
+$wasLoggedIn = (($_SESSION['logged_in'] ?? false) === true);
+$adminFlag = (($_SESSION['admin_logged_in'] ?? false) === true);
+$staffFlag = (($_SESSION['staff_logged_in'] ?? false) === true);
 
 $rawRole = strtolower(trim((string)($_SESSION['role'] ?? '')));
 
@@ -46,11 +51,7 @@ $role = $roleAliases[$rawRole] ?? $rawRole;
 $ipAddress = $_SERVER['REMOTE_ADDR'] ?? null;
 $userAgent = $_SERVER['HTTP_USER_AGENT'] ?? null;
 
-// Keep Admin, personnel, and customer login destinations separate.
-$redirectPage = 'login.php';
-if ($role === 'admin') {
-    $redirectPage = '/admin/admin_login.php';
-} elseif (in_array($role, [
+$staffRoles = [
     'manager',
     'receptionist',
     'groomer',
@@ -58,12 +59,30 @@ if ($role === 'admin') {
     'veterinarian',
     'vet_assistant',
     'vet_nurse',
-], true)) {
+];
+
+// Require the matching role flag so an Admin session cannot be mistaken for Staff,
+// or vice versa, when an old or inconsistent session contains conflicting values.
+$isAdminSession = $wasLoggedIn
+    && $adminFlag
+    && !$staffFlag
+    && $role === 'admin';
+
+$isStaffSession = $wasLoggedIn
+    && $staffFlag
+    && !$adminFlag
+    && in_array($role, $staffRoles, true);
+
+// Keep Admin, personnel, and customer login destinations separate.
+$redirectPage = 'login.php';
+if ($role === 'admin') {
+    $redirectPage = '/admin/admin_login.php';
+} elseif (in_array($role, $staffRoles, true)) {
     $redirectPage = '/staff/stafflogin.php';
 }
 
 // Destroy the session and clear its browser cookie before trying to write logs.
-// This ensures logout still completes when the database is unavailable.
+// Audit logging is best-effort and must never preserve an authenticated session.
 $_SESSION = [];
 
 if (ini_get('session.use_cookies')) {
@@ -83,41 +102,31 @@ if (ini_get('session.use_cookies')) {
 
 session_destroy();
 
-// Set the redirect before audit logging, so a logging/configuration failure
-// cannot leave the user on a page with an active session.
+// Set the redirect before audit logging so logging/configuration failures do not
+// leave the browser waiting without a destination.
 header('Location: ' . $redirectPage, true, 303);
 
-// Admin logout audit entry is best-effort; it must never block logout.
-if ($role === 'admin') {
+// Record both Admin and authenticated Staff logout events in the same audit table
+// displayed by admin_account_logs.php. Customer logout is intentionally not included.
+if (($isAdminSession || $isStaffSession) && $userId !== null) {
     try {
-        require_once __DIR__ . '/../db_supabase.php';
+        // db_supabase.php is in the project root, alongside logout.php.
+        require_once __DIR__ . '/db_supabase.php';
 
         if (isset($pdo) && $pdo instanceof PDO) {
-            if ($userId !== null) {
-                $stmt = $pdo->prepare(
-                    "INSERT INTO admin_account_logs
-                        (user_id, action, status, ip_address, user_agent)
-                     VALUES (:user_id, 'LOGOUT', 'SUCCESS', :ip_address, :user_agent)"
-                );
-                $stmt->execute([
-                    ':user_id' => $userId,
-                    ':ip_address' => $ipAddress,
-                    ':user_agent' => $userAgent,
-                ]);
-            } else {
-                $stmt = $pdo->prepare(
-                    "INSERT INTO admin_account_logs
-                        (user_id, action, status, ip_address, user_agent)
-                     VALUES (NULL, 'LOGOUT', 'SUCCESS', :ip_address, :user_agent)"
-                );
-                $stmt->execute([
-                    ':ip_address' => $ipAddress,
-                    ':user_agent' => $userAgent,
-                ]);
-            }
+            $stmt = $pdo->prepare(
+                "INSERT INTO admin_account_logs
+                    (user_id, action, status, ip_address, user_agent)
+                 VALUES (:user_id, 'LOGOUT', 'SUCCESS', :ip_address, :user_agent)"
+            );
+            $stmt->execute([
+                ':user_id' => $userId,
+                ':ip_address' => $ipAddress,
+                ':user_agent' => $userAgent,
+            ]);
         }
     } catch (Throwable $e) {
-        error_log('Admin logout audit logging failed: ' . $e->getMessage());
+        error_log('Account logout audit logging failed: ' . $e->getMessage());
     }
 }
 

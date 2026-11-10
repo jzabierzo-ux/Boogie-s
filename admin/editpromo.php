@@ -1,15 +1,26 @@
 <?php
 require_once __DIR__ . '/../shared_session_bootstrap.php';
 
-// Admin-only access. Keep Admin authentication separate from Staff login.
+// Strict Admin-only authorization. Staff sessions must never use this page.
 $current_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
-if (
-    !isset($_SESSION['logged_in']) ||
-    $_SESSION['logged_in'] !== true ||
-    $current_role !== 'admin'
-) {
-    header('Location: ../admin_login.php');
-    exit();
+$admin_user_id = filter_var(
+    $_SESSION['user_id'] ?? null,
+    FILTER_VALIDATE_INT,
+    ['options' => ['min_range' => 1]]
+);
+$is_valid_admin_session = (
+    ($_SESSION['logged_in'] ?? false) === true &&
+    ($_SESSION['admin_logged_in'] ?? false) === true &&
+    ($_SESSION['staff_logged_in'] ?? false) !== true &&
+    $current_role === 'admin' &&
+    $admin_user_id !== false &&
+    $admin_user_id !== null
+);
+
+if (!$is_valid_admin_session) {
+    http_response_code(403);
+    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+    exit('Access denied. Administrator access only.');
 }
 
 // Connect only after the Admin session has been verified.

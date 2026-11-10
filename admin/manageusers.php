@@ -2,112 +2,113 @@
 
 require_once __DIR__ . '/../shared_session_bootstrap.php';
 
-include '../db_supabase.php';
-
 // --- ROLE-BASED ACCESS CONTROL ---
-
 $raw_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
-
 $role_aliases = [
-
     'administrator' => 'admin',
-
     'shop manager' => 'manager',
-
     'shop_manager' => 'manager',
-
     'vet' => 'veterinarian',
-
     'veterinary' => 'veterinarian',
-
     'front desk' => 'receptionist',
-
     'front desk / receptionist' => 'receptionist',
-
     'front_desk' => 'receptionist',
-
     'front_desk_receptionist' => 'receptionist',
-
     'veterinary assistant' => 'vet_assistant',
-
     'vet assistant' => 'vet_assistant',
-
     'veterinary_assistant' => 'vet_assistant',
-
     'veterinary nurse' => 'vet_nurse',
-
     'vet nurse' => 'vet_nurse',
-
     'veterinary_nurse' => 'vet_nurse',
-
     'grooming staff' => 'groomer',
-
     'grooming staff / groomer' => 'groomer',
-
     'grooming_staff' => 'groomer',
-
     'grooming_staff_groomer' => 'groomer',
-
     'pet hotel staff' => 'pet_hotel_staff',
-
     'pet hotel staff / attendant' => 'pet_hotel_staff',
-
     'pet_hotel_attendant' => 'pet_hotel_staff',
-
     'pet_hotel_staff_attendant' => 'pet_hotel_staff',
-
     // Legacy account mappings retained pending account review.
-
     'staff' => 'groomer',
-
     'supervisor' => 'receptionist',
-
 ];
 
 $current_role = $role_aliases[$raw_role] ?? $raw_role;
-
 if ($current_role !== '') {
-
     $_SESSION['role'] = $current_role;
-
 }
 
-$is_admin = ($current_role === 'admin');
+$logged_in = ($_SESSION['logged_in'] ?? false) === true;
+$admin_portal_logged_in = ($_SESSION['admin_logged_in'] ?? false) === true;
+$staff_portal_logged_in = ($_SESSION['staff_logged_in'] ?? false) === true;
+$session_user_id = filter_var(
+    $_SESSION['user_id'] ?? null,
+    FILTER_VALIDATE_INT,
+    ['options' => ['min_range' => 1]]
+);
 
-if (($_SESSION['logged_in'] ?? false) !== true) {
+$staff_roles = [
+    'manager', 'receptionist', 'groomer', 'pet_hotel_staff',
+    'veterinarian', 'vet_assistant', 'vet_nurse',
+];
+$allowed_user_page_roles = ['admin', 'manager', 'receptionist', 'groomer', 'pet_hotel_staff'];
 
-    // Keep the Admin login separate from the staff login.
+// A single browser session must belong to exactly one portal.
+$is_admin = $logged_in
+    && $admin_portal_logged_in
+    && !$staff_portal_logged_in
+    && $current_role === 'admin'
+    && $session_user_id !== false
+    && $session_user_id !== null;
 
-    $login_target = ($current_role === 'admin') ? '../admin_login.php' : '../staff/stafflogin.php';
+$is_staff = $logged_in
+    && $staff_portal_logged_in
+    && !$admin_portal_logged_in
+    && in_array($current_role, $staff_roles, true)
+    && $session_user_id !== false
+    && $session_user_id !== null;
 
+if (!$logged_in) {
+    // Keep the Admin login separate from the Staff login.
+    $login_target = ($current_role === 'admin' || $admin_portal_logged_in)
+        ? 'admin_login.php'
+        : '../staff/stafflogin.php';
     header('Location: ' . $login_target);
-
     exit();
-
 }
 
-if (empty($_SESSION['user_id']) || !is_numeric($_SESSION['user_id'])) {
-
+if (!$is_admin && !$is_staff) {
     http_response_code(403);
-
-    exit('Access denied: invalid session.');
-
+    exit('Access denied. Invalid or conflicting portal session.');
 }
 
 if (in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)) {
-
     header('Location: ../staff/staffdashboard.php');
-
     exit();
-
 }
 
 // Admin, Manager, Receptionist, Groomer, and Pet Hotel Staff may view customer accounts.
-$allowed_user_page_roles = ['admin', 'manager', 'receptionist', 'groomer', 'pet_hotel_staff'];
 if (!in_array($current_role, $allowed_user_page_roles, true)) {
     http_response_code(403);
     exit('Access denied. This role cannot access customer management.');
 }
+
+$uid = (int)$session_user_id;
+
+// Initialize the database only after the portal session and role are authorized.
+if (!isset($pdo) || !($pdo instanceof PDO)) {
+    require_once __DIR__ . '/../db_supabase.php';
+}
+if (!isset($pdo) || !($pdo instanceof PDO)) {
+    error_log('Manage users: database connection is unavailable.');
+    http_response_code(503);
+    exit('Customer management is temporarily unavailable. Please try again.');
+}
+
+// Customer contact details should not be stored in shared browser/proxy caches.
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
+header('X-Content-Type-Options: nosniff');
 
 // 2. FETCH ADMIN PROFILE
 
@@ -115,7 +116,69 @@ $admin_full_name = (string)($_SESSION['user_name'] ?? 'User');
 $profile_img_path = '';
 $first_name = trim(explode(' ', $admin_full_name)[0] ?? 'User', ',');
 
-$uid = (int)$_SESSION['user_id'];
+/** Resolve only known profile-image URLs or project upload folders. */
+function manageUsersResolveProfileImageUrl(string $storedPath): string
+{
+    $storedPath = trim($storedPath);
+    if ($storedPath === '' || preg_match('/[\x00-\x1F\x7F]/', $storedPath)) {
+        return '';
+    }
+
+    if (preg_match('~^https?://~i', $storedPath)) {
+        $parts = parse_url($storedPath);
+        if (!is_array($parts)
+            || !in_array(strtolower((string)($parts['scheme'] ?? '')), ['http', 'https'], true)
+            || empty($parts['host'])
+            || isset($parts['user'])
+            || isset($parts['pass'])
+            || filter_var($storedPath, FILTER_VALIDATE_URL) === false) {
+            return '';
+        }
+        return $storedPath;
+    }
+
+    $path = str_replace('\\', '/', $storedPath);
+    $rootUploads = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'uploads';
+    $adminUploads = __DIR__ . DIRECTORY_SEPARATOR . 'uploads';
+    $candidates = [];
+
+    if (strpos($path, '../uploads/') === 0) {
+        $candidates[] = [$rootUploads, '../uploads/', substr($path, strlen('../uploads/'))];
+    } elseif (strpos($path, 'uploads/') === 0) {
+        $relative = substr($path, strlen('uploads/'));
+        $candidates[] = [$adminUploads, 'uploads/', $relative];
+        $candidates[] = [$rootUploads, '../uploads/', $relative];
+    } elseif (strpos($path, 'admin/uploads/') === 0) {
+        $candidates[] = [$adminUploads, 'uploads/', substr($path, strlen('admin/uploads/'))];
+    } elseif (strpos($path, '../admin/uploads/') === 0) {
+        $candidates[] = [$adminUploads, 'uploads/', substr($path, strlen('../admin/uploads/'))];
+    } else {
+        return '';
+    }
+
+    foreach ($candidates as [$directory, $urlPrefix, $relative]) {
+        $segments = explode('/', (string)$relative);
+        if ($relative === '' || in_array('', $segments, true)
+            || in_array('.', $segments, true) || in_array('..', $segments, true)) {
+            continue;
+        }
+
+        $basePath = realpath($directory);
+        if ($basePath === false) {
+            continue;
+        }
+        $resolvedPath = realpath($basePath . DIRECTORY_SEPARATOR . implode(DIRECTORY_SEPARATOR, $segments));
+        $basePrefix = rtrim($basePath, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+        if ($resolvedPath === false || !is_file($resolvedPath) || strpos($resolvedPath, $basePrefix) !== 0) {
+            continue;
+        }
+
+        return $urlPrefix . implode('/', array_map('rawurlencode', $segments));
+    }
+
+    return '';
+}
+
 
 try {
     $get_admin = $pdo->prepare("
@@ -137,6 +200,7 @@ try {
     // Use the session fallback when the profile query fails.
     error_log('Manage users profile query failed: ' . $e->getMessage());
 }
+$profile_img_src = manageUsersResolveProfileImageUrl($profile_img_path);
 
 // --- NOTIFICATIONS: ADMIN ALERTS OR SERVICE-STAFF PERSONAL ALERTS ---
 $admin_notifications = [];
@@ -232,11 +296,25 @@ try {
 }
 
 // 4. FETCH USER LIST WITH SEARCH, FILTER, AND SERVER-SIDE PAGINATION
-$search = '';
-$filter_type = (string)($_GET['filter'] ?? '');
+$search_raw = $_GET['search'] ?? '';
+$search = is_string($search_raw) ? trim($search_raw) : '';
+if (function_exists('mb_substr')) {
+    $search = mb_substr($search, 0, 150, 'UTF-8');
+} else {
+    $search = substr($search, 0, 150);
+}
+
+$filter_raw = $_GET['filter'] ?? '';
+$filter_type = (is_string($filter_raw) && in_array($filter_raw, ['verified', 'contact'], true))
+    ? $filter_raw
+    : '';
+
 $users_per_page = 20;
-$current_page = filter_var($_GET['page'] ?? 1, FILTER_VALIDATE_INT);
-if ($current_page === false || $current_page < 1) {
+$page_raw = $_GET['page'] ?? 1;
+$current_page = (is_string($page_raw) || is_int($page_raw))
+    ? filter_var($page_raw, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]])
+    : false;
+if ($current_page === false || $current_page === null || $current_page > intdiv(PHP_INT_MAX, $users_per_page)) {
     $current_page = 1;
 }
 $current_page = (int)$current_page;
@@ -253,16 +331,20 @@ try {
     $where_sql = " WHERE role = 'customer' ";
     $params = [];
 
-    if (isset($_GET['search']) && trim((string)$_GET['search']) !== '') {
-        $search = trim((string)$_GET['search']);
+    if ($search !== '') {
         $where_sql .= "
             AND (
-                full_name ILIKE :search
-                OR email ILIKE :search
-                OR contact_number ILIKE :search
+                full_name ILIKE :search_name
+                OR email ILIKE :search_email
+                OR contact_number ILIKE :search_contact
             )
         ";
-        $params[':search'] = '%' . $search . '%';
+        $search_pattern = '%' . $search . '%';
+        $params = [
+            ':search_name' => $search_pattern,
+            ':search_email' => $search_pattern,
+            ':search_contact' => $search_pattern,
+        ];
     } elseif ($filter_type === 'verified') {
         $where_sql .= " AND is_verified::text IN ('1', 'true', 't')";
     } elseif ($filter_type === 'contact') {
@@ -319,9 +401,14 @@ try {
     $range_end = 0;
 }
 
-// Preserve the active search/filter while moving between result pages.
-$pagination_params = $_GET;
-unset($pagination_params['page']);
+// Preserve only validated search/filter values while moving between result pages.
+$pagination_params = [];
+if ($search !== '') {
+    $pagination_params['search'] = $search;
+}
+if ($filter_type !== '') {
+    $pagination_params['filter'] = $filter_type;
+}
 $previous_page_url = 'manageusers.php?' . http_build_query(array_merge($pagination_params, ['page' => max(1, $current_page - 1)]));
 $next_page_url = 'manageusers.php?' . http_build_query(array_merge($pagination_params, ['page' => min($total_pages, $current_page + 1)]));
 
@@ -1212,9 +1299,9 @@ $next_page_url = 'manageusers.php?' . http_build_query(array_merge($pagination_p
 
                     <span class="admin-tag"><?php echo strtoupper($current_role); ?></span>
 
-                    <?php if (!empty($profile_img_path) && file_exists($profile_img_path)): ?>
+                    <?php if ($profile_img_src !== ''): ?>
 
-                        <img src="<?php echo htmlspecialchars($profile_img_path); ?>" class="top-avatar" alt="Profile Picture">
+                        <img src="<?php echo htmlspecialchars($profile_img_src, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>" class="top-avatar" alt="Profile Picture">
 
                     <?php else: ?>
 

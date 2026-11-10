@@ -1,6 +1,16 @@
 <?php
 require_once __DIR__ . '/../shared_session_bootstrap.php';
 
+date_default_timezone_set('Asia/Manila');
+ini_set('display_errors', '0');
+
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
+header('Expires: 0');
+header('X-Content-Type-Options: nosniff');
+header('Referrer-Policy: strict-origin-when-cross-origin');
+header('X-Frame-Options: DENY');
+
 /*
  * Normalize legacy role labels without changing the stored database role.
  */
@@ -56,6 +66,13 @@ function isAllowedPersonnelRole(string $role): bool
 function logPersonnelAccount(PDO $pdo, ?int $userId, string $action, string $status): void
 {
     try {
+        $remoteAddress = $_SERVER['REMOTE_ADDR'] ?? '';
+        $ipAddress = is_string($remoteAddress) && filter_var($remoteAddress, FILTER_VALIDATE_IP)
+            ? $remoteAddress
+            : 'UNKNOWN';
+        $userAgent = $_SERVER['HTTP_USER_AGENT'] ?? 'UNKNOWN';
+        $userAgent = is_string($userAgent) ? substr($userAgent, 0, 255) : 'UNKNOWN';
+
         $stmt = $pdo->prepare('
             INSERT INTO admin_account_logs
                 (user_id, action, status, ip_address, user_agent)
@@ -66,12 +83,19 @@ function logPersonnelAccount(PDO $pdo, ?int $userId, string $action, string $sta
             ':user_id' => $userId,
             ':action' => $action,
             ':status' => $status,
-            ':ip_address' => (string)($_SERVER['REMOTE_ADDR'] ?? 'UNKNOWN'),
-            ':user_agent' => (string)($_SERVER['HTTP_USER_AGENT'] ?? 'UNKNOWN'),
+            ':ip_address' => $ipAddress,
+            ':user_agent' => $userAgent,
         ]);
     } catch (Throwable $e) {
         error_log('Personnel account log insert failed: ' . $e->getMessage());
     }
+}
+
+/** Read a scalar POST value without triggering array-to-string warnings. */
+function personnelPostString(string $key): ?string
+{
+    $value = $_POST[$key] ?? null;
+    return is_string($value) ? $value : null;
 }
 
 function showPersonnelLoginError(string $message): void
@@ -80,13 +104,21 @@ function showPersonnelLoginError(string $message): void
         $message,
         JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT
     );
-    echo '<script>alert(' . $safeMessage . '); window.history.back();</script>';
+    if ($safeMessage === false) {
+        $safeMessage = '"Unable to process login right now. Please try again."';
+    }
+    header('Content-Type: text/html; charset=UTF-8');
+    echo '<!doctype html><html lang="en"><meta charset="UTF-8"><title>Login Error</title>';
+    echo '<script>alert(' . $safeMessage . '); window.history.back();</script></html>';
     exit;
 }
 
-// Keep already-authenticated users in the correct portal.
+// Keep already-authenticated users in the correct portal. A Staff session must
+// never carry the Admin flag, and an Admin session must never carry the Staff flag.
 $sessionRole = normalizePersonnelRole($_SESSION['role'] ?? '');
 $sessionLoggedIn = ($_SESSION['logged_in'] ?? false) === true;
+$adminFlag = ($_SESSION['admin_logged_in'] ?? false) === true;
+$staffFlag = ($_SESSION['staff_logged_in'] ?? false) === true;
 $sessionUserId = filter_var(
     $_SESSION['user_id'] ?? null,
     FILTER_VALIDATE_INT,
@@ -94,28 +126,33 @@ $sessionUserId = filter_var(
 );
 $validSessionUser = $sessionUserId !== false && $sessionUserId !== null;
 
-if (
-    $sessionLoggedIn &&
-    ($_SESSION['admin_logged_in'] ?? false) === true &&
-    $sessionRole === 'admin' &&
-    $validSessionUser
-) {
+$validAdminSession = $sessionLoggedIn && $adminFlag && !$staffFlag
+    && $sessionRole === 'admin' && $validSessionUser;
+$validStaffSession = $sessionLoggedIn && $staffFlag && !$adminFlag
+    && isAllowedPersonnelRole($sessionRole) && $validSessionUser;
+
+if ($validAdminSession) {
     header('Location: ../admin/admindashboard.php?portal=admin');
     exit();
 }
 
-if (
-    $sessionLoggedIn &&
-    ($_SESSION['staff_logged_in'] ?? false) === true &&
-    $validSessionUser &&
-    isAllowedPersonnelRole($sessionRole)
-) {
+if ($validStaffSession) {
     if (in_array($sessionRole, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)) {
         header('Location: staffdashboard.php');
     } else {
         header('Location: ../admin/admindashboard.php?portal=staff');
     }
     exit();
+}
+
+// Discard an inconsistent or stale Admin/Staff portal session before showing
+// this login form. This also handles the case where both portal flags are true.
+$hasAnyPortalFlag = !empty($_SESSION['admin_logged_in']) || !empty($_SESSION['staff_logged_in']);
+if ($hasAnyPortalFlag || ($sessionLoggedIn && ($adminFlag || $staffFlag))) {
+    $_SESSION = [];
+    if (session_status() === PHP_SESSION_ACTIVE) {
+        session_regenerate_id(true);
+    }
 }
 
 if (
@@ -126,19 +163,27 @@ if (
 }
 
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
-    $expectedCsrf = (string)($_SESSION['personnel_login_csrf'] ?? '');
-    $postedCsrf = (string)($_POST['personnel_login_csrf'] ?? '');
+    $expectedCsrf = $_SESSION['personnel_login_csrf'] ?? '';
+    $postedCsrf = personnelPostString('personnel_login_csrf');
 
-    if ($expectedCsrf === '' || $postedCsrf === '' || !hash_equals($expectedCsrf, $postedCsrf)) {
+    if (!is_string($expectedCsrf) || $expectedCsrf === '' || $postedCsrf === null
+        || $postedCsrf === '' || !hash_equals($expectedCsrf, $postedCsrf)) {
         http_response_code(403);
         showPersonnelLoginError('Your login form expired. Refresh the page and try again.');
     }
 
-    $usernameInput = trim((string)($_POST['username'] ?? ''));
-    $passwordInput = (string)($_POST['password'] ?? '');
+    $usernameValue = personnelPostString('username');
+    $passwordValue = personnelPostString('password');
+    $usernameInput = $usernameValue !== null ? trim($usernameValue) : '';
+    $passwordInput = $passwordValue ?? '';
 
-    if ($usernameInput === '' || $passwordInput === '') {
+    if ($usernameValue === null || $passwordValue === null
+        || $usernameInput === '' || $passwordInput === '') {
         showPersonnelLoginError('Please enter your username/email and password.');
+    }
+
+    if (strlen($usernameInput) > 255 || strlen($passwordInput) > 4096) {
+        showPersonnelLoginError('The username/email or password is too long. Please check your entries.');
     }
 
     try {
@@ -161,14 +206,19 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         ]);
         $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
+        $databaseUserId = isset($user['id'])
+            ? filter_var($user['id'], FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]])
+            : false;
         if (
             !$user ||
+            $databaseUserId === false ||
             !isset($user['password']) ||
-            !password_verify($passwordInput, (string)$user['password'])
+            !is_string($user['password']) ||
+            !password_verify($passwordInput, $user['password'])
         ) {
             logPersonnelAccount(
                 $pdo,
-                $user ? (int)$user['id'] : null,
+                $databaseUserId !== false ? (int)$databaseUserId : null,
                 'LOGIN',
                 'FAILED'
             );
@@ -178,26 +228,29 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         $normalizedRole = normalizePersonnelRole($user['role'] ?? '');
 
         if ($normalizedRole === 'admin') {
-            logPersonnelAccount($pdo, (int)$user['id'], 'LOGIN', 'FAILED');
+            logPersonnelAccount($pdo, (int)$databaseUserId, 'LOGIN', 'FAILED');
             showPersonnelLoginError('This account is not authorized for the Personnel Portal.');
         }
 
         if (!isAllowedPersonnelRole($normalizedRole)) {
-            logPersonnelAccount($pdo, (int)$user['id'], 'LOGIN', 'FAILED');
+            logPersonnelAccount($pdo, (int)$databaseUserId, 'LOGIN', 'FAILED');
             http_response_code(403);
             showPersonnelLoginError('This account does not have an authorized personnel role.');
         }
 
-        logPersonnelAccount($pdo, (int)$user['id'], 'LOGIN', 'SUCCESS');
-
-        // Rotate the session ID and replace pre-authentication session data.
-        session_regenerate_id(true);
+        // Rotate the session ID and replace all pre-authentication or other-portal data.
+        if (!session_regenerate_id(true)) {
+            throw new RuntimeException('Unable to rotate the personnel session ID.');
+        }
         $_SESSION = [];
         $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
         $_SESSION['logged_in'] = true;
+        $_SESSION['admin_logged_in'] = false;
         $_SESSION['staff_logged_in'] = true;
-        $_SESSION['user_id'] = (int)$user['id'];
+        $_SESSION['user_id'] = (int)$databaseUserId;
         $_SESSION['role'] = $normalizedRole;
+
+        logPersonnelAccount($pdo, (int)$databaseUserId, 'LOGIN', 'SUCCESS');
 
         $fullName = trim((string)($user['full_name'] ?? ''));
         $_SESSION['user_name'] = $fullName !== '' ? $fullName : 'System User';
@@ -372,7 +425,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 
       <div class="security-note"><i class="fa-solid fa-circle-info" aria-hidden="true"></i><div><strong>Staff access only.</strong> Your account permissions determine which pages and actions you can use.</div></div>
 
-      <form action="<?php echo htmlspecialchars($_SERVER['PHP_SELF'], ENT_QUOTES, 'UTF-8'); ?>" method="POST" autocomplete="on">
+      <form action="<?php echo htmlspecialchars((string)($_SERVER['PHP_SELF'] ?? 'stafflogin.php'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>" method="POST" autocomplete="on">
         <input type="hidden" name="personnel_login_csrf" value="<?php echo htmlspecialchars($_SESSION['personnel_login_csrf'], ENT_QUOTES, 'UTF-8'); ?>">
         <div class="form-group">
           <label for="username">Username or email</label>

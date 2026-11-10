@@ -1,14 +1,39 @@
 <?php
 require_once __DIR__ . '/../shared_session_bootstrap.php';
 
-// Admin-only authorization.
-$current_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
-if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true || $current_role !== 'admin') {
-    header('Location: ../admin_login.php');
-    exit();
+// Admin-only authorization: require the dedicated Admin session flag and
+// reject any session that also carries the Staff portal flag.
+$raw_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
+$current_role = ($raw_role === 'administrator') ? 'admin' : $raw_role;
+$user_id = filter_var(
+    $_SESSION['user_id'] ?? null,
+    FILTER_VALIDATE_INT,
+    ['options' => ['min_range' => 1]]
+);
+
+$is_admin_session = (
+    ($_SESSION['logged_in'] ?? false) === true
+    && ($_SESSION['admin_logged_in'] ?? false) === true
+    && ($_SESSION['staff_logged_in'] ?? false) !== true
+    && $current_role === 'admin'
+    && $user_id !== false
+    && $user_id !== null
+);
+
+if (!$is_admin_session) {
+    if (($_SESSION['logged_in'] ?? false) !== true) {
+        header('Location: admin_login.php');
+        exit();
+    }
+    http_response_code(403);
+    exit('Access denied. Admin only.');
 }
 
-require_once '../db_supabase.php';
+$_SESSION['role'] = 'admin';
+$user_id = (int)$user_id;
+
+// Load the database only after Admin authorization succeeds.
+require_once __DIR__ . '/../db_supabase.php';
 
 // CSRF token used by all state-changing service actions.
 if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
@@ -127,20 +152,53 @@ if (isset($_SESSION['user_id'])) {
 
 $profile_img_src = resolveManageServicesProfileImage($profile_img_path);
 
+/** Read a scalar POST field without turning submitted arrays into the word "Array". */
+function manageServicesPostString(string $key): string
+{
+    $value = $_POST[$key] ?? '';
+    return is_string($value) ? trim($value) : '';
+}
+
+/** Build an unread predicate based on the existing PostgreSQL is_read column type. */
+function manageServicesUnreadPredicate(PDO $pdo): string
+{
+    $typeStmt = $pdo->prepare("SELECT data_type
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'admin_notifications'
+          AND column_name = 'is_read'
+        LIMIT 1");
+    $typeStmt->execute();
+    $dataType = strtolower(trim((string)$typeStmt->fetchColumn()));
+
+    if ($dataType === 'boolean') {
+        return 'COALESCE(is_read, FALSE) = FALSE';
+    }
+    if (in_array($dataType, ['smallint', 'integer', 'bigint', 'numeric', 'decimal', 'real', 'double precision'], true)) {
+        return '(is_read = 0 OR is_read IS NULL)';
+    }
+    if (in_array($dataType, ['text', 'character varying', 'character'], true)) {
+        return "(is_read IS NULL OR LOWER(BTRIM(CAST(is_read AS TEXT))) IN ('0', 'false', 'f', 'no', 'unread', ''))";
+    }
+
+    throw new RuntimeException('Unsupported or unknown admin_notifications.is_read column type.');
+}
+
 try {
     // Load only the newest 20 notifications while retaining the full unread count.
+    $unread_predicate = manageServicesUnreadPredicate($pdo);
     $admin_notif_stmt = $pdo->query(
         'SELECT id, message, created_at, COUNT(*) OVER() AS total_unread
-         FROM admin_notifications
-         WHERE is_read = 0
-         ORDER BY created_at DESC, id DESC
+         FROM public.admin_notifications
+         WHERE ' . $unread_predicate . '
+         ORDER BY created_at DESC NULLS LAST, id DESC
          LIMIT 20'
     );
     $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
     $unread_count = !empty($admin_notifications)
         ? (int)$admin_notifications[0]['total_unread']
         : 0;
-} catch (PDOException $e) {
+} catch (Throwable $e) {
     error_log('Manage services notification lookup failed: ' . $e->getMessage());
     $admin_notifications = [];
     $unread_count = 0;
@@ -148,8 +206,13 @@ try {
 
 // All changes must be submitted through POST with a valid CSRF token.
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $session_token = $_SESSION['csrf_token'] ?? '';
     $posted_token = $_POST['csrf_token'] ?? '';
-    if (!is_string($posted_token) || !hash_equals($csrf_token, $posted_token)) {
+    if (
+        !is_string($session_token) || $session_token === '' ||
+        !is_string($posted_token) || $posted_token === '' ||
+        !hash_equals($session_token, $posted_token)
+    ) {
         http_response_code(403);
         exit('Invalid security token. Refresh the page and try again.');
     }
@@ -176,11 +239,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // Add or update a service.
     if (isset($_POST['save_service'])) {
-        $category = trim((string)($_POST['category'] ?? ''));
-        $service_name = trim((string)($_POST['service_name'] ?? ''));
-        $price_raw = trim((string)($_POST['price'] ?? ''));
-        $available_raw = (string)($_POST['is_available'] ?? '');
-        $service_id_raw = trim((string)($_POST['service_id'] ?? ''));
+        $category = manageServicesPostString('category');
+        $service_name = manageServicesPostString('service_name');
+        $price_raw = manageServicesPostString('price');
+        $available_raw = manageServicesPostString('is_available');
+        $service_id_raw = manageServicesPostString('service_id');
         $service_id = null;
 
         if ($service_id_raw !== '') {
@@ -194,8 +257,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($category === '' || $service_name === '' || $price_raw === '') {
             redirectWithServiceFlash('error', 'Please complete all required service fields.');
         }
-        if (!is_numeric($price_raw) || !is_finite((float)$price_raw) || (float)$price_raw < 0) {
-            redirectWithServiceFlash('error', 'Enter a valid price of zero or greater.');
+        // Accept ordinary decimal currency values only (up to two decimal places).
+        if (
+            !preg_match('/^(?:[0-9]+(?:\.[0-9]{1,2})?|\.[0-9]{1,2})$/D', $price_raw) ||
+            !is_finite((float)$price_raw) ||
+            (float)$price_raw < 0
+        ) {
+            redirectWithServiceFlash('error', 'Enter a valid price of zero or greater, using up to two decimal places.');
         }
         if (!in_array($available_raw, ['0', '1'], true)) {
             redirectWithServiceFlash('error', 'Select a valid service visibility option.');

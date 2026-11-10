@@ -1,15 +1,27 @@
 <?php
 require_once __DIR__ . '/../shared_session_bootstrap.php';
 
-// This endpoint creates personnel accounts and is restricted to Admins.
-$current_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
+// This endpoint creates personnel accounts and is restricted to Admin sessions.
+$raw_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
+$current_role = ($raw_role === 'administrator') ? 'admin' : $raw_role;
 
-if (($_SESSION['logged_in'] ?? false) !== true) {
-    header('Location: ../admin_login.php');
-    exit();
-}
+$is_admin_session = (
+    ($_SESSION['logged_in'] ?? false) === true &&
+    ($_SESSION['admin_logged_in'] ?? false) === true &&
+    ($_SESSION['staff_logged_in'] ?? false) !== true &&
+    $current_role === 'admin' &&
+    isset($_SESSION['user_id']) &&
+    is_numeric($_SESSION['user_id']) &&
+    (int)$_SESSION['user_id'] > 0
+);
 
-if ($current_role !== 'admin') {
+if (!$is_admin_session) {
+    if (($_SESSION['logged_in'] ?? false) !== true) {
+        // admin_login.php is a sibling of this endpoint inside the admin folder.
+        header('Location: admin_login.php');
+        exit();
+    }
+
     http_response_code(403);
     exit('Access denied. Admin only.');
 }

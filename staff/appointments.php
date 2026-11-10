@@ -3,35 +3,71 @@ require_once __DIR__ . '/../shared_session_bootstrap.php';
 
 date_default_timezone_set('Asia/Manila');
 
-// This page belongs only to the Veterinarian Portal. Require both the
-// shared login flag and the personnel-specific session flag.
+// This page belongs only to the Veterinarian Portal. Require an exclusive,
+// authenticated Staff session; an Admin session must never enter this page.
 $raw_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
-$normalized_role = preg_replace('/[\\s_-]+/', ' ', $raw_role);
+$normalized_role = preg_replace('/[\\s_-]+/', ' ', $raw_role) ?? '';
 $role_aliases = [
     'vet' => 'veterinarian',
     'veterinary' => 'veterinarian',
 ];
 $current_role = $role_aliases[$normalized_role] ?? $normalized_role;
-$logged_in_flag = $_SESSION['logged_in'] ?? false;
-$is_logged_in = ($logged_in_flag === true || $logged_in_flag === 1 || $logged_in_flag === '1'
-    || (is_string($logged_in_flag) && strtolower(trim($logged_in_flag)) === 'true'));
-$is_staff_session = ($_SESSION['staff_logged_in'] ?? false) === true;
-$staff_user_id = filter_var($_SESSION['user_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
-$is_vet_role = in_array($current_role, ['vet', 'veterinarian'], true);
+$is_logged_in = ($_SESSION['logged_in'] ?? false) === true;
+$is_staff_session = ($_SESSION['staff_logged_in'] ?? false) === true
+    && ($_SESSION['admin_logged_in'] ?? false) !== true;
+$staff_user_id = filter_var(
+    $_SESSION['user_id'] ?? null,
+    FILTER_VALIDATE_INT,
+    ['options' => ['min_range' => 1]]
+);
+$is_vet_role = ($current_role === 'veterinarian');
 
 if (!$is_logged_in || !$is_staff_session || !$is_vet_role || $staff_user_id === false || $staff_user_id === null) {
-    header('Location: stafflogin.php');
-    exit();
+    if (!$is_logged_in || !$is_staff_session) {
+        header('Location: stafflogin.php');
+        exit();
+    }
+    http_response_code(403);
+    exit('Access denied. This page is for authorized veterinary personnel only.');
 }
 
-// Generate a page-specific CSRF token after successful authorization.
-if (empty($_SESSION['staff_csrf_token']) || !is_string($_SESSION['staff_csrf_token'])) {
-    $_SESSION['staff_csrf_token'] = bin2hex(random_bytes(32));
-}
-$csrf_token = (string)$_SESSION['staff_csrf_token'];
+// Do not allow a cached page to expose another user's appointment information.
+header('Cache-Control: private, no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
+header('Expires: 0');
+header('X-Content-Type-Options: nosniff');
+header('Referrer-Policy: same-origin');
+header('X-Frame-Options: SAMEORIGIN');
+header('Cross-Origin-Resource-Policy: same-origin');
 
-// Only open a database connection after the session and role are verified.
+// Only open a database connection after the session and portal flags are verified.
 require_once __DIR__ . '/../db_supabase.php';
+
+// Re-check the role stored in the database. A stale or forged session role is
+// not sufficient to enter the veterinary appointment management page.
+try {
+    $accountRoleStmt = $pdo->prepare('SELECT role FROM public.users WHERE id = :id LIMIT 1');
+    $accountRoleStmt->execute([':id' => (int)$staff_user_id]);
+    $databaseRoleRaw = $accountRoleStmt->fetchColumn();
+} catch (Throwable $e) {
+    error_log('Veterinarian appointments role verification failed: ' . $e->getMessage());
+    http_response_code(503);
+    exit('Unable to verify your staff account right now. Please try again.');
+}
+
+$databaseRoleNormalized = preg_replace('/[\\s_-]+/', ' ', strtolower(trim((string)$databaseRoleRaw))) ?? '';
+$databaseRole = $role_aliases[$databaseRoleNormalized] ?? $databaseRoleNormalized;
+if ($databaseRole !== 'veterinarian' || $databaseRole !== $current_role) {
+    http_response_code(403);
+    exit('Access denied. Your account is not authorized for veterinary appointments.');
+}
+
+// Generate a page-specific CSRF token after successful database authorization.
+if (empty($_SESSION['staff_appointments_csrf']) || !is_string($_SESSION['staff_appointments_csrf'])) {
+    $_SESSION['staff_appointments_csrf'] = bin2hex(random_bytes(32));
+}
+$csrf_token = (string)$_SESSION['staff_appointments_csrf'];
+
 require_once __DIR__ . '/../includes/clinic_reschedule.php';
 
 /** Return SQL fragments for the actual PostgreSQL is_read column type. */
@@ -49,18 +85,21 @@ function staffAppointmentNotificationReadSql(PDO $pdo): array
     if ($data_type === 'boolean') {
         return [
             'read_value' => 'FALSE',
+            'mark_read_value' => 'TRUE',
             'unread_predicate' => 'COALESCE(is_read, FALSE) = FALSE',
         ];
     }
     if (in_array($data_type, ['smallint', 'integer', 'bigint', 'numeric', 'decimal', 'real', 'double precision'], true)) {
         return [
             'read_value' => '0',
+            'mark_read_value' => '1',
             'unread_predicate' => '(is_read = 0 OR is_read IS NULL)',
         ];
     }
     if (in_array($data_type, ['text', 'character varying', 'character'], true)) {
         return [
             'read_value' => "'false'",
+            'mark_read_value' => "'true'",
             'unread_predicate' => "(is_read IS NULL OR LOWER(BTRIM(CAST(is_read AS TEXT))) IN ('0', 'false', 'f', 'no', 'unread', ''))",
         ];
     }
@@ -198,32 +237,78 @@ try {
 }
 
 $allowed_filters = ['All', 'Pending', 'Confirmed', 'For Rescheduling', 'Rescheduled', 'Completed', 'Cancelled', 'No-Show'];
-$filter_status = trim((string)($_GET['status'] ?? 'All'));
+$raw_filter_status = $_GET['status'] ?? 'All';
+$filter_status = is_string($raw_filter_status) ? trim($raw_filter_status) : 'All';
 if (!in_array($filter_status, $allowed_filters, true)) {
     $filter_status = 'All';
 }
 
 $flash_message = '';
+$request_method = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'));
+
+// Mark only this veterinarian's notifications as read using POST + CSRF.
+// This prevents a cross-site GET request from changing notification state.
+if ($request_method === 'POST' && array_key_exists('mark_notifications_read', $_POST)) {
+    $postedToken = $_POST['csrf_token'] ?? null;
+    if (!is_string($postedToken) || $postedToken === '' || !hash_equals($csrf_token, $postedToken)) {
+        http_response_code(403);
+        exit('Invalid security token. Refresh the page and try again.');
+    }
+
+    try {
+        $notificationReadSql = staffAppointmentNotificationReadSql($pdo);
+        $markReadStmt = $pdo->prepare("UPDATE public.notifications
+            SET is_read = {$notificationReadSql['mark_read_value']}
+            WHERE user_id = :user_id
+              AND {$notificationReadSql['unread_predicate']}");
+        $markReadStmt->execute([':user_id' => (int)$staff_user_id]);
+        $_SESSION['staff_appointment_flash'] = 'Notifications marked as read.';
+    } catch (Throwable $e) {
+        error_log('Veterinarian mark-notifications-read failed: ' . $e->getMessage());
+        $_SESSION['staff_appointment_flash'] = 'Unable to update notifications right now.';
+    }
+    header('Location: appointments.php', true, 303);
+    exit();
+}
 
 // Clinic-initiated rescheduling is separate from the customer's one-time reschedule.
-if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && isset($_POST['clinic_reschedule_action'])) {
-    $clinicReturnStatus = trim((string)($_POST['return_status'] ?? 'All'));
+if ($request_method === 'POST' && array_key_exists('clinic_reschedule_action', $_POST)) {
+    $rawReturnStatus = $_POST['return_status'] ?? 'All';
+    $clinicReturnStatus = is_string($rawReturnStatus) ? trim($rawReturnStatus) : 'All';
     if (!in_array($clinicReturnStatus, $allowed_filters, true)) {
         $clinicReturnStatus = 'All';
     }
-    $postedToken = (string)($_POST['csrf_token'] ?? '');
-    if ($postedToken === '' || !hash_equals($csrf_token, $postedToken)) {
+    $postedToken = $_POST['csrf_token'] ?? null;
+    $rawAppointmentId = $_POST['appointment_id'] ?? null;
+    $rawRescheduleDate = $_POST['clinic_reschedule_date'] ?? null;
+    $rawRescheduleTime = $_POST['clinic_reschedule_time'] ?? null;
+    $rawRescheduleReason = $_POST['clinic_reschedule_reason'] ?? null;
+    $clinicAppointmentId = (is_string($rawAppointmentId) || is_int($rawAppointmentId))
+        ? filter_var($rawAppointmentId, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]])
+        : false;
+
+    if (!is_string($postedToken) || $postedToken === '' || !hash_equals($csrf_token, $postedToken)) {
         $flash_message = 'Security check failed. Please refresh the page and try again.';
+    } elseif ($clinicAppointmentId === false || !is_string($rawRescheduleDate)
+        || !is_string($rawRescheduleTime) || !is_string($rawRescheduleReason)) {
+        $flash_message = 'Invalid clinic reschedule request.';
     } else {
-        $clinicRescheduleResult = boogieClinicReschedule(
-            $pdo,
-            (int)($_POST['appointment_id'] ?? 0),
-            trim((string)($_POST['clinic_reschedule_date'] ?? '')),
-            trim((string)($_POST['clinic_reschedule_time'] ?? '')),
-            trim((string)($_POST['clinic_reschedule_reason'] ?? '')),
-            $current_role
-        );
-        $flash_message = (string)($clinicRescheduleResult['message'] ?? 'Unable to process the clinic-initiated reschedule.');
+        try {
+            $clinicRescheduleResult = boogieClinicReschedule(
+                $pdo,
+                (int)$clinicAppointmentId,
+                trim($rawRescheduleDate),
+                trim($rawRescheduleTime),
+                trim($rawRescheduleReason),
+                $current_role
+            );
+            $flash_message = is_array($clinicRescheduleResult)
+                ? (string)($clinicRescheduleResult['message'] ?? 'Unable to process the clinic-initiated reschedule.')
+                : 'Unable to process the clinic-initiated reschedule.';
+        } catch (Throwable $e) {
+            error_log('Veterinarian clinic reschedule failed: ' . $e->getMessage());
+            $flash_message = 'Unable to process the clinic-initiated reschedule right now.';
+        }
     }
 
     $_SESSION['staff_appointment_flash'] = $flash_message;
@@ -237,18 +322,24 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && isset($_POST['clinic_res
 
 // Handle appointment changes using a transaction so the status update and its
 // customer notification either both succeed or both roll back.
-if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && isset($_POST['appointment_action'])) {
-    $action = trim((string)($_POST['appointment_action'] ?? ''));
-    $appointment_id = filter_var($_POST['appointment_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
-    $posted_token = (string)($_POST['csrf_token'] ?? '');
-    $return_status = trim((string)($_POST['return_status'] ?? 'All'));
+if ($request_method === 'POST' && array_key_exists('appointment_action', $_POST)) {
+    $rawAction = $_POST['appointment_action'] ?? null;
+    $action = is_string($rawAction) ? trim($rawAction) : '';
+    $rawAppointmentId = $_POST['appointment_id'] ?? null;
+    $appointment_id = (is_string($rawAppointmentId) || is_int($rawAppointmentId))
+        ? filter_var($rawAppointmentId, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]])
+        : false;
+    $posted_token = $_POST['csrf_token'] ?? null;
+    $posted_token = is_string($posted_token) ? $posted_token : '';
+    $rawReturnStatus = $_POST['return_status'] ?? 'All';
+    $return_status = is_string($rawReturnStatus) ? trim($rawReturnStatus) : 'All';
     if (!in_array($return_status, $allowed_filters, true)) {
         $return_status = 'All';
     }
 
     if ($posted_token === '' || !hash_equals($csrf_token, $posted_token)) {
         $flash_message = 'Security check failed. Please refresh the page and try again.';
-    } elseif ($appointment_id === false || $appointment_id === null || !in_array($action, ['confirm', 'complete', 'cancel'], true)) {
+    } elseif ($appointment_id === false || !in_array($action, ['confirm', 'complete', 'cancel'], true)) {
         $flash_message = 'Invalid appointment action.';
     } else {
         try {
@@ -362,6 +453,11 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && isset($_POST['appointmen
     }
     header('Location: ' . $redirect_url, true, 303);
     exit();
+}
+
+if ($request_method === 'POST') {
+    http_response_code(400);
+    exit('Invalid appointment request.');
 }
 
 $flash_message = (string)($_SESSION['staff_appointment_flash'] ?? '');
@@ -2519,7 +2615,11 @@ input, select, textarea, button, img { max-width:100%; }
                     <div class="notif-dropdown" id="notifBox" onclick="event.stopPropagation()">
                         <div class="notif-header">
                             Alerts
-                            <a href="mark_notifications_read.php" id="mark-read-link" class="mark-read-btn" style="display: <?php echo ($unread_count > 0) ? 'inline-block' : 'none'; ?>;">Mark all read</a>
+                            <form method="POST" action="appointments.php" id="mark-read-form" style="display: <?php echo ($unread_count > 0) ? 'inline-block' : 'none'; ?>; margin:0;">
+                                <input type="hidden" name="mark_notifications_read" value="1">
+                                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
+                                <button type="submit" id="mark-read-link" class="mark-read-btn">Mark all read</button>
+                            </form>
                         </div>
                         
                         <div class="notif-body" id="admin-notif-list">
@@ -2577,7 +2677,7 @@ input, select, textarea, button, img { max-width:100%; }
             <?php if ($flash_message !== ''): ?>
                 <div style="margin:-8px 0 22px; padding:12px 16px; border-radius:10px; background:#eff6ff; color:#1e40af; border:1px solid #bfdbfe; font-size:13px; font-weight:600;">
                     <i class="fas fa-circle-info" style="margin-right:6px;"></i>
-                    <?php echo htmlspecialchars($flash_message, ENT_QUOTES, 'UTF-8'); ?>
+                    <?php echo htmlspecialchars($flash_message, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
                 </div>
             <?php endif; ?>
 

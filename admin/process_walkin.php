@@ -6,11 +6,28 @@ require_once __DIR__ . '/../shared_session_bootstrap.php';
 
 date_default_timezone_set('Asia/Manila');
 
+// This endpoint handles customer and pet information; never allow cached responses.
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
+header('X-Content-Type-Options: nosniff');
+header('Referrer-Policy: strict-origin-when-cross-origin');
 
+/** Read only scalar POST values to avoid array-to-string warnings and coercion. */
+function walkinPostString(string $key, string $default = ''): string
+{
+    $value = $_POST[$key] ?? $default;
+    return is_scalar($value) ? trim((string)$value) : '';
+}
+
+/** Read a scalar session value without triggering array-to-string conversions. */
+function walkinSessionString(string $key, string $default = ''): string
+{
+    $value = $_SESSION[$key] ?? $default;
+    return is_scalar($value) ? trim((string)$value) : '';
+}
 
 // Use the same role aliases and allowed operational roles as managebooking.php.
-
-$raw_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
+$raw_role = strtolower(walkinSessionString('role'));
 
 $role_aliases = [
 
@@ -58,27 +75,45 @@ $current_role = $role_aliases[$raw_role] ?? $raw_role;
 if ($current_role !== '') {
     $_SESSION['role'] = $current_role;
 }
-$requested_portal = strtolower(trim((string)($_POST['login_portal'] ?? $_GET['portal'] ?? 'admin')));
+$portal_request_value = $_POST['login_portal'] ?? $_GET['portal'] ?? 'admin';
+$requested_portal = strtolower(is_scalar($portal_request_value) ? trim((string)$portal_request_value) : 'admin');
 $allowed_roles = ['admin', 'manager', 'receptionist', 'groomer', 'pet_hotel_staff'];
 
+$session_user_id = filter_var(
+    $_SESSION['user_id'] ?? null,
+    FILTER_VALIDATE_INT,
+    ['options' => ['min_range' => 1]]
+);
+$session_logged_in = ($_SESSION['logged_in'] ?? false) === true;
+$admin_flag = ($_SESSION['admin_logged_in'] ?? false) === true;
+$staff_flag = ($_SESSION['staff_logged_in'] ?? false) === true;
+
+// A browser session must never act as both portals at the same time.
+if ($session_logged_in && $admin_flag && $staff_flag) {
+    http_response_code(403);
+    exit('Access denied. Please log out and sign in again using the correct portal.');
+}
+
 $admin_session_valid = (
-    ($_SESSION['logged_in'] ?? false) === true
-    && ($_SESSION['admin_logged_in'] ?? false) === true
+    $session_logged_in
+    && $admin_flag
+    && !$staff_flag
     && $current_role === 'admin'
-    && (int)($_SESSION['user_id'] ?? 0) > 0
+    && $session_user_id !== false
 );
 $staff_session_valid = (
-    ($_SESSION['logged_in'] ?? false) === true
-    && ($_SESSION['staff_logged_in'] ?? false) === true
+    $session_logged_in
+    && $staff_flag
+    && !$admin_flag
     && in_array($current_role, ['manager', 'receptionist', 'groomer', 'pet_hotel_staff'], true)
-    && (int)($_SESSION['user_id'] ?? 0) > 0
+    && $session_user_id !== false
 );
 
 if (!$admin_session_valid && !$staff_session_valid) {
     if ($requested_portal === 'staff') {
         header('Location: ../staff/stafflogin.php');
     } else {
-        header('Location: ../admin_login.php');
+        header('Location: admin_login.php');
     }
     exit();
 }
@@ -104,11 +139,12 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST' || !isset($_POST['add_walkin'])) {
 
 
 
-$session_csrf = (string)($_SESSION['csrf_token'] ?? '');
+$session_csrf = $_SESSION['csrf_token'] ?? null;
+$posted_csrf = $_POST['csrf_token'] ?? null;
 
-$posted_csrf = (string)($_POST['csrf_token'] ?? '');
-
-if ($session_csrf === '' || $posted_csrf === '' || !hash_equals($session_csrf, $posted_csrf)) {
+if (!is_string($session_csrf) || !is_string($posted_csrf)
+    || $session_csrf === '' || $posted_csrf === ''
+    || !hash_equals($session_csrf, $posted_csrf)) {
 
     http_response_code(403);
 
@@ -118,31 +154,21 @@ if ($session_csrf === '' || $posted_csrf === '' || !hash_equals($session_csrf, $
 
 
 
-$customer_name = trim((string)($_POST['customer_name'] ?? ''));
-
-$contact_number = trim((string)($_POST['contact_number'] ?? ''));
-
-$pet_name = trim((string)($_POST['pet_name'] ?? ''));
-
-$pet_breed = trim((string)($_POST['pet_breed'] ?? ''));
-
-$pet_type = trim((string)($_POST['pet_type'] ?? ''));
-
-$pet_gender = trim((string)($_POST['pet_gender'] ?? ''));
-
-$pet_weight = (float)($_POST['pet_weight'] ?? 0);
-
-$service_category = trim((string)($_POST['service_category'] ?? ''));
-
-$specific_service = trim((string)($_POST['specific_service'] ?? ''));
-
-$haircut_style = trim((string)($_POST['haircut_style'] ?? ''));
-
-$appointment_date = trim((string)($_POST['appointment_date'] ?? ''));
-
-$appointment_time = trim((string)($_POST['appointment_time'] ?? ''));
-$pickup_time = trim((string)($_POST['pickup_time'] ?? ''));
-$checkout_date = trim((string)($_POST['checkout_date'] ?? ''));
+$customer_name = walkinPostString('customer_name');
+$contact_number = walkinPostString('contact_number');
+$pet_name = walkinPostString('pet_name');
+$pet_breed = walkinPostString('pet_breed');
+$pet_type = walkinPostString('pet_type');
+$pet_gender = walkinPostString('pet_gender');
+$pet_weight_raw = walkinPostString('pet_weight');
+$pet_weight = is_numeric($pet_weight_raw) ? (float)$pet_weight_raw : 0.0;
+$service_category = walkinPostString('service_category');
+$specific_service = walkinPostString('specific_service');
+$haircut_style = walkinPostString('haircut_style');
+$appointment_date = walkinPostString('appointment_date');
+$appointment_time = walkinPostString('appointment_time');
+$pickup_time = walkinPostString('pickup_time');
+$checkout_date = walkinPostString('checkout_date');
 $is_daycare = ($service_category === 'Pet Hotel' && stripos($specific_service, 'daycare') !== false);
 
 
@@ -422,7 +448,8 @@ function walkinRedirect(string $message)
     $_SESSION['alert_msg'] = $message;
     $portal = (
         ($_SESSION['admin_logged_in'] ?? false) === true
-        && strtolower(trim((string)($_SESSION['role'] ?? ''))) === 'admin'
+        && ($_SESSION['staff_logged_in'] ?? false) !== true
+        && strtolower(walkinSessionString('role')) === 'admin'
     ) ? 'admin' : 'staff';
     header('Location: managebooking.php?portal=' . $portal);
     exit();
@@ -430,7 +457,10 @@ function walkinRedirect(string $message)
 
 
 
-if ($customer_name === '' || $contact_number === '' || $pet_name === '' || $pet_type === '' || $pet_gender === '' || $pet_weight <= 0 || $service_category === '' || $specific_service === '' || $appointment_date === '' || $appointment_time === '') {
+if ($customer_name === '' || $contact_number === '' || $pet_name === '' || $pet_type === '' || $pet_gender === ''
+    || $pet_weight_raw === '' || !is_numeric($pet_weight_raw) || !is_finite($pet_weight)
+    || $pet_weight <= 0 || $pet_weight > 50
+    || $service_category === '' || $specific_service === '' || $appointment_date === '' || $appointment_time === '') {
 
     walkinRedirect('Please complete all walk-in booking fields.');
 
@@ -524,9 +554,11 @@ if ($specific_service === 'Full Grooming Package' && $haircut_style !== '') {
 
 
 
-$date_check = DateTime::createFromFormat('Y-m-d', $appointment_date);
+$date_check = DateTime::createFromFormat('!Y-m-d', $appointment_date);
+$date_errors = DateTime::getLastErrors();
 
-if (!$date_check || $date_check->format('Y-m-d') !== $appointment_date) {
+if (!$date_check || $date_check->format('Y-m-d') !== $appointment_date
+    || ($date_errors !== false && ($date_errors['warning_count'] > 0 || $date_errors['error_count'] > 0))) {
 
     walkinRedirect('Please enter a valid appointment date.');
 
@@ -535,8 +567,10 @@ if (!$date_check || $date_check->format('Y-m-d') !== $appointment_date) {
 
 
 $time_check = DateTime::createFromFormat('!H:i', $appointment_time);
+$time_errors = DateTime::getLastErrors();
 
-if (!$time_check || $time_check->format('H:i') !== $appointment_time) {
+if (!$time_check || $time_check->format('H:i') !== $appointment_time
+    || ($time_errors !== false && ($time_errors['warning_count'] > 0 || $time_errors['error_count'] > 0))) {
 
     walkinRedirect('Please enter a valid appointment time.');
 
@@ -547,7 +581,10 @@ $daycare_start_minutes = null;
 $daycare_end_minutes = null;
 if ($is_overnight_boarding) {
     $checkout_check = DateTime::createFromFormat('!Y-m-d', $checkout_date);
-    if (!$checkout_check || $checkout_check->format('Y-m-d') !== $checkout_date || $checkout_date <= $appointment_date) {
+    $checkout_errors = DateTime::getLastErrors();
+    if (!$checkout_check || $checkout_check->format('Y-m-d') !== $checkout_date
+        || ($checkout_errors !== false && ($checkout_errors['warning_count'] > 0 || $checkout_errors['error_count'] > 0))
+        || $checkout_date <= $appointment_date) {
         walkinRedirect('For Pet Boarding, select a valid check-out date at least one day after check-in.');
     }
     // Record the actual walk-in check-in time selected by Admin/Staff.
@@ -585,6 +622,11 @@ if ($is_overnight_boarding) {
 $walkin_now_manila = new DateTimeImmutable('now', new DateTimeZone('Asia/Manila'));
 if ($appointment_date < $walkin_now_manila->format('Y-m-d')) {
     walkinRedirect('Walk-in bookings cannot be created for a past date.');
+}
+
+// The existing walk-in business rule permits veterinary services on Wednesday and Saturday only.
+if ($service_category === 'Vet Services' && !in_array((int)$date_check->format('N'), [3, 6], true)) {
+    walkinRedirect('Veterinary walk-ins are available on Wednesday and Saturday only.');
 }
 
 // Re-check the Manila-local clock on the server. Walk-ins record an actual
@@ -895,7 +937,7 @@ try {
         ]);
         $rows = $existing_stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
         $daily_limits = ['Grooming' => 10, 'Vet Services' => 30, 'Pet Hotel' => 6];
-        $simultaneous_limits = ['Grooming' => 2, 'Vet Services' => 2, 'Pet Hotel' => 6];
+        $simultaneous_limits = ['Grooming' => 2, 'Vet Services' => 1, 'Pet Hotel' => 6];
         // Manual occupied adjustments represent real walk-ins not yet registered
         // as appointments, so include them in both overall and category daily caps.
         $daily_total = count($rows) + walkinManualOccupiedUnitsForDate($manual_adjustments, $appointment_date);
@@ -969,7 +1011,7 @@ try {
             $capacity_error = $service_category === 'Grooming'
                 ? 'Grooming staff are already busy or unavailable during part of this service. Please choose another time.'
                 : ($service_category === 'Vet Services'
-                    ? 'Both veterinary staff are already busy or unavailable during this time. Please choose another time.'
+                    ? 'The veterinarian is already busy or unavailable during this time. Please choose another time.'
                     : 'No Pet Hotel room is available during this time. Please choose another drop-off or pickup time.');
         }
     }
@@ -1016,6 +1058,9 @@ try {
 
 
     $new_user_id = (int)$user_stmt->fetchColumn();
+    if ($new_user_id <= 0) {
+        throw new RuntimeException('Walk-in customer record was not created.');
+    }
 
 
 
@@ -1056,6 +1101,9 @@ try {
 
 
     $new_pet_id = (int)$pet_stmt->fetchColumn();
+    if ($new_pet_id <= 0) {
+        throw new RuntimeException('Walk-in pet record was not created.');
+    }
 
 
 

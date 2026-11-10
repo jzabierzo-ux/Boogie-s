@@ -1,110 +1,275 @@
 <?php
 require_once __DIR__ . '/../shared_session_bootstrap.php';
 
-// --- SECURITY CHECK ---
-// Normalize spaces/hyphens so role aliases such as "Vet Assistant" still work.
-$current_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
-$current_role = preg_replace('/[\s-]+/', '_', $current_role) ?? '';
-$allowed_roles = ['admin', 'manager', 'vet', 'veterinarian', 'vet_assistant', 'vet_nurse'];
-$is_veterinary_role = in_array($current_role, ['vet', 'veterinarian', 'vet_assistant', 'vet_nurse'], true);
-$has_valid_staff_session = !$is_veterinary_role || (($_SESSION['staff_logged_in'] ?? false) === true);
+date_default_timezone_set('Asia/Manila');
+ini_set('display_errors', '0');
+header('Cache-Control: private, no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
+header('Expires: 0');
+header('X-Content-Type-Options: nosniff');
+header('Referrer-Policy: no-referrer');
+header('X-Frame-Options: SAMEORIGIN');
+header('Cross-Origin-Resource-Policy: same-origin');
 
-if (
-    ($_SESSION['logged_in'] ?? false) !== true ||
-    !in_array($current_role, $allowed_roles, true) ||
-    !$has_valid_staff_session
-) {
-    header('Location: stafflogin.php');
+/** Normalize supported legacy role names to the canonical application roles. */
+function petsNormalizeRole($role): string
+{
+    if (!is_string($role) && !is_numeric($role)) {
+        return '';
+    }
+
+    $normalized = strtolower(trim((string)$role));
+    $normalized = preg_replace('/[\\s-]+/', '_', $normalized) ?? '';
+
+    $aliases = [
+        'administrator' => 'admin',
+        'shop_manager' => 'manager',
+        'vet' => 'veterinarian',
+        'veterinary' => 'veterinarian',
+        'veterinary_assistant' => 'vet_assistant',
+        'veterinary_nurse' => 'vet_nurse',
+    ];
+
+    return $aliases[$normalized] ?? $normalized;
+}
+
+/** Resolve only HTTP(S) URLs or files inside the known project upload folders. */
+function petsResolveProfileImageUrl($storedPath): string
+{
+    $path = trim((string)($storedPath ?? ''));
+    if ($path === '' || preg_match('/[\\x00-\\x1F\\x7F]/', $path)) {
+        return '';
+    }
+
+    if (filter_var($path, FILTER_VALIDATE_URL)) {
+        $parts = parse_url($path);
+        $scheme = is_array($parts) ? strtolower((string)($parts['scheme'] ?? '')) : '';
+        if (in_array($scheme, ['http', 'https'], true)
+            && !isset($parts['user']) && !isset($parts['pass'])) {
+            return $path;
+        }
+        return '';
+    }
+
+    $path = str_replace('\\', '/', $path);
+    // Support the two legacy relative prefixes that were previously stored,
+    // but normalize them before checking the strict allow-list below.
+    if (str_starts_with($path, '../uploads/')) {
+        $path = substr($path, 3);
+    } elseif (str_starts_with($path, '../admin/uploads/')) {
+        $path = substr($path, 3);
+    }
+    $path = ltrim($path, '/');
+
+    if ($path === '' || preg_match('~(^|/)\\.\\.?(/|$)|^[A-Za-z][A-Za-z0-9+.-]*:~', $path)) {
+        return '';
+    }
+
+    $projectRoot = dirname(__DIR__);
+    $locations = [
+        'uploads/' => [$projectRoot . '/uploads', '../uploads/'],
+        'admin/uploads/' => [$projectRoot . '/admin/uploads', '../admin/uploads/'],
+        'staff/uploads/' => [$projectRoot . '/staff/uploads', 'uploads/'],
+    ];
+
+    foreach ($locations as $prefix => [$basePath, $browserPrefix]) {
+        if (!str_starts_with($path, $prefix)) {
+            continue;
+        }
+
+        $baseReal = realpath($basePath);
+        if ($baseReal === false) {
+            return '';
+        }
+
+        $relative = substr($path, strlen($prefix));
+        if ($relative === '' || str_contains($relative, '..')) {
+            return '';
+        }
+
+        $realFile = realpath($baseReal . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $relative));
+        if ($realFile === false || !is_file($realFile)
+            || !str_starts_with($realFile, $baseReal . DIRECTORY_SEPARATOR)) {
+            return '';
+        }
+
+        $encoded = implode('/', array_map('rawurlencode', explode('/', $relative)));
+        return $browserPrefix . $encoded;
+    }
+
+    return '';
+}
+
+/** Build a trusted unread predicate for the existing PostgreSQL is_read type. */
+function petsUnreadPredicate(PDO $pdo, string $tableName): string
+{
+    if (!in_array($tableName, ['notifications', 'admin_notifications'], true)) {
+        throw new InvalidArgumentException('Unsupported notification table.');
+    }
+
+    $typeStmt = $pdo->prepare("SELECT data_type
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = :table_name
+          AND column_name = 'is_read'
+        LIMIT 1");
+    $typeStmt->execute([':table_name' => $tableName]);
+    $dataType = strtolower(trim((string)$typeStmt->fetchColumn()));
+
+    if ($dataType === 'boolean') {
+        return 'COALESCE(is_read, FALSE) = FALSE';
+    }
+    if (in_array($dataType, ['smallint', 'integer', 'bigint', 'numeric', 'decimal', 'real', 'double precision'], true)) {
+        return '(is_read = 0 OR is_read IS NULL)';
+    }
+    if (in_array($dataType, ['text', 'character varying', 'character'], true)) {
+        return "(is_read IS NULL OR LOWER(BTRIM(CAST(is_read AS TEXT))) IN ('0', 'false', 'f', 'no', 'unread', ''))";
+    }
+
+    throw new RuntimeException('Unsupported or unknown notifications.is_read column type.');
+}
+
+$rawRole = $_SESSION['role'] ?? '';
+$current_role = petsNormalizeRole($rawRole);
+$loggedIn = ($_SESSION['logged_in'] ?? false) === true;
+$adminFlag = ($_SESSION['admin_logged_in'] ?? false) === true;
+$staffFlag = ($_SESSION['staff_logged_in'] ?? false) === true;
+$userId = filter_var($_SESSION['user_id'] ?? $_SESSION['staff_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+$validUserId = $userId !== false && $userId !== null;
+$allowedRoles = ['admin', 'manager', 'veterinarian', 'vet_assistant', 'vet_nurse'];
+$is_admin = $loggedIn && $adminFlag && !$staffFlag && $current_role === 'admin' && $validUserId;
+$is_staff = $loggedIn && $staffFlag && !$adminFlag
+    && in_array($current_role, ['manager', 'veterinarian', 'vet_assistant', 'vet_nurse'], true)
+    && $validUserId;
+
+if (!$loggedIn) {
+    $loginTarget = $current_role === 'admin' ? '../admin/admin_login.php' : 'stafflogin.php';
+    header('Location: ' . $loginTarget);
     exit();
 }
 
-// Connect only after the session and role have been validated.
+if (!$is_admin && !$is_staff) {
+    http_response_code(403);
+    exit('Access denied. A valid, exclusive Admin or authorized Staff session is required.');
+}
+
+// Open the database only after portal authentication and role checks.
 require_once __DIR__ . '/../db_supabase.php';
 if (!isset($pdo) || !($pdo instanceof PDO)) {
-    http_response_code(500);
-    exit('Database connection is unavailable.');
+    http_response_code(503);
+    exit('Database connection is temporarily unavailable.');
 }
 
-// SET CORRECT TIMEZONE FOR PHILIPPINES
-date_default_timezone_set('Asia/Manila');
-
-$staff_name = trim((string)($_SESSION['staff_name'] ?? 'Doctor'));
-if ($staff_name === '') {
-    $staff_name = 'Doctor';
-}
-
-// --- FETCH STAFF PROFILE IMAGE & FULL NAME ---
-$profile_img_path = '';
-$full_display_name = $staff_name;
-$uid = filter_var($_SESSION['user_id'] ?? $_SESSION['staff_id'] ?? null, FILTER_VALIDATE_INT);
-
-if ($uid !== false && $uid !== null && $uid > 0) {
-    try {
-        $stmt_staff = $pdo->prepare(
-            'SELECT full_name, profile_image FROM users WHERE id = :id LIMIT 1'
-        );
-        $stmt_staff->execute([':id' => $uid]);
-        $staff_data = $stmt_staff->fetch(PDO::FETCH_ASSOC);
-
-        if ($staff_data) {
-            $profile_img_path = trim((string)($staff_data['profile_image'] ?? ''));
-            $db_full_name = trim((string)($staff_data['full_name'] ?? ''));
-            if ($db_full_name !== '') {
-                $full_display_name = $db_full_name;
-            }
-        }
-    } catch (Throwable $e) {
-        error_log('Patients Directory profile lookup failed: ' . $e->getMessage());
+// Verify that the live account role still matches the active session role.
+try {
+    $accountRoleStmt = $pdo->prepare('SELECT role FROM users WHERE id = :id LIMIT 1');
+    $accountRoleStmt->execute([':id' => (int)$userId]);
+    $databaseRole = petsNormalizeRole($accountRoleStmt->fetchColumn());
+    if ($databaseRole === '' || $databaseRole !== $current_role || !in_array($databaseRole, $allowedRoles, true)) {
+        http_response_code(403);
+        exit('Access denied. The account role does not match the active session.');
     }
+} catch (Throwable $e) {
+    error_log('Patients Directory account-role verification failed: ' . $e->getMessage());
+    http_response_code(503);
+    exit('Unable to verify the account at this time.');
 }
 
-// Linisin ang pangalan para sa Avatar Initial.
-$clean_name = trim(preg_replace('/^\s*(?:Dr\.?|Dra\.?|Doc\.?)\s+/i', '', $full_display_name) ?? $full_display_name, " ,");
-$first_letter = strtoupper(substr($clean_name, 0, 1));
-if ($first_letter === '') {
-    $first_letter = 'D';
+$can_delete_pet_profiles = $is_admin || ($is_staff && $current_role === 'manager');
+$is_veterinary_role = in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true);
+$role_label = [
+    'admin' => 'ADMIN',
+    'manager' => 'MANAGER',
+    'veterinarian' => 'VETERINARIAN',
+    'vet_assistant' => 'VET ASSISTANT',
+    'vet_nurse' => 'VET NURSE',
+][$current_role] ?? 'STAFF';
+
+$staff_name = trim((string)($_SESSION['staff_name'] ?? $_SESSION['user_name'] ?? 'Staff'));
+if ($staff_name === '') {
+    $staff_name = 'Staff';
+}
+$full_display_name = $staff_name;
+$profile_img_path = '';
+$profile_img_src = '';
+try {
+    $profileStmt = $pdo->prepare('SELECT full_name, profile_image FROM users WHERE id = :id LIMIT 1');
+    $profileStmt->execute([':id' => (int)$userId]);
+    $profileData = $profileStmt->fetch(PDO::FETCH_ASSOC);
+    if ($profileData) {
+        $profile_img_path = (string)($profileData['profile_image'] ?? '');
+        $profile_img_src = petsResolveProfileImageUrl($profile_img_path);
+        $databaseName = trim((string)($profileData['full_name'] ?? ''));
+        if ($databaseName !== '') {
+            $full_display_name = $databaseName;
+        }
+    }
+} catch (Throwable $e) {
+    error_log('Patients Directory profile lookup failed: ' . $e->getMessage());
 }
 
-// Siguraduhing may "Dr. " na nakadikit sa buong pangalan para formal.
-$display_with_title = preg_match('/^\s*(?:Dr\.?|Dra\.?|Doc\.?)\s+/i', $full_display_name)
-    ? $full_display_name
-    : 'Dr. ' . $full_display_name;
+$clean_name = trim((string)(preg_replace('/^\\s*(?:Dr\\.?|Dra\\.?|Doc\\.?)\\s+/i', '', $full_display_name) ?? $full_display_name), ' ,');
+$first_letter = function_exists('mb_substr')
+    ? mb_strtoupper(mb_substr($clean_name !== '' ? $clean_name : 'U', 0, 1, 'UTF-8'), 'UTF-8')
+    : strtoupper(substr($clean_name !== '' ? $clean_name : 'U', 0, 1));
+$display_with_title = $is_veterinary_role
+    ? (preg_match('/^\\s*(?:Dr\\.?|Dra\\.?|Doc\\.?)\\s+/i', $full_display_name) ? $full_display_name : 'Dr. ' . $full_display_name)
+    : $full_display_name;
+$mobile_name_source = trim((string)(preg_replace('/^\\s*(?:Dr\\.?|Dra\\.?|Doc\\.?)\\s+/i', '', $display_with_title) ?? $display_with_title));
+$first_name_only = trim((string)(preg_split('/\\s+/', $mobile_name_source)[0] ?? ''));
 
-// Mobile top bar: show first name only to prevent crowding.
-$mobile_name_source = trim(preg_replace('/^\s*(?:Dr\.?|Dra\.?|Doc\.?)\s+/i', '', $display_with_title) ?? $display_with_title);
-$first_name_only = trim((string)(preg_split('/\s+/', $mobile_name_source)[0] ?? ''));
-
-// --- FETCH NOTIFICATIONS ---
-// Keep the total unread count accurate while limiting the dropdown to recent items.
+// Keep Admin alerts in the Admin table; Staff sees only notifications addressed to their own account.
 $admin_notifications = [];
 $unread_count = 0;
 try {
-    $unread_count = (int)$pdo->query(
-        'SELECT COUNT(*) FROM admin_notifications WHERE is_read = 0'
-    )->fetchColumn();
+    $notificationTable = $is_admin ? 'admin_notifications' : 'notifications';
+    $unreadPredicate = petsUnreadPredicate($pdo, $notificationTable);
 
-    $admin_notif_stmt = $pdo->query(
-        'SELECT message, created_at FROM admin_notifications WHERE is_read = 0 ORDER BY created_at DESC LIMIT 10'
-    );
-    $admin_notifications = $admin_notif_stmt ? $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC) : [];
+    if ($is_admin) {
+        $notificationStmt = $pdo->query("SELECT message, created_at,
+                COUNT(*) OVER() AS total_unread
+            FROM admin_notifications
+            WHERE {$unreadPredicate}
+            ORDER BY created_at DESC NULLS LAST
+            LIMIT 10");
+    } else {
+        $notificationStmt = $pdo->prepare("SELECT title, message, created_at,
+                COUNT(*) OVER() AS total_unread
+            FROM notifications
+            WHERE user_id = :user_id
+              AND {$unreadPredicate}
+            ORDER BY created_at DESC NULLS LAST, id DESC
+            LIMIT 10");
+        $notificationStmt->execute([':user_id' => (int)$userId]);
+    }
+
+    $admin_notifications = $notificationStmt ? ($notificationStmt->fetchAll(PDO::FETCH_ASSOC) ?: []) : [];
+    if ($admin_notifications) {
+        $unread_count = (int)($admin_notifications[0]['total_unread'] ?? count($admin_notifications));
+    }
 } catch (Throwable $e) {
     error_log('Patients Directory notification lookup failed: ' . $e->getMessage());
+    $admin_notifications = [];
+    $unread_count = 0;
 }
 
-// --- STATS LOGIC ---
-// One aggregate query replaces three separate COUNT queries.
+// A POST token is used by the separate mark_notifications_read.php handler.
+if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+$notification_csrf_token = (string)$_SESSION['csrf_token'];
+$notification_read_action = $is_admin ? '../admin/mark_notifications_read.php' : 'mark_notifications_read.php';
+
 $total_pets = 0;
 $dogs = 0;
 $cats = 0;
 $others = 0;
 try {
-    $stats_stmt = $pdo->query(
-        "SELECT COUNT(*) AS total, " .
-        "COALESCE(SUM(CASE WHEN pet_type = 'Dog' THEN 1 ELSE 0 END), 0) AS dogs, " .
-        "COALESCE(SUM(CASE WHEN pet_type = 'Cat' THEN 1 ELSE 0 END), 0) AS cats " .
-        'FROM pets'
-    );
-    $stats = $stats_stmt ? $stats_stmt->fetch(PDO::FETCH_ASSOC) : [];
+    $statsStmt = $pdo->query("SELECT COUNT(*) AS total,
+            COALESCE(SUM(CASE WHEN pet_type = 'Dog' THEN 1 ELSE 0 END), 0) AS dogs,
+            COALESCE(SUM(CASE WHEN pet_type = 'Cat' THEN 1 ELSE 0 END), 0) AS cats
+        FROM pets");
+    $stats = $statsStmt ? ($statsStmt->fetch(PDO::FETCH_ASSOC) ?: []) : [];
     $total_pets = (int)($stats['total'] ?? 0);
     $dogs = (int)($stats['dogs'] ?? 0);
     $cats = (int)($stats['cats'] ?? 0);
@@ -113,8 +278,8 @@ try {
     error_log('Patients Directory statistics lookup failed: ' . $e->getMessage());
 }
 
-// Sanitize the category filter before it is used in both the header and table.
-$filter_type = trim((string)($_GET['type'] ?? ''));
+$rawFilterType = $_GET['type'] ?? '';
+$filter_type = is_string($rawFilterType) ? trim($rawFilterType) : '';
 if (!in_array($filter_type, ['Dog', 'Cat', 'Other'], true)) {
     $filter_type = '';
 }
@@ -2141,16 +2306,29 @@ input, select, textarea, button, img { max-width:100%; }
                     <div class="notif-dropdown" id="notifBox" onclick="event.stopPropagation()">
                         <div class="notif-header">
                             Alerts
-                            <a href="mark_notifications_read.php" id="mark-read-link" class="mark-read-btn" style="display: <?php echo ($unread_count > 0) ? 'inline-block' : 'none'; ?>;">Mark all read</a>
+                            <form action="<?php echo htmlspecialchars($notification_read_action, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>" method="POST" style="margin:0;">
+                                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($notification_csrf_token, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
+                                <input type="hidden" name="action" value="mark_notifications_read">
+                                <button type="submit" id="mark-read-link" class="mark-read-btn" style="display: <?php echo ($unread_count > 0) ? 'inline-block' : 'none'; ?>;">Mark all read</button>
+                            </form>
                         </div>
                         
                         <div class="notif-body" id="admin-notif-list">
-                            <?php if($unread_count > 0): ?>
-                                <?php foreach($admin_notifications as $notif): ?>
+                            <?php if ($unread_count > 0): ?>
+                                <?php foreach ($admin_notifications as $notif):
+                                    $notif_title = trim((string)($notif['title'] ?? ''));
+                                    $notif_message = trim((string)($notif['message'] ?? ''));
+                                    $notif_timestamp = !empty($notif['created_at']) ? strtotime((string)$notif['created_at']) : false;
+                                ?>
                                     <div class="notif-item">
                                         <i class="fa-solid fa-circle-exclamation" style="color: #ef4444; margin-right: 5px;"></i>
-                                        <?php echo htmlspecialchars((string)($notif['message'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>
-                                        <br><small style="color: #94a3b8; font-size: 11px;"><?php echo date('M d, g:i A', strtotime($notif['created_at'])); ?></small>
+                                        <?php if (!$is_admin && $notif_title !== ''): ?>
+                                            <strong style="display:block;margin-bottom:3px;"><?php echo htmlspecialchars($notif_title, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></strong>
+                                        <?php endif; ?>
+                                        <?php echo htmlspecialchars($notif_message !== '' ? $notif_message : ($notif_title !== '' ? $notif_title : 'New notification'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
+                                        <?php if ($notif_timestamp !== false): ?>
+                                            <br><small style="color: #94a3b8; font-size: 11px;"><?php echo date('M d, g:i A', $notif_timestamp); ?></small>
+                                        <?php endif; ?>
                                     </div>
                                 <?php endforeach; ?>
                             <?php else: ?>
@@ -2162,13 +2340,13 @@ input, select, textarea, button, img { max-width:100%; }
 
                 <div class="profile-wrapper" onclick="toggleProfile(event)">
                     <div class="role-label">
-                        <i class="fas fa-user-md"></i> VET
+                        <i class="fas fa-user-md"></i> <?php echo htmlspecialchars($role_label, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
                     </div>
                     
-                    <?php if (!empty($profile_img_path) && ((preg_match('#^https?://#i', $profile_img_path) && filter_var($profile_img_path, FILTER_VALIDATE_URL)) || (!preg_match('#^[a-z][a-z0-9+.-]*://#i', $profile_img_path) && is_file(__DIR__ . '/../' . ltrim($profile_img_path, '/'))))): ?>
-                        <img src="<?php echo htmlspecialchars($profile_img_path, ENT_QUOTES, 'UTF-8'); ?>" class="top-avatar" alt="Profile Picture">
+                    <?php if ($profile_img_src !== ''): ?>
+                        <img src="<?php echo htmlspecialchars($profile_img_src, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>" class="top-avatar" alt="Profile Picture">
                     <?php else: ?>
-                        <div class="top-avatar-fallback"><?php echo $first_letter; ?></div>
+                        <div class="top-avatar-fallback"><?php echo htmlspecialchars($first_letter, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></div>
                     <?php endif; ?>
                     
                     <span class="profile-name-text desktop-profile-name" style="font-size:14px;font-weight:700;color:var(--sidebar-navy);display:flex;align-items:center;gap:6px;">
@@ -2304,17 +2482,18 @@ input, select, textarea, button, img { max-width:100%; }
                                     }
                                     echo "</div></td>";
 
-                                    echo "<td>
-                                            <div class='action-links'>
-                                                <a href='view_records.php?id=" . urlencode((string)$pet_id) . "' class='btn-icon btn-view' title='View Medical Records' aria-label='View medical records for " . htmlspecialchars($p_name, ENT_QUOTES, 'UTF-8') . "'>
-                                                    <i class='fas fa-notes-medical'></i>
-                                                </a>
-
-                                                <a href='delete_pet.php?id=" . urlencode((string)$pet_id) . "' class='btn-icon btn-delete' title='Delete Patient' aria-label='Delete " . htmlspecialchars($p_name, ENT_QUOTES, 'UTF-8') . "' onclick='return confirm(\"Are you sure you want to permanently delete this patient?\");'>
-                                                    <i class='fas fa-trash-alt'></i>
-                                                </a>
-                                            </div>
-                                          </td>";
+                                    $safePetId = rawurlencode((string)$pet_id);
+                                    $safePetName = htmlspecialchars($p_name, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+                                    $actionHtml = "<a href='view_records.php?id={$safePetId}' class='btn-icon btn-view' title='View Medical Records' aria-label='View medical records for {$safePetName}'>
+                                        <i class='fas fa-notes-medical'></i>
+                                    </a>";
+                                    if ($can_delete_pet_profiles) {
+                                        // The delete handler must independently enforce Admin/Manager authorization and POST/CSRF.
+                                        $actionHtml .= "<a href='delete_pet.php?id={$safePetId}' class='btn-icon btn-delete' title='Delete Patient' aria-label='Delete {$safePetName}' onclick='return confirm(\"Are you sure you want to permanently delete this patient?\");'>
+                                            <i class='fas fa-trash-alt'></i>
+                                        </a>";
+                                    }
+                                    echo "<td><div class='action-links'>{$actionHtml}</div></td>";
                                     echo "</tr>";
                                 }
                             } else {

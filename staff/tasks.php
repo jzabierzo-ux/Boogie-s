@@ -3,36 +3,79 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../shared_session_bootstrap.php';
 
+/** Normalize the veterinary role labels accepted by the Personnel login. */
+function normalizeTasksPersonnelRole($role): string
+{
+    $role = strtolower(trim((string)$role));
+    $normalized = preg_replace('/[\s_-]+/', ' ', $role) ?? $role;
+    $aliases = [
+        'vet' => 'veterinarian',
+        'veterinary' => 'veterinarian',
+        'veterinarian' => 'veterinarian',
+        'vet assistant' => 'vet_assistant',
+        'veterinary assistant' => 'vet_assistant',
+        'vet nurse' => 'vet_nurse',
+        'veterinary nurse' => 'vet_nurse',
+    ];
+
+    return $aliases[$normalized] ?? str_replace(' ', '_', $normalized);
+}
+
 /* -------------------------------------------------------------------------
    AUTHENTICATION — VETERINARY TEAM ONLY
-   Accept both session flags used by the Staff login flow.
+   A valid Staff session must not carry an Admin portal flag.
    ------------------------------------------------------------------------- */
-$roleRaw = strtolower(trim((string)($_SESSION['role'] ?? '')));
-$roleNormalized = preg_replace('/[_-]+/', ' ', $roleRaw);
-$roleAliases = [
-    'vet' => 'veterinarian',
-    'veterinary' => 'veterinarian',
-    'veterinarian' => 'veterinarian',
-    'vet assistant' => 'vet_assistant',
-    'veterinary assistant' => 'vet_assistant',
-    'vet nurse' => 'vet_nurse',
-    'veterinary nurse' => 'vet_nurse',
-];
-$currentRole = $roleAliases[$roleNormalized] ?? $roleRaw;
+$currentRole = normalizeTasksPersonnelRole($_SESSION['role'] ?? '');
+$loggedIn = ($_SESSION['logged_in'] ?? false) === true;
+$staffSession = ($_SESSION['staff_logged_in'] ?? false) === true;
+$adminSession = ($_SESSION['admin_logged_in'] ?? false) === true;
+$userId = filter_var(
+    $_SESSION['user_id'] ?? null,
+    FILTER_VALIDATE_INT,
+    ['options' => ['min_range' => 1]]
+);
 $vetRoles = ['veterinarian', 'vet_assistant', 'vet_nurse'];
-$sessionLoggedIn = in_array($_SESSION['logged_in'] ?? null, [true, 1, '1'], true)
-    || in_array($_SESSION['staff_logged_in'] ?? null, [true, 1, '1'], true);
-$userId = (int)($_SESSION['user_id'] ?? $_SESSION['staff_id'] ?? 0);
 
-if (!$sessionLoggedIn || !in_array($currentRole, $vetRoles, true) || $userId <= 0) {
+if (!$loggedIn || !$staffSession || $adminSession || !in_array($currentRole, $vetRoles, true)
+    || $userId === false || $userId === null) {
+    if ($adminSession) {
+        http_response_code(403);
+        exit('Access denied. This page is for the Veterinary Staff portal only.');
+    }
     header('Location: stafflogin.php');
     exit;
 }
+$userId = (int)$userId;
 
 // Philippine time and private page caching.
 date_default_timezone_set('Asia/Manila');
-header('Cache-Control: private, no-store, max-age=0');
+header('Cache-Control: private, no-store, no-cache, must-revalidate, max-age=0');
 header('Pragma: no-cache');
+header('Expires: 0');
+header('X-Content-Type-Options: nosniff');
+header('X-Frame-Options: SAMEORIGIN');
+header('Referrer-Policy: same-origin');
+header('Cross-Origin-Resource-Policy: same-origin');
+
+// Open the database only after the session flags, role, and user ID pass validation.
+require_once __DIR__ . '/../db_supabase.php';
+
+// Confirm that the role stored in the database still matches this Staff session.
+try {
+    $identityStmt = $pdo->prepare('SELECT role FROM public.users WHERE id = :user_id LIMIT 1');
+    $identityStmt->execute([':user_id' => $userId]);
+    $databaseRoleValue = $identityStmt->fetchColumn();
+} catch (Throwable $e) {
+    error_log('Tasks personnel identity verification failed: ' . $e->getMessage());
+    http_response_code(503);
+    exit('Unable to verify the staff account right now. Please try again.');
+}
+
+$databaseRole = $databaseRoleValue !== false ? normalizeTasksPersonnelRole($databaseRoleValue) : '';
+if (!in_array($databaseRole, $vetRoles, true) || !hash_equals($databaseRole, $currentRole)) {
+    http_response_code(403);
+    exit('Access denied. Your account is not authorized for the Veterinary Tasks page.');
+}
 
 // CSRF token for the task-completion action.
 if (empty($_SESSION['tasks_csrf']) || !is_string($_SESSION['tasks_csrf'])) {
@@ -40,37 +83,56 @@ if (empty($_SESSION['tasks_csrf']) || !is_string($_SESSION['tasks_csrf'])) {
 }
 $tasksCsrf = $_SESSION['tasks_csrf'];
 
-// Keep the variable names expected by the existing page markup.
+// Keep the variable name expected by the existing page markup.
 $tasks_csrf = $tasksCsrf;
-
-// Open the database only after the user has passed the authentication checks.
-require_once __DIR__ . '/../db_supabase.php';
 
 /* -------------------------------------------------------------------------
    COMPLETE TASK — ONLY A CONFIRMED VETERINARY APPOINTMENT CAN BE COMPLETED
    ------------------------------------------------------------------------- */
-if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && isset($_POST['complete_task'])) {
+$requestMethod = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'));
+if (!in_array($requestMethod, ['GET', 'POST'], true)) {
+    header('Allow: GET, POST');
+    http_response_code(405);
+    exit('Method not allowed.');
+}
+
+if ($requestMethod === 'POST') {
+    if (!isset($_POST['complete_task'])) {
+        header('Allow: GET, POST');
+        http_response_code(405);
+        exit('Unsupported task request.');
+    }
+
     $rawAppointmentId = $_POST['appointment_id'] ?? null;
-    $appointmentId = is_scalar($rawAppointmentId)
+    $appointmentId = (is_string($rawAppointmentId) || is_int($rawAppointmentId))
         ? filter_var((string)$rawAppointmentId, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]])
         : false;
-    $submittedCsrf = $_POST['csrf_token'] ?? '';
+    $submittedCsrf = $_POST['csrf_token'] ?? null;
 
-    if ($appointmentId === false || !is_string($submittedCsrf) || $submittedCsrf === '' || !hash_equals($tasksCsrf, $submittedCsrf)) {
+    if ($appointmentId === false || $appointmentId === null) {
         http_response_code(400);
-        exit('Invalid request. Please refresh the page and try again.');
+        exit('Invalid appointment selected. Please refresh the page and try again.');
+    }
+    if (!is_string($submittedCsrf) || $submittedCsrf === '' || !hash_equals($tasksCsrf, $submittedCsrf)) {
+        http_response_code(403);
+        exit('Invalid security token. Refresh the page and try again.');
     }
 
     try {
+        // The conditional UPDATE is atomic and prevents repeated/stale completion requests.
         $completeStmt = $pdo->prepare("
-            UPDATE appointments
+            UPDATE public.appointments
             SET booking_status = 'Completed'
             WHERE id = :appointment_id
-              AND booking_status = 'Confirmed'
-              AND service LIKE 'Vet Services%'
+              AND LOWER(BTRIM(COALESCE(booking_status, ''))) = 'confirmed'
+              AND LOWER(BTRIM(COALESCE(service, ''))) LIKE 'vet services%'
         ");
-        $completeStmt->execute([':appointment_id' => $appointmentId]);
-    } catch (PDOException $e) {
+        $completeStmt->execute([':appointment_id' => (int)$appointmentId]);
+
+        if ($completeStmt->rowCount() !== 1) {
+            error_log('Veterinary task completion skipped: appointment not found, not confirmed, or not a Vet Services booking.');
+        }
+    } catch (Throwable $e) {
         error_log('Task completion update failed: ' . $e->getMessage());
     }
 
@@ -131,8 +193,17 @@ if ($profileImgPath !== '') {
                 }
             }
 
-            if ($isAllowedUpload && is_file($projectRoot . '/' . $relativeImagePath)) {
-                $profileImgSrc = '../' . implode('/', array_map('rawurlencode', explode('/', $relativeImagePath)));
+            if ($isAllowedUpload) {
+                $projectRootReal = realpath($projectRoot);
+                $candidateReal = $projectRootReal !== false
+                    ? realpath($projectRootReal . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $relativeImagePath))
+                    : false;
+
+                if ($projectRootReal !== false && $candidateReal !== false
+                    && is_file($candidateReal)
+                    && str_starts_with($candidateReal, $projectRootReal . DIRECTORY_SEPARATOR)) {
+                    $profileImgSrc = '../' . implode('/', array_map('rawurlencode', explode('/', $relativeImagePath)));
+                }
             }
         }
     }

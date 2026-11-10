@@ -1,6 +1,5 @@
 <?php
 require_once __DIR__ . '/../shared_session_bootstrap.php';
-require_once __DIR__ . '/../db_supabase.php';
 
 date_default_timezone_set('Asia/Manila');
 ini_set('display_errors', '0');
@@ -11,6 +10,7 @@ header('Expires: 0');
 header('X-Content-Type-Options: nosniff');
 header('Referrer-Policy: no-referrer');
 header('Cross-Origin-Resource-Policy: same-origin');
+header('X-Frame-Options: DENY');
 
 /** Return a generic response without exposing storage paths or credentials. */
 function gcashReceiptFail(int $statusCode, string $message): void
@@ -22,15 +22,21 @@ function gcashReceiptFail(int $statusCode, string $message): void
 }
 
 /** Check the actual Admin session flags used by admin/admin_login.php. */
-$role = strtolower(trim((string)($_SESSION['role'] ?? '')));
+$rawRole = $_SESSION['role'] ?? '';
+$role = is_string($rawRole) ? strtolower(trim($rawRole)) : '';
 if ($role === 'administrator') {
     $role = 'admin';
 }
+$rawUserId = $_SESSION['user_id'] ?? null;
+$adminUserId = (is_string($rawUserId) || is_int($rawUserId))
+    ? filter_var($rawUserId, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]])
+    : false;
 $adminAuthorized = (
     ($_SESSION['logged_in'] ?? false) === true
     && ($_SESSION['admin_logged_in'] ?? false) === true
+    && ($_SESSION['staff_logged_in'] ?? false) !== true
     && $role === 'admin'
-    && (int)($_SESSION['user_id'] ?? 0) > 0
+    && $adminUserId !== false
 );
 
 if (!$adminAuthorized) {
@@ -50,6 +56,9 @@ $bookingId = filter_var($rawBookingId, FILTER_VALIDATE_INT, ['options' => ['min_
 if ($bookingId === false) {
     gcashReceiptFail(400, 'Invalid booking request.');
 }
+
+// Establish the database connection only after Admin authorization and request validation.
+require_once __DIR__ . '/../db_supabase.php';
 
 try {
     $bookingStmt = $pdo->prepare('
@@ -126,7 +135,11 @@ function gcashReceiptDownloadFromStorage(string $objectPath): string
         || empty($parsedUrl['host'])
         || isset($parsedUrl['user'])
         || isset($parsedUrl['pass'])
+        || (isset($parsedUrl['port']) && (int)$parsedUrl['port'] !== 443)
         || (isset($parsedUrl['path']) && trim((string)$parsedUrl['path'], '/') !== '')
+        || isset($parsedUrl['query'])
+        || isset($parsedUrl['fragment'])
+        || preg_match('/[\r\n]/', $apiKey)
         || !preg_match('/^[a-z0-9][a-z0-9_-]{1,61}[a-z0-9]$/i', $bucket)
     ) {
         error_log('GCash receipt viewer has invalid Supabase Storage configuration.');
@@ -201,26 +214,39 @@ function gcashReceiptDownloadFromStorage(string $objectPath): string
         gcashReceiptFail(502, 'Unable to retrieve the receipt right now.');
     }
 
-    // Only accept a relative Storage signed path or an HTTPS URL on this exact project host.
+    // Only accept a signed path for the exact private bucket/object just requested.
+    $expectedSignedPath = '/storage/v1/object/sign/' . rawurlencode($bucket) . '/' . $encodedPath;
     if (str_starts_with($signedPath, '/object/sign/')) {
-        $downloadUrl = $supabaseUrl . '/storage/v1' . $signedPath;
-    } elseif (str_starts_with($signedPath, '/storage/v1/object/sign/')) {
-        $downloadUrl = $supabaseUrl . $signedPath;
-    } else {
-        $signedUrlParts = parse_url($signedPath);
-        if (
-            !is_array($signedUrlParts)
-            || strtolower((string)($signedUrlParts['scheme'] ?? '')) !== 'https'
-            || strtolower((string)($signedUrlParts['host'] ?? '')) !== strtolower((string)$parsedUrl['host'])
-            || isset($signedUrlParts['user'])
-            || isset($signedUrlParts['pass'])
-            || !str_starts_with((string)($signedUrlParts['path'] ?? ''), '/storage/v1/object/sign/')
-        ) {
-            error_log('GCash receipt signing endpoint returned an unexpected URL format.');
-            gcashReceiptFail(502, 'Unable to retrieve the receipt right now.');
-        }
-        $downloadUrl = $signedPath;
+        $signedPath = '/storage/v1' . $signedPath;
     }
+
+    $signedUrlParts = parse_url($signedPath);
+    if (!is_array($signedUrlParts)) {
+        error_log('GCash receipt signing endpoint returned an invalid URL format.');
+        gcashReceiptFail(502, 'Unable to retrieve the receipt right now.');
+    }
+
+    $signedPathOnly = (string)($signedUrlParts['path'] ?? '');
+    $isRelativeSignedPath = !isset($signedUrlParts['scheme']) && !isset($signedUrlParts['host']);
+    $isAbsoluteSignedUrl = (
+        strtolower((string)($signedUrlParts['scheme'] ?? '')) === 'https'
+        && strtolower((string)($signedUrlParts['host'] ?? '')) === strtolower((string)$parsedUrl['host'])
+        && !isset($signedUrlParts['user'])
+        && !isset($signedUrlParts['pass'])
+        && (!isset($signedUrlParts['port']) || (int)$signedUrlParts['port'] === 443)
+    );
+    if (
+        (!$isRelativeSignedPath && !$isAbsoluteSignedUrl)
+        || $signedPathOnly !== $expectedSignedPath
+        || isset($signedUrlParts['fragment'])
+        || !isset($signedUrlParts['query'])
+        || trim((string)$signedUrlParts['query']) === ''
+    ) {
+        error_log('GCash receipt signing endpoint returned an unexpected URL format.');
+        gcashReceiptFail(502, 'Unable to retrieve the receipt right now.');
+    }
+
+    $downloadUrl = $isRelativeSignedPath ? ($supabaseUrl . $signedPath) : $signedPath;
 
     $contents = '';
     $maxBytes = 5 * 1024 * 1024;

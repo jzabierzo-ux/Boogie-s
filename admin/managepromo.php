@@ -11,27 +11,55 @@ require_once __DIR__ . '/../shared_session_bootstrap.php';
 
 
 // 1. SECURITY: STRICTLY ADMIN ONLY
-
-
-
-
-
+// Require a valid Admin session, not just a generic logged-in flag or role value.
 $current_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
+$session_logged_in = (($_SESSION['logged_in'] ?? false) === true);
+$admin_logged_in = (($_SESSION['admin_logged_in'] ?? false) === true);
+$staff_logged_in = (($_SESSION['staff_logged_in'] ?? false) === true);
+$session_user_id = filter_var(
+    $_SESSION['user_id'] ?? null,
+    FILTER_VALIDATE_INT,
+    ['options' => ['min_range' => 1]]
+);
+$valid_session_user = ($session_user_id !== false && $session_user_id !== null);
 
+$is_valid_admin_session = (
+    $session_logged_in
+    && $admin_logged_in
+    && !$staff_logged_in
+    && $current_role === 'admin'
+    && $valid_session_user
+);
 
+if (!$is_valid_admin_session) {
+    // Keep an authenticated Staff member in the Staff portal; do not promote
+    // the account or destroy its legitimate Staff session.
+    $personnel_roles = [
+        'manager',
+        'receptionist',
+        'groomer',
+        'pet_hotel_staff',
+        'veterinarian',
+        'vet_assistant',
+        'vet_nurse',
+    ];
 
-if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true || $current_role !== 'admin') {
+    if (
+        $session_logged_in
+        && $staff_logged_in
+        && !$admin_logged_in
+        && in_array($current_role, $personnel_roles, true)
+    ) {
+        if (in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)) {
+            header('Location: /staff/staffdashboard.php');
+        } else {
+            header('Location: /admin/admindashboard.php?portal=staff');
+        }
+        exit();
+    }
 
-
-
-    header("Location: ../admin_login.php");
-
-
-
+    header('Location: /admin/admin_login.php');
     exit();
-
-
-
 }
 
 // Create a CSRF token for state-changing actions on this page.
@@ -49,7 +77,7 @@ if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
 
 
 
-include '../db_supabase.php';
+require_once __DIR__ . '/../db_supabase.php';
 
 
 

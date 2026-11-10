@@ -16,23 +16,25 @@ header('Expires: 0');
 
 $current_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
 
-$is_admin_logged_in = isset($_SESSION['logged_in'])
-
-    && $_SESSION['logged_in'] === true
-
-    && $current_role === 'admin';
-
-
+$is_admin_logged_in = (
+    ($_SESSION['logged_in'] ?? false) === true
+    && ($_SESSION['admin_logged_in'] ?? false) === true
+    && ($_SESSION['staff_logged_in'] ?? false) !== true
+    && $current_role === 'admin'
+    && isset($_SESSION['user_id'])
+    && is_numeric($_SESSION['user_id'])
+    && (int)$_SESSION['user_id'] > 0
+);
 
 if (!$is_admin_logged_in) {
+    if (($_SESSION['logged_in'] ?? false) !== true) {
+        header('Location: /admin/admin_login.php');
+        exit();
+    }
 
-    header('Location: /admin/admin_login.php');
-
-    exit();
-
+    http_response_code(403);
+    exit('Access denied. Admin only.');
 }
-
-
 
 // CSRF token for state-changing actions such as marking notifications as read.
 if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
@@ -265,6 +267,12 @@ if (!in_array($status_filter, ['ALL', 'SUCCESS', 'FAILED'], true)) {
     $status_filter = 'ALL';
 }
 
+$actionRaw = $_GET['action'] ?? 'all';
+$action_filter = is_string($actionRaw) ? strtoupper(trim($actionRaw)) : 'ALL';
+if (!in_array($action_filter, ['ALL', 'LOGIN', 'LOGOUT'], true)) {
+    $action_filter = 'ALL';
+}
+
 $pageRaw = $_GET['page'] ?? '1';
 $page = (is_string($pageRaw) || is_int($pageRaw))
     ? filter_var($pageRaw, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]])
@@ -280,6 +288,7 @@ $rows = [];
 $total_logs = 0;
 $success_logs = 0;
 $failed_logs = 0;
+$logout_logs = 0;
 $load_error = '';
 
 /* Keep the original search fields and status semantics, but filter in SQL. */
@@ -312,6 +321,11 @@ if ($status_filter === 'SUCCESS' || $status_filter === 'FAILED') {
     $filter_params[':status'] = $status_filter;
 }
 
+if ($action_filter === 'LOGIN' || $action_filter === 'LOGOUT') {
+    $filter_sql .= ' AND aal.action = :action';
+    $filter_params[':action'] = $action_filter;
+}
+
 try {
     // Summary cards remain global (not affected by the current search/status filter).
     // The same aggregate also returns the count of rows matching the active filters.
@@ -320,6 +334,7 @@ try {
             COUNT(*) AS total_logs,
             COUNT(*) FILTER (WHERE aal.status = 'SUCCESS' AND aal.action = 'LOGIN') AS success_logs,
             COUNT(*) FILTER (WHERE aal.status = 'FAILED' AND aal.action = 'LOGIN') AS failed_logs,
+            COUNT(*) FILTER (WHERE aal.status = 'SUCCESS' AND aal.action = 'LOGOUT') AS logout_logs,
             COUNT(*) FILTER (WHERE TRUE {$filter_sql}) AS filtered_logs
         FROM admin_account_logs aal
         LEFT JOIN users u ON u.id = aal.user_id
@@ -333,6 +348,7 @@ try {
         $total_logs = (int)($count_data['total_logs'] ?? 0);
         $success_logs = (int)($count_data['success_logs'] ?? 0);
         $failed_logs = (int)($count_data['failed_logs'] ?? 0);
+        $logout_logs = (int)($count_data['logout_logs'] ?? 0);
         $total_filtered = (int)($count_data['filtered_logs'] ?? 0);
     }
 
@@ -384,6 +400,9 @@ if ($search !== '') {
 }
 if ($status_filter !== 'ALL') {
     $pagination_params['status'] = $status_filter;
+}
+if ($action_filter !== 'ALL') {
+    $pagination_params['action'] = $action_filter;
 }
 $refresh_params = $pagination_params;
 if ($page > 1) {
@@ -687,7 +706,7 @@ try {
 
 
 
-            grid-template-columns: repeat(3, 1fr);
+            grid-template-columns: repeat(4, minmax(0, 1fr));
 
 
 
@@ -1252,6 +1271,12 @@ try {
 
 
         }
+
+        .action-badge.action-logout {
+            background: #fef3c7;
+            color: #92400e;
+        }
+
 
 
 
@@ -2334,7 +2359,7 @@ try {
         }
 
         .summary-grid {
-            grid-template-columns: repeat(3, minmax(0, 1fr));
+            grid-template-columns: repeat(4, minmax(0, 1fr));
         }
 
         .table-card {
@@ -2778,7 +2803,7 @@ try {
 
 
 
-                    <p>Monitor administrator and personnel sign-in activity and access attempts.</p>
+                    <p>Monitor administrator and personnel login, logout, and access activity.</p>
 
 
 
@@ -2920,6 +2945,11 @@ try {
 
         </div>
 
+        <div class="summary-card">
+            <div class="summary-label">SUCCESSFUL LOGOUTS</div>
+            <div class="summary-number"><?php echo number_format($logout_logs); ?></div>
+        </div>
+
 
 
     </div>
@@ -3056,7 +3086,11 @@ try {
 
             </select>
 
-
+            <select name="action" class="status-select" aria-label="Filter by action">
+                <option value="all" <?php echo $action_filter === 'ALL' ? 'selected' : ''; ?>>All Actions</option>
+                <option value="LOGIN" <?php echo $action_filter === 'LOGIN' ? 'selected' : ''; ?>>Login</option>
+                <option value="LOGOUT" <?php echo $action_filter === 'LOGOUT' ? 'selected' : ''; ?>>Logout</option>
+            </select>
 
             <button
 
@@ -3098,7 +3132,7 @@ try {
 
 
 
-                title="Clear search and status filters"
+                title="Clear search, status, and action filters"
 
 
 
@@ -3341,7 +3375,7 @@ try {
 
 
 
-                                    <span class="action-badge">
+                                    <span class="action-badge <?php echo strtoupper(trim((string)($row['action'] ?? ''))) === 'LOGOUT' ? 'action-logout' : ''; ?>">
 
 
 

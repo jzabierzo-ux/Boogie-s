@@ -2,8 +2,8 @@
 require_once __DIR__ . '/../shared_session_bootstrap.php';
 
 // Normalize the role names used across the Admin/Staff portals.
-// This keeps Add New Pet access consistent with the operational roles
-// that can already access managepet.php, while keeping Veterinarians blocked.
+// Only the Admin portal flag may authorize an Admin account, and only the
+// Staff portal flag may authorize an operational Staff account.
 $raw_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
 $role_key = preg_replace('/[\s\/\-]+/', '_', $raw_role);
 $role_key = preg_replace('/_+/', '_', trim((string)$role_key, '_'));
@@ -22,8 +22,7 @@ $role_aliases = [
 ];
 
 $current_role = $role_aliases[$role_key] ?? $role_key;
-$allowed_roles = [
-    'admin',
+$staff_roles = [
     'manager',
     'receptionist',
     'groomer',
@@ -32,15 +31,44 @@ $allowed_roles = [
     'supervisor',
 ];
 
-if (($_SESSION['logged_in'] ?? false) !== true) {
-    header('Location: ../admin_login.php');
+$logged_in = ($_SESSION['logged_in'] ?? false) === true;
+$admin_flag = ($_SESSION['admin_logged_in'] ?? false) === true;
+$staff_flag = ($_SESSION['staff_logged_in'] ?? false) === true;
+$session_user_id = filter_var(
+    $_SESSION['user_id'] ?? null,
+    FILTER_VALIDATE_INT,
+    ['options' => ['min_range' => 1]]
+);
+
+$is_admin_session = $logged_in
+    && $admin_flag
+    && !$staff_flag
+    && $current_role === 'admin'
+    && $session_user_id !== false
+    && $session_user_id !== null;
+
+$is_staff_session = $logged_in
+    && $staff_flag
+    && !$admin_flag
+    && in_array($current_role, $staff_roles, true)
+    && $session_user_id !== false
+    && $session_user_id !== null;
+
+if (!$logged_in) {
+    if (in_array($current_role, $staff_roles, true)) {
+        header('Location: ../staff/stafflogin.php');
+    } else {
+        header('Location: admin_login.php');
+    }
     exit();
 }
 
-if (!in_array($current_role, $allowed_roles, true)) {
+if (!$is_admin_session && !$is_staff_session) {
     http_response_code(403);
     exit('Access denied.');
 }
+
+$user_id = (int)$session_user_id;
 
 // Do not initialize the database connection for unauthenticated or unauthorized users.
 require_once __DIR__ . '/../db_supabase.php';
@@ -53,6 +81,10 @@ $csrf_token = $_SESSION['csrf_token'];
 
 function addPetEscape($value): string
 {
+    if (!is_scalar($value) && $value !== null) {
+        return '';
+    }
+
     return htmlspecialchars((string)($value ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 }
 
@@ -60,6 +92,56 @@ function addPetPostString(string $key): string
 {
     $value = $_POST[$key] ?? '';
     return is_string($value) || is_numeric($value) ? trim((string)$value) : '';
+}
+
+/**
+ * Resolve the unread value/predicate for the notification table's actual
+ * PostgreSQL is_read type. Table names are fixed to this allow-list.
+ */
+function addPetNotificationReadSql(PDO $pdo, string $tableName): array
+{
+    $allowedTables = ['admin_notifications', 'notifications'];
+    if (!in_array($tableName, $allowedTables, true)) {
+        throw new InvalidArgumentException('Unsupported notification table.');
+    }
+
+    $typeStmt = $pdo->prepare(
+        "SELECT data_type
+         FROM information_schema.columns
+         WHERE table_schema = 'public'
+           AND table_name = :table_name
+           AND column_name = 'is_read'
+         LIMIT 1"
+    );
+    $typeStmt->execute([':table_name' => $tableName]);
+    $dataType = strtolower(trim((string)$typeStmt->fetchColumn()));
+
+    if ($dataType === 'boolean') {
+        return [
+            'read_value' => 'FALSE',
+            'unread_predicate' => 'COALESCE(is_read, FALSE) = FALSE',
+        ];
+    }
+
+    if (in_array($dataType, [
+        'smallint', 'integer', 'bigint', 'numeric', 'decimal', 'real', 'double precision'
+    ], true)) {
+        return [
+            'read_value' => '0',
+            'unread_predicate' => '(is_read = 0 OR is_read IS NULL)',
+        ];
+    }
+
+    if (in_array($dataType, ['text', 'character varying', 'character'], true)) {
+        return [
+            'read_value' => "'false'",
+            'unread_predicate' => "(is_read IS NULL OR LOWER(BTRIM(CAST(is_read AS TEXT))) IN ('0', 'false', 'f', 'no', 'unread', ''))",
+        ];
+    }
+
+    throw new RuntimeException(
+        'Unsupported or unknown is_read column type for public.' . $tableName . '.'
+    );
 }
 
 /** Resolve only known project upload folders, preventing arbitrary local paths. */
@@ -170,9 +252,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ':weight' => $p_weight,
             ]);
 
+            $notification_read_sql = addPetNotificationReadSql($pdo, 'notifications');
             $notif_stmt = $pdo->prepare(
-                'INSERT INTO notifications (user_id, title, message, type, is_read, created_at) '
-                . 'VALUES (:user_id, :title, :message, :type, 0, CURRENT_TIMESTAMP)'
+                'INSERT INTO public.notifications (user_id, title, message, type, is_read, created_at) '
+                . 'VALUES (:user_id, :title, :message, :type, '
+                . $notification_read_sql['read_value'] . ', CURRENT_TIMESTAMP)'
             );
             $notif_stmt->execute([
                 ':user_id' => $owner_id,
@@ -218,25 +302,20 @@ if ($admin_full_name === '') {
     $admin_full_name = 'User';
 }
 $profile_img_path = '';
-if (isset($_SESSION['user_id'])) {
-    $uid = filter_var($_SESSION['user_id'], FILTER_VALIDATE_INT);
-    if ($uid !== false && $uid !== null && $uid > 0) {
-        try {
-            $profile_stmt = $pdo->prepare('SELECT full_name, profile_image FROM users WHERE id = :id LIMIT 1');
-            $profile_stmt->execute([':id' => $uid]);
-            $profile_data = $profile_stmt->fetch(PDO::FETCH_ASSOC);
-            if ($profile_data) {
-                $candidate_name = trim((string)($profile_data['full_name'] ?? ''));
-                if ($candidate_name !== '') {
-                    $admin_full_name = $candidate_name;
-                    $_SESSION['user_name'] = $admin_full_name;
-                }
-                $profile_img_path = (string)($profile_data['profile_image'] ?? '');
-            }
-        } catch (PDOException $e) {
-            error_log('Add pet profile lookup failed: ' . $e->getMessage());
+try {
+    $profile_stmt = $pdo->prepare('SELECT full_name, profile_image FROM users WHERE id = :id LIMIT 1');
+    $profile_stmt->execute([':id' => $user_id]);
+    $profile_data = $profile_stmt->fetch(PDO::FETCH_ASSOC);
+    if ($profile_data) {
+        $candidate_name = trim((string)($profile_data['full_name'] ?? ''));
+        if ($candidate_name !== '') {
+            $admin_full_name = $candidate_name;
+            $_SESSION['user_name'] = $admin_full_name;
         }
+        $profile_img_path = (string)($profile_data['profile_image'] ?? '');
     }
+} catch (PDOException $e) {
+    error_log('Add pet profile lookup failed: ' . $e->getMessage());
 }
 $name_parts = preg_split('/\s+/', trim($admin_full_name));
 $first_name = (string)($name_parts[0] ?? 'U');
@@ -247,28 +326,22 @@ $profile_img_src = addPetProfileImageSource($profile_img_path);
 $admin_notifications = [];
 $unread_count = 0;
 try {
-    if ($current_role === 'admin') {
+    if ($is_admin_session) {
+        $read_sql = addPetNotificationReadSql($pdo, 'admin_notifications');
         $notif_stmt = $pdo->query(
             'SELECT id, message, created_at, COUNT(*) OVER() AS total_unread '
-            . 'FROM admin_notifications WHERE is_read = 0 '
-            . 'ORDER BY created_at DESC, id DESC LIMIT 20'
+            . 'FROM public.admin_notifications WHERE ' . $read_sql['unread_predicate'] . ' '
+            . 'ORDER BY created_at DESC NULLS LAST, id DESC LIMIT 20'
         );
     } else {
-        $notification_user_id = filter_var(
-            $_SESSION['user_id'] ?? null,
-            FILTER_VALIDATE_INT,
-            ['options' => ['min_range' => 1]]
-        );
+        $notification_user_id = $user_id;
 
-        if ($notification_user_id === false || $notification_user_id === null) {
-            throw new RuntimeException('A valid user ID is required to load staff notifications.');
-        }
-
+        $read_sql = addPetNotificationReadSql($pdo, 'notifications');
         $notif_stmt = $pdo->prepare(
             'SELECT id, message, created_at, COUNT(*) OVER() AS total_unread '
-            . 'FROM notifications '
-            . 'WHERE user_id = :user_id AND is_read = 0 '
-            . 'ORDER BY created_at DESC, id DESC LIMIT 20'
+            . 'FROM public.notifications '
+            . 'WHERE user_id = :user_id AND ' . $read_sql['unread_predicate'] . ' '
+            . 'ORDER BY created_at DESC NULLS LAST, id DESC LIMIT 20'
         );
         $notif_stmt->execute([':user_id' => $notification_user_id]);
     }

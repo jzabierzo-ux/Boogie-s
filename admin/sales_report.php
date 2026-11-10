@@ -1,31 +1,61 @@
 <?php
 require_once __DIR__ . '/../shared_session_bootstrap.php';
-// Sales reports are restricted to authenticated Admin accounts.
-$current_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
-if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true || $current_role !== 'admin') {
-    header('Location: ../admin_login.php');
-    exit();
+date_default_timezone_set('Asia/Manila');
+
+// Sales reports are restricted to a valid Admin portal session.
+$raw_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
+$current_role = ($raw_role === 'administrator') ? 'admin' : $raw_role;
+$session_user_id = filter_var(
+    $_SESSION['user_id'] ?? null,
+    FILTER_VALIDATE_INT,
+    ['options' => ['min_range' => 1]]
+);
+$is_admin_session = (
+    ($_SESSION['logged_in'] ?? false) === true
+    && ($_SESSION['admin_logged_in'] ?? false) === true
+    && ($_SESSION['staff_logged_in'] ?? false) !== true
+    && $current_role === 'admin'
+    && $session_user_id !== false
+    && $session_user_id !== null
+);
+
+if (!$is_admin_session) {
+    if (($_SESSION['logged_in'] ?? false) !== true) {
+        header('Location: admin_login.php');
+        exit();
+    }
+    http_response_code(403);
+    exit('Access denied. Admin only.');
 }
+$session_user_id = (int)$session_user_id;
+
 // Shared CSRF token required by the POST-only notification read endpoint.
 if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
 }
 $csrf_token = $_SESSION['csrf_token'];
 
-require_once '../db_supabase.php';
+require_once __DIR__ . '/../db_supabase.php';
 $admin_full_name = 'Administrator';
 $profile_img_path = '';
 $first_name = 'Administrator';
-$start_date = trim((string)($_GET['start_date'] ?? ''));
-$end_date = trim((string)($_GET['end_date'] ?? ''));
-$filter_error = '';
+$start_date_raw = $_GET['start_date'] ?? '';
+$end_date_raw = $_GET['end_date'] ?? '';
+$start_date_is_string = is_string($start_date_raw);
+$end_date_is_string = is_string($end_date_raw);
+$start_date = $start_date_is_string ? trim($start_date_raw) : '';
+$end_date = $end_date_is_string ? trim($end_date_raw) : '';
+$filter_error = (!$start_date_is_string || !$end_date_is_string)
+    ? 'Please choose valid dates for the sales report.'
+    : '';
 $date_filter_query = '';
 $date_params = [];
 $total_revenue = 0.0;
 $total_transactions = 0;
 $history_rows = [];
 $history_per_page = 25;
-$requested_page = filter_var($_GET['page'] ?? 1, FILTER_VALIDATE_INT, ['options' => ['default' => 1, 'min_range' => 1]]);
+$page_raw = $_GET['page'] ?? '1';
+$requested_page = filter_var(is_scalar($page_raw) ? (string)$page_raw : '1', FILTER_VALIDATE_INT, ['options' => ['default' => 1, 'min_range' => 1]]);
 $current_page = max(1, (int)$requested_page);
 $total_pages = 1;
 $history_offset = 0;
@@ -34,7 +64,7 @@ $unread_count = 0;
 if (isset($_SESSION['user_id'])) {
     try {
         $profile_stmt = $pdo->prepare('SELECT full_name, profile_image FROM users WHERE id = :id LIMIT 1');
-        $profile_stmt->execute([':id' => (int)$_SESSION['user_id']]);
+        $profile_stmt->execute([':id' => $session_user_id]);
         $admin_data = $profile_stmt->fetch(PDO::FETCH_ASSOC);
         if ($admin_data) {
             $admin_full_name = (string)($admin_data['full_name'] ?? 'Administrator');
@@ -153,13 +183,43 @@ try {
 $history_start = !empty($history_rows) ? $history_offset + 1 : 0;
 $history_end = !empty($history_rows) ? $history_offset + count($history_rows) : 0;
 
+/** Return a safe unread predicate for the existing PostgreSQL is_read column type. */
+function salesReportUnreadPredicate(PDO $pdo): string
+{
+    $type_stmt = $pdo->prepare("SELECT data_type
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'admin_notifications'
+          AND column_name = 'is_read'
+        LIMIT 1");
+    $type_stmt->execute();
+    $data_type = strtolower(trim((string)$type_stmt->fetchColumn()));
+
+    if ($data_type === 'boolean') {
+        return 'COALESCE(is_read, FALSE) = FALSE';
+    }
+    if (in_array($data_type, ['smallint', 'integer', 'bigint', 'numeric', 'decimal', 'real', 'double precision'], true)) {
+        return '(is_read = 0 OR is_read IS NULL)';
+    }
+    if (in_array($data_type, ['text', 'character varying', 'character'], true)) {
+        return "(is_read IS NULL OR LOWER(BTRIM(CAST(is_read AS TEXT))) IN ('0', 'false', 'f', 'no', 'unread', ''))";
+    }
+
+    throw new RuntimeException('Unsupported or unknown admin_notifications.is_read column type.');
+}
+
 // Admin notifications belong only to the Admin portal; load only the latest 20 while retaining the full unread count.
 try {
-    $admin_notif_query = $pdo->prepare('SELECT id, message, created_at, COUNT(*) OVER() AS total_unread FROM admin_notifications WHERE is_read = 0 ORDER BY created_at DESC, id DESC LIMIT 20');
+    $unread_predicate = salesReportUnreadPredicate($pdo);
+    $admin_notif_query = $pdo->prepare("SELECT id, message, created_at, COUNT(*) OVER() AS total_unread
+        FROM public.admin_notifications
+        WHERE {$unread_predicate}
+        ORDER BY created_at DESC NULLS LAST, id DESC
+        LIMIT 20");
     $admin_notif_query->execute();
     $admin_notifications = $admin_notif_query->fetchAll(PDO::FETCH_ASSOC);
     $unread_count = !empty($admin_notifications) ? (int)$admin_notifications[0]['total_unread'] : 0;
-} catch (PDOException $e) {
+} catch (Throwable $e) {
     error_log('Sales report notification query error: ' . $e->getMessage());
     $admin_notifications = [];
     $unread_count = 0;
@@ -447,7 +507,7 @@ try {
             <a href="managebooking.php" class="nav-item"><i class="fas fa-calendar-alt"></i> Bookings</a>
             <a href="manageusers.php" class="nav-item"><i class="fas fa-users"></i> Users</a>
             <a href="managepet.php" class="nav-item"><i class="fas fa-dog"></i> Pets</a>
-            <?php if (isset($_SESSION['role']) && strtolower(trim($_SESSION['role'])) === 'admin'): ?>
+            <?php if ($is_admin_session): ?>
                 <a href="managestaff.php" class="nav-item"><i class="fas fa-id-badge"></i> Personnel</a>
                 <a href="managepromo.php" class="nav-item"><i class="fas fa-tags"></i> Promos</a>
                 <a href="manage_services.php" class="nav-item"><i class="fas fa-list-ul"></i> Pricelist</a>
@@ -497,7 +557,7 @@ try {
                     </div>
                 </div>
                 <div class="profile-wrapper" onclick="toggleProfile(event)">
-                    <span class="admin-tag"><?php echo strtoupper($_SESSION['role'] ?? 'ADMIN'); ?></span>
+                    <span class="admin-tag"><?php echo htmlspecialchars(strtoupper($current_role), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></span>
                     <?php if (!empty($profile_img_src)): ?>
                         <img src="<?php echo htmlspecialchars($profile_img_src, ENT_QUOTES, 'UTF-8'); ?>" class="top-avatar" alt="Profile Picture">
                     <?php else: ?>

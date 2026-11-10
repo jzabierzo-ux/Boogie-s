@@ -1,77 +1,59 @@
 <?php
 require_once __DIR__ . '/../shared_session_bootstrap.php';
-
-// 1. SECURITY: normalize role names used by Admin and Staff accounts.
-// This page is shared by operational staff, so service-staff roles must be allowed too.
-$current_role_raw = strtolower(trim((string)($_SESSION['role'] ?? '')));
-$staff_role_aliases = [
-    'administrator' => 'admin',
-    'admin' => 'admin',
-    'shop manager' => 'manager',
-    'shop_manager' => 'manager',
-    'manager' => 'manager',
-    'front desk' => 'receptionist',
-    'front desk / receptionist' => 'receptionist',
-    'front_desk' => 'receptionist',
-    'front_desk_receptionist' => 'receptionist',
-    'receptionist' => 'receptionist',
-    'grooming staff' => 'groomer',
-    'grooming staff / groomer' => 'groomer',
-    'grooming_staff' => 'groomer',
-    'grooming_staff_groomer' => 'groomer',
-    'groomer' => 'groomer',
-    'staff' => 'groomer', // Legacy role used by older staff accounts.
-    'pet hotel staff' => 'pet_hotel_staff',
-    'pet hotel staff / attendant' => 'pet_hotel_staff',
-    'pet_hotel_attendant' => 'pet_hotel_staff',
-    'pet_hotel_staff_attendant' => 'pet_hotel_staff',
-    'pet_hotel_staff' => 'pet_hotel_staff',
-    'supervisor' => 'receptionist',
-    'vet' => 'veterinarian',
-    'veterinary' => 'veterinarian',
-    'veterinarian' => 'veterinarian',
-    'vet assistant' => 'vet_assistant',
-    'veterinary assistant' => 'vet_assistant',
-    'veterinary_assistant' => 'vet_assistant',
-    'vet_assistant' => 'vet_assistant',
-    'vet nurse' => 'vet_nurse',
-    'veterinary nurse' => 'vet_nurse',
-    'veterinary_nurse' => 'vet_nurse',
-    'vet_nurse' => 'vet_nurse'
-];
-$current_role = $staff_role_aliases[$current_role_raw] ?? $current_role_raw;
-$session_logged_in = in_array($_SESSION['logged_in'] ?? null, [true, 1, '1'], true)
-    || in_array($_SESSION['staff_logged_in'] ?? null, [true, 1, '1'], true);
-$allowed_profile_roles = [
-    'admin', 'manager', 'receptionist', 'groomer', 'pet_hotel_staff',
-    'veterinarian', 'vet_assistant', 'vet_nurse'
-];
-$is_authorized = $session_logged_in && in_array($current_role, $allowed_profile_roles, true);
-
-if (!$is_authorized) {
-    header('Location: stafflogin.php');
-    exit;
-}
-
-// CSRF protection for profile changes
-if (empty($_SESSION['csrf_token'])) {
-    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
-}
-$csrf_token = $_SESSION['csrf_token'];
-
-// Safely get the user ID
-$user_id = (int)($_SESSION['user_id'] ?? $_SESSION['staff_id'] ?? $_SESSION['id'] ?? 0);
-
-if ($user_id <= 0) {
-    header('Location: stafflogin.php');
-    exit;
-}
-
-// Connect only after the session, role, and account ID have been validated.
 require_once __DIR__ . '/../db_supabase.php';
 
-/** Return a scalar POST value safely; arrays/objects are rejected. */
-function staffProfilePostValue(string $key, bool $trim = true): string
+date_default_timezone_set('Asia/Manila');
+
+/*
+ * This profile page is shared by Admin and authorized Staff roles.
+ * The portal flags must be exclusive: an Admin session cannot also be a
+ * Staff session, and a Staff account cannot enter with an Admin flag.
+ */
+function staffProfileFlagEnabled($value): bool
+{
+    return $value === true
+        || $value === 1
+        || $value === '1'
+        || (is_string($value) && strtolower(trim($value)) === 'true');
+}
+
+function staffProfileNormalizeRole($value): string
+{
+    $role = strtolower(trim((string)$value));
+    $role = preg_replace('/[\s_-]+/', ' ', $role) ?? '';
+
+    $aliases = [
+        'administrator' => 'admin',
+        'admin' => 'admin',
+        'shop manager' => 'manager',
+        'manager' => 'manager',
+        'front desk' => 'receptionist',
+        'front desk receptionist' => 'receptionist',
+        'front desk / receptionist' => 'receptionist',
+        'receptionist' => 'receptionist',
+        'grooming staff' => 'groomer',
+        'grooming staff groomer' => 'groomer',
+        'grooming staff / groomer' => 'groomer',
+        'groomer' => 'groomer',
+        'staff' => 'groomer',
+        'pet hotel staff' => 'pet_hotel_staff',
+        'pet hotel staff attendant' => 'pet_hotel_staff',
+        'pet hotel staff / attendant' => 'pet_hotel_staff',
+        'pet hotel attendant' => 'pet_hotel_staff',
+        'supervisor' => 'receptionist',
+        'vet' => 'veterinarian',
+        'veterinary' => 'veterinarian',
+        'veterinarian' => 'veterinarian',
+        'vet assistant' => 'vet_assistant',
+        'veterinary assistant' => 'vet_assistant',
+        'vet nurse' => 'vet_nurse',
+        'veterinary nurse' => 'vet_nurse',
+    ];
+
+    return $aliases[$role] ?? str_replace(' ', '_', $role);
+}
+
+function staffProfilePostString(string $key, bool $trim = true): string
 {
     $value = $_POST[$key] ?? '';
     if (!is_string($value)) {
@@ -81,12 +63,91 @@ function staffProfilePostValue(string $key, bool $trim = true): string
     return $trim ? trim($value) : $value;
 }
 
+function staffProfileTextLength(string $value): int
+{
+    return function_exists('mb_strlen') ? mb_strlen($value, 'UTF-8') : strlen($value);
+}
 
-/** Return server-side Supabase Storage configuration without exposing credentials to the browser. */
-function staffSupabaseStorageConfig(): ?array
+/** Read type-aware unread/update SQL for the admin notification flag. */
+function staffProfileNotificationReadSql(PDO $pdo): array
+{
+    $typeStmt = $pdo->prepare(
+        "SELECT data_type
+         FROM information_schema.columns
+         WHERE table_schema = 'public'
+           AND table_name = 'admin_notifications'
+           AND column_name = 'is_read'
+         LIMIT 1"
+    );
+    $typeStmt->execute();
+    $dataType = strtolower((string)$typeStmt->fetchColumn());
+
+    if ($dataType === 'boolean') {
+        return ['is_read IS FALSE', 'is_read = TRUE'];
+    }
+
+    if (in_array($dataType, ['smallint', 'integer', 'bigint', 'numeric', 'decimal', 'real', 'double precision'], true)) {
+        return ['COALESCE(is_read, 0) = 0', 'is_read = 1'];
+    }
+
+    if (in_array($dataType, ['text', 'character varying', 'character', 'USER-DEFINED'], true)) {
+        return [
+            "LOWER(BTRIM(COALESCE(is_read::text, ''))) IN ('0', 'false', 'f', '')",
+            "is_read = '1'"
+        ];
+    }
+
+    throw new RuntimeException('Unsupported admin notification read-flag column type.');
+}
+
+function staffProfileLoadNotifications(PDO $pdo): array
+{
+    [$unreadSql] = staffProfileNotificationReadSql($pdo);
+
+    $countStmt = $pdo->query("SELECT COUNT(*) FROM admin_notifications WHERE {$unreadSql}");
+    $unread = (int)$countStmt->fetchColumn();
+
+    $listStmt = $pdo->query(
+        "SELECT message, created_at
+         FROM admin_notifications
+         WHERE {$unreadSql}
+         ORDER BY created_at DESC
+         LIMIT 10"
+    );
+
+    return [$unread, $listStmt->fetchAll(PDO::FETCH_ASSOC) ?: []];
+}
+
+function staffProfileRenderNotifications(array $notifications): string
+{
+    if (!$notifications) {
+        return '<div class="notif-empty">No new alerts.</div>';
+    }
+
+    $html = '';
+    foreach ($notifications as $notification) {
+        $message = trim((string)($notification['message'] ?? ''));
+        $html .= '<div class="notif-item">';
+        $html .= '<i class="fa-solid fa-circle-exclamation" style="color:#ef4444;margin-right:5px;" aria-hidden="true"></i>';
+        $html .= htmlspecialchars($message !== '' ? $message : 'New notification', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+
+        $createdAt = (string)($notification['created_at'] ?? '');
+        $timestamp = $createdAt !== '' ? strtotime($createdAt) : false;
+        if ($timestamp !== false) {
+            $html .= '<br><small style="color:#94a3b8;font-size:11px;">';
+            $html .= htmlspecialchars(date('M d, g:i A', $timestamp), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+            $html .= '</small>';
+        }
+        $html .= '</div>';
+    }
+
+    return $html;
+}
+
+/** Return validated server-side Supabase Storage configuration. */
+function staffProfileStorageConfig(): ?array
 {
     $supabaseUrl = trim((string)(getenv('SUPABASE_URL') ?: ''));
-    // Prefer the current Supabase secret key. Keep the legacy service-role key as a fallback.
     $secretKey = trim((string)(getenv('SUPABASE_SECRET_KEY') ?: ''));
     $legacyServiceRoleKey = trim((string)(getenv('SUPABASE_SERVICE_ROLE_KEY') ?: ''));
     $apiKey = $secretKey !== '' ? $secretKey : $legacyServiceRoleKey;
@@ -99,13 +160,14 @@ function staffSupabaseStorageConfig(): ?array
 
     $supabaseUrl = rtrim($supabaseUrl, '/');
     $parsedUrl = parse_url($supabaseUrl);
+
     if (
-        !filter_var($supabaseUrl, FILTER_VALIDATE_URL) ||
-        !is_array($parsedUrl) ||
-        strtolower((string)($parsedUrl['scheme'] ?? '')) !== 'https' ||
-        empty($parsedUrl['host']) ||
-        isset($parsedUrl['user']) ||
-        isset($parsedUrl['pass'])
+        !filter_var($supabaseUrl, FILTER_VALIDATE_URL)
+        || !is_array($parsedUrl)
+        || strtolower((string)($parsedUrl['scheme'] ?? '')) !== 'https'
+        || empty($parsedUrl['host'])
+        || isset($parsedUrl['user'])
+        || isset($parsedUrl['pass'])
     ) {
         return null;
     }
@@ -118,38 +180,40 @@ function staffSupabaseStorageConfig(): ?array
     ];
 }
 
-/** Upload/delete a profile image directly through the Supabase Storage REST API. */
-function staffSupabaseStorageRequest(string $method, string $objectPath, ?string $filePath = null, ?string $mimeType = null): array
+/** Upload or delete a profile image using the server-side Storage credentials. */
+function staffProfileStorageRequest(string $method, string $objectPath, ?string $filePath = null, ?string $mimeType = null): array
 {
-    $config = staffSupabaseStorageConfig();
+    $config = staffProfileStorageConfig();
     if ($config === null) {
         return [
             'ok' => false,
             'status' => 0,
-            'body' => '',
-            'error' => 'Supabase Storage is not configured. Add SUPABASE_URL and SUPABASE_SECRET_KEY to the server environment (or the legacy SUPABASE_SERVICE_ROLE_KEY).'
+            'error' => 'Supabase Storage is not configured. Check SUPABASE_URL and the server-side Storage key.'
         ];
     }
 
     if (!function_exists('curl_init')) {
-        return ['ok' => false, 'status' => 0, 'body' => '', 'error' => 'The PHP cURL extension is not available.'];
+        return ['ok' => false, 'status' => 0, 'error' => 'The PHP cURL extension is not available.'];
     }
 
-    $segments = explode('/', trim(str_replace('\\', '/', $objectPath), '/'));
+    $normalizedPath = str_replace('\\', '/', trim($objectPath, '/'));
+    $segments = explode('/', $normalizedPath);
     if (
-        $objectPath === '' ||
-        in_array('', $segments, true) ||
-        in_array('.', $segments, true) ||
-        in_array('..', $segments, true)
+        $normalizedPath === ''
+        || in_array('', $segments, true)
+        || in_array('.', $segments, true)
+        || in_array('..', $segments, true)
     ) {
-        return ['ok' => false, 'status' => 0, 'body' => '', 'error' => 'Invalid Storage object path.'];
+        return ['ok' => false, 'status' => 0, 'error' => 'Invalid Storage object path.'];
     }
 
-    $encodedObjectPath = implode('/', array_map('rawurlencode', $segments));
-    $endpoint = $config['url'] . '/storage/v1/object/' . rawurlencode($config['bucket']) . '/' . $encodedObjectPath;
-    // New sb_secret_* keys are sent as apikey. Legacy service_role JWTs also use Bearer auth.
+    $encodedPath = implode('/', array_map('rawurlencode', $segments));
+    $endpoint = $config['url'] . '/storage/v1/object/' . rawurlencode($config['bucket']) . '/' . $encodedPath;
     $headers = ['apikey: ' . $config['key']];
-    if (!empty($config['uses_legacy_jwt'])) {
+
+    // Legacy service-role JWTs require Bearer authorization. New sb_secret_* keys
+    // are provided through the apikey header and are never sent to the browser.
+    if ($config['uses_legacy_jwt']) {
         $headers[] = 'Authorization: Bearer ' . $config['key'];
     }
 
@@ -168,12 +232,12 @@ function staffSupabaseStorageRequest(string $method, string $objectPath, ?string
 
     if ($method === 'POST') {
         if ($filePath === null || !is_file($filePath) || !is_readable($filePath)) {
-            return ['ok' => false, 'status' => 0, 'body' => '', 'error' => 'The temporary uploaded image could not be read.'];
+            return ['ok' => false, 'status' => 0, 'error' => 'The temporary uploaded image could not be read.'];
         }
 
         $fileContents = file_get_contents($filePath);
         if (!is_string($fileContents)) {
-            return ['ok' => false, 'status' => 0, 'body' => '', 'error' => 'The temporary uploaded image could not be read.'];
+            return ['ok' => false, 'status' => 0, 'error' => 'The temporary uploaded image could not be read.'];
         }
 
         $headers[] = 'Content-Type: ' . ($mimeType ?: 'application/octet-stream');
@@ -181,12 +245,12 @@ function staffSupabaseStorageRequest(string $method, string $objectPath, ?string
         $options[CURLOPT_HTTPHEADER] = $headers;
         $options[CURLOPT_POSTFIELDS] = $fileContents;
     } elseif ($method !== 'DELETE') {
-        return ['ok' => false, 'status' => 0, 'body' => '', 'error' => 'Unsupported Storage request.'];
+        return ['ok' => false, 'status' => 0, 'error' => 'Unsupported Storage request.'];
     }
 
     $curl = curl_init();
     if ($curl === false) {
-        return ['ok' => false, 'status' => 0, 'body' => '', 'error' => 'Unable to initialize the Storage connection.'];
+        return ['ok' => false, 'status' => 0, 'error' => 'Unable to initialize the Storage connection.'];
     }
 
     curl_setopt_array($curl, $options);
@@ -196,45 +260,44 @@ function staffSupabaseStorageRequest(string $method, string $objectPath, ?string
     curl_close($curl);
 
     if ($responseBody === false) {
-        error_log('Staff Supabase Storage request failed: ' . $curlError);
-        return ['ok' => false, 'status' => $statusCode, 'body' => '', 'error' => 'Could not connect to Supabase Storage. Please try again.'];
+        error_log('Staff profile Storage request failed: ' . $curlError);
+        return ['ok' => false, 'status' => $statusCode, 'error' => 'Could not connect to Supabase Storage. Please try again.'];
     }
 
-    $success = ($method === 'POST')
+    $success = $method === 'POST'
         ? in_array($statusCode, [200, 201], true)
         : in_array($statusCode, [200, 204], true);
 
     if (!$success) {
-        error_log('Staff Supabase Storage request returned HTTP ' . $statusCode . ': ' . substr((string)$responseBody, 0, 500));
+        error_log('Staff profile Storage request returned HTTP ' . $statusCode . ': ' . substr((string)$responseBody, 0, 500));
     }
 
     return [
         'ok' => $success,
         'status' => $statusCode,
-        'body' => (string)$responseBody,
         'error' => $success ? '' : 'Supabase Storage rejected the image request (HTTP ' . $statusCode . '). Check the bucket and server credentials.'
     ];
 }
 
-/** Build the public browser URL for a staff profile image in the public bucket. */
-function staffSupabaseStoragePublicUrl(string $objectPath): ?string
+function staffProfileStoragePublicUrl(string $objectPath): ?string
 {
-    $config = staffSupabaseStorageConfig();
+    $config = staffProfileStorageConfig();
     if ($config === null) {
         return null;
     }
 
-    $segments = explode('/', trim(str_replace('\\', '/', $objectPath), '/'));
-    if ($objectPath === '' || in_array('', $segments, true) || in_array('.', $segments, true) || in_array('..', $segments, true)) {
+    $normalizedPath = str_replace('\\', '/', trim($objectPath, '/'));
+    $segments = explode('/', $normalizedPath);
+    if ($normalizedPath === '' || in_array('', $segments, true) || in_array('.', $segments, true) || in_array('..', $segments, true)) {
         return null;
     }
 
-    $encodedObjectPath = implode('/', array_map('rawurlencode', $segments));
-    return $config['url'] . '/storage/v1/object/public/' . rawurlencode($config['bucket']) . '/' . $encodedObjectPath;
+    $encodedPath = implode('/', array_map('rawurlencode', $segments));
+    return $config['url'] . '/storage/v1/object/public/' . rawurlencode($config['bucket']) . '/' . $encodedPath;
 }
 
-/** Resolve saved Supabase URLs and older local uploads for backwards compatibility. */
-function resolveStaffProfileImageUrl($storedPath): string
+/** Resolve stored URLs and older local upload files without permitting traversal. */
+function staffProfileResolveImageUrl($storedPath): string
 {
     if (!is_string($storedPath) || trim($storedPath) === '') {
         return '';
@@ -242,268 +305,425 @@ function resolveStaffProfileImageUrl($storedPath): string
 
     $path = trim(str_replace('\\', '/', $storedPath));
     if (preg_match('#^https?://#i', $path)) {
-        return filter_var($path, FILTER_VALIDATE_URL) ? $path : '';
+        $parsed = parse_url($path);
+        return filter_var($path, FILTER_VALIDATE_URL)
+            && is_array($parsed)
+            && in_array(strtolower((string)($parsed['scheme'] ?? '')), ['http', 'https'], true)
+            && !isset($parsed['user'])
+            && !isset($parsed['pass'])
+            ? $path
+            : '';
     }
 
     $filename = basename($path);
-    if ($filename === '' || $filename === '.' || $filename === '..') {
+    if ($filename === '' || $filename === '.' || $filename === '..' || $filename !== preg_replace('/[^A-Za-z0-9._-]/', '', $filename)) {
         return '';
     }
 
-    $projectRoot = dirname(__DIR__);
-    $legacyUploadPath = $projectRoot . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . $filename;
-    if (is_file($legacyUploadPath)) {
-        return '../uploads/' . rawurlencode($filename);
+    $projectRoot = realpath(dirname(__DIR__));
+    if ($projectRoot === false) {
+        return '';
     }
 
-    return '';
+    $uploadRoot = realpath($projectRoot . DIRECTORY_SEPARATOR . 'uploads');
+    $legacyUploadPath = realpath($projectRoot . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . $filename);
+    if (
+        $uploadRoot === false
+        || $legacyUploadPath === false
+        || !is_file($legacyUploadPath)
+        || strpos($legacyUploadPath, rtrim($uploadRoot, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR) !== 0
+    ) {
+        return '';
+    }
+
+    return '../uploads/' . rawurlencode($filename);
 }
 
-$success_msg = "";
-$error_msg = "";
-$new_storage_object = null;
+function staffProfileRedirect(): void
+{
+    header('Location: staff_profile.php', true, 303);
+    exit;
+}
 
-// 2. HANDLE PROFILE PICTURE UPLOAD
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['profile_image'])) {
-    $submitted_csrf = staffProfilePostValue('csrf_token', false);
-    $upload = $_FILES['profile_image'];
-    $max_upload_size = 2 * 1024 * 1024; // Keep the existing 2MB Staff upload limit.
-    $allowed_mimes = [
-        'image/jpeg' => 'jpg',
-        'image/png' => 'png',
-        'image/gif' => 'gif'
-    ];
+// Normalize the session role and enforce mutually exclusive portal sessions.
+$current_role = staffProfileNormalizeRole($_SESSION['role'] ?? '');
+$allowed_staff_roles = [
+    'manager', 'receptionist', 'groomer', 'pet_hotel_staff',
+    'veterinarian', 'vet_assistant', 'vet_nurse'
+];
+$is_admin = $current_role === 'admin';
+$is_staff_role = in_array($current_role, $allowed_staff_roles, true);
+$logged_in = staffProfileFlagEnabled($_SESSION['logged_in'] ?? false);
+$admin_logged_in = staffProfileFlagEnabled($_SESSION['admin_logged_in'] ?? false);
+$staff_logged_in = staffProfileFlagEnabled($_SESSION['staff_logged_in'] ?? false);
 
-    if (!hash_equals($csrf_token, $submitted_csrf)) {
-        $error_msg = "Invalid request. Please refresh the page and try again.";
-    } elseif (!is_array($upload) || !isset($upload['error'], $upload['size'], $upload['tmp_name'])
-        || is_array($upload['error']) || is_array($upload['size']) || is_array($upload['tmp_name'])) {
-        $error_msg = "Invalid image upload request.";
-    } elseif ((int)$upload['error'] !== UPLOAD_ERR_OK) {
-        $error_msg = ((int)$upload['error'] === UPLOAD_ERR_INI_SIZE || (int)$upload['error'] === UPLOAD_ERR_FORM_SIZE)
-            ? "Profile picture must not exceed 2MB."
-            : "Failed to upload image. Please try again.";
-    } elseif ((int)$upload['size'] <= 0 || (int)$upload['size'] > $max_upload_size) {
-        $error_msg = "Profile picture must be between 1 byte and 2MB.";
-    } elseif (!is_string($upload['tmp_name']) || !is_uploaded_file($upload['tmp_name'])) {
-        $error_msg = "Invalid image upload. Please choose the image again.";
-    } else {
-        $tmp_name = $upload['tmp_name'];
-        $finfo_mime = '';
-        if (function_exists('finfo_open')) {
+if (!$logged_in) {
+    header('Location: ' . ($is_admin ? '../admin/admin_login.php' : 'stafflogin.php'));
+    exit;
+}
+
+if (
+    ($is_admin && (!$admin_logged_in || $staff_logged_in))
+    || ($is_staff_role && (!$staff_logged_in || $admin_logged_in))
+    || (!$is_admin && !$is_staff_role)
+    || ($admin_logged_in && $staff_logged_in)
+) {
+    http_response_code(403);
+    exit('Access denied. Please sign in through the correct portal.');
+}
+
+$userIdRaw = $_SESSION['user_id'] ?? $_SESSION['staff_id'] ?? $_SESSION['id'] ?? null;
+$user_id = filter_var($userIdRaw, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+if ($user_id === false || $user_id === null) {
+    header('Location: ' . ($is_admin ? '../admin/admin_login.php' : 'stafflogin.php'));
+    exit;
+}
+$user_id = (int)$user_id;
+$_SESSION['role'] = $current_role;
+
+if (!isset($pdo) || !($pdo instanceof PDO)) {
+    error_log('Staff profile page: Supabase database connection unavailable.');
+    http_response_code(503);
+    exit('Profile services are temporarily unavailable. Please try again.');
+}
+
+header('Cache-Control: private, no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
+header('Expires: 0');
+header('X-Content-Type-Options: nosniff');
+header('X-Frame-Options: SAMEORIGIN');
+header('Referrer-Policy: strict-origin-when-cross-origin');
+header('Permissions-Policy: camera=(), microphone=(), geolocation=()');
+
+try {
+    $accountStmt = $pdo->prepare(
+        'SELECT id, role, full_name, username, contact_number, position, profile_image
+         FROM users
+         WHERE id = :user_id
+         LIMIT 1'
+    );
+    $accountStmt->execute([':user_id' => $user_id]);
+    $staff_data = $accountStmt->fetch(PDO::FETCH_ASSOC) ?: null;
+} catch (PDOException $e) {
+    error_log('Staff profile account verification failed: ' . $e->getMessage());
+    http_response_code(503);
+    exit('Unable to verify this account right now. Please try again.');
+}
+
+if (!$staff_data || staffProfileNormalizeRole($staff_data['role'] ?? '') !== $current_role) {
+    http_response_code(403);
+    exit('Access denied. The account role does not match this portal session.');
+}
+
+if (
+    !isset($_SESSION['csrf_token'])
+    || !is_string($_SESSION['csrf_token'])
+    || strlen($_SESSION['csrf_token']) < 32
+) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+$csrf_token = $_SESSION['csrf_token'];
+
+$success_msg = '';
+$error_msg = '';
+$can_view_admin_notifications = $is_admin || $current_role === 'manager';
+$method = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'));
+
+if (!in_array($method, ['GET', 'POST'], true)) {
+    http_response_code(405);
+    header('Allow: GET, POST');
+    exit('Method not allowed.');
+}
+
+if ($method === 'POST') {
+    $submitted_csrf = staffProfilePostString('csrf_token', false);
+    $action = staffProfilePostString('action');
+
+    if ($submitted_csrf === '' || !hash_equals($csrf_token, $submitted_csrf)) {
+        $error_msg = 'Invalid request. Please refresh the page and try again.';
+    } elseif ($action === 'mark_notifications_read') {
+        if (!$can_view_admin_notifications) {
+            http_response_code(403);
+            exit('You are not allowed to manage these notifications.');
+        }
+
+        try {
+            [, $markReadSql] = staffProfileNotificationReadSql($pdo);
+            $markReadStmt = $pdo->prepare("UPDATE admin_notifications SET {$markReadSql}");
+            $markReadStmt->execute();
+            staffProfileRedirect();
+        } catch (Throwable $e) {
+            error_log('Staff profile mark-notifications-read failed: ' . $e->getMessage());
+            $error_msg = 'Unable to update notifications right now. Please try again.';
+        }
+    } elseif ($action === 'upload_profile_image') {
+        $upload = $_FILES['profile_image'] ?? null;
+        $maxUploadSize = 2 * 1024 * 1024;
+        $allowedMimes = [
+            'image/jpeg' => 'jpg',
+            'image/png' => 'png',
+            'image/gif' => 'gif'
+        ];
+
+        if (
+            !is_array($upload)
+            || !isset($upload['error'], $upload['size'], $upload['tmp_name'])
+            || is_array($upload['error'])
+            || is_array($upload['size'])
+            || is_array($upload['tmp_name'])
+        ) {
+            $error_msg = 'Invalid image upload request.';
+        } elseif ((int)$upload['error'] !== UPLOAD_ERR_OK) {
+            $error_msg = in_array((int)$upload['error'], [UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE], true)
+                ? 'Profile picture must not exceed 2MB.'
+                : 'Failed to upload image. Please try again.';
+        } elseif ((int)$upload['size'] <= 0 || (int)$upload['size'] > $maxUploadSize) {
+            $error_msg = 'Profile picture must be between 1 byte and 2MB.';
+        } elseif (!is_string($upload['tmp_name']) || !is_uploaded_file($upload['tmp_name'])) {
+            $error_msg = 'Invalid image upload. Please choose the image again.';
+        } elseif (!function_exists('finfo_open')) {
+            $error_msg = 'The server cannot validate image files right now.';
+        } else {
+            $tmpName = $upload['tmp_name'];
             $finfo = finfo_open(FILEINFO_MIME_TYPE);
+            $finfoMime = $finfo ? (string)finfo_file($finfo, $tmpName) : '';
             if ($finfo) {
-                $finfo_mime = (string)finfo_file($finfo, $tmp_name);
                 finfo_close($finfo);
             }
-        }
+            $imageInfo = @getimagesize($tmpName);
+            $detectedMime = is_array($imageInfo) ? (string)($imageInfo['mime'] ?? '') : '';
+            $width = is_array($imageInfo) ? (int)($imageInfo[0] ?? 0) : 0;
+            $height = is_array($imageInfo) ? (int)($imageInfo[1] ?? 0) : 0;
 
-        $image_info = @getimagesize($tmp_name);
-        $detected_mime = is_array($image_info) ? (string)($image_info['mime'] ?? '') : '';
-        if (
-            $finfo_mime === '' ||
-            !isset($allowed_mimes[$finfo_mime]) ||
-            $detected_mime !== $finfo_mime
-        ) {
-            $error_msg = "Invalid image file. Only valid JPG, PNG, and GIF images are allowed.";
-        } else {
-            try {
-                $extension = $allowed_mimes[$finfo_mime];
-                $new_filename = 'staff_' . $user_id . '_' . bin2hex(random_bytes(12)) . '.' . $extension;
-                $storage_object = 'staff/' . $user_id . '/' . $new_filename;
+            if (
+                $finfoMime === ''
+                || !isset($allowedMimes[$finfoMime])
+                || $detectedMime !== $finfoMime
+                || $width <= 0
+                || $height <= 0
+                || $width > 6000
+                || $height > 6000
+                || ($width * $height) > 20000000
+            ) {
+                $error_msg = 'Invalid image file. Only valid JPG, PNG, and GIF images up to 2MB are allowed.';
+            } else {
+                $extension = $allowedMimes[$finfoMime];
+                $newFilename = 'staff_' . $user_id . '_' . bin2hex(random_bytes(12)) . '.' . $extension;
+                $storageObject = 'staff/' . $user_id . '/' . $newFilename;
+                $uploadedToStorage = false;
 
-                // Upload directly to persistent Supabase Storage; do not write to Vercel's filesystem.
-                $storage_result = staffSupabaseStorageRequest('POST', $storage_object, $tmp_name, $finfo_mime);
-                if (!$storage_result['ok']) {
-                    error_log('Staff profile image upload failed: ' . $storage_result['error']);
-                    $error_msg = $storage_result['error'];
-                } else {
-                    $public_image_url = staffSupabaseStoragePublicUrl($storage_object);
-                    if ($public_image_url === null) {
-                        staffSupabaseStorageRequest('DELETE', $storage_object);
-                        $error_msg = 'Unable to create the profile picture URL. Check your Supabase Storage settings.';
+                try {
+                    $storageResult = staffProfileStorageRequest('POST', $storageObject, $tmpName, $finfoMime);
+                    if (!$storageResult['ok']) {
+                        $error_msg = $storageResult['error'];
                     } else {
-                        $update_img_stmt = $pdo->prepare("\n                            UPDATE users\n                            SET profile_image = :profile_image\n                            WHERE id = :user_id\n                            RETURNING id\n                        ");
-                        $update_img_stmt->execute([
-                            ':profile_image' => $public_image_url,
-                            ':user_id' => $user_id
-                        ]);
-
-                        if (!$update_img_stmt->fetchColumn()) {
-                            staffSupabaseStorageRequest('DELETE', $storage_object);
-                            $error_msg = "Unable to save the profile picture for this account.";
+                        $uploadedToStorage = true;
+                        $publicImageUrl = staffProfileStoragePublicUrl($storageObject);
+                        if ($publicImageUrl === null) {
+                            $error_msg = 'Unable to create the profile picture URL. Check your Supabase Storage settings.';
                         } else {
-                            $new_storage_object = null; // The database now references this uploaded object.
-                            $success_msg = "Profile picture updated successfully!";
+                            $updateImageStmt = $pdo->prepare(
+                                'UPDATE users
+                                 SET profile_image = :profile_image
+                                 WHERE id = :user_id
+                                 RETURNING id'
+                            );
+                            $updateImageStmt->execute([
+                                ':profile_image' => $publicImageUrl,
+                                ':user_id' => $user_id
+                            ]);
+
+                            if ($updateImageStmt->fetchColumn()) {
+                                $staff_data['profile_image'] = $publicImageUrl;
+                                $success_msg = 'Profile picture updated successfully!';
+                                $uploadedToStorage = false; // Keep the Storage object referenced by the database.
+                            } else {
+                                $error_msg = 'Unable to save the profile picture for this account.';
+                            }
                         }
                     }
+                } catch (Throwable $e) {
+                    error_log('Staff profile image update failed: ' . $e->getMessage());
+                    $error_msg = 'Unable to save the profile picture. Please try again.';
+                } finally {
+                    if ($uploadedToStorage) {
+                        staffProfileStorageRequest('DELETE', $storageObject);
+                    }
                 }
-            } catch (Throwable $e) {
-                if (isset($storage_object) && is_string($storage_object) && $storage_object !== '') {
-                    staffSupabaseStorageRequest('DELETE', $storage_object);
-                }
-                error_log("Staff profile image update failed: " . $e->getMessage());
-                $error_msg = "Unable to save the profile picture. Please try again.";
             }
         }
-    }
-}
+    } elseif ($action === 'update_profile') {
+        $new_name = staffProfilePostString('full_name');
+        $new_username = staffProfilePostString('username');
+        $new_contact = staffProfilePostString('contact_number');
 
-// 3. HANDLE PROFILE DETAILS UPDATE (TINANGGAL NA ANG EMAIL)
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_profile'])) {
-    $submitted_csrf = staffProfilePostValue('csrf_token', false);
-    $new_name = staffProfilePostValue('full_name');
-    $new_username = staffProfilePostValue('username');
-    $new_contact = staffProfilePostValue('contact_number');
+        $digitsOnlyContact = preg_replace('/\D+/', '', $new_contact) ?? '';
+        $hasValidContact = $new_contact === ''
+            || (
+                preg_match('/^[0-9+\s().-]+$/', $new_contact) === 1
+                && strlen($new_contact) <= 25
+                && strlen($digitsOnlyContact) >= 7
+                && strlen($digitsOnlyContact) <= 15
+            );
 
-    if (!hash_equals($csrf_token, $submitted_csrf)) {
-        $error_msg = "Invalid request. Please refresh the page and try again.";
-    } elseif ($new_name === '' || $new_username === '') {
-        $error_msg = 'Full name and username are required.';
-    } else {
-        try {
-            $check_user_stmt = $pdo->prepare("
-                SELECT id
-                FROM users
-                WHERE username = :username
-                  AND id <> :user_id
-                LIMIT 1
-            ");
-            $check_user_stmt->execute([
-                ':username' => $new_username,
-                ':user_id' => $user_id
-            ]);
-
-            if ($check_user_stmt->fetchColumn()) {
-                $error_msg = "Username is already taken by another account. Please choose another one.";
-            } else {
-                $update_info_stmt = $pdo->prepare("
-                    UPDATE users
-                    SET full_name = :full_name,
-                        username = :username,
-                        contact_number = :contact_number
-                    WHERE id = :user_id
-                    RETURNING id
-                ");
-                $update_info_stmt->execute([
-                    ':full_name' => $new_name,
+        if ($new_name === '' || $new_username === '') {
+            $error_msg = 'Full name and username are required.';
+        } elseif (staffProfileTextLength($new_name) > 150) {
+            $error_msg = 'Full name must not exceed 150 characters.';
+        } elseif (staffProfileTextLength($new_username) > 100) {
+            $error_msg = 'Username must not exceed 100 characters.';
+        } elseif (preg_match('/[\x00-\x1F\x7F]/', $new_name . $new_username) === 1) {
+            $error_msg = 'Please remove unsupported control characters from the profile details.';
+        } elseif (!$hasValidContact) {
+            $error_msg = 'Please enter a valid contact number or leave the field blank.';
+        } else {
+            try {
+                $checkUserStmt = $pdo->prepare(
+                    'SELECT id
+                     FROM users
+                     WHERE LOWER(username) = LOWER(:username)
+                       AND id <> :user_id
+                     LIMIT 1'
+                );
+                $checkUserStmt->execute([
                     ':username' => $new_username,
-                    ':contact_number' => $new_contact,
                     ':user_id' => $user_id
                 ]);
 
-                if ($update_info_stmt->fetchColumn()) {
-                    $_SESSION['staff_name'] = $new_name;
-                    $_SESSION['user_name'] = $new_name;
-                    $success_msg = "Profile details saved successfully!";
+                if ($checkUserStmt->fetchColumn()) {
+                    $error_msg = 'Username is already taken by another account. Please choose another one.';
                 } else {
-                    $error_msg = "Unable to update this profile. Please sign in again.";
+                    $updateInfoStmt = $pdo->prepare(
+                        'UPDATE users
+                         SET full_name = :full_name,
+                             username = :username,
+                             contact_number = :contact_number
+                         WHERE id = :user_id
+                         RETURNING id'
+                    );
+                    $updateInfoStmt->execute([
+                        ':full_name' => $new_name,
+                        ':username' => $new_username,
+                        ':contact_number' => $new_contact,
+                        ':user_id' => $user_id
+                    ]);
+
+                    if ($updateInfoStmt->fetchColumn()) {
+                        $_SESSION['staff_name'] = $new_name;
+                        $_SESSION['user_name'] = $new_name;
+                        $staff_data['full_name'] = $new_name;
+                        $staff_data['username'] = $new_username;
+                        $staff_data['contact_number'] = $new_contact;
+                        $success_msg = 'Profile details saved successfully!';
+                    } else {
+                        $error_msg = 'Unable to update this profile. Please sign in again.';
+                    }
                 }
+            } catch (PDOException $e) {
+                error_log('Staff profile details update failed: ' . $e->getMessage());
+                $error_msg = ((string)$e->getCode() === '23505')
+                    ? 'Username is already taken by another account. Please choose another one.'
+                    : 'Failed to update profile details.';
+            } catch (Throwable $e) {
+                error_log('Staff profile details update failed: ' . $e->getMessage());
+                $error_msg = 'Failed to update profile details.';
             }
-        } catch (PDOException $e) {
-            error_log("Profile details update failed: " . $e->getMessage());
-            $error_msg = ((string)$e->getCode() === '23505')
-                ? "Username is already taken by another account. Please choose another one."
-                : "Failed to update profile details.";
-        } catch (Throwable $e) {
-            error_log("Profile details update failed: " . $e->getMessage());
-            $error_msg = "Failed to update profile details.";
         }
-    }
-}
+    } elseif ($action === 'change_password') {
+        $current_password = staffProfilePostString('current_password', false);
+        $new_password = staffProfilePostString('new_password', false);
+        $confirm_password = staffProfilePostString('confirm_password', false);
 
+        if ($current_password === '' || $new_password === '' || $confirm_password === '') {
+            $error_msg = 'Please complete all password fields.';
+        } elseif (staffProfileTextLength($new_password) < 8) {
+            $error_msg = 'New password must be at least 8 characters long.';
+        } elseif (staffProfileTextLength($new_password) > 128 || strlen($new_password) > 512) {
+            $error_msg = 'New password must not exceed 128 characters.';
+        } elseif ($new_password !== $confirm_password) {
+            $error_msg = 'New password and confirmation password do not match.';
+        } else {
+            try {
+                $passwordStmt = $pdo->prepare(
+                    'SELECT password
+                     FROM users
+                     WHERE id = :user_id
+                     LIMIT 1'
+                );
+                $passwordStmt->execute([':user_id' => $user_id]);
+                $passwordRow = $passwordStmt->fetch(PDO::FETCH_ASSOC);
 
-// 4. HANDLE PASSWORD CHANGE
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['change_password'])) {
-    $submitted_csrf = staffProfilePostValue('csrf_token', false);
-    $current_password = staffProfilePostValue('current_password', false);
-    $new_password = staffProfilePostValue('new_password', false);
-    $confirm_password = staffProfilePostValue('confirm_password', false);
+                if (!$passwordRow || !is_string($passwordRow['password'] ?? null) || $passwordRow['password'] === '') {
+                    $error_msg = 'Unable to verify your current password.';
+                } elseif (!password_verify($current_password, $passwordRow['password'])) {
+                    $error_msg = 'Current password is incorrect.';
+                } elseif (hash_equals($current_password, $new_password)) {
+                    $error_msg = 'Your new password must be different from your current password.';
+                } else {
+                    $newPasswordHash = password_hash($new_password, PASSWORD_DEFAULT);
+                    if (!is_string($newPasswordHash) || $newPasswordHash === '') {
+                        throw new RuntimeException('Password hashing failed.');
+                    }
 
-    if (!hash_equals($csrf_token, $submitted_csrf)) {
-        $error_msg = "Invalid request. Please refresh the page and try again.";
-    } elseif ($current_password === '' || $new_password === '' || $confirm_password === '') {
-        $error_msg = "Please complete all password fields.";
-    } elseif (strlen($new_password) < 8) {
-        $error_msg = "New password must be at least 8 characters long.";
-    } elseif ($new_password !== $confirm_password) {
-        $error_msg = "New password and confirmation password do not match.";
+                    $updatePasswordStmt = $pdo->prepare(
+                        'UPDATE users
+                         SET password = :password
+                         WHERE id = :user_id
+                         RETURNING id'
+                    );
+                    $updatePasswordStmt->execute([
+                        ':password' => $newPasswordHash,
+                        ':user_id' => $user_id
+                    ]);
+
+                    if ($updatePasswordStmt->fetchColumn()) {
+                        $success_msg = 'Password changed successfully!';
+                    } else {
+                        $error_msg = 'Unable to update your password. Please sign in again.';
+                    }
+                }
+            } catch (PDOException $e) {
+                error_log('Staff profile password update failed: ' . $e->getMessage());
+                $error_msg = 'Failed to change your password. Please try again.';
+            } catch (Throwable $e) {
+                error_log('Staff profile password update failed: ' . $e->getMessage());
+                $error_msg = 'Unable to change your password right now.';
+            }
+        }
     } else {
-        try {
-            $password_stmt = $pdo->prepare("
-                SELECT password
-                FROM users
-                WHERE id = :user_id
-                LIMIT 1
-            ");
-            $password_stmt->execute([':user_id' => $user_id]);
-            $password_row = $password_stmt->fetch(PDO::FETCH_ASSOC);
-
-            if (!$password_row || empty($password_row['password'])) {
-                $error_msg = "Unable to verify your current password.";
-            } elseif (!password_verify($current_password, (string)$password_row['password'])) {
-                $error_msg = "Current password is incorrect.";
-            } else {
-                $new_password_hash = password_hash($new_password, PASSWORD_DEFAULT);
-                $update_password_stmt = $pdo->prepare("
-                    UPDATE users
-                    SET password = :password
-                    WHERE id = :user_id
-                    RETURNING id
-                ");
-                $update_password_stmt->execute([
-                    ':password' => $new_password_hash,
-                    ':user_id' => $user_id
-                ]);
-
-                if ($update_password_stmt->fetchColumn()) {
-                    $success_msg = "Password changed successfully!";
-                } else {
-                    $error_msg = "Unable to update your password. Please sign in again.";
-                }
-            }
-        } catch (PDOException $e) {
-            error_log("Password update failed: " . $e->getMessage());
-            $error_msg = "Failed to change your password. Please try again.";
-        } catch (Throwable $e) {
-            error_log("Password update failed: " . $e->getMessage());
-            $error_msg = "Unable to change your password right now.";
-        }
+        http_response_code(400);
+        $error_msg = 'Invalid profile action.';
     }
 }
 
-// 5. FETCH CURRENT DATA (Buong details mula sa Database)
-$staff_data = null;
-
-if ($user_id > 0) {
-    try {
-        $get_staff_stmt = $pdo->prepare("
-            SELECT id, full_name, username, contact_number, position, profile_image
-            FROM users
-            WHERE id = :user_id
-            LIMIT 1
-        ");
-
-        $get_staff_stmt->execute([
-            ':user_id' => $user_id
-        ]);
-
-        $staff_data = $get_staff_stmt->fetch(PDO::FETCH_ASSOC) ?: null;
-    } catch (PDOException $e) {
-        error_log("Staff data query failed: " . $e->getMessage());
-    }
+// Reload the current account data after any update.
+try {
+    $getStaffStmt = $pdo->prepare(
+        'SELECT id, full_name, username, contact_number, position, profile_image
+         FROM users
+         WHERE id = :user_id
+         LIMIT 1'
+    );
+    $getStaffStmt->execute([':user_id' => $user_id]);
+    $staff_data = $getStaffStmt->fetch(PDO::FETCH_ASSOC) ?: null;
+} catch (PDOException $e) {
+    error_log('Staff profile data refresh failed: ' . $e->getMessage());
+    $staff_data = null;
 }
 
-// Siguradong full_name ang gagamitin at ilalabas din natin ang username
+if (!$staff_data) {
+    http_response_code(404);
+    exit('Profile account not found.');
+}
+
 $full_display_name = (string)($staff_data['full_name'] ?? $_SESSION['staff_name'] ?? 'Personnel');
 $profile_img_path = $staff_data['profile_image'] ?? '';
-$profile_img_url = resolveStaffProfileImageUrl($profile_img_path);
-$staff_username = $staff_data['username'] ?? '';
-$staff_contact = $staff_data['contact_number'] ?? '';
-$staff_position = $staff_data['position'] ?? strtoupper($current_role);
+$profile_img_url = staffProfileResolveImageUrl($profile_img_path);
+$staff_username = (string)($staff_data['username'] ?? '');
+$staff_contact = (string)($staff_data['contact_number'] ?? '');
+$staff_position = (string)($staff_data['position'] ?? strtoupper($current_role));
 
-// Format first name at initial para sa display
-$clean_name = trim(str_replace('Dr. ', '', $full_display_name), " ,");
+$clean_name = trim((string)preg_replace('/^\s*(?:Dr\.?|Dra\.?|Doc\.?)\s+/i', '', $full_display_name));
 $name_parts = preg_split('/\s+/', $clean_name, -1, PREG_SPLIT_NO_EMPTY) ?: [];
 $first_name_only = $name_parts[0] ?? 'Personnel';
 $first_letter = function_exists('mb_substr')
@@ -513,40 +733,53 @@ if ($first_letter === '') {
     $first_letter = 'P';
 }
 
-// Siguraduhing may "Dr. " sa unahan ng full name para sa formal displays kung VET siya
 if ($current_role === 'veterinarian') {
-    $display_with_title = (stripos($full_display_name, 'Dr.') === false)
-        ? 'Dr. ' . $full_display_name
-        : $full_display_name;
+    $display_with_title = preg_match('/^\s*(?:Dr\.?|Dra\.?|Doc\.?)\s+/i', $full_display_name)
+        ? $full_display_name
+        : 'Dr. ' . $full_display_name;
 } else {
     $display_with_title = $full_display_name;
 }
 
-// Admin notifications are shown only to Admin/Manager accounts, never to Vet accounts.
-$can_view_admin_notifications = in_array($current_role, ['admin', 'manager'], true);
-$admin_notifications = [];
+// Admin and Manager retain the original admin-alert workflow. Other Staff roles
+// do not receive global Admin notifications from this shared profile page.
 $unread_count = 0;
+$admin_notifications = [];
 
 if ($can_view_admin_notifications) {
     try {
-        $unread_count_stmt = $pdo->query("
-            SELECT COUNT(*)
-            FROM admin_notifications
-            WHERE is_read = 0
-        ");
-        $unread_count = (int)$unread_count_stmt->fetchColumn();
-
-        $admin_notif_stmt = $pdo->query("
-            SELECT id, message, created_at
-            FROM admin_notifications
-            WHERE is_read = 0
-            ORDER BY created_at DESC
-            LIMIT 10
-        ");
-        $admin_notifications = $admin_notif_stmt->fetchAll(PDO::FETCH_ASSOC);
-    } catch (PDOException $e) {
-        error_log("Admin notifications query failed: " . $e->getMessage());
+        [$unread_count, $admin_notifications] = staffProfileLoadNotifications($pdo);
+    } catch (Throwable $e) {
+        error_log('Staff profile notifications query failed: ' . $e->getMessage());
     }
+}
+
+// Refresh notifications through this authenticated page instead of calling an
+// Admin-only endpoint from the Staff portal.
+if (($_GET['ajax'] ?? '') === 'notifications') {
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+    header('Pragma: no-cache');
+
+    if (!$can_view_admin_notifications) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'unread' => 0, 'html' => '<div class="notif-empty">Notifications unavailable.</div>']);
+        exit;
+    }
+
+    try {
+        [$ajaxUnread, $ajaxNotifications] = staffProfileLoadNotifications($pdo);
+        echo json_encode([
+            'success' => true,
+            'unread' => $ajaxUnread,
+            'html' => staffProfileRenderNotifications($ajaxNotifications)
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    } catch (Throwable $e) {
+        error_log('Staff profile notification refresh failed: ' . $e->getMessage());
+        http_response_code(500);
+        echo json_encode(['success' => false, 'unread' => 0, 'html' => '<div class="notif-empty">Unable to load notifications.</div>']);
+    }
+    exit;
 }
 ?>
 
@@ -2435,7 +2668,7 @@ input, select, textarea, button, img { max-width:100%; }
                 <a href="tasks.php" class="nav-item"><i class="fas fa-tasks"></i> My Tasks</a>
             <?php else: ?>
                 <!-- Operational service staff use the grooming / pet-care portal, not veterinary pages. -->
-                <a href="../admin/admindashboard.php" class="nav-item"><i class="fas fa-chart-line"></i> Dashboard</a>
+                <a href="<?php echo $is_admin ? '../admin/admindashboard.php' : '../admin/admindashboard.php?portal=staff'; ?>" class="nav-item"><i class="fas fa-chart-line"></i> Dashboard</a>
                 <a href="../admin/managebooking.php" class="nav-item"><i class="fas fa-calendar-alt"></i> Bookings</a>
                 <a href="../admin/manageusers.php" class="nav-item"><i class="fas fa-users"></i> Users</a>
                 <a href="../admin/managepet.php" class="nav-item"><i class="fas fa-dog"></i> Pets</a>
@@ -2487,7 +2720,11 @@ input, select, textarea, button, img { max-width:100%; }
                     <div class="notif-dropdown" id="notifBox" onclick="event.stopPropagation()">
                         <div class="notif-header">
                             Alerts
-                            <a href="mark_notifications_read.php" id="mark-read-link" class="mark-read-btn" style="display: <?php echo ($unread_count > 0) ? 'inline-block' : 'none'; ?>;">Mark all read</a>
+                            <form action="staff_profile.php" method="POST" id="mark-read-form" style="display: <?php echo ($unread_count > 0 && $can_view_admin_notifications) ? 'inline-block' : 'none'; ?>; margin:0;">
+                                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token, ENT_QUOTES, 'UTF-8'); ?>">
+                                <input type="hidden" name="action" value="mark_notifications_read">
+                                <button type="submit" id="mark-read-link" class="mark-read-btn" style="border:0;background:transparent;color:#1d63ff;font:inherit;font-size:12px;font-weight:700;cursor:pointer;padding:0;">Mark all read</button>
+                            </form>
                         </div>
                         <div class="notif-body" id="staff-notif-list">
                             <?php if($unread_count > 0 && !empty($admin_notifications)): ?>
@@ -2565,6 +2802,7 @@ input, select, textarea, button, img { max-width:100%; }
 
                 <form action="" method="POST" enctype="multipart/form-data" id="imageForm" style="display:none;">
                     <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token, ENT_QUOTES, 'UTF-8'); ?>">
+                    <input type="hidden" name="action" value="upload_profile_image">
                     <input type="file" id="imageUpload" name="profile_image" accept=".png, .jpg, .jpeg, .gif" onchange="document.getElementById('imageForm').submit()">
                 </form>
 
@@ -2582,6 +2820,7 @@ input, select, textarea, button, img { max-width:100%; }
 
                 <form action="" method="POST">
                     <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token, ENT_QUOTES, 'UTF-8'); ?>">
+                    <input type="hidden" name="action" value="update_profile">
                     <div class="form-grid">
                         <div class="form-group full-width">
                             <label>Full Name</label>
@@ -2618,6 +2857,7 @@ input, select, textarea, button, img { max-width:100%; }
 
             <form action="" method="POST" autocomplete="off">
                 <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token, ENT_QUOTES, 'UTF-8'); ?>">
+                <input type="hidden" name="action" value="change_password">
 
                 <div class="form-grid">
                     <div class="form-group full-width">
@@ -2732,12 +2972,12 @@ input, select, textarea, button, img { max-width:100%; }
 
             const badge = document.getElementById('staff-notif-badge');
             const notifList = document.getElementById('staff-notif-list');
-            const markReadBtn = document.getElementById('mark-read-link');
+            const markReadForm = document.getElementById('mark-read-form');
             if (!badge || !notifList) return;
 
             notificationRequestInProgress = true;
 
-            fetch('../admin/get_admin_notifs.php', {
+            fetch('staff_profile.php?ajax=notifications', {
                 credentials: 'same-origin',
                 headers: { 'Accept': 'application/json' },
                 cache: 'no-store'
@@ -2755,8 +2995,8 @@ input, select, textarea, button, img { max-width:100%; }
                     badge.style.display = unread > 0 ? 'inline-block' : 'none';
                     badge.textContent = String(unread);
 
-                    if (markReadBtn) {
-                        markReadBtn.style.display = unread > 0 ? 'inline-block' : 'none';
+                    if (markReadForm) {
+                        markReadForm.style.display = unread > 0 ? 'inline-block' : 'none';
                     }
 
                     if (typeof data.html === 'string' && data.html !== '') {

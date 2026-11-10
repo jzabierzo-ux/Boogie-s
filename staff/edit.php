@@ -1,50 +1,95 @@
 <?php
+declare(strict_types=1);
+
 require_once __DIR__ . '/../shared_session_bootstrap.php';
 
-/* -------------------------------------------------------------------------
- * Veterinary Team authentication and role normalization.
- * This page is not available to Admin or non-veterinary personnel roles.
- * ---------------------------------------------------------------------- */
-$rawRole = strtolower(trim((string)($_SESSION['role'] ?? '')));
-$roleAliases = [
-    'vet' => 'veterinarian',
-    'veterinary' => 'veterinarian',
-    'veterinarian' => 'veterinarian',
-    'vet assistant' => 'vet_assistant',
-    'veterinary assistant' => 'vet_assistant',
-    'veterinary_assistant' => 'vet_assistant',
-    'vet_assistant' => 'vet_assistant',
-    'vet nurse' => 'vet_nurse',
-    'veterinary nurse' => 'vet_nurse',
-    'veterinary_nurse' => 'vet_nurse',
-    'vet_nurse' => 'vet_nurse',
-];
-$currentRole = $roleAliases[$rawRole] ?? $rawRole;
-$loggedIn = ($_SESSION['logged_in'] ?? false) === true;
-$staffLoggedIn = ($_SESSION['staff_logged_in'] ?? false) === true;
-$userId = filter_var(
-    $_SESSION['user_id'] ?? null,
-    FILTER_VALIDATE_INT,
-    ['options' => ['min_range' => 1]]
-);
-$allowedVeterinaryRoles = ['veterinarian', 'vet_assistant', 'vet_nurse'];
+date_default_timezone_set('Asia/Manila');
+header('Cache-Control: private, no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
+header('Expires: 0');
+header('X-Content-Type-Options: nosniff');
+header('X-Frame-Options: SAMEORIGIN');
+header('Referrer-Policy: strict-origin-when-cross-origin');
 
-if (
-    !$loggedIn ||
-    !$staffLoggedIn ||
-    !in_array($currentRole, $allowedVeterinaryRoles, true) ||
-    $userId === false ||
-    $userId === null
-) {
-    header('Location: stafflogin.php');
+/** Normalize legacy veterinary role names to the canonical session role. */
+function staffEditPetNormalizeRole($value): string
+{
+    $role = is_scalar($value) ? strtolower(trim((string)$value)) : '';
+    $role = preg_replace('/[\\s_-]+/', ' ', $role) ?? '';
+    $aliases = [
+        'vet' => 'veterinarian',
+        'veterinary' => 'veterinarian',
+        'veterinarian' => 'veterinarian',
+        'vet assistant' => 'vet_assistant',
+        'veterinary assistant' => 'vet_assistant',
+        'vet nurse' => 'vet_nurse',
+        'veterinary nurse' => 'vet_nurse',
+    ];
+    return $aliases[$role] ?? str_replace(' ', '_', $role);
+}
+
+/** Read a positive integer from an untrusted scalar request/session value. */
+function staffEditPetPositiveInt($value)
+{
+    if (!is_string($value) && !is_int($value)) {
+        return false;
+    }
+    return filter_var($value, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+}
+
+/** Read a POST field only when it is a string, preventing array coercion. */
+function staffEditPetPostString(string $key): ?string
+{
+    $value = $_POST[$key] ?? '';
+    return is_string($value) ? trim($value) : null;
+}
+
+/** Count characters safely even when mbstring is not installed. */
+function staffEditPetLength(string $value): int
+{
+    return function_exists('mb_strlen') ? mb_strlen($value, 'UTF-8') : strlen($value);
+}
+
+/** Show a safely encoded alert and return to the Staff pet directory. */
+function staffEditPetAlertRedirect(string $message, int $statusCode = 200): void
+{
+    http_response_code($statusCode);
+    header('Content-Type: text/html; charset=UTF-8');
+    $safeMessage = json_encode(
+        $message,
+        JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_INVALID_UTF8_SUBSTITUTE
+    );
+    echo '<!DOCTYPE html><html lang="en"><meta charset="UTF-8"><title>Pet Record</title>';
+    echo '<script>alert(' . ($safeMessage !== false ? $safeMessage : '"Request completed."') . '); window.location.replace("pets.php");</script>';
+    echo '<noscript><p>' . htmlspecialchars($message, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</p><a href="pets.php">Return to Pet Directory</a></noscript></html>';
     exit();
 }
 
-// Keep the normalized role in the session for consistency across Staff pages.
-$_SESSION['role'] = $currentRole;
-date_default_timezone_set('Asia/Manila');
+/* -------------------------------------------------------------------------
+ * AUTHENTICATION — VETERINARY STAFF ONLY.
+ * Reject Admin and mixed Admin/Staff sessions, even if role text is forged.
+ * ---------------------------------------------------------------------- */
+$currentRole = staffEditPetNormalizeRole($_SESSION['role'] ?? '');
+$loggedIn = ($_SESSION['logged_in'] ?? false) === true;
+$staffLoggedIn = ($_SESSION['staff_logged_in'] ?? false) === true;
+$adminLoggedIn = ($_SESSION['admin_logged_in'] ?? false) === true;
+$userId = staffEditPetPositiveInt($_SESSION['user_id'] ?? null);
+$allowedVeterinaryRoles = ['veterinarian', 'vet_assistant', 'vet_nurse'];
 
-if (!isset($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token']) || $_SESSION['csrf_token'] === '') {
+if (!$loggedIn || !$staffLoggedIn) {
+    header('Location: stafflogin.php', true, 303);
+    exit();
+}
+
+if ($adminLoggedIn || !in_array($currentRole, $allowedVeterinaryRoles, true) || $userId === false) {
+    http_response_code(403);
+    exit('Access denied. A valid veterinary Staff session is required.');
+}
+
+// Keep the canonical role consistently in the Staff session.
+$_SESSION['role'] = $currentRole;
+
+if (!isset($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token']) || !preg_match('/^[a-f0-9]{64}$/', $_SESSION['csrf_token'])) {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
 }
 $csrfToken = $_SESSION['csrf_token'];
@@ -53,25 +98,6 @@ $petData = null;
 $errorMessage = '';
 $customers = [];
 
-/** Read a POST field only when it is a string, preventing array-to-string errors. */
-function staffEditPetPostString(string $key): ?string
-{
-    $value = $_POST[$key] ?? '';
-    return is_string($value) ? trim($value) : null;
-}
-
-/** Show a safe alert and return to the Staff pet directory. */
-function staffEditPetAlertRedirect(string $message, int $statusCode = 200): void
-{
-    http_response_code($statusCode);
-    $safeMessage = json_encode(
-        $message,
-        JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_INVALID_UTF8_SUBSTITUTE
-    );
-    echo '<script>alert(' . $safeMessage . '); window.location.href="pets.php";</script>';
-    exit();
-}
-
 $method = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'));
 if (!in_array($method, ['GET', 'POST'], true)) {
     http_response_code(405);
@@ -79,16 +105,42 @@ if (!in_array($method, ['GET', 'POST'], true)) {
     exit('Method not allowed.');
 }
 
-// On submit, trust the hidden POST ID; on initial load, use the query string.
+// Reject unusually large submissions before processing any form fields.
+$contentLength = filter_var($_SERVER['CONTENT_LENGTH'] ?? 0, FILTER_VALIDATE_INT);
+if ($method === 'POST' && $contentLength !== false && $contentLength > 65536) {
+    http_response_code(413);
+    exit('The submitted pet record is too large.');
+}
+
+// On submit, use the hidden POST ID; on initial load, use the query-string ID.
 $rawPetId = $method === 'POST' ? ($_POST['pet_id'] ?? null) : ($_GET['id'] ?? null);
-$petId = filter_var($rawPetId, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
-if ($petId === false || $petId === null) {
+$petId = staffEditPetPositiveInt($rawPetId);
+if ($petId === false) {
     staffEditPetAlertRedirect('Invalid pet ID.', 400);
 }
 $petId = (int)$petId;
 
-// Load the database only after the session and request checks have passed.
+// Connect only after the portal session, role, and request method are validated.
 require_once __DIR__ . '/../db_supabase.php';
+if (!isset($pdo) || !($pdo instanceof PDO)) {
+    http_response_code(503);
+    exit('Database connection is temporarily unavailable.');
+}
+
+// Confirm that the signed-in account still has the same veterinary role in the database.
+try {
+    $accountStmt = $pdo->prepare('SELECT role FROM users WHERE id = :user_id LIMIT 1');
+    $accountStmt->execute([':user_id' => (int)$userId]);
+    $databaseRole = staffEditPetNormalizeRole($accountStmt->fetchColumn());
+    if (!in_array($databaseRole, $allowedVeterinaryRoles, true) || $databaseRole !== $currentRole) {
+        http_response_code(403);
+        exit('Access denied. The account role is not authorized for this page.');
+    }
+} catch (Throwable $e) {
+    error_log('Staff edit-pet account role verification failed: ' . $e->getMessage());
+    http_response_code(503);
+    exit('Unable to verify the Staff account. Please try again.');
+}
 
 // Load only the pet fields used by this page and its update form.
 try {
@@ -100,7 +152,7 @@ try {
     );
     $petStmt->execute([':id' => $petId]);
     $petData = $petStmt->fetch(PDO::FETCH_ASSOC);
-} catch (PDOException $e) {
+} catch (Throwable $e) {
     error_log('Staff pet lookup failed: ' . $e->getMessage());
     http_response_code(500);
     exit('Unable to load the pet record. Please try again.');
@@ -112,18 +164,11 @@ if (!$petData) {
 
 if ($method === 'POST') {
     $submittedCsrf = $_POST['csrf_token'] ?? '';
-    if (
-        !is_string($submittedCsrf) ||
-        $submittedCsrf === '' ||
-        !hash_equals($csrfToken, $submittedCsrf)
-    ) {
+    if (!is_string($submittedCsrf) || $submittedCsrf === '' || !hash_equals($csrfToken, $submittedCsrf)) {
         $errorMessage = 'Invalid form request. Please refresh the page and try again.';
     } else {
-        $rawOwnerId = $_POST['customer_id'] ?? '';
-        $ownerId = is_string($rawOwnerId) || is_int($rawOwnerId)
-            ? filter_var($rawOwnerId, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]])
-            : false;
-
+        $rawOwnerId = $_POST['customer_id'] ?? null;
+        $ownerId = staffEditPetPositiveInt($rawOwnerId);
         $petName = staffEditPetPostString('pet_name');
         $petType = staffEditPetPostString('pet_type');
         $breed = staffEditPetPostString('breed');
@@ -133,10 +178,8 @@ if ($method === 'POST') {
         $medicalHistory = staffEditPetPostString('medical_history');
 
         if (
-            $ownerId === false || $ownerId === null ||
-            $petName === null || $petType === null || $breed === null ||
-            $age === null || $weight === null || $gender === null ||
-            $medicalHistory === null
+            $ownerId === false || $petName === null || $petType === null || $breed === null ||
+            $age === null || $weight === null || $gender === null || $medicalHistory === null
         ) {
             $errorMessage = 'Invalid pet record data. Please review the form and try again.';
         } elseif (
@@ -144,10 +187,20 @@ if ($method === 'POST') {
             $age === '' || $weight === '' || $gender === ''
         ) {
             $errorMessage = 'Please complete all required fields.';
+        } elseif (
+            staffEditPetLength($petName) > 150 || staffEditPetLength($breed) > 150 ||
+            staffEditPetLength($age) > 30 || staffEditPetLength($weight) > 30 ||
+            staffEditPetLength($medicalHistory) > 5000
+        ) {
+            $errorMessage = 'Some pet information is too long. Please shorten the entries and try again.';
         } elseif (!in_array($petType, ['Dog', 'Cat', 'Other'], true)) {
             $errorMessage = 'Invalid pet type selected.';
         } elseif (!in_array($gender, ['Male', 'Female'], true)) {
             $errorMessage = 'Invalid gender selected.';
+        } elseif (!preg_match('/^\d+(?:\.\d{1,2})?$/D', $age) || !is_finite((float)$age) || (float)$age < 0) {
+            $errorMessage = 'Please enter a valid non-negative pet age.';
+        } elseif (!preg_match('/^\d+(?:\.\d{1,2})?$/D', $weight) || !is_finite((float)$weight) || (float)$weight <= 0) {
+            $errorMessage = 'Please enter a valid pet weight greater than zero.';
         } else {
             // Preserve the existing workflow: edited Staff pet records become Approved.
             $status = 'Approved';
@@ -155,18 +208,16 @@ if ($method === 'POST') {
             try {
                 $pdo->beginTransaction();
 
-                // Lock the target pet to avoid updating a record deleted or changed concurrently.
-                $lockPetStmt = $pdo->prepare(
-                    'SELECT id FROM pets WHERE id = :pet_id LIMIT 1 FOR UPDATE'
-                );
+                // Lock the target pet to avoid updating a record deleted concurrently.
+                $lockPetStmt = $pdo->prepare('SELECT id FROM pets WHERE id = :pet_id LIMIT 1 FOR UPDATE');
                 $lockPetStmt->execute([':pet_id' => $petId]);
                 if (!$lockPetStmt->fetchColumn()) {
-                    throw new RuntimeException('Pet record no longer exists. Please return to the pet directory.');
+                    throw new RuntimeException('Pet record no longer exists.');
                 }
 
-                // Confirm and lock the selected owner as an actual customer account.
+                // Confirm the selected owner is an actual customer account.
                 $ownerStmt = $pdo->prepare(
-                    "SELECT id FROM users WHERE id = :owner_id AND role = 'customer' LIMIT 1 FOR KEY SHARE"
+                    "SELECT id FROM users WHERE id = :owner_id AND LOWER(BTRIM(role)) = 'customer' LIMIT 1 FOR KEY SHARE"
                 );
                 $ownerStmt->execute([':owner_id' => (int)$ownerId]);
                 if (!$ownerStmt->fetchColumn()) {
@@ -200,9 +251,8 @@ if ($method === 'POST') {
                         ':pet_id' => $petId,
                     ]);
 
-                    $updatedPetId = $updateStmt->fetchColumn();
-                    if ($updatedPetId === false) {
-                        throw new RuntimeException('Pet record was not updated. Please try again.');
+                    if ($updateStmt->fetchColumn() === false) {
+                        throw new RuntimeException('Pet record was not updated.');
                     }
 
                     $pdo->commit();
@@ -218,7 +268,7 @@ if ($method === 'POST') {
         }
 
         // Keep submitted values visible when validation or database update fails.
-        if ($ownerId !== false && $ownerId !== null) {
+        if ($ownerId !== false) {
             $petData['owner_id'] = (int)$ownerId;
         }
         if ($petName !== null) $petData['name'] = $petName;
@@ -231,19 +281,19 @@ if ($method === 'POST') {
     }
 }
 
-// Customer list for the dropdown; only the fields rendered by the form are fetched.
+// Customer list for the dropdown; only customer accounts are selectable.
 try {
     $custStmt = $pdo->query(
-        "SELECT id, full_name FROM users WHERE role = 'customer' ORDER BY full_name ASC, id ASC"
+        "SELECT id, full_name FROM users WHERE LOWER(BTRIM(role)) = 'customer' ORDER BY full_name ASC, id ASC"
     );
     $customers = $custStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
-} catch (PDOException $e) {
+} catch (Throwable $e) {
     error_log('Staff pet customer list lookup failed: ' . $e->getMessage());
     $customers = [];
     $errorMessage = 'Unable to load the customer list. Please try again.';
 }
 
-// Maintain the variable names used by the existing HTML form.
+// Maintain the variable names expected by the existing HTML form.
 $pet_data = $petData;
 $error_message = $errorMessage;
 $csrf_token = $csrfToken;
@@ -1026,7 +1076,7 @@ $pet_id = $petId;
 
             <?php if ($error_message !== ''): ?>
 
-                <div class="alert-box alert-error"><?php echo htmlspecialchars($error_message, ENT_QUOTES, 'UTF-8'); ?></div>
+                <div class="alert-box alert-error"><?php echo htmlspecialchars($error_message, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></div>
 
             <?php endif; ?>
 
@@ -1034,7 +1084,7 @@ $pet_id = $petId;
 
             <form action="" method="POST">
 
-                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token, ENT_QUOTES, 'UTF-8'); ?>">
+                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
 
                 <input type="hidden" name="pet_id" value="<?php echo (int)$pet_id; ?>">
 
@@ -1052,7 +1102,7 @@ $pet_id = $petId;
 
                             <option value="<?php echo (int)$customer['id']; ?>" <?php echo $selected; ?>>
 
-                                <?php echo htmlspecialchars($customer['full_name'] ?? '', ENT_QUOTES, 'UTF-8'); ?>
+                                <?php echo htmlspecialchars((string)($customer['full_name'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
 
                             </option>
 
@@ -1074,7 +1124,7 @@ $pet_id = $petId;
 
                         <label>Pet Name *</label>
 
-                        <input type="text" name="pet_name" class="form-control" value="<?php echo htmlspecialchars($pet_data['name'] ?? '', ENT_QUOTES, 'UTF-8'); ?>" required>
+                        <input type="text" name="pet_name" class="form-control" value="<?php echo htmlspecialchars((string)($pet_data['name'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>" required>
 
                     </div>
 
@@ -1104,7 +1154,7 @@ $pet_id = $petId;
 
                         <label>Breed *</label>
 
-                        <input type="text" name="breed" class="form-control" value="<?php echo htmlspecialchars($pet_data['breed'] ?? '', ENT_QUOTES, 'UTF-8'); ?>" required>
+                        <input type="text" name="breed" class="form-control" value="<?php echo htmlspecialchars((string)($pet_data['breed'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>" required>
 
                     </div>
 
@@ -1112,7 +1162,7 @@ $pet_id = $petId;
 
                         <label>Age *</label>
 
-                        <input type="text" inputmode="decimal" name="age" class="form-control" value="<?php echo htmlspecialchars($pet_data['age'] ?? '', ENT_QUOTES, 'UTF-8'); ?>" required>
+                        <input type="text" inputmode="decimal" name="age" class="form-control" value="<?php echo htmlspecialchars((string)($pet_data['age'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>" required>
 
                     </div>
 
@@ -1126,7 +1176,7 @@ $pet_id = $petId;
 
                         <label>Weight *</label>
 
-                        <input type="text" inputmode="decimal" name="weight" class="form-control" value="<?php echo htmlspecialchars($pet_data['weight'] ?? '', ENT_QUOTES, 'UTF-8'); ?>" required>
+                        <input type="text" inputmode="decimal" name="weight" class="form-control" value="<?php echo htmlspecialchars((string)($pet_data['weight'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>" required>
 
                     </div>
 
@@ -1152,7 +1202,7 @@ $pet_id = $petId;
 
                     <label>Medical History / Alerts</label>
 
-                    <textarea name="medical_history" class="form-control" rows="4"><?php echo htmlspecialchars($pet_data['medical_history'] ?? '', ENT_QUOTES, 'UTF-8'); ?></textarea>
+                    <textarea name="medical_history" class="form-control" rows="4"><?php echo htmlspecialchars((string)($pet_data['medical_history'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></textarea>
 
                 </div>
 

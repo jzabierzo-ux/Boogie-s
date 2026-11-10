@@ -1,7 +1,7 @@
 <?php
 require_once __DIR__ . '/../shared_session_bootstrap.php';
 
-// Normalize legacy role names to the same role names used by manageusers.php.
+// Normalize legacy role names to the canonical Admin/Staff roles.
 $raw_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
 $role_aliases = [
     'administrator' => 'admin',
@@ -32,35 +32,72 @@ $role_aliases = [
     'supervisor' => 'receptionist',
 ];
 $current_role = $role_aliases[$raw_role] ?? $raw_role;
-if ($current_role !== '') {
-    $_SESSION['role'] = $current_role;
-}
-$is_admin = ($current_role === 'admin');
 
-if (($_SESSION['logged_in'] ?? false) !== true) {
-    $login_target = ($current_role === 'admin') ? '../admin_login.php' : '../staff/stafflogin.php';
-    header('Location: ' . $login_target);
+$session_user_id = filter_var(
+    $_SESSION['user_id'] ?? null,
+    FILTER_VALIDATE_INT,
+    ['options' => ['min_range' => 1]]
+);
+$has_valid_user_id = $session_user_id !== false && $session_user_id !== null;
+$logged_in = ($_SESSION['logged_in'] ?? false) === true;
+$admin_flag = ($_SESSION['admin_logged_in'] ?? false) === true;
+$staff_flag = ($_SESSION['staff_logged_in'] ?? false) === true;
+
+// Exactly one portal identity must be active in this browser session.
+$is_admin_session = $logged_in
+    && $admin_flag
+    && !$staff_flag
+    && $current_role === 'admin'
+    && $has_valid_user_id;
+$staff_roles = [
+    'manager', 'receptionist', 'groomer', 'pet_hotel_staff',
+    'veterinarian', 'vet_assistant', 'vet_nurse',
+];
+$is_staff_session = $logged_in
+    && $staff_flag
+    && !$admin_flag
+    && in_array($current_role, $staff_roles, true)
+    && $has_valid_user_id;
+
+if (!$logged_in) {
+    $login_target = ($current_role === 'admin' || $admin_flag)
+        ? 'admin_login.php'
+        : '../staff/stafflogin.php';
+    header('Location: ' . $login_target, true, 303);
     exit();
 }
 
-if (empty($_SESSION['user_id']) || !is_numeric($_SESSION['user_id']) || (int)$_SESSION['user_id'] < 1) {
+if (!$is_admin_session && !$is_staff_session) {
     http_response_code(403);
-    exit('Access denied: invalid session.');
+    exit('Access denied. Please sign in through the correct portal.');
 }
 
-if (in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)) {
-    header('Location: ../staff/staffdashboard.php');
+// Veterinarians use their dedicated portal and cannot open customer-management pages.
+if ($is_staff_session && in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)) {
+    header('Location: ../staff/staffdashboard.php', true, 303);
     exit();
 }
+
 $allowed_roles = ['admin', 'manager', 'receptionist', 'groomer', 'pet_hotel_staff'];
 if (!in_array($current_role, $allowed_roles, true)) {
     http_response_code(403);
     exit('Access denied. This role cannot access customer details.');
 }
 
-// Only connect to the database after the session and role have been authorized.
+$is_admin = $is_admin_session;
+
+// Only connect to the database after the portal session and role are authorized.
 require_once __DIR__ . '/../db_supabase.php';
+if (!isset($pdo) || !($pdo instanceof PDO)) {
+    error_log('View customer: Supabase PDO connection is unavailable.');
+    http_response_code(503);
+    exit('Customer details are temporarily unavailable. Please try again.');
+}
+
 date_default_timezone_set('Asia/Manila');
+header('Cache-Control: private, no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
+header('X-Content-Type-Options: nosniff');
 
 // Editing a customer's contact number is an operational permission; permanent deletion is Admin-only.
 $can_update_contact = in_array($current_role, ['admin', 'manager', 'receptionist', 'groomer', 'pet_hotel_staff'], true);
@@ -72,12 +109,15 @@ if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
 $csrf_token = (string)$_SESSION['csrf_token'];
 
 // Validate the customer ID before any customer-specific read or write query.
-$requested_id = (string)($_GET['id'] ?? '');
-if ($requested_id === '' || !ctype_digit($requested_id) || (int)$requested_id < 1) {
-    header('Location: manageusers.php');
+$requested_id_raw = $_GET['id'] ?? null;
+$validated_customer_id = (is_string($requested_id_raw) || is_int($requested_id_raw))
+    ? filter_var($requested_id_raw, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]])
+    : false;
+if ($validated_customer_id === false || $validated_customer_id === null) {
+    header('Location: manageusers.php', true, 303);
     exit();
 }
-$customer_id = (int)$requested_id;
+$customer_id = (int)$validated_customer_id;
 
 /**
  * Return a type-compatible unread predicate for the Admin notification table.
@@ -87,7 +127,7 @@ function viewCustomerAdminUnreadPredicate(PDO $pdo): string
 {
     $typeStmt = $pdo->prepare("SELECT data_type
         FROM information_schema.columns
-        WHERE table_schema = current_schema()
+        WHERE table_schema = 'public'
           AND table_name = 'admin_notifications'
           AND column_name = 'is_read'
         LIMIT 1");
@@ -273,12 +313,32 @@ if (!empty($_SESSION['view_customer_flash']) && is_array($_SESSION['view_custome
     unset($_SESSION['view_customer_flash']);
 }
 
+// Accept only normal page reads and the two explicitly supported POST actions.
+$request_method = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'));
+if (!in_array($request_method, ['GET', 'POST'], true)) {
+    http_response_code(405);
+    header('Allow: GET, POST');
+    exit('Method not allowed.');
+}
+
 // Process only explicitly named POST actions. All mutations require a valid CSRF token.
-$is_update_request = ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_contact']));
-$is_delete_request = ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_user']));
-if ($is_update_request || $is_delete_request) {
-    $posted_token = (string)($_POST['csrf_token'] ?? '');
-    if ($posted_token === '' || !hash_equals($csrf_token, $posted_token)) {
+$is_update_request = ($request_method === 'POST' && isset($_POST['update_contact']));
+$is_delete_request = ($request_method === 'POST' && isset($_POST['delete_user']));
+if ($request_method === 'POST') {
+    if (!$is_update_request && !$is_delete_request) {
+        http_response_code(400);
+        exit('Invalid customer action.');
+    }
+    if ($is_update_request && $is_delete_request) {
+        http_response_code(400);
+        exit('Submit only one customer action at a time.');
+    }
+
+    $posted_token = $_POST['csrf_token'] ?? '';
+    if (
+        !is_string($posted_token) || $posted_token === '' ||
+        !hash_equals($csrf_token, $posted_token)
+    ) {
         http_response_code(403);
         exit('Invalid security token. Please refresh the page and try again.');
     }
@@ -290,13 +350,14 @@ if ($is_update_request) {
         exit('Access denied. You do not have permission to edit customer contact details.');
     }
 
-    $new_contact = trim((string)($_POST['new_contact'] ?? ''));
+    $new_contact_raw = $_POST['new_contact'] ?? '';
+    $new_contact = is_string($new_contact_raw) ? trim($new_contact_raw) : '';
     if (!preg_match('/^[0-9]{11}$/', $new_contact)) {
         $page_message = 'Invalid contact number. Please enter exactly 11 digits.';
         $page_message_type = 'error';
     } else {
         try {
-            $stmt_update = $pdo->prepare("UPDATE users SET contact_number = :contact_number WHERE id = :customer_id AND role = 'customer'");
+            $stmt_update = $pdo->prepare("UPDATE users SET contact_number = :contact_number WHERE id = :customer_id AND LOWER(TRIM(COALESCE(role, ''))) = 'customer'");
             $stmt_update->execute([
                 ':contact_number' => $new_contact,
                 ':customer_id' => $customer_id,
@@ -331,7 +392,7 @@ if ($is_delete_request) {
         $pdo->beginTransaction();
 
         // Confirm the target is a customer before deleting any related records.
-        $customer_check = $pdo->prepare("SELECT id FROM users WHERE id = :customer_id AND role = 'customer' FOR UPDATE");
+        $customer_check = $pdo->prepare("SELECT id FROM users WHERE id = :customer_id AND LOWER(TRIM(COALESCE(role, ''))) = 'customer' FOR UPDATE");
         $customer_check->execute([':customer_id' => $customer_id]);
         if (!$customer_check->fetchColumn()) {
             $pdo->rollBack();
@@ -346,7 +407,7 @@ if ($is_delete_request) {
         $delete_pets = $pdo->prepare('DELETE FROM pets WHERE owner_id = :customer_id');
         $delete_pets->execute([':customer_id' => $customer_id]);
 
-        $delete_user = $pdo->prepare("DELETE FROM users WHERE id = :customer_id AND role = 'customer'");
+        $delete_user = $pdo->prepare("DELETE FROM users WHERE id = :customer_id AND LOWER(TRIM(COALESCE(role, ''))) = 'customer'");
         $delete_user->execute([':customer_id' => $customer_id]);
         if ($delete_user->rowCount() !== 1) {
             throw new RuntimeException('Customer account was not deleted.');
@@ -367,7 +428,7 @@ if ($is_delete_request) {
 
 // Fetch the target customer and their records using parameterized queries.
 try {
-    $user_stmt = $pdo->prepare("SELECT id, full_name, user_category, email, contact_number, is_verified, created_at FROM users WHERE id = :customer_id AND role = 'customer' LIMIT 1");
+    $user_stmt = $pdo->prepare("SELECT id, full_name, user_category, email, contact_number, is_verified, created_at FROM users WHERE id = :customer_id AND LOWER(TRIM(COALESCE(role, ''))) = 'customer' LIMIT 1");
     $user_stmt->execute([':customer_id' => $customer_id]);
     $customer = $user_stmt->fetch(PDO::FETCH_ASSOC);
 } catch (PDOException $e) {

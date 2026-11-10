@@ -1,11 +1,26 @@
 <?php
 require_once __DIR__ . '/../shared_session_bootstrap.php';
 
-// SECURITY: Only allow logged-in Admins.
+// SECURITY: Require a valid Admin session, not merely a logged-in role label.
 $current_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
-if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true || $current_role !== 'admin') {
-    header("Location: ../admin_login.php");
-    exit();
+$admin_user_id = filter_var(
+    $_SESSION['user_id'] ?? null,
+    FILTER_VALIDATE_INT,
+    ['options' => ['min_range' => 1]]
+);
+
+$is_admin_session = (
+    ($_SESSION['logged_in'] ?? false) === true
+    && ($_SESSION['admin_logged_in'] ?? false) === true
+    && ($_SESSION['staff_logged_in'] ?? false) !== true
+    && $current_role === 'admin'
+    && $admin_user_id !== false
+);
+
+if (!$is_admin_session) {
+    http_response_code(403);
+    header('Content-Type: text/plain; charset=UTF-8');
+    exit('Access denied. Administrator privileges are required.');
 }
 
 // DATABASE CONNECTION

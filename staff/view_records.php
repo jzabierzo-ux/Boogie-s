@@ -2,56 +2,104 @@
 require_once __DIR__ . '/../shared_session_bootstrap.php';
 
 /* -------------------------------------------------------------------------
-   AUTHENTICATION — only Admin and Veterinary personnel may view this page.
-   Check the session before opening a database connection.
+   AUTHENTICATION — only Admin and Veterinarians may view this page.
+   Admin and Staff portal session flags must be mutually exclusive.
    ------------------------------------------------------------------------- */
-$current_role_raw = strtolower(trim((string)($_SESSION['role'] ?? '')));
-$current_role_raw = preg_replace('/[\s_-]+/', ' ', $current_role_raw);
-$role_aliases = [
+$roleRaw = strtolower(trim((string)($_SESSION['role'] ?? '')));
+$roleRaw = preg_replace('/[\s_-]+/', ' ', $roleRaw) ?? $roleRaw;
+$roleAliases = [
     'administrator' => 'admin',
     'admin' => 'admin',
     'vet' => 'veterinarian',
     'veterinary' => 'veterinarian',
     'veterinarian' => 'veterinarian'
 ];
-$current_role = $role_aliases[$current_role_raw] ?? $current_role_raw;
+$currentRole = $roleAliases[$roleRaw] ?? $roleRaw;
 
-$login_flags = [$_SESSION['logged_in'] ?? false, $_SESSION['staff_logged_in'] ?? false];
-$is_logged_in = false;
-foreach ($login_flags as $login_flag) {
-    if ($login_flag === true || $login_flag === 1 || $login_flag === '1'
-        || (is_string($login_flag) && strtolower(trim($login_flag)) === 'true')) {
-        $is_logged_in = true;
-        break;
+$loggedIn = ($_SESSION['logged_in'] ?? false) === true;
+$adminLoggedIn = ($_SESSION['admin_logged_in'] ?? false) === true;
+$staffLoggedIn = ($_SESSION['staff_logged_in'] ?? false) === true;
+$userId = filter_var(
+    $_SESSION['user_id'] ?? null,
+    FILTER_VALIDATE_INT,
+    ['options' => ['min_range' => 1]]
+);
+
+$isAdmin = $currentRole === 'admin'
+    && $loggedIn
+    && $adminLoggedIn
+    && !$staffLoggedIn;
+$isVeterinarian = $currentRole === 'veterinarian'
+    && $loggedIn
+    && $staffLoggedIn
+    && !$adminLoggedIn;
+
+if ($userId === false || $userId === null || (!$isAdmin && !$isVeterinarian)) {
+    if (!$loggedIn || $userId === false || $userId === null) {
+        header('Location: stafflogin.php');
+        exit;
     }
-}
-
-$is_admin = $current_role === 'admin';
-$is_veterinarian = $current_role === 'veterinarian';
-if (!$is_logged_in) {
-    header('Location: stafflogin.php');
-    exit;
-}
-if (!$is_admin && !$is_veterinarian) {
     http_response_code(403);
-    exit('Access denied. This page is for Admin and Veterinary personnel only.');
+    exit('Access denied. This page is for Admin and Veterinarian accounts only.');
+}
+$userId = (int)$userId;
+// Keep the established variable names used by the page helpers and HTML.
+$user_id = $userId;
+$is_admin = $isAdmin;
+$is_veterinarian = $isVeterinarian;
+
+$method = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'));
+if (!in_array($method, ['GET', 'POST'], true)) {
+    http_response_code(405);
+    header('Allow: GET, POST');
+    exit('Method not allowed.');
 }
 
-$user_id = (int)($_SESSION['user_id'] ?? $_SESSION['staff_id'] ?? $_SESSION['id'] ?? 0);
-if ($user_id <= 0) {
-    header('Location: stafflogin.php');
-    exit;
-}
-
-$pet_id = filter_var($_GET['id'] ?? null, FILTER_VALIDATE_INT);
-if ($pet_id === false || $pet_id === null || $pet_id <= 0) {
+$petId = filter_var($_GET['id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+if ($petId === false || $petId === null) {
     http_response_code(400);
     exit('Invalid Patient ID.');
 }
+$pet_id = (int)$petId;
 
 require_once __DIR__ . '/../db_supabase.php';
+if (!isset($pdo) || !($pdo instanceof PDO)) {
+    error_log('View patient record: database connection is unavailable.');
+    http_response_code(503);
+    exit('Patient records are temporarily unavailable. Please try again.');
+}
+
 date_default_timezone_set('Asia/Manila');
-header('Cache-Control: private, no-store, max-age=0');
+header('Cache-Control: private, no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
+header('Expires: 0');
+header('X-Content-Type-Options: nosniff');
+header('X-Frame-Options: SAMEORIGIN');
+header('Referrer-Policy: strict-origin-when-cross-origin');
+header('Permissions-Policy: camera=(), microphone=(), geolocation=()');
+
+// Confirm that the database account role agrees with the active portal session.
+try {
+    $accountStmt = $pdo->prepare("SELECT role, full_name, profile_image FROM users WHERE id = :user_id LIMIT 1");
+    $accountStmt->execute([':user_id' => $userId]);
+    $accountData = $accountStmt->fetch(PDO::FETCH_ASSOC);
+    if (!$accountData) {
+        http_response_code(403);
+        exit('Access denied. The account could not be verified.');
+    }
+
+    $databaseRoleRaw = strtolower(trim((string)($accountData['role'] ?? '')));
+    $databaseRoleRaw = preg_replace('/[\s_-]+/', ' ', $databaseRoleRaw) ?? $databaseRoleRaw;
+    $databaseRole = $roleAliases[$databaseRoleRaw] ?? $databaseRoleRaw;
+    if (($isAdmin && $databaseRole !== 'admin') || ($isVeterinarian && $databaseRole !== 'veterinarian')) {
+        http_response_code(403);
+        exit('Access denied. Your account role does not match this portal.');
+    }
+} catch (PDOException $e) {
+    error_log('View patient record account verification failed: ' . $e->getMessage());
+    http_response_code(503);
+    exit('Unable to verify your account right now. Please try again.');
+}
 
 if (!isset($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token']) || strlen($_SESSION['csrf_token']) < 32) {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
@@ -72,8 +120,13 @@ function resolveViewRecordProfileImage(string $storedPath): string
     }
 
     $normalized = str_replace('\\', '/', $storedPath);
-    $normalized = preg_replace('#^(?:\.\./|\./)+#', '', ltrim($normalized, '/'));
-    if ($normalized === '' || preg_match('#(^|/)\.\.(?:/|$)#', $normalized)) {
+    $normalized = ltrim($normalized, '/');
+    $normalized = preg_replace('#^(?:\.\./|\./)+#', '', $normalized) ?? $normalized;
+    if (
+        $normalized === '' ||
+        preg_match('#(^|/)\.\.(?:/|$)#', $normalized) ||
+        !preg_match('#^(?:uploads|admin/uploads|staff/uploads)/[A-Za-z0-9._/-]+$#', $normalized)
+    ) {
         return '';
     }
 
@@ -138,26 +191,13 @@ function renderViewRecordNotifications(array $notifications): string
     return $html;
 }
 
-$staff_name = (string)($_SESSION['staff_name'] ?? $_SESSION['user_name'] ?? 'Doctor');
-$full_display_name = $staff_name;
-$profile_img_path = '';
-$profile_img_src = '';
-
-try {
-    $getStaff = $pdo->prepare("\n        SELECT full_name, profile_image\n        FROM users\n        WHERE id = :user_id\n        LIMIT 1\n    ");
-    $getStaff->execute([':user_id' => $user_id]);
-    $staffData = $getStaff->fetch(PDO::FETCH_ASSOC) ?: [];
-    $profile_img_path = (string)($staffData['profile_image'] ?? '');
-    $profile_img_src = resolveViewRecordProfileImage($profile_img_path);
-    if (!empty($staffData['full_name'])) {
-        $full_display_name = (string)$staffData['full_name'];
-    }
-} catch (PDOException $e) {
-    error_log('View patient record profile query failed: ' . $e->getMessage());
-}
+$staff_name = (string)($accountData['full_name'] ?? $_SESSION['staff_name'] ?? $_SESSION['user_name'] ?? 'User');
+$full_display_name = trim($staff_name) !== '' ? trim($staff_name) : 'User';
+$profile_img_path = (string)($accountData['profile_image'] ?? '');
+$profile_img_src = resolveViewRecordProfileImage($profile_img_path);
 
 $name_without_title = trim((string)preg_replace('/^\s*(?:Dr\.?|Dra\.?|Doc\.?)\s+/i', '', $full_display_name));
-$first_letter = strtoupper(substr($name_without_title !== '' ? $name_without_title : 'D', 0, 1));
+$first_letter = strtoupper((string)(function_exists('mb_substr') ? mb_substr($name_without_title !== '' ? $name_without_title : 'U', 0, 1, 'UTF-8') : substr($name_without_title !== '' ? $name_without_title : 'U', 0, 1)));
 $has_doctor_title = preg_match('/^\s*(?:Dr\.?|Dra\.?|Doc\.?)\s+/i', $full_display_name) === 1;
 $display_with_title = ($is_veterinarian && !$has_doctor_title) ? 'Dr. ' . $full_display_name : $full_display_name;
 $mobile_name_source = trim((string)preg_replace('/^\s*(?:Dr\.?|Dra\.?|Doc\.?)\s+/i', '', $display_with_title));
@@ -267,12 +307,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $notif_message = $doctor_name . ' added a note for ' . $p_name . ': "' . $new_note_text . '"';
 
         try {
-            $notifStmt = $pdo->prepare("\n                INSERT INTO notifications (user_id, title, message, is_read, created_at)\n                VALUES (:user_id, :title, :message, 0, CURRENT_TIMESTAMP)\n            ");
+            $notifStmt = $pdo->prepare("\n                INSERT INTO notifications (user_id, title, message, is_read, created_at)\n                SELECT id, :title, :message, 0, CURRENT_TIMESTAMP\n                FROM users\n                WHERE id = :user_id AND role = 'customer'\n                RETURNING id\n            ");
             $notifStmt->execute([
                 ':user_id' => $owner_id,
                 ':title' => $notif_title,
                 ':message' => $notif_message
             ]);
+            if ($notifStmt->fetchColumn() === false) {
+                http_response_code(400);
+                exit('The pet owner account could not be verified. No note was sent.');
+            }
         } catch (PDOException $e) {
             error_log('Medical note notification failed: ' . $e->getMessage());
             http_response_code(500);
@@ -2218,8 +2262,8 @@ input, select, textarea, button, img { max-width:100%; }
                                 <?php foreach($admin_notifications as $notif): ?>
                                     <div class="notif-item">
                                         <i class="fa-solid fa-circle-exclamation" style="color: #ef4444; margin-right: 5px;"></i>
-                                        <?php echo htmlspecialchars($notif['message']); ?>
-                                        <br><small style="color: #94a3b8; font-size: 11px;"><?php echo date('M d, g:i A', strtotime($notif['created_at'])); ?></small>
+                                        <?php echo htmlspecialchars((string)($notif['message'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
+                                        <br><small style="color: #94a3b8; font-size: 11px;"><?php $notifTimestamp = !empty($notif['created_at']) ? strtotime((string)$notif['created_at']) : false; echo $notifTimestamp !== false ? htmlspecialchars(date('M d, g:i A', $notifTimestamp), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') : ''; ?></small>
                                     </div>
                                 <?php endforeach; ?>
                             <?php else: ?>
@@ -2231,13 +2275,13 @@ input, select, textarea, button, img { max-width:100%; }
 
                 <div class="profile-wrapper" onclick="toggleProfile(event)">
                     <div class="role-label">
-                        <i class="fas fa-user-md"></i> VET
+                        <i class="fas <?php echo $isAdmin ? 'fa-user-shield' : 'fa-user-md'; ?>"></i> <?php echo $isAdmin ? 'ADMIN' : 'VET'; ?>
                     </div>
                     
                     <?php if ($profile_img_src !== ''): ?>
                         <img src="<?php echo htmlspecialchars($profile_img_src, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>" class="top-avatar" alt="Profile Picture">
                     <?php else: ?>
-                        <div class="top-avatar-fallback"><?php echo $first_letter; ?></div>
+                        <div class="top-avatar-fallback"><?php echo htmlspecialchars($first_letter, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></div>
                     <?php endif; ?>
                     
                     <span class="profile-name-text desktop-profile-name" style="font-size: 14px; font-weight: 700; color: var(--sidebar-navy); display: flex; align-items: center; gap: 6px;">
@@ -2249,7 +2293,7 @@ input, select, textarea, button, img { max-width:100%; }
                     </span>
 
                     <div class="profile-dropdown" id="profileBox" onclick="event.stopPropagation()">
-                        <a href="staff_profile.php" class="profile-item">
+                        <a href="<?php echo $isAdmin ? '../admin/admin_profile.php' : 'staff_profile.php'; ?>" class="profile-item">
                             <i class="fas fa-user-circle"></i> My Profile
                         </a>
                         <a href="../logout.php" class="profile-item logout-text" style="color: #ef4444; border-top: 1px solid #f1f5f9;">
@@ -2263,7 +2307,9 @@ input, select, textarea, button, img { max-width:100%; }
         <div class="container">
             <div class="header-actions">
                 <a href="pets.php" class="btn-back"><i class="fas fa-arrow-left"></i> Back to Directory</a>
-                <a href="edit_medical.php?id=<?php echo $pet_id; ?>" class="btn-edit"><i class="fas fa-edit"></i> Edit Full Medical Profile</a>
+                <?php if ($isVeterinarian): ?>
+                    <a href="edit_medical.php?id=<?php echo (int)$pet_id; ?>" class="btn-edit"><i class="fas fa-edit"></i> Edit Full Medical Profile</a>
+                <?php endif; ?>
             </div>
 
             <div class="card">
@@ -2357,7 +2403,7 @@ input, select, textarea, button, img { max-width:100%; }
                 <form method="POST" action="" class="note-form">
                     <input type="hidden" name="action" value="add_note">
                     <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token, ENT_QUOTES, 'UTF-8'); ?>">
-                    <textarea name="new_note" placeholder="Type diagnosis, prescriptions, or clinical notes here to notify the owner..." required></textarea>
+                    <textarea name="new_note" maxlength="5000" placeholder="Type diagnosis, prescriptions, or clinical notes here to notify the owner..." required></textarea>
                     <button type="submit" name="add_note" class="btn-submit"><i class="fas fa-paper-plane"></i> Send Note to Owner</button>
                 </form>
 

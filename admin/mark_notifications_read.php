@@ -5,8 +5,8 @@ require_once __DIR__ . '/../shared_session_bootstrap.php';
 |--------------------------------------------------------------------------
 | AUTHENTICATION AND ROLE NORMALIZATION
 |--------------------------------------------------------------------------
-| Admin alerts are shared Admin-only records. Groomer and Pet Hotel Staff
-| may only mark notification rows addressed to their own user ID as read.
+| Admin can mark Admin notifications as read. Groomer and Pet Hotel Staff
+| can only mark notification rows addressed to their own user ID as read.
 */
 $rawRole = strtolower(trim((string)($_SESSION['role'] ?? '')));
 $roleAliases = [
@@ -22,9 +22,6 @@ $roleAliases = [
     'pet_hotel_staff_attendant' => 'pet_hotel_staff',
 ];
 $currentRole = $roleAliases[$rawRole] ?? $rawRole;
-if ($currentRole !== '') {
-    $_SESSION['role'] = $currentRole;
-}
 
 $loggedIn = ($_SESSION['logged_in'] ?? false) === true;
 $userId = filter_var(
@@ -32,34 +29,32 @@ $userId = filter_var(
     FILTER_VALIDATE_INT,
     ['options' => ['min_range' => 1]]
 );
-$isAdmin = $currentRole === 'admin';
-$isServiceStaff = in_array($currentRole, ['groomer', 'pet_hotel_staff'], true);
+$validUserId = $userId !== false && $userId !== null;
 
+// Keep Admin and Staff sessions mutually exclusive.
 $adminSessionValid = $loggedIn
     && ($_SESSION['admin_logged_in'] ?? false) === true
-    && $isAdmin
-    && $userId !== false
-    && $userId !== null;
+    && ($_SESSION['staff_logged_in'] ?? false) !== true
+    && $currentRole === 'admin'
+    && $validUserId;
 
 $staffSessionValid = $loggedIn
     && ($_SESSION['staff_logged_in'] ?? false) === true
-    && $isServiceStaff
-    && $userId !== false
-    && $userId !== null;
+    && ($_SESSION['admin_logged_in'] ?? false) !== true
+    && in_array($currentRole, ['groomer', 'pet_hotel_staff'], true)
+    && $validUserId;
 
 if (!$adminSessionValid && !$staffSessionValid) {
     http_response_code(403);
     exit('Access denied.');
 }
 
-$isAdmin = $adminSessionValid;
-
 /*
 |--------------------------------------------------------------------------
 | POST-ONLY METHOD AND CSRF VALIDATION
 |--------------------------------------------------------------------------
-| Both Admin and Staff must use a POST request with the shared session
-| CSRF token before notification records can be marked as read.
+| Both Admin and eligible service Staff must use a POST request with the
+| session CSRF token before notification records can be marked as read.
 */
 $method = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? ''));
 if ($method !== 'POST') {
@@ -80,9 +75,7 @@ if (
     exit('Invalid security token. Please refresh the page and try again.');
 }
 
-// shared_session_bootstrap.php normally loads the PDO connection itself.
-// Keep this guarded include for compatibility with requests where a session
-// was already active before the shared bootstrap was loaded.
+// Load the database connection only after authentication and CSRF validation.
 if (!isset($pdo) || !($pdo instanceof PDO)) {
     require_once __DIR__ . '/../db_supabase.php';
 }
@@ -93,8 +86,8 @@ if (!isset($pdo) || !($pdo instanceof PDO)) {
 }
 
 /**
- * Determine the correct SQL value and unread condition for a fixed table's
- * existing PostgreSQL is_read column type. Table identifiers are allow-listed.
+ * Determine safe SQL values for the existing PostgreSQL is_read column type.
+ * Table names are restricted to the two known notification tables.
  */
 function markReadNotificationSql(PDO $pdo, string $tableName): array
 {
@@ -141,7 +134,8 @@ function markReadNotificationSql(PDO $pdo, string $tableName): array
 }
 
 try {
-    if ($isAdmin) {
+    if ($adminSessionValid) {
+        // An Admin can mark all unread Admin alerts as read.
         $readSql = markReadNotificationSql($pdo, 'admin_notifications');
         $stmt = $pdo->prepare(
             'UPDATE public.admin_notifications '
@@ -151,6 +145,7 @@ try {
         $stmt->execute();
         $redirectTarget = 'managebooking.php';
     } else {
+        // Service Staff can only update their own notification rows.
         $readSql = markReadNotificationSql($pdo, 'notifications');
         $stmt = $pdo->prepare(
             'UPDATE public.notifications '

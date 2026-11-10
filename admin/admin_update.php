@@ -12,6 +12,7 @@ require_once __DIR__ . '/../shared_session_bootstrap.php';
 
 header('Content-Type: text/plain; charset=utf-8');
 header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
 header('X-Content-Type-Options: nosniff');
 
 // Normalize legacy role names to the canonical booking-management roles.
@@ -36,28 +37,37 @@ $role_aliases = [
     'supervisor' => 'receptionist',
 ];
 $current_role = $role_aliases[$current_role_raw] ?? $current_role_raw;
-if ($current_role !== '') {
-    $_SESSION['role'] = $current_role;
-}
 
 $staff_roles = ['manager', 'receptionist', 'groomer', 'pet_hotel_staff'];
-$session_user_id = filter_var(
-    $_SESSION['user_id'] ?? null,
-    FILTER_VALIDATE_INT,
-    ['options' => ['min_range' => 1]]
-);
+$raw_session_user_id = $_SESSION['user_id'] ?? null;
+$session_user_id = is_string($raw_session_user_id) || is_int($raw_session_user_id)
+    ? filter_var(
+        $raw_session_user_id,
+        FILTER_VALIDATE_INT,
+        ['options' => ['min_range' => 1]]
+    )
+    : false;
+$session_user_id_valid = $session_user_id !== false && $session_user_id !== null;
+
+// Require one matching portal session only. A shared or mixed Admin/Staff
+// session must not be accepted by this state-changing endpoint.
+$logged_in = ($_SESSION['logged_in'] ?? false) === true;
+$admin_flag = ($_SESSION['admin_logged_in'] ?? false) === true;
+$staff_flag = ($_SESSION['staff_logged_in'] ?? false) === true;
 
 $admin_session_valid = (
-    ($_SESSION['logged_in'] ?? false) === true
-    && ($_SESSION['admin_logged_in'] ?? false) === true
+    $logged_in
+    && $admin_flag
+    && !$staff_flag
     && $current_role === 'admin'
-    && $session_user_id !== false
+    && $session_user_id_valid
 );
 $staff_session_valid = (
-    ($_SESSION['logged_in'] ?? false) === true
-    && ($_SESSION['staff_logged_in'] ?? false) === true
+    $logged_in
+    && $staff_flag
+    && !$admin_flag
     && in_array($current_role, $staff_roles, true)
-    && $session_user_id !== false
+    && $session_user_id_valid
 );
 
 if (!$admin_session_valid && !$staff_session_valid) {
@@ -71,31 +81,35 @@ if (!in_array($current_role, $allowed_roles, true)) {
     exit('Unauthorized access.');
 }
 
-if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
     http_response_code(405);
     header('Allow: POST');
     exit('Method not allowed.');
 }
 
 // The booking-management page creates and supplies this session-bound token.
-$session_token = (string)($_SESSION['csrf_token'] ?? '');
-$posted_token = (string)($_POST['csrf_token'] ?? '');
-if ($session_token === '' || $posted_token === '' || !hash_equals($session_token, $posted_token)) {
+$session_token = $_SESSION['csrf_token'] ?? null;
+$posted_token = $_POST['csrf_token'] ?? null;
+if (
+    !is_string($session_token) || $session_token === ''
+    || !is_string($posted_token) || $posted_token === ''
+    || !hash_equals($session_token, $posted_token)
+) {
     http_response_code(403);
     exit('Invalid or expired request token. Refresh the page and try again.');
 }
 
-$appointment_id = filter_var(
-    $_POST['appointment_id'] ?? null,
-    FILTER_VALIDATE_INT,
-    ['options' => ['min_range' => 1]]
-);
-$user_id = filter_var(
-    $_POST['user_id'] ?? null,
-    FILTER_VALIDATE_INT,
-    ['options' => ['min_range' => 1]]
-);
-if ($appointment_id === false || $user_id === false) {
+// Reject array-shaped or otherwise malformed IDs before calling filter_var.
+$raw_appointment_id = $_POST['appointment_id'] ?? null;
+$raw_posted_user_id = $_POST['user_id'] ?? null;
+$appointment_id = is_string($raw_appointment_id) || is_int($raw_appointment_id)
+    ? filter_var($raw_appointment_id, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]])
+    : false;
+$posted_user_id = is_string($raw_posted_user_id) || is_int($raw_posted_user_id)
+    ? filter_var($raw_posted_user_id, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]])
+    : false;
+
+if ($appointment_id === false || $appointment_id === null || $posted_user_id === false || $posted_user_id === null) {
     http_response_code(400);
     exit('Invalid appointment_id or user_id.');
 }
@@ -126,16 +140,28 @@ try {
          LIMIT 1
          FOR UPDATE"
     );
-    $check_appointment->execute([':appointment_id' => $appointment_id]);
+    $check_appointment->execute([':appointment_id' => (int)$appointment_id]);
     $appointment = $check_appointment->fetch(PDO::FETCH_ASSOC);
 
     if (!$appointment) {
         throw new DomainException('Appointment not found.', 404);
     }
 
-    if ((int)($appointment['user_id'] ?? 0) !== $user_id) {
+    $appointment_user_id = filter_var(
+        $appointment['user_id'] ?? null,
+        FILTER_VALIDATE_INT,
+        ['options' => ['min_range' => 1]]
+    );
+    if ($appointment_user_id === false || $appointment_user_id === null) {
+        throw new RuntimeException('Appointment has an invalid customer account reference.');
+    }
+
+    // Keep the existing submitted-owner consistency check, but use the
+    // database-derived owner ID for all subsequent customer updates.
+    if ((int)$appointment_user_id !== (int)$posted_user_id) {
         throw new DomainException('Appointment does not belong to this user.', 403);
     }
+    $user_id = (int)$appointment_user_id;
 
     if (!noShowServiceAllowedForRole($current_role, (string)($appointment['service'] ?? ''))) {
         throw new DomainException('Access denied for this service booking.', 403);
@@ -188,7 +214,7 @@ try {
            AND COALESCE(reschedule_count, 0) = 1"
     );
     $update_appointment->execute([
-        ':appointment_id' => $appointment_id,
+        ':appointment_id' => (int)$appointment_id,
         ':user_id' => $user_id,
     ]);
 

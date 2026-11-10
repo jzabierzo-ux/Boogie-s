@@ -35,33 +35,60 @@ $current_role = $role_aliases[$raw_role] ?? $raw_role;
 if ($current_role !== '') {
     $_SESSION['role'] = $current_role;
 }
-$is_admin = ($current_role === 'admin');
-$can_transfer_owner = in_array($current_role, ['admin', 'manager', 'receptionist'], true);
+$staff_pet_roles = ['manager', 'receptionist', 'groomer', 'pet_hotel_staff'];
+$veterinary_roles = ['veterinarian', 'vet_assistant', 'vet_nurse'];
+$session_logged_in = ($_SESSION['logged_in'] ?? false) === true;
+$session_admin_flag = ($_SESSION['admin_logged_in'] ?? false) === true;
+$session_staff_flag = ($_SESSION['staff_logged_in'] ?? false) === true;
+$session_user_id = filter_var(
+    $_SESSION['user_id'] ?? null,
+    FILTER_VALIDATE_INT,
+    ['options' => ['min_range' => 1]]
+);
+$valid_session_user_id = ($session_user_id !== false && $session_user_id !== null);
 
-if (($_SESSION['logged_in'] ?? false) !== true) {
-    // Admin and staff login pages remain separate.
-    $login_target = ($current_role === 'admin') ? '../admin_login.php' : '../staff/stafflogin.php';
+// Admin and Staff must have their own matching session flag. The two portal
+// flags must never be active together in the same browser session.
+$is_admin_session = $session_logged_in
+    && $session_admin_flag
+    && !$session_staff_flag
+    && $current_role === 'admin'
+    && $valid_session_user_id;
+$is_staff_session = $session_logged_in
+    && $session_staff_flag
+    && !$session_admin_flag
+    && in_array($current_role, $staff_pet_roles, true)
+    && $valid_session_user_id;
+
+if (!$session_logged_in) {
+    // Keep the Admin and personnel login destinations separate.
+    $staff_login_roles = array_merge($staff_pet_roles, $veterinary_roles);
+    $login_target = in_array($current_role, $staff_login_roles, true)
+        ? '../staff/stafflogin.php'
+        : 'admin_login.php';
     header('Location: ' . $login_target);
     exit();
 }
 
-if (empty($_SESSION['user_id']) || !is_numeric($_SESSION['user_id'])) {
+if (!$is_admin_session && !$is_staff_session) {
+    // Veterinary personnel use their own portal and cannot edit pet records here.
+    if (
+        in_array($current_role, $veterinary_roles, true)
+        && $session_staff_flag
+        && !$session_admin_flag
+        && $valid_session_user_id
+    ) {
+        header('Location: ../staff/staffdashboard.php');
+        exit();
+    }
+
     http_response_code(403);
-    exit('Access denied: invalid session.');
+    exit('Access denied. A valid Admin or authorized Staff session is required.');
 }
 
-// Veterinary roles use their dedicated portal. Grooming and Pet Hotel Staff
-// may edit pet details, but ownership transfers remain restricted below.
-if (in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)) {
-    header('Location: ../staff/staffdashboard.php');
-    exit();
-}
-
-$allowed_pet_roles = ['admin', 'manager', 'receptionist', 'groomer', 'pet_hotel_staff'];
-if (!in_array($current_role, $allowed_pet_roles, true)) {
-    http_response_code(403);
-    exit('Access denied. This role cannot edit pet records.');
-}
+$is_admin = $is_admin_session;
+$can_transfer_owner = in_array($current_role, ['admin', 'manager', 'receptionist'], true);
+$user_id = (int)$session_user_id;
 
 // Open the database connection only after the session and role have been authorized.
 require_once __DIR__ . '/../db_supabase.php';
@@ -431,6 +458,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($can_transfer_owner) {
                     $row['owner_id'] = $new_owner_id;
                     $row['owner_name'] = $new_owner_name;
+                    $row['owner_display'] = $new_owner_name;
                 }
                 $success_msg = 'Pet record successfully updated.';
             } catch (PDOException $e) {

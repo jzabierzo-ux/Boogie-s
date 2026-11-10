@@ -15,7 +15,7 @@ function sendAdminNotificationResponse(int $statusCode, array $payload): void
     exit();
 }
 
-if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'GET') {
+if (strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET')) !== 'GET') {
     header('Allow: GET');
     sendAdminNotificationResponse(405, [
         'success' => false,
@@ -25,16 +25,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'GET') {
     ]);
 }
 
-$sessionFlagIsTrue = static function ($value): bool {
-    return $value === true
-        || $value === 1
-        || $value === '1'
-        || (is_string($value) && strtolower(trim($value)) === 'true');
-};
-
-$loggedIn = $sessionFlagIsTrue($_SESSION['logged_in'] ?? false);
-$adminPortalLoggedIn = $sessionFlagIsTrue($_SESSION['admin_logged_in'] ?? false);
-$staffPortalLoggedIn = $sessionFlagIsTrue($_SESSION['staff_logged_in'] ?? false);
+// Normalize legacy role labels without changing the stored session role.
 $rawRole = strtolower(trim((string)($_SESSION['role'] ?? '')));
 $roleAliases = [
     'administrator' => 'admin',
@@ -55,14 +46,31 @@ $roleAliases = [
     'staff' => 'groomer',
 ];
 $currentRole = $roleAliases[$rawRole] ?? $rawRole;
-$userId = filter_var($_SESSION['user_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
 
-$isAdmin = $loggedIn && $adminPortalLoggedIn && $currentRole === 'admin';
+$loggedIn = ($_SESSION['logged_in'] ?? false) === true;
+$adminFlag = ($_SESSION['admin_logged_in'] ?? false) === true;
+$staffFlag = ($_SESSION['staff_logged_in'] ?? false) === true;
+$userId = filter_var(
+    $_SESSION['user_id'] ?? null,
+    FILTER_VALIDATE_INT,
+    ['options' => ['min_range' => 1]]
+);
+$hasValidUserId = $userId !== false && $userId !== null;
+
+// Admin and operational Staff must use their own mutually exclusive session.
+$isAdmin = $loggedIn
+    && $adminFlag
+    && !$staffFlag
+    && $currentRole === 'admin'
+    && $hasValidUserId;
+
 $isServiceStaff = $loggedIn
-    && $staffPortalLoggedIn
-    && in_array($currentRole, ['groomer', 'pet_hotel_staff'], true);
+    && $staffFlag
+    && !$adminFlag
+    && in_array($currentRole, ['groomer', 'pet_hotel_staff'], true)
+    && $hasValidUserId;
 
-if ((!$isAdmin && !$isServiceStaff) || $userId === false || $userId === null) {
+if (!$isAdmin && !$isServiceStaff) {
     sendAdminNotificationResponse(403, [
         'success' => false,
         'unread' => 0,
@@ -71,9 +79,19 @@ if ((!$isAdmin && !$isServiceStaff) || $userId === false || $userId === null) {
     ]);
 }
 
-// The shared session bootstrap normally loads the PDO connection already.
-// Keep this include as a safe fallback for requests where a session was started earlier.
-require_once __DIR__ . '/../db_supabase.php';
+// Load the database only after method and session checks have passed.
+if (!isset($pdo) || !($pdo instanceof PDO)) {
+    require_once __DIR__ . '/../db_supabase.php';
+}
+if (!isset($pdo) || !($pdo instanceof PDO)) {
+    error_log('Get admin notifications: database connection is unavailable.');
+    sendAdminNotificationResponse(503, [
+        'success' => false,
+        'unread' => 0,
+        'html' => '<div class="notif-empty">Notifications are temporarily unavailable.</div>',
+        'message' => 'Notifications are temporarily unavailable.',
+    ]);
+}
 
 function formatAdminNotificationDate($value): string
 {
@@ -82,6 +100,7 @@ function formatAdminNotificationDate($value): string
     }
 
     try {
+        // Database timestamps without an explicit offset are stored in UTC.
         $timestamp = new DateTimeImmutable(trim((string)$value), new DateTimeZone('UTC'));
         return $timestamp->setTimezone(new DateTimeZone('Asia/Manila'))->format('M d, g:i A');
     } catch (Throwable $e) {
@@ -90,10 +109,9 @@ function formatAdminNotificationDate($value): string
     }
 }
 
-
 /**
  * Detect the existing is_read column type so unread comparisons remain
- * correct for boolean, numeric, and text-backed notification tables.
+ * correct for boolean, numeric, and text-backed PostgreSQL notification tables.
  * Table names are restricted to this code-defined allow-list.
  */
 function notificationUnreadPredicate(PDO $pdo, string $tableName): string
@@ -105,7 +123,7 @@ function notificationUnreadPredicate(PDO $pdo, string $tableName): string
 
     $typeStmt = $pdo->prepare("SELECT data_type
         FROM information_schema.columns
-        WHERE table_schema = current_schema()
+        WHERE table_schema = 'public'
           AND table_name = :table_name
           AND column_name = 'is_read'
         LIMIT 1");
@@ -122,7 +140,7 @@ function notificationUnreadPredicate(PDO $pdo, string $tableName): string
         return "(is_read IS NULL OR LOWER(BTRIM(CAST(is_read AS TEXT))) IN ('0', 'false', 'f', 'no', 'unread', ''))";
     }
 
-    throw new RuntimeException('Unsupported or unknown is_read column type for ' . $tableName . '.');
+    throw new RuntimeException('Unsupported or unknown is_read column type for public.' . $tableName . '.');
 }
 
 function renderAdminNotificationItems(array $notifications, bool $staffNotifications): string
@@ -188,7 +206,7 @@ try {
         // Window count returns the full unread total while limiting the displayed list to 20.
         $stmt = $pdo->query("SELECT id, message, created_at,
                     COUNT(*) OVER() AS total_unread
-                FROM admin_notifications
+                FROM public.admin_notifications
                 WHERE {$unreadPredicate}
                 ORDER BY created_at DESC NULLS LAST, id DESC
                 LIMIT 20");
@@ -196,11 +214,11 @@ try {
         $unreadCount = (int)($notifications[0]['total_unread'] ?? 0);
         $html = renderAdminNotificationItems($notifications, false);
     } else {
-        // Service staff only receive unread notification rows addressed to their own user ID.
+        // Service Staff only receive unread notification rows addressed to their own user ID.
         $unreadPredicate = notificationUnreadPredicate($pdo, 'notifications');
         $stmt = $pdo->prepare("SELECT id, title, message, type, created_at,
                     COUNT(*) OVER() AS total_unread
-                FROM notifications
+                FROM public.notifications
                 WHERE user_id = :user_id
                   AND {$unreadPredicate}
                 ORDER BY created_at DESC NULLS LAST, id DESC

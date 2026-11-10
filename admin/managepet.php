@@ -2,7 +2,7 @@
 
 require_once __DIR__ . '/../shared_session_bootstrap.php';
 
-include '../db_supabase.php';
+date_default_timezone_set('Asia/Manila');
 
 // --- ROLE-BASED ACCESS CONTROL ---
 
@@ -72,61 +72,87 @@ if ($current_role !== '') {
 
 }
 
-$is_admin = ($current_role === 'admin');
+// A shared Admin/Staff page must accept only the matching, exclusive portal session.
+$allowed_pet_page_roles = ['admin', 'manager', 'receptionist', 'groomer', 'pet_hotel_staff'];
+$is_logged_in = (($_SESSION['logged_in'] ?? false) === true);
+$admin_flag = (($_SESSION['admin_logged_in'] ?? false) === true);
+$staff_flag = (($_SESSION['staff_logged_in'] ?? false) === true);
+$validated_session_user_id = filter_var(
+    $_SESSION['user_id'] ?? null,
+    FILTER_VALIDATE_INT,
+    ['options' => ['min_range' => 1]]
+);
+
+if (!$is_logged_in) {
+    // Preserve the distinct login destinations for the two portals.
+    $login_target = ($current_role === 'admin' || $admin_flag)
+        ? '../admin_login.php'
+        : '../staff/stafflogin.php';
+    header('Location: ' . $login_target, true, 302);
+    exit();
+}
+
+if ($admin_flag && $staff_flag) {
+    http_response_code(403);
+    exit('Access denied. Please log out and sign in again using the correct portal.');
+}
+
+if ($validated_session_user_id === false || $validated_session_user_id === null) {
+    http_response_code(403);
+    exit('Access denied: invalid session.');
+}
+
+$is_admin = (
+    $admin_flag
+    && !$staff_flag
+    && $current_role === 'admin'
+);
+$is_staff = (
+    $staff_flag
+    && !$admin_flag
+    && in_array($current_role, ['manager', 'receptionist', 'groomer', 'pet_hotel_staff', 'veterinarian', 'vet_assistant', 'vet_nurse'], true)
+);
+
+if (!$is_admin && !$is_staff) {
+    http_response_code(403);
+    exit('Access denied. Your session does not match this portal.');
+}
+
+// Veterinary roles use their dedicated Staff portal and cannot use Pet Management.
+if (in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)) {
+    header('Location: ../staff/staffdashboard.php', true, 302);
+    exit();
+}
+
+if (!in_array($current_role, $allowed_pet_page_roles, true)) {
+    http_response_code(403);
+    exit('Access denied. This role cannot access pet management.');
+}
+
 $is_service_staff = in_array($current_role, ['groomer', 'pet_hotel_staff'], true);
 $show_notifications = ($is_admin || $is_service_staff);
 
-// Shared CSRF token for the notification mark-all-read endpoint. Keep the
-// separate managepet_csrf_token below for the Add Pet form.
+// Avoid caching pages that contain customer and pet information.
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
+header('X-Content-Type-Options: nosniff');
+header('Referrer-Policy: strict-origin-when-cross-origin');
+
+// The database is initialized only after authentication and authorization succeed.
+require_once __DIR__ . '/../db_supabase.php';
+
+// Shared CSRF token for the notification mark-all-read endpoint.
 if ($show_notifications && (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token']))) {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
 }
 $notification_csrf_token = $show_notifications ? (string)$_SESSION['csrf_token'] : '';
 
-if (($_SESSION['logged_in'] ?? false) !== true) {
-
-    // Keep the Admin login separate from the Staff login.
-
-    $login_target = ($current_role === 'admin') ? '../admin_login.php' : '../staff/stafflogin.php';
-
-    header('Location: ' . $login_target);
-
-    exit();
-
-}
-
-if (empty($_SESSION['user_id']) || !is_numeric($_SESSION['user_id'])) {
-
-    http_response_code(403);
-
-    exit('Access denied: invalid session.');
-
-}
-
-// Veterinary roles use their dedicated portal.
-if (in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)) {
-    header('Location: ../staff/staffdashboard.php');
-    exit();
-}
-
-// Admin, Manager, Receptionist, Groomer, and Pet Hotel Staff may access Pet Management.
-$allowed_pet_page_roles = ['admin', 'manager', 'receptionist', 'groomer', 'pet_hotel_staff'];
-
-if (!in_array($current_role, $allowed_pet_page_roles, true)) {
-
-    http_response_code(403);
-
-    exit('Access denied. This role cannot access pet management.');
-
-}
-
 // CSRF token for the Add Pet form.
 
 if (empty($_SESSION['managepet_csrf_token']) || !is_string($_SESSION['managepet_csrf_token'])) {
-
     $_SESSION['managepet_csrf_token'] = bin2hex(random_bytes(32));
-
 }
+$managepet_csrf_token = (string)$_SESSION['managepet_csrf_token'];
 
 // Load owner choices on demand instead of querying every customer on each page view.
 if ($_SERVER['REQUEST_METHOD'] === 'GET' && (($_GET['ajax'] ?? '') === 'customer_options')) {
@@ -172,7 +198,7 @@ try {
 
     if (isset($_SESSION['user_id'])) {
 
-        $uid = (int)$_SESSION['user_id'];
+        $uid = (int)$validated_session_user_id;
 
         $get_admin = $pdo->prepare("
 
@@ -243,8 +269,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_pet'])) {
         exit('Access denied. Only Admin can delete pet profiles.');
     }
 
-    $submitted_token = $_POST['csrf_token'] ?? '';
-    if (!is_string($submitted_token) || !hash_equals($_SESSION['managepet_csrf_token'], $submitted_token)) {
+    $submitted_token = $_POST['csrf_token'] ?? null;
+    if (!is_string($submitted_token) || $managepet_csrf_token === '' || !hash_equals($managepet_csrf_token, $submitted_token)) {
         http_response_code(403);
         exit('Security check failed. Please refresh the page and try again.');
     }
@@ -332,9 +358,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_pet'])) {
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_pet'])) {
 
-    $submitted_token = $_POST['csrf_token'] ?? '';
+    $submitted_token = $_POST['csrf_token'] ?? null;
 
-    if (!is_string($submitted_token) || !hash_equals($_SESSION['managepet_csrf_token'], $submitted_token)) {
+    if (!is_string($submitted_token) || $managepet_csrf_token === '' || !hash_equals($managepet_csrf_token, $submitted_token)) {
 
         http_response_code(403);
 
@@ -344,7 +370,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_pet'])) {
 
         $raw_owner_id = $_POST['owner_id'] ?? '';
 
-        $owner_id = is_string($raw_owner_id) ? filter_var($raw_owner_id, FILTER_VALIDATE_INT) : false;
+        $owner_id = is_string($raw_owner_id) ? filter_var($raw_owner_id, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) : false;
 
         $pet_name = is_string($_POST['pet_name'] ?? null) ? trim($_POST['pet_name']) : '';
 
@@ -388,8 +414,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_pet'])) {
 
         $has_control_chars = (bool)preg_match('/[\x00-\x1F\x7F]/', $pet_name);
         $has_breed_control_chars = (bool)preg_match('/[\x00-\x1F\x7F]/', $pet_breed);
-        $age_is_valid = $pet_age !== '' && is_numeric($pet_age) && is_finite((float)$pet_age)
-            && (float)$pet_age >= 0 && (float)$pet_age <= 100;
+        $age_is_valid = $pet_age !== ''
+            && preg_match('/^(?:100|\d{1,2})(?:\.\d{1,2})?$/D', $pet_age) === 1
+            && is_numeric($pet_age)
+            && is_finite((float)$pet_age)
+            && (float)$pet_age >= 0
+            && (float)$pet_age <= 100;
 
         if (!is_int($owner_id) || $owner_id < 1 || $pet_name === '' || $pet_type === '' || $pet_breed === '' || $pet_age === '' || $pet_gender === '' || $pet_weight === '') {
 
@@ -1676,7 +1706,7 @@ if ($filter_breed !== '') {
 
                     <span style="font-size: 14px; font-weight: 600; color: #4a5568; display: flex; align-items: center; gap: 6px;">
 
-                        <?php echo htmlspecialchars($admin_full_name); ?>
+                        <?php echo htmlspecialchars((string)$admin_full_name, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
 
                         <i class="fas fa-chevron-down" style="font-size: 10px; color: #94a3b8;"></i>
 
@@ -1830,7 +1860,7 @@ if ($filter_breed !== '') {
                                         </a>
                                         <?php if ($is_admin): ?>
                                             <form method="POST" action="" class="delete-pet-form" onsubmit="return confirm('Are you sure you want to permanently delete this pet profile? Pets with appointment history cannot be deleted.');">
-                                                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['managepet_csrf_token'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
+                                                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($managepet_csrf_token, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
                                                 <input type="hidden" name="pet_id" value="<?php echo $pet_id; ?>">
                                                 <button type="submit" name="delete_pet" value="1" class="action-link btn-delete" title="Delete Pet" aria-label="Delete <?php echo htmlspecialchars($pet_name_display, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
                                                     <i class="fas fa-trash-alt"></i>
@@ -1882,7 +1912,7 @@ if ($filter_breed !== '') {
 
             <form method="POST" action="">
 
-                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['managepet_csrf_token'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
+                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($managepet_csrf_token, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
 
                 <div class="form-group">
 

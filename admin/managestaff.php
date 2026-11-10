@@ -1,15 +1,30 @@
 <?php
 require_once __DIR__ . '/../shared_session_bootstrap.php';
-require_once '../db_supabase.php';
+require_once __DIR__ . '/../db_supabase.php';
 
-$current_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
+// Strict Admin-only authorization. The role and the dedicated Admin session
+// marker must both be valid; a Staff session must never inherit Admin access.
+$raw_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
+$current_role = ($raw_role === 'administrator') ? 'admin' : $raw_role;
 
-if (($_SESSION['logged_in'] ?? false) !== true) {
-    header('Location: ../admin_login.php');
-    exit();
-}
+$is_admin_session = (
+    ($_SESSION['logged_in'] ?? false) === true &&
+    ($_SESSION['admin_logged_in'] ?? false) === true &&
+    ($_SESSION['staff_logged_in'] ?? false) !== true &&
+    $current_role === 'admin' &&
+    isset($_SESSION['user_id']) &&
+    is_numeric($_SESSION['user_id']) &&
+    (int)$_SESSION['user_id'] > 0
+);
 
-if ($current_role !== 'admin') {
+if (!$is_admin_session) {
+    // Send users without a login session to the Admin login page.
+    // Authenticated non-Admin sessions receive an explicit denial.
+    if (($_SESSION['logged_in'] ?? false) !== true) {
+        header('Location: admin_login.php');
+        exit();
+    }
+
     http_response_code(403);
     exit('Access denied. Admin only.');
 }

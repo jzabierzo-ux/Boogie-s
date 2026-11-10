@@ -6,27 +6,30 @@ require_once __DIR__ . '/../shared_session_bootstrap.php';
  * session store itself uses the PostgreSQL connection. Do not include it again.
  */
 
-// --- VETERINARIAN PORTAL ACCESS ---
-$rawRole = strtolower(trim((string)($_SESSION['role'] ?? '')));
+// This page is restricted to an authenticated veterinarian Staff session.
 $roleAliases = [
     'vet' => 'veterinarian',
     'veterinary' => 'veterinarian',
 ];
-$currentRole = $roleAliases[$rawRole] ?? $rawRole;
+$normalizeMedicalRole = static function ($role) use ($roleAliases): string {
+    $normalized = strtolower(trim((string)$role));
+    return $roleAliases[$normalized] ?? $normalized;
+};
 
+$currentRole = $normalizeMedicalRole($_SESSION['role'] ?? '');
 $loggedIn = ($_SESSION['logged_in'] ?? false) === true;
 $staffLoggedIn = ($_SESSION['staff_logged_in'] ?? false) === true;
+$adminLoggedIn = !empty($_SESSION['admin_logged_in']);
 $staffUserIdRaw = $_SESSION['user_id'] ?? $_SESSION['staff_id'] ?? null;
-$staffUserId = filter_var(
-    $staffUserIdRaw,
-    FILTER_VALIDATE_INT,
-    ['options' => ['min_range' => 1]]
-);
+$staffUserId = (is_string($staffUserIdRaw) || is_int($staffUserIdRaw))
+    ? filter_var($staffUserIdRaw, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]])
+    : false;
 
 if (
     !$loggedIn ||
     !$staffLoggedIn ||
-    !in_array($currentRole, ['vet', 'veterinarian', 'veterinary'], true) ||
+    $adminLoggedIn ||
+    $currentRole !== 'veterinarian' ||
     $staffUserId === false ||
     $staffUserId === null
 ) {
@@ -34,8 +37,14 @@ if (
     exit();
 }
 
-// Keep the normalized role in the session for consistency with staff pages.
-$_SESSION['role'] = 'veterinarian';
+// Medical and patient information must not be stored in browser or shared caches.
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
+header('Expires: 0');
+header('X-Content-Type-Options: nosniff');
+header('X-Frame-Options: DENY');
+header('Referrer-Policy: strict-origin-when-cross-origin');
+header('Permissions-Policy: camera=(), microphone=(), geolocation=()');
 
 if (!isset($pdo) || !($pdo instanceof PDO)) {
     error_log('Edit medical records: shared database connection unavailable.');
@@ -107,22 +116,30 @@ $profile_img_url = '';
 $full_display_name = $staff_name;
 
 try {
+    // Verify the account's current database role; session values alone are not trusted.
     $get_staff_stmt = $pdo->prepare(
-        'SELECT full_name, profile_image FROM users WHERE id = :id LIMIT 1'
+        'SELECT role, full_name, profile_image FROM users WHERE id = :id LIMIT 1'
     );
     $get_staff_stmt->execute([':id' => (int)$staffUserId]);
     $staff_data = $get_staff_stmt->fetch(PDO::FETCH_ASSOC);
-
-    if ($staff_data) {
-        $profile_img_path = (string)($staff_data['profile_image'] ?? '');
-        if (!empty($staff_data['full_name'])) {
-            $full_display_name = (string)$staff_data['full_name'];
-            $_SESSION['staff_name'] = $full_display_name;
-            $_SESSION['user_name'] = $full_display_name;
-        }
-    }
 } catch (PDOException $e) {
-    error_log('Edit medical records staff profile lookup failed: ' . $e->getMessage());
+    error_log('Edit medical records staff account lookup failed: ' . $e->getMessage());
+    http_response_code(503);
+    exit('Medical records are temporarily unavailable. Please try again.');
+}
+
+if (!$staff_data || $normalizeMedicalRole($staff_data['role'] ?? '') !== 'veterinarian') {
+    http_response_code(403);
+    exit('You are not authorized to access veterinary medical records.');
+}
+
+// Keep the canonical role after both the session and database checks pass.
+$_SESSION['role'] = 'veterinarian';
+$profile_img_path = (string)($staff_data['profile_image'] ?? '');
+if (!empty($staff_data['full_name'])) {
+    $full_display_name = (string)$staff_data['full_name'];
+    $_SESSION['staff_name'] = $full_display_name;
+    $_SESSION['user_name'] = $full_display_name;
 }
 
 $profile_img_url = editMedicalResolveProfileImageUrl($profile_img_path);
@@ -143,11 +160,10 @@ $first_name_only = trim((string)(preg_split('/\s+/', $mobile_name_source)[0] ?? 
 // Admin-only notifications are intentionally not queried from the veterinarian portal.
 
 // Validate the patient ID before running the patient query.
-$pet_id = filter_var(
-    $_GET['id'] ?? null,
-    FILTER_VALIDATE_INT,
-    ['options' => ['min_range' => 1]]
-);
+$rawPetId = $_GET['id'] ?? null;
+$pet_id = (is_string($rawPetId) || is_int($rawPetId))
+    ? filter_var($rawPetId, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]])
+    : false;
 if ($pet_id === false || $pet_id === null) {
     http_response_code(400);
     exit('Invalid Patient ID.');
@@ -196,6 +212,17 @@ if (isset($_SESSION['medical_record_flash']) && is_string($_SESSION['medical_rec
     unset($_SESSION['medical_record_flash']);
 }
 
+/** Count user-entered text by characters when the mbstring extension is available. */
+function editMedicalTextLength(string $value): int
+{
+    if (function_exists('mb_strlen')) {
+        return mb_strlen($value, 'UTF-8');
+    }
+
+    $count = preg_match_all('/./us', $value, $matches);
+    return $count === false ? strlen($value) : $count;
+}
+
 $method = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'));
 if (!in_array($method, ['GET', 'POST'], true)) {
     http_response_code(405);
@@ -204,7 +231,7 @@ if (!in_array($method, ['GET', 'POST'], true)) {
 }
 
 if ($method === 'POST') {
-    if (!isset($_POST['update_medical'])) {
+    if (!isset($_POST['update_medical']) || !is_string($_POST['update_medical'])) {
         http_response_code(400);
         exit('Invalid medical record action.');
     }
@@ -245,24 +272,42 @@ if ($method === 'POST') {
     $validPetTypes = ['Dog', 'Cat', 'Other'];
     $validGenders = ['Male', 'Female', 'Unknown'];
 
-    if ($petFields['name'] === '' || strlen($petFields['name']) > 120) {
+    if ($petFields['name'] === '' || editMedicalTextLength($petFields['name']) > 120) {
         $error_msg = 'Pet name is required and must not exceed 120 characters.';
     } elseif (!in_array($petFields['pet_type'], $validPetTypes, true)) {
         $error_msg = 'Please select a valid pet type.';
     } elseif (!in_array($petFields['gender'], $validGenders, true)) {
         $error_msg = 'Please select a valid gender.';
-    } elseif (strlen($petFields['breed']) > 120) {
+    } elseif (editMedicalTextLength($petFields['breed']) > 120) {
         $error_msg = 'Breed must not exceed 120 characters.';
-    } elseif (strlen($petFields['age']) > 40 || ($petFields['age'] !== '' && (!is_numeric($petFields['age']) || (float)$petFields['age'] < 0))) {
-        $error_msg = 'Age must be a valid number of years, or left blank if unknown.';
-    } elseif (strlen($petFields['weight']) > 60) {
+    } elseif (
+        editMedicalTextLength($petFields['age']) > 6 ||
+        ($petFields['age'] !== '' && (
+            !preg_match('/^\d{1,3}(?:\.\d)?$/D', $petFields['age']) ||
+            (float)$petFields['age'] > 100
+        ))
+    ) {
+        $error_msg = 'Age must be between 0 and 100 years, or left blank if unknown.';
+    } elseif (editMedicalTextLength($petFields['weight']) > 60) {
         $error_msg = 'Weight / size must not exceed 60 characters.';
-    } elseif (strlen($petFields['medical_history']) > 10000 || strlen($petFields['special_needs']) > 10000) {
+    } elseif (
+        editMedicalTextLength($petFields['medical_history']) > 10000 ||
+        editMedicalTextLength($petFields['special_needs']) > 10000
+    ) {
         $error_msg = 'Health and care information must not exceed 10,000 characters per field.';
     }
 
     if ($error_msg === '') {
         try {
+            $pdo->beginTransaction();
+
+            // Lock the patient row so a concurrent delete/update cannot race this save.
+            $lock_stmt = $pdo->prepare('SELECT id FROM pets WHERE id = :id LIMIT 1 FOR UPDATE');
+            $lock_stmt->execute([':id' => $pet_id]);
+            if (!$lock_stmt->fetchColumn()) {
+                throw new RuntimeException('The patient record no longer exists.');
+            }
+
             $update_stmt = $pdo->prepare(
                 'UPDATE pets
                  SET name = :name,
@@ -290,14 +335,17 @@ if ($method === 'POST') {
 
             $updated_pet_id = $update_stmt->fetchColumn();
             if ($updated_pet_id === false) {
-                http_response_code(404);
-                exit('Patient not found. The pet profile was not updated.');
+                throw new RuntimeException('The patient profile update returned no record.');
             }
 
+            $pdo->commit();
             $_SESSION['medical_record_flash'] = 'Pet profile and medical information updated successfully.';
             header('Location: view_records.php?id=' . $pet_id, true, 303);
             exit();
-        } catch (PDOException $e) {
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
             error_log('Pet profile and medical record update failed: ' . $e->getMessage());
             $error_msg = 'Unable to save the pet profile right now. Please check the information and try again.';
         }
@@ -2150,7 +2198,7 @@ input, select, textarea, button, img { max-width:100%; }
                     <?php if ($profile_img_url !== ''): ?>
                         <img src="<?php echo htmlspecialchars($profile_img_url, ENT_QUOTES, 'UTF-8'); ?>" class="top-avatar" alt="Staff profile" loading="lazy">
                     <?php else: ?>
-                        <div class="top-avatar-fallback"><?php echo $first_letter; ?></div>
+                        <div class="top-avatar-fallback"><?php echo htmlspecialchars($first_letter, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></div>
                     <?php endif; ?>
                     <span class="desktop-profile-name" style="font-size: 14px; font-weight: 700; color: var(--sidebar-navy);"><?php echo htmlspecialchars($display_with_title, ENT_QUOTES, 'UTF-8'); ?></span>
                     <span class="mobile-profile-first-name"><?php echo htmlspecialchars($first_name_only, ENT_QUOTES, 'UTF-8'); ?></span>

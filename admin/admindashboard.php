@@ -1,4 +1,4 @@
-<?php
+	<?php
 
 require_once __DIR__ . '/../shared_session_bootstrap.php';
 
@@ -80,45 +80,67 @@ if (isset($role_aliases[$current_role])) {
 
 }
 
-if (($_SESSION['logged_in'] ?? false) !== true) {
+$personnel_dashboard_roles = [
+    'manager',
+    'receptionist',
+    'groomer',
+    'pet_hotel_staff'
+];
 
-    $login_target = in_array($current_role, ['manager', 'receptionist', 'groomer', 'pet_hotel_staff'], true)
+$allowed_dashboard_roles = array_merge(['admin'], $personnel_dashboard_roles);
+
+// Unauthenticated visitors are sent to the login page for their known portal.
+if (($_SESSION['logged_in'] ?? false) !== true) {
+    $login_target = in_array($current_role, $personnel_dashboard_roles, true)
         ? '../staff/stafflogin.php'
         : 'admin_login.php';
     header('Location: ' . $login_target);
-
     exit();
-
 }
 
-if (empty($_SESSION['user_id']) || !is_numeric($_SESSION['user_id'])) {
+// A valid portal session must contain a positive user ID.
+$user_id = filter_var(
+    $_SESSION['user_id'] ?? null,
+    FILTER_VALIDATE_INT,
+    ['options' => ['min_range' => 1]]
+);
 
+if ($user_id === false || $user_id === null) {
     http_response_code(403);
-
     exit('Access denied: invalid session.');
-
 }
 
-$allowed_dashboard_roles = [
-
-    'admin',
-
-    'manager',
-
-    'receptionist',
-
-    'groomer',
-
-    'pet_hotel_staff'
-
-];
-
+// Only Admin and approved operational personnel can use this dashboard.
 if (!in_array($current_role, $allowed_dashboard_roles, true)) {
-
     http_response_code(403);
-
     exit('Access denied. Please use the dashboard assigned to your role.');
+}
 
+// Enforce the session flag belonging to the authenticated portal.
+// A session cannot be both Admin and Staff, even if its role value is altered.
+$has_admin_session = ($_SESSION['admin_logged_in'] ?? false) === true;
+$has_staff_session = ($_SESSION['staff_logged_in'] ?? false) === true;
+
+$has_valid_portal_session = (
+    ($current_role === 'admin' && $has_admin_session && !$has_staff_session)
+    ||
+    (in_array($current_role, $personnel_dashboard_roles, true)
+        && $has_staff_session
+        && !$has_admin_session)
+);
+
+if (!$has_valid_portal_session) {
+    // Clear the invalid/mismatched session and rotate its identifier before redirecting.
+    $_SESSION = [];
+    session_regenerate_id(true);
+
+    $login_target = ($current_role === 'admin')
+        ? 'admin_login.php'
+        : '../staff/stafflogin.php';
+
+    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+    header('Location: ' . $login_target);
+    exit();
 }
 
 $is_admin = ($current_role === 'admin');
@@ -181,7 +203,7 @@ $can_view_vet_schedule = in_array(
 
 // --- PROFILE LOGIC ---
 
-$user_id = $_SESSION['user_id'];
+$user_id = (int) $user_id;
 
 $profile_img_path = '';
 $profile_img_src = '';

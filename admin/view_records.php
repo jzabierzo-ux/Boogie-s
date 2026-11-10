@@ -1,10 +1,20 @@
 <?php
 require_once __DIR__ . '/../shared_session_bootstrap.php';
 
-// --- 1. ROLE-BASED ACCESS CONTROL ---
-// Keep this Admin-side record page consistent with managepet.php/editpet.php.
-// The staff_logged_in flag alone is not enough to authorize access.
-$raw_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
+// Do not expose PHP warnings, SQL details, or cached pet/owner information.
+ini_set('display_errors', '0');
+ini_set('log_errors', '1');
+header('Cache-Control: private, no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
+header('Expires: 0');
+header('X-Content-Type-Options: nosniff');
+header('Referrer-Policy: no-referrer');
+header('Cross-Origin-Resource-Policy: same-origin');
+
+// --- 1. STRICT PORTAL AND ROLE-BASED ACCESS CONTROL ---
+// A role value by itself is not proof of an Admin or Staff login.
+$sessionRoleValue = $_SESSION['role'] ?? '';
+$raw_role = is_string($sessionRoleValue) ? strtolower(trim($sessionRoleValue)) : '';
 $role_aliases = [
     'administrator' => 'admin',
     'shop manager' => 'manager',
@@ -38,22 +48,46 @@ if ($current_role !== '') {
     $_SESSION['role'] = $current_role;
 }
 
-if (($_SESSION['logged_in'] ?? false) !== true) {
-    // Admin and personnel login remain separate.
-    $login_target = ($current_role === 'admin') ? '../admin_login.php' : '../staff/stafflogin.php';
-    header('Location: ' . $login_target);
+$is_logged_in = ($_SESSION['logged_in'] ?? false) === true;
+$admin_flag = ($_SESSION['admin_logged_in'] ?? false) === true;
+$staff_flag = ($_SESSION['staff_logged_in'] ?? false) === true;
+
+// Never allow a mixed Admin/Staff portal session to access this page.
+if ($admin_flag && $staff_flag) {
+    http_response_code(403);
+    exit('Access denied. Please log out and sign in again using one portal.');
+}
+
+if (!$is_logged_in) {
+    // Keep the two login destinations separate.
+    $login_target = $admin_flag ? '../admin_login.php' : '../staff/stafflogin.php';
+    header('Location: ' . $login_target, true, 302);
     exit();
 }
 
-if (!isset($_SESSION['user_id']) || !is_numeric($_SESSION['user_id']) || (int)$_SESSION['user_id'] < 1) {
+$rawUserId = $_SESSION['user_id'] ?? null;
+$validatedUserId = (is_string($rawUserId) || is_int($rawUserId))
+    ? filter_var($rawUserId, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]])
+    : false;
+if ($validatedUserId === false) {
     http_response_code(403);
     exit('Access denied: invalid session.');
 }
+$session_user_id = (int)$validatedUserId;
 
-// Veterinary roles use their dedicated portal; Pet Hotel Staff use allowed booking functions.
-if (in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)) {
-    header('Location: ../staff/staffdashboard.php');
+// Veterinary personnel must continue to their dedicated staff dashboard.
+if ($staff_flag && !$admin_flag && in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)) {
+    header('Location: ../staff/staffdashboard.php', true, 302);
     exit();
+}
+
+$allowed_staff_record_roles = ['manager', 'receptionist', 'groomer', 'pet_hotel_staff'];
+$is_admin_session = $admin_flag && !$staff_flag && $current_role === 'admin';
+$is_staff_session = $staff_flag && !$admin_flag && in_array($current_role, $allowed_staff_record_roles, true);
+
+if (!$is_admin_session && !$is_staff_session) {
+    http_response_code(403);
+    exit('Access denied. Your portal session does not match your account role. Please log out and sign in again.');
 }
 
 // Admin, Manager, Receptionist, Groomer, and Pet Hotel Staff can view pet records.
@@ -65,8 +99,11 @@ if (!in_array($current_role, $allowed_record_roles, true)) {
 
 // --- 2. VALIDATE PET ID ---
 $back_link = 'managepet.php';
-$pet_id = filter_var($_GET['id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
-if ($pet_id === false || $pet_id === null) {
+$rawPetId = $_GET['id'] ?? null;
+$pet_id = (is_string($rawPetId) || is_int($rawPetId))
+    ? filter_var($rawPetId, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]])
+    : false;
+if ($pet_id === false) {
     http_response_code(400);
     exit('Invalid Pet ID.');
 }
@@ -145,6 +182,8 @@ if ($special_needs === '') {
 $p_status = $row['status'] ?? 'Pending';
 
 // --- 4. FETCH APPOINTMENT & TRANSACTION HISTORY ---
+$appointments = [];
+$appointments_load_error = false;
 try {
     // Use only the fields displayed in the history table and a stable tie-breaker.
     $appt_query = '
@@ -162,9 +201,9 @@ try {
     $appt_stmt = $pdo->prepare($appt_query);
     $appt_stmt->execute([':pet_id' => $pet_id]);
     $appointments = $appt_stmt->fetchAll(PDO::FETCH_ASSOC);
-} catch (PDOException $e) {
-    error_log('View pet appointment history query failed: ' . $e->getMessage());
-    $appointments = [];
+} catch (Throwable $e) {
+    error_log('View pet appointment history query failed for pet #' . $pet_id . ': ' . $e->getMessage());
+    $appointments_load_error = true;
 }
 ?>
 
@@ -856,7 +895,7 @@ try {
 
 
 
-                        <?php echo htmlspecialchars((string)$p_name, ENT_QUOTES, 'UTF-8'); ?>
+                        <?php echo htmlspecialchars((string)$p_name, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
 
 
 
@@ -918,7 +957,7 @@ try {
 
             <div class="text-box">
 
-                <?php echo nl2br(htmlspecialchars((string)$med_history, ENT_QUOTES, 'UTF-8')); ?>
+                <?php echo nl2br(htmlspecialchars((string)$med_history, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')); ?>
 
             </div>
 
@@ -926,7 +965,7 @@ try {
 
             <div class="text-box" style="border-left-color: var(--brand-yellow);">
 
-                <?php echo nl2br(htmlspecialchars((string)$special_needs, ENT_QUOTES, 'UTF-8')); ?>
+                <?php echo nl2br(htmlspecialchars((string)$special_needs, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')); ?>
 
             </div>
 
@@ -1006,11 +1045,11 @@ try {
 
                                     </td>
 
-                                    <td><?php echo htmlspecialchars((string)($appt['service'] ?? ''), ENT_QUOTES, 'UTF-8'); ?></td>
+                                    <td><?php echo htmlspecialchars((string)($appt['service'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></td>
 
                                     <td style="font-weight: 800; color: #10b981; font-size: 15px;"><?php echo $fee; ?></td>
 
-                                    <td><span class="status-pill status-<?php echo $status_class; ?>"><?php echo htmlspecialchars($status, ENT_QUOTES, 'UTF-8'); ?></span></td>
+                                    <td><span class="status-pill status-<?php echo $status_class; ?>"><?php echo htmlspecialchars($status, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></span></td>
 
                                 </tr>
 
@@ -1022,9 +1061,13 @@ try {
 
                                 <td colspan="5" style="text-align: center; color: #94a3b8; padding: 60px 30px;">
 
-                                    <i class="fas fa-calendar-times" style="font-size: 40px; margin-bottom: 15px; opacity: 0.3;"></i><br>
-
-                                    <span style="font-weight: 500;">No appointment or transaction history found for this pet.</span>
+                                    <?php if ($appointments_load_error): ?>
+                                        <i class="fas fa-triangle-exclamation" style="font-size: 40px; margin-bottom: 15px; opacity: 0.5;"></i><br>
+                                        <span style="font-weight: 500;">Unable to load appointment history right now. Please refresh the page or try again later.</span>
+                                    <?php else: ?>
+                                        <i class="fas fa-calendar-times" style="font-size: 40px; margin-bottom: 15px; opacity: 0.3;"></i><br>
+                                        <span style="font-weight: 500;">No appointment or transaction history found for this pet.</span>
+                                    <?php endif; ?>
 
                                 </td>
 
