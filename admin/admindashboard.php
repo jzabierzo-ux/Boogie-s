@@ -1067,6 +1067,7 @@ if ($raw_profile_img !== '') {
 
     </style>
 
+<link rel="stylesheet" href="../boogies_notification_mobile.css">
 </head>
 
 <body>

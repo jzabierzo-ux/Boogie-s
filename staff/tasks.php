@@ -242,10 +242,10 @@ try {
             p.name AS pet_name
         FROM appointments a
         LEFT JOIN pets p ON p.id = a.pet_id
-        WHERE a.booking_status IN ('Confirmed', 'Completed')
-          AND a.service LIKE 'Vet Services%'
+        WHERE LOWER(BTRIM(COALESCE(a.booking_status, ''))) IN ('pending', 'confirmed', 'completed', 'rescheduled')
+          AND LOWER(BTRIM(COALESCE(a.service, ''))) LIKE 'vet services%'
         ORDER BY
-            CASE WHEN a.booking_status = 'Completed' THEN 1 ELSE 0 END,
+            CASE WHEN LOWER(BTRIM(COALESCE(a.booking_status, ''))) = 'completed' THEN 1 ELSE 0 END,
             a.appointment_date ASC,
             a.appointment_time ASC,
             a.id ASC
@@ -417,7 +417,20 @@ $progress = $total_tasks > 0
         
         .status-badge { font-size: 10px; padding: 6px 12px; border-radius: 8px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px; display: inline-block;}
         .badge-confirmed { background: #e0f2fe; color: #0369a1; }
+        .badge-pending, .badge-rescheduled { background: #fef3c7; color: #92400e; }
         .badge-completed { background: #dcfce7; color: #166534; }
+        .task-waiting-indicator {
+            width: 35px;
+            height: 35px;
+            flex: 0 0 35px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border: 1px solid #fcd34d;
+            border-radius: 10px;
+            background: #fffbeb;
+            color: #b45309;
+        }
 
         .empty-state { text-align: center; padding: 60px 0; color: #94a3b8; }
         .empty-state i { font-size: 50px; color: #cbd5e1; margin-bottom: 20px; opacity: 0.5; display: block; }
@@ -2127,6 +2140,7 @@ input, select, textarea, button, img { max-width:100%; }
     }
 }
 </style>
+<link rel="stylesheet" href="../boogies_notification_mobile.css">
 </head>
 <body>
 
@@ -2239,11 +2253,20 @@ input, select, textarea, button, img { max-width:100%; }
                 <div class="task-list">
                     <?php if ($total_tasks > 0): ?>
                         <?php foreach ($tasks as $task): ?>
-                            <?php $is_done = ($task['booking_status'] === 'Completed'); ?>
+                            <?php
+                                $task_status = strtolower(trim((string)($task['booking_status'] ?? '')));
+                                $is_done = ($task_status === 'completed');
+                                $can_complete = ($task_status === 'confirmed');
+                                $status_class = $is_done
+                                    ? 'badge-completed'
+                                    : ($can_complete
+                                        ? 'badge-confirmed'
+                                        : (in_array($task_status, ['pending', 'rescheduled'], true) ? 'badge-pending' : 'badge-confirmed'));
+                            ?>
                             
                             <div class="task-item <?php echo $is_done ? 'is-completed' : ''; ?>">
                                 <div class="task-content">
-                                    <?php if (!$is_done): ?>
+                                    <?php if ($can_complete): ?>
                                         <form method="POST" action="tasks.php" onsubmit="return confirm('Are you sure you have completed this service?');" style="margin:0;">
                                             <input type="hidden" name="appointment_id" value="<?php echo (int)$task['id']; ?>">
                                             <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($tasks_csrf, ENT_QUOTES, 'UTF-8'); ?>">
@@ -2251,9 +2274,13 @@ input, select, textarea, button, img { max-width:100%; }
                                                 <i class="fas fa-check" style="font-size: 16px;"></i>
                                             </button>
                                         </form>
-                                    <?php else: ?>
-                                        <div class="btn-toggle">
+                                    <?php elseif ($is_done): ?>
+                                        <div class="btn-toggle" aria-label="Completed">
                                             <i class="fas fa-check" style="font-size: 16px;"></i>
+                                        </div>
+                                    <?php else: ?>
+                                        <div class="task-waiting-indicator" title="Awaiting appointment confirmation" aria-label="Awaiting appointment confirmation">
+                                            <i class="fas fa-clock" aria-hidden="true"></i>
                                         </div>
                                     <?php endif; ?>
                                     
@@ -2268,7 +2295,7 @@ input, select, textarea, button, img { max-width:100%; }
                                 </div>
                                 
                                 <div>
-                                    <span class="status-badge <?php echo $is_done ? 'badge-completed' : 'badge-confirmed'; ?>">
+                                    <span class="status-badge <?php echo $status_class; ?>">
                                         <?php echo htmlspecialchars((string)($task['booking_status'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>
                                     </span>
                                 </div>
@@ -2278,7 +2305,7 @@ input, select, textarea, button, img { max-width:100%; }
                     <?php else: ?>
                         <div class="empty-state">
                             <i class="fas fa-clipboard-check"></i>
-                            <p>No pending procedures.<br>Confirmed bookings will appear here automatically.</p>
+                            <p>No veterinary appointments to display.<br>Active Vet Services appointments will appear here automatically.</p>
                         </div>
                     <?php endif; ?>
                 </div>

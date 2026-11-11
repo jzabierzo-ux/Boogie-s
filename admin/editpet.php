@@ -626,6 +626,7 @@ if ($is_admin) {
             .card-title { font-size: 16px; }
         }
     </style>
+<link rel="stylesheet" href="../boogies_notification_mobile.css">
 </head>
 <body>
     <aside>

@@ -1152,6 +1152,7 @@ $next_page_url = 'manageusers.php?' . http_build_query(array_merge($pagination_p
 
 </style>
 
+<link rel="stylesheet" href="../boogies_notification_mobile.css">
 </head>
 
 <body>

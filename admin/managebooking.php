@@ -2194,6 +2194,7 @@ if ($is_admin) {
         }
 
     </style>
+<link rel="stylesheet" href="../boogies_notification_mobile.css">
 </head>
 <body>
 

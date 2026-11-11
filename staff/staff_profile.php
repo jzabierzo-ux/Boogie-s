@@ -2651,6 +2651,7 @@ input, select, textarea, button, img { max-width:100%; }
     }
 }
 </style>
+<link rel="stylesheet" href="../boogies_notification_mobile.css">
 </head>
 <body>
 

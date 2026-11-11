@@ -495,6 +495,7 @@ try {
             .print-btn { right: 12px; top: 16px; }
         }
     </style>
+<link rel="stylesheet" href="../boogies_notification_mobile.css">
 </head>
 <body>
     <aside>

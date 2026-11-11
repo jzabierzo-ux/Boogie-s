@@ -2575,6 +2575,7 @@ input, select, textarea, button, img { max-width:100%; }
     .clinic-reschedule-cancel { background:#e2e8f0; color:#334155; }
     .clinic-reschedule-submit { background:#7c3aed; color:#fff; }
 </style>
+<link rel="stylesheet" href="../boogies_notification_mobile.css">
 </head>
 <body>
 

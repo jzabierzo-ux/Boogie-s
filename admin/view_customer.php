@@ -1207,6 +1207,7 @@ main{margin-left:var(--sidebar-width);flex:1;min-width:0;min-height:100vh}.top-b
 
 </style>
 
+<link rel="stylesheet" href="../boogies_notification_mobile.css">
 </head>
 
 <body>

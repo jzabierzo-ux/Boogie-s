@@ -74,7 +74,7 @@ $isStaffSession = $wasLoggedIn
     && in_array($role, $staffRoles, true);
 
 // Keep Admin, personnel, and customer login destinations separate.
-$redirectPage = 'login.php';
+$redirectPage = '/customer/login.php';
 if ($role === 'admin') {
     $redirectPage = '/admin/admin_login.php';
 } elseif (in_array($role, $staffRoles, true)) {

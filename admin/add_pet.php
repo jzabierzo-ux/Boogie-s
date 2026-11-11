@@ -981,6 +981,7 @@ try {
 
 </style>
 
+<link rel="stylesheet" href="../boogies_notification_mobile.css">
 </head>
 <body>
     <aside>

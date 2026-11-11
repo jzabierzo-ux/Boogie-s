@@ -1920,6 +1920,7 @@ $profile_img_src = editPromoResolveProfileImageUrl($profile_img_path);
 @media(max-width:900px){.heading-main{flex-direction:column;gap:12px}.page-back{width:100%;justify-content:center}.edit-status-strip{flex-direction:column;align-items:flex-start}.edit-status-strip span:last-child{line-height:1.5}.layout{gap:16px;}}
 @media(max-width:560px){.edit-status-strip{padding:11px 12px}.page-back{min-height:44px}.card-title{align-items:flex-start;flex-wrap:wrap}.mini-note{margin-top:2px}.theme-options{gap:8px}.theme-pill{min-height:46px;}}
 </style>
+<link rel="stylesheet" href="../boogies_notification_mobile.css">
 </head>
 <body>
 

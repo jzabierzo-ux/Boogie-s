@@ -1443,7 +1443,8 @@ $top_profile_image = $profile_image_url;
 
         </style>
 
-    </head>
+    <link rel="stylesheet" href="../boogies_notification_mobile.css">
+</head>
 
     <body>
 

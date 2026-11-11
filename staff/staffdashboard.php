@@ -2326,6 +2326,329 @@ input, select, textarea, button, img { max-width:100%; }
     }
 }
 </style>
+<link rel="stylesheet" href="../boogies_notification_mobile.css">
+<style id="staff-dashboard-mobile-layout-fix">
+/* Staff dashboard mobile refinement: keep desktop layout unchanged. */
+@media (max-width: 900px) {
+    .main-content,
+    .container,
+    .hero-banner,
+    .stats-grid-3,
+    .schedule-card,
+    .schedule-list {
+        width: 100%;
+        max-width: 100%;
+        min-width: 0;
+    }
+
+    .container {
+        padding: 22px 16px 28px;
+    }
+
+    .hero-banner {
+        padding: 24px 20px;
+        margin-bottom: 22px;
+        border-radius: 17px;
+    }
+
+    .hero-banner h2 {
+        font-size: 22px;
+        line-height: 1.35;
+        overflow-wrap: anywhere;
+    }
+
+    .hero-banner p {
+        font-size: 13px;
+        line-height: 1.55;
+    }
+
+    .stats-grid-3 {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 13px;
+        margin-bottom: 24px;
+    }
+
+    .stat-card {
+        min-width: 0;
+        padding: 18px 16px;
+        border-radius: 16px;
+    }
+
+    .stat-card h4 {
+        font-size: 11px;
+        line-height: 1.4;
+        letter-spacing: .45px;
+        overflow-wrap: anywhere;
+    }
+
+    .stat-card p {
+        font-size: 28px;
+        line-height: 1.15;
+    }
+
+    .schedule-card {
+        border-radius: 16px;
+    }
+
+    .schedule-header {
+        padding: 18px 16px;
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 11px;
+    }
+
+    .schedule-header h3 {
+        font-size: 15px;
+        line-height: 1.45;
+        overflow-wrap: anywhere;
+    }
+
+    .btn-view-all {
+        width: 100%;
+        min-height: 42px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 10px 14px;
+        font-size: 13px;
+    }
+
+    .schedule-list {
+        padding: 0 16px;
+    }
+
+    .schedule-item {
+        display: grid !important;
+        grid-template-columns: 82px 42px minmax(0, 1fr);
+        gap: 11px;
+        align-items: center;
+        padding: 16px 0;
+    }
+
+    .time-box {
+        width: 100%;
+        min-width: 0;
+        margin: 0;
+        padding: 8px 5px;
+        font-size: 12px;
+        line-height: 1.25;
+    }
+
+    .pet-icon {
+        width: 42px;
+        height: 42px;
+        min-width: 42px;
+        margin: 0;
+    }
+
+    .schedule-info {
+        min-width: 0;
+        overflow-wrap: anywhere;
+    }
+
+    .schedule-info strong {
+        display: block;
+        font-size: 14px;
+        line-height: 1.35;
+        overflow-wrap: anywhere;
+    }
+
+    .schedule-info span {
+        display: block;
+        font-size: 12px;
+        line-height: 1.5;
+        overflow-wrap: anywhere;
+        word-break: normal;
+    }
+
+    /* The status span is inside the fourth direct child wrapper.
+       Put that wrapper across the complete grid row so badges never get
+       squeezed into the narrow time column. */
+    .schedule-item > div:last-child {
+        grid-column: 1 / -1 !important;
+        justify-self: start;
+        display: flex;
+        align-items: center;
+        width: 100%;
+        min-width: 0;
+        margin: 2px 0 0;
+    }
+
+    .schedule-status {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: auto;
+        max-width: 100%;
+        min-height: 28px;
+        padding: 6px 11px;
+        border-radius: 8px;
+        font-size: 10px;
+        line-height: 1.25;
+        letter-spacing: .35px;
+        white-space: normal;
+        overflow-wrap: anywhere;
+        word-break: normal;
+    }
+
+    footer {
+        padding: 22px 16px;
+        font-size: 11px;
+        line-height: 1.5;
+    }
+}
+
+@media (max-width: 560px) {
+    .container {
+        padding: 18px 12px 24px;
+    }
+
+    .hero-banner {
+        padding: 21px 17px;
+        margin-bottom: 18px;
+        border-radius: 15px;
+    }
+
+    .hero-banner h2 {
+        font-size: 20px;
+        line-height: 1.35;
+    }
+
+    .hero-banner p {
+        font-size: 13px;
+        line-height: 1.55;
+    }
+
+    .stats-grid-3 {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 12px;
+        margin-bottom: 20px;
+    }
+
+    .stat-card {
+        display: grid;
+        grid-template-columns: 42px minmax(0, 1fr) auto;
+        grid-template-rows: auto auto;
+        column-gap: 11px;
+        align-items: center;
+        padding: 15px 15px;
+        border-radius: 15px;
+    }
+
+    .stat-card i {
+        grid-column: 1;
+        grid-row: 1 / 3;
+        margin: 0;
+        font-size: 22px;
+    }
+
+    .stat-card h4 {
+        grid-column: 2;
+        grid-row: 1 / 3;
+        margin: 0;
+        font-size: 11px;
+        line-height: 1.4;
+        letter-spacing: .4px;
+    }
+
+    .stat-card p {
+        grid-column: 3;
+        grid-row: 1 / 3;
+        margin: 0;
+        font-size: 26px;
+        line-height: 1.1;
+    }
+
+    .schedule-header {
+        padding: 16px 14px;
+        gap: 10px;
+    }
+
+    .schedule-header h3 {
+        font-size: 15px;
+    }
+
+    .schedule-list {
+        padding: 0 14px;
+    }
+
+    .schedule-item {
+        grid-template-columns: 72px 40px minmax(0, 1fr);
+        gap: 10px;
+        padding: 15px 0;
+    }
+
+    .time-box {
+        font-size: 11px;
+        padding: 8px 4px;
+    }
+
+    .pet-icon {
+        width: 40px;
+        height: 40px;
+        min-width: 40px;
+        font-size: 16px;
+    }
+
+    .schedule-info strong {
+        font-size: 14px;
+    }
+
+    .schedule-info span {
+        font-size: 12px;
+        line-height: 1.5;
+    }
+
+    .schedule-item > div:last-child {
+        grid-column: 1 / -1 !important;
+        margin-top: 1px;
+    }
+
+    .schedule-status {
+        min-height: 29px;
+        padding: 6px 10px;
+        font-size: 10px;
+    }
+}
+
+@media (max-width: 380px) {
+    .container {
+        padding-left: 10px;
+        padding-right: 10px;
+    }
+
+    .schedule-item {
+        grid-template-columns: minmax(0, 1fr) 40px;
+        column-gap: 10px;
+        row-gap: 9px;
+    }
+
+    .schedule-item .time-box {
+        grid-column: 1 / -1;
+        grid-row: 1;
+        justify-self: start;
+        width: auto;
+        min-width: 82px;
+    }
+
+    .schedule-item .pet-icon {
+        grid-column: 1;
+        grid-row: 2;
+    }
+
+    .schedule-item .schedule-info {
+        grid-column: 2;
+        grid-row: 2;
+        min-width: 0;
+    }
+
+    .schedule-item > div:last-child {
+        grid-column: 1 / -1 !important;
+        grid-row: 3;
+    }
+}
+</style>
 </head>
 <body>
 
