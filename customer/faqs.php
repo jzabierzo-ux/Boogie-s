@@ -1033,6 +1033,188 @@ footer{
 
 }
 
+
+
+/* ============================================================
+   FAQ PAGE — MOBILE READABILITY + SHARED LOGIN BUTTON
+   Keep the FAQ page consistent with the other Customer pages.
+   ============================================================ */
+.user-controls > .login-btn {
+    min-height: 42px;
+    padding: 10px 16px;
+    border: 1px solid var(--brand-blue);
+    border-radius: 10px;
+    background: var(--brand-blue);
+    color: var(--brand-yellow);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    text-decoration: none;
+    white-space: nowrap;
+    font-size: 13px;
+    font-weight: 800;
+    line-height: 1.2;
+    transition: background .2s ease, transform .2s ease;
+}
+.user-controls > .login-btn:hover {
+    background: var(--brand-blue-2);
+    transform: translateY(-1px);
+}
+.user-controls > .login-btn:focus-visible {
+    outline: 3px solid rgba(255,204,0,.55);
+    outline-offset: 3px;
+}
+
+@media (max-width: 680px) {
+    .nav-top {
+        width: calc(100% - 24px);
+        min-height: 64px;
+        padding: 9px 0;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+    }
+    .nav-top > .logo {
+        flex: 1 1 auto;
+        min-width: 0;
+        max-width: 100%;
+        gap: 8px;
+    }
+    .nav-logo-img {
+        width: 42px;
+        height: 42px;
+        flex: 0 0 42px;
+    }
+    .logo-text {
+        min-width: 0;
+        overflow: hidden;
+    }
+    .logo-text b {
+        font-size: 16px;
+        white-space: nowrap;
+    }
+    .logo-text span {
+        font-size: 7px;
+        letter-spacing: .8px;
+        white-space: nowrap;
+    }
+    .user-controls {
+        flex: 0 0 auto;
+        gap: 7px;
+    }
+    .user-controls > .login-btn {
+        min-height: 42px;
+        padding: 9px 12px;
+        font-size: 11px;
+    }
+
+    main {
+        width: calc(100% - 24px);
+        padding: 28px 0 48px;
+    }
+    .page-heading h1 {
+        font-size: 28px;
+        line-height: 1.2;
+    }
+    .page-heading p {
+        font-size: 14px;
+        line-height: 1.65;
+    }
+    .welcome-line {
+        font-size: 13px;
+        line-height: 1.6;
+    }
+    .faq-question {
+        padding: 17px 15px;
+        font-size: 14px;
+        line-height: 1.5;
+        gap: 12px;
+    }
+    .faq-answer-inner {
+        padding: 0 15px 17px;
+        font-size: 14px;
+        line-height: 1.7;
+    }
+    .contact-note {
+        padding: 13px 14px;
+        font-size: 13px;
+        line-height: 1.7;
+    }
+    footer {
+        padding: 42px 15px 24px;
+    }
+    .footer-main {
+        grid-template-columns: 1fr;
+        gap: 22px;
+        padding-bottom: 28px;
+    }
+    .footer-main h4 {
+        font-size: 13px;
+        line-height: 1.4;
+        margin-bottom: 11px;
+    }
+    .footer-main p,
+    .footer-main a {
+        font-size: 13px;
+        line-height: 1.65;
+        margin-bottom: 9px;
+        overflow-wrap: anywhere;
+    }
+    .socials a {
+        width: 36px;
+        height: 36px;
+    }
+    .footer-bottom {
+        font-size: 11px;
+        line-height: 1.6;
+        padding-top: 18px;
+    }
+    .dropdown-menu {
+        max-width: calc(100vw - 24px);
+    }
+    .dropdown-item {
+        font-size: 13px;
+        line-height: 1.5;
+    }
+}
+
+@media (max-width: 380px) {
+    .nav-top {
+        width: calc(100% - 18px);
+    }
+    .nav-logo-img {
+        width: 38px;
+        height: 38px;
+        flex-basis: 38px;
+    }
+    .logo-text b {
+        font-size: 15px;
+    }
+    .logo-text span {
+        font-size: 6px;
+        letter-spacing: .7px;
+    }
+    .user-controls > .login-btn {
+        padding: 8px 10px;
+        font-size: 10px;
+    }
+    main {
+        width: calc(100% - 18px);
+        padding-top: 22px;
+    }
+    .page-heading h1 {
+        font-size: 25px;
+    }
+    .faq-question {
+        font-size: 13.5px;
+    }
+    .faq-answer-inner,
+    .contact-note {
+        font-size: 13px;
+    }
+}
+
 </style>
 
 </head>
@@ -1186,11 +1368,7 @@ footer{
 
         <div class="user-controls">
 
-            <a href="login.php" class="profile-trigger" style="padding:8px 14px;text-decoration:none;">
-
-                Login
-
-            </a>
+            <a href="login.php" class="login-btn">Login / Register</a>
 
         </div>
 

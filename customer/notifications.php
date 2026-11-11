@@ -2289,6 +2289,200 @@ $notification_total = count($notifs_list);
 
 
 
+
+
+        /* ===== READABILITY OVERRIDES FOR CUSTOMER MOBILE ===== */
+        @media (max-width: 680px) {
+            .promo-bar {
+                font-size: 11px;
+                padding: 8px 10px;
+            }
+
+            .nav-top {
+                padding: 9px 12px;
+                gap: 8px;
+            }
+
+            .logo {
+                flex: 1 1 auto;
+                min-width: 0;
+            }
+
+            .user-controls {
+                flex: 0 0 auto;
+                gap: 7px;
+            }
+
+            main {
+                width: calc(100% - 28px);
+                padding: 24px 0 46px;
+            }
+
+            .back-nav a {
+                font-size: 12px;
+            }
+
+            .notification-kicker {
+                font-size: 10px;
+            }
+
+            .notification-title h1 {
+                font-size: 29px;
+                line-height: 1.2;
+            }
+
+            .notification-title p {
+                font-size: 13px;
+                line-height: 1.6;
+            }
+
+            .notification-actions {
+                width: 100%;
+                align-items: stretch;
+            }
+
+            .notification-count {
+                font-size: 11px;
+                padding: 11px 13px;
+            }
+
+            .notification-count strong {
+                font-size: 20px;
+            }
+
+            .mark-all-btn {
+                width: 100%;
+                min-height: 42px;
+                padding: 10px 14px;
+                font-size: 12px;
+            }
+
+            .notification-card {
+                gap: 12px;
+                padding: 15px 14px;
+            }
+
+            .notif-icon {
+                width: 42px;
+                height: 42px;
+                flex-basis: 42px;
+                font-size: 17px;
+            }
+
+            .notif-head h3 {
+                font-size: 14px;
+                line-height: 1.45;
+            }
+
+            .notif-time {
+                font-size: 10px;
+                line-height: 1.5;
+            }
+
+            .notif-message {
+                font-size: 12px;
+                line-height: 1.7;
+            }
+
+            .notif-meta {
+                font-size: 10px;
+                line-height: 1.5;
+            }
+
+            .mark-read-btn {
+                min-height: 40px;
+                padding: 9px 12px;
+                font-size: 12px;
+            }
+
+            .empty-notifications {
+                padding: 40px 17px;
+            }
+
+            .empty-notifications h3 {
+                font-size: 18px;
+            }
+
+            .empty-notifications p {
+                font-size: 12px;
+                line-height: 1.6;
+            }
+
+            .about-box {
+                padding: 17px;
+            }
+
+            .about-box h4 {
+                font-size: 14px;
+            }
+
+            .about-box p,
+            .about-item {
+                font-size: 12px;
+                line-height: 1.6;
+            }
+
+            .footer-main h4 {
+                font-size: 12px;
+            }
+
+            .footer-main p,
+            .footer-main a {
+                font-size: 11.5px;
+                line-height: 1.7;
+            }
+
+            .footer-bottom {
+                font-size: 10px;
+            }
+        }
+
+        @media (max-width: 380px) {
+            .nav-top {
+                padding-left: 9px;
+                padding-right: 9px;
+            }
+
+            .logo-text b {
+                font-size: 15px;
+            }
+
+            .logo-text span {
+                font-size: 6.5px;
+            }
+
+            .notification-bell,
+            .profile-trigger {
+                width: 38px;
+                height: 38px;
+                min-height: 38px;
+            }
+
+            .notification-title h1 {
+                font-size: 26px;
+            }
+
+            .notification-card {
+                gap: 10px;
+                padding: 13px 11px;
+            }
+
+            .notif-icon {
+                width: 38px;
+                height: 38px;
+                flex-basis: 38px;
+                font-size: 15px;
+            }
+
+            .notif-head h3 {
+                font-size: 13px;
+            }
+
+            .notif-message {
+                font-size: 11.5px;
+            }
+        }
+
     </style>
 
 </head>

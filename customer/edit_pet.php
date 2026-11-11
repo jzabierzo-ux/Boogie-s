@@ -2131,6 +2131,313 @@ img, input, select, button{
 
 
 
+
+
+/* ===== MOBILE READABILITY AND HEADER ALIGNMENT ===== */
+@media (max-width: 680px) {
+    .nav-top {
+        width: calc(100% - 24px);
+        min-height: 58px;
+        padding: 8px 0;
+        display: flex;
+        flex-wrap: nowrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+    }
+
+    .logo {
+        min-width: 0;
+        max-width: none;
+        flex: 1 1 auto;
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        overflow: hidden;
+    }
+
+    .nav-logo-img {
+        width: 40px;
+        height: 40px;
+        flex: 0 0 40px;
+    }
+
+    .logo-text {
+        min-width: 0;
+        display: flex;
+    }
+
+    .logo-text b {
+        font-size: 15px;
+        line-height: 1.15;
+        white-space: nowrap;
+    }
+
+    .logo-text span {
+        font-size: 6.5px;
+        letter-spacing: .7px;
+        white-space: nowrap;
+    }
+
+    .user-controls {
+        flex: 0 0 auto;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-left: auto;
+    }
+
+    .notification-bell,
+    .profile-trigger {
+        width: 39px;
+        min-width: 39px;
+        height: 39px;
+        min-height: 39px;
+        flex: 0 0 39px;
+    }
+
+    .profile-trigger {
+        padding: 3px;
+        justify-content: center;
+        gap: 0;
+    }
+
+    .profile-trigger span,
+    .profile-trigger > i:last-child {
+        display: none !important;
+    }
+
+    .profile-avatar {
+        width: 31px;
+        height: 31px;
+    }
+
+    .dropdown-menu {
+        position: fixed;
+        top: 70px;
+        left: 12px;
+        right: 12px;
+        width: auto !important;
+        max-width: none;
+        max-height: calc(100vh - 84px);
+        overflow-y: auto;
+        z-index: 1200;
+    }
+
+    main {
+        width: calc(100% - 24px);
+        padding: 24px 0 44px;
+    }
+
+    .page-intro {
+        display: block;
+        margin-bottom: 18px;
+    }
+
+    .page-heading h1 {
+        font-size: 27px;
+        line-height: 1.2;
+    }
+
+    .page-heading p {
+        font-size: 13px;
+        line-height: 1.55;
+    }
+
+    .page-kicker {
+        font-size: 10px;
+    }
+
+    .pet-chip {
+        margin-top: 12px;
+        width: 100%;
+        justify-content: center;
+        white-space: normal;
+        text-align: center;
+        font-size: 12px;
+    }
+
+    .alert-error {
+        padding: 12px;
+        font-size: 12px;
+        line-height: 1.55;
+    }
+
+    .form-card {
+        padding: 19px 16px;
+        border-radius: 16px;
+    }
+
+    .form-card-top {
+        align-items: center;
+        gap: 11px;
+        margin-bottom: 17px;
+    }
+
+    .pet-icon {
+        width: 46px;
+        height: 46px;
+        flex-basis: 46px;
+        font-size: 19px;
+    }
+
+    .form-card-heading h2 {
+        font-size: 19px;
+        line-height: 1.3;
+        overflow-wrap: anywhere;
+    }
+
+    .form-card-heading p {
+        font-size: 12px;
+        line-height: 1.5;
+    }
+
+    .form-group {
+        margin-bottom: 16px;
+    }
+
+    .form-group label {
+        font-size: 13px;
+        line-height: 1.4;
+        margin-bottom: 7px;
+    }
+
+    .form-control {
+        min-height: 48px;
+        padding: 11px 12px;
+        font-size: 16px;
+        line-height: 1.45;
+    }
+
+    textarea.form-control {
+        min-height: 130px;
+        font-size: 16px;
+        line-height: 1.55;
+    }
+
+    .field-help {
+        font-size: 11px;
+        line-height: 1.5;
+    }
+
+    .form-note {
+        padding: 12px;
+        font-size: 12px;
+        line-height: 1.6;
+    }
+
+    .form-actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 9px;
+        margin-top: 18px;
+    }
+
+    .btn {
+        width: 100%;
+        min-height: 47px;
+        padding: 10px 12px;
+        font-size: 13px;
+        line-height: 1.3;
+    }
+
+    footer {
+        padding: 42px 16px 24px;
+    }
+
+    .footer-main {
+        grid-template-columns: 1fr;
+        gap: 22px;
+        padding-bottom: 26px;
+    }
+
+    .footer-main h4 {
+        font-size: 12px;
+    }
+
+    .footer-main p,
+    .footer-main a {
+        font-size: 12px;
+        line-height: 1.65;
+        overflow-wrap: anywhere;
+    }
+
+    .footer-bottom {
+        font-size: 10px;
+        line-height: 1.6;
+    }
+}
+
+@media (max-width: 440px) {
+    .nav-top {
+        width: calc(100% - 18px);
+        gap: 6px;
+    }
+
+    .logo-text b {
+        font-size: 14px;
+    }
+
+    .logo-text span {
+        font-size: 6px;
+    }
+
+    main {
+        width: calc(100% - 18px);
+    }
+
+    .page-heading h1 {
+        font-size: 25px;
+    }
+
+    .form-card {
+        padding: 16px 13px;
+    }
+
+    .form-actions {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 360px) {
+    .nav-logo-img {
+        width: 36px;
+        height: 36px;
+        flex-basis: 36px;
+    }
+
+    .logo {
+        gap: 5px;
+    }
+
+    .logo-text b {
+        font-size: 13px;
+    }
+
+    .logo-text span {
+        font-size: 5.5px;
+        letter-spacing: .45px;
+    }
+
+    .user-controls {
+        gap: 5px;
+    }
+
+    .notification-bell,
+    .profile-trigger {
+        width: 36px;
+        min-width: 36px;
+        height: 36px;
+        min-height: 36px;
+        flex-basis: 36px;
+    }
+
+    .profile-avatar {
+        width: 28px;
+        height: 28px;
+    }
+}
+
 </style>
 
 </head>

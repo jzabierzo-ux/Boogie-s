@@ -5552,7 +5552,425 @@ $has_upcoming = $upcoming !== null;
 
 
 
-    </style>
+
+
+        /* ==========================================================
+           CUSTOMER DASHBOARD — READABLE MOBILE TYPOGRAPHY
+           Mobile-only overrides; desktop layout and PHP logic remain unchanged.
+           ========================================================== */
+        @media (max-width: 680px) {
+            body {
+                font-size: 15px !important;
+                line-height: 1.6 !important;
+            }
+
+            .promo-bar {
+                font-size: 11px !important;
+                line-height: 1.4 !important;
+            }
+
+            .logo-text b {
+                font-size: 17px !important;
+            }
+
+            .logo-text span {
+                font-size: 7.5px !important;
+                letter-spacing: .7px !important;
+            }
+
+            .notification-badge {
+                font-size: 10px !important;
+            }
+
+            .dropdown-menu {
+                max-height: min(70vh, 520px) !important;
+                overflow-y: auto !important;
+                -webkit-overflow-scrolling: touch;
+            }
+
+            .dropdown-header {
+                font-size: 12.5px !important;
+                line-height: 1.4 !important;
+                padding: 14px 16px !important;
+            }
+
+            .dropdown-item {
+                font-size: 14px !important;
+                line-height: 1.5 !important;
+                padding: 13px 16px !important;
+                overflow-wrap: anywhere;
+            }
+
+            .dropdown-item small {
+                font-size: 11px !important;
+            }
+
+            main {
+                width: calc(100% - 24px) !important;
+                padding: 26px 0 52px !important;
+            }
+
+            .welcome-copy .eyebrow {
+                font-size: 10.5px !important;
+                line-height: 1.35 !important;
+                padding: 7px 11px !important;
+            }
+
+            .welcome-copy h1 {
+                font-size: 27px !important;
+                line-height: 1.22 !important;
+            }
+
+            .welcome-copy p {
+                font-size: 14px !important;
+                line-height: 1.55 !important;
+            }
+
+            .primary-action {
+                min-height: 48px !important;
+                font-size: 14px !important;
+                line-height: 1.35 !important;
+            }
+
+            .dashboard-cards {
+                grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+                gap: 11px !important;
+            }
+
+            .dash-card {
+                padding: 16px !important;
+                min-width: 0 !important;
+            }
+
+            .dash-icon {
+                width: 42px !important;
+                height: 42px !important;
+                font-size: 18px !important;
+                margin-bottom: 12px !important;
+            }
+
+            .dash-card h3 {
+                font-size: 13.5px !important;
+                line-height: 1.4 !important;
+                overflow-wrap: anywhere;
+            }
+
+            .dash-card p {
+                font-size: 11.5px !important;
+                line-height: 1.5 !important;
+                min-height: 0 !important;
+                margin-bottom: 10px !important;
+            }
+
+            .dash-value {
+                font-size: 21px !important;
+                line-height: 1.25 !important;
+            }
+
+            .dash-link {
+                font-size: 11px !important;
+                line-height: 1.4 !important;
+            }
+
+            .overview-grid {
+                grid-template-columns: minmax(0, 1fr) !important;
+                gap: 15px !important;
+            }
+
+            .panel-header {
+                padding: 18px 16px 14px !important;
+                gap: 10px !important;
+                flex-wrap: wrap !important;
+            }
+
+            .panel-heading .kicker {
+                font-size: 10px !important;
+                line-height: 1.4 !important;
+            }
+
+            .panel-heading h2 {
+                font-size: 19px !important;
+                line-height: 1.3 !important;
+            }
+
+            .panel-link {
+                font-size: 11.5px !important;
+                line-height: 1.4 !important;
+            }
+
+            .panel-body {
+                padding: 16px !important;
+            }
+
+            .pet-item {
+                gap: 11px !important;
+                padding: 12px !important;
+            }
+
+            .pet-info h4 {
+                font-size: 14px !important;
+                line-height: 1.4 !important;
+            }
+
+            .pet-info p {
+                font-size: 12px !important;
+                line-height: 1.5 !important;
+            }
+
+            .pet-arrow {
+                font-size: 12px !important;
+            }
+
+            .empty-state p:first-of-type {
+                font-size: 15px !important;
+                line-height: 1.45 !important;
+            }
+
+            .empty-state p:last-of-type {
+                font-size: 12.5px !important;
+                line-height: 1.6 !important;
+            }
+
+            .notice-box {
+                gap: 10px !important;
+                padding: 12px !important;
+            }
+
+            .notice-box span {
+                font-size: 12.5px !important;
+                line-height: 1.6 !important;
+            }
+
+            .appointment-card {
+                padding: 16px !important;
+            }
+
+            .appointment-service {
+                font-size: 17px !important;
+                line-height: 1.4 !important;
+            }
+
+            .appointment-meta p {
+                font-size: 13px !important;
+                line-height: 1.5 !important;
+            }
+
+            .status-pill {
+                font-size: 10.5px !important;
+                line-height: 1.3 !important;
+                padding: 7px 10px !important;
+            }
+
+            .appointment-label {
+                font-size: 10.5px !important;
+                line-height: 1.4 !important;
+            }
+
+            .appointment-pet {
+                font-size: 14px !important;
+                line-height: 1.4 !important;
+            }
+
+            .appointment-action {
+                font-size: 12.5px !important;
+                line-height: 1.45 !important;
+            }
+
+            .quick-action {
+                min-height: 46px !important;
+                font-size: 13px !important;
+                line-height: 1.4 !important;
+            }
+
+            .footer-main h4 {
+                font-size: 12px !important;
+                line-height: 1.4 !important;
+            }
+
+            .footer-main p,
+            .footer-main a {
+                font-size: 12.5px !important;
+                line-height: 1.7 !important;
+            }
+
+            .footer-bottom {
+                font-size: 10.5px !important;
+                line-height: 1.6 !important;
+            }
+        }
+
+        @media (max-width: 380px) {
+            .logo-text b {
+                font-size: 15px !important;
+            }
+
+            .logo-text span {
+                font-size: 7px !important;
+            }
+
+            main {
+                width: calc(100% - 20px) !important;
+            }
+
+            .dashboard-cards {
+                gap: 9px !important;
+            }
+
+            .dash-card {
+                padding: 13px !important;
+            }
+
+            .dash-card h3 {
+                font-size: 12.5px !important;
+            }
+
+            .dash-card p {
+                font-size: 11px !important;
+            }
+
+            .dash-value {
+                font-size: 20px !important;
+            }
+
+            .dash-link {
+                font-size: 10.5px !important;
+            }
+
+            .welcome-copy h1 {
+                font-size: 24px !important;
+            }
+
+            .panel-heading h2 {
+                font-size: 18px !important;
+            }
+
+            .appointment-footer {
+                gap: 12px !important;
+            }
+        }
+
+    
+
+        /* ===== FINAL CUSTOMER DASHBOARD MOBILE HEADER ALIGNMENT ===== */
+        @media (max-width: 680px) {
+            header .nav-top {
+                width: 100% !important;
+                max-width: 100% !important;
+                display: flex !important;
+                flex-direction: row !important;
+                flex-wrap: nowrap !important;
+                align-items: center !important;
+                justify-content: space-between !important;
+                gap: 10px !important;
+                padding: 10px 14px !important;
+                min-height: 68px !important;
+            }
+
+            header .nav-top > .logo {
+                flex: 1 1 auto !important;
+                width: auto !important;
+                min-width: 0 !important;
+                max-width: calc(100% - 100px) !important;
+                margin: 0 !important;
+            }
+
+            header .nav-top > .logo .nav-logo-img {
+                width: 44px !important;
+                height: 44px !important;
+                flex: 0 0 44px !important;
+            }
+
+            header .nav-top > .logo .logo-text {
+                min-width: 0 !important;
+                overflow: hidden !important;
+            }
+
+            header .nav-top > .logo .logo-text b {
+                font-size: 17px !important;
+                line-height: 1.15 !important;
+                white-space: nowrap !important;
+            }
+
+            header .nav-top > .logo .logo-text span {
+                font-size: 7px !important;
+                line-height: 1.2 !important;
+                letter-spacing: .8px !important;
+                white-space: nowrap !important;
+            }
+
+            header .nav-top > .user-controls {
+                width: auto !important;
+                max-width: none !important;
+                min-width: max-content !important;
+                flex: 0 0 auto !important;
+                display: flex !important;
+                flex-direction: row !important;
+                align-items: center !important;
+                justify-content: flex-end !important;
+                gap: 8px !important;
+                margin: 0 0 0 auto !important;
+            }
+
+            .notification-bell {
+                width: 40px !important;
+                height: 40px !important;
+                flex: 0 0 40px !important;
+            }
+
+            .profile-trigger {
+                width: 40px !important;
+                min-width: 40px !important;
+                min-height: 40px !important;
+                height: 40px !important;
+                padding: 3px !important;
+                display: flex !important;
+                align-items: center !important;
+                justify-content: center !important;
+            }
+
+            .profile-trigger img {
+                width: 32px !important;
+                height: 32px !important;
+            }
+
+            .profile-trigger .profile-name,
+            .profile-trigger .chevron {
+                display: none !important;
+            }
+        }
+
+        @media (max-width: 380px) {
+            header .nav-top {
+                padding-left: 10px !important;
+                padding-right: 10px !important;
+                gap: 7px !important;
+            }
+
+            header .nav-top > .logo {
+                max-width: calc(100% - 92px) !important;
+                gap: 7px !important;
+            }
+
+            header .nav-top > .logo .nav-logo-img {
+                width: 40px !important;
+                height: 40px !important;
+                flex-basis: 40px !important;
+            }
+
+            header .nav-top > .logo .logo-text b {
+                font-size: 15px !important;
+            }
+
+            .notification-bell,
+            .profile-trigger {
+                width: 38px !important;
+                min-width: 38px !important;
+                height: 38px !important;
+                min-height: 38px !important;
+            }
+        }
+
+</style>
 
 
 

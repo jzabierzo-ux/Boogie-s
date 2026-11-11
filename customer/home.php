@@ -2166,6 +2166,240 @@ try {
         }
         /* Desktop header uses the same shared layout as petservices.php and grooming.php. */
 
+    
+
+        /* ============================================================
+           CUSTOMER HOME — MOBILE READABILITY OVERRIDES
+           Larger text and comfortable tap targets on phones only.
+           Keeps desktop styling and all PHP/JavaScript behavior intact.
+           ============================================================ */
+        @media (max-width: 680px) {
+            .promo-bar {
+                font-size: 12px !important;
+                line-height: 1.45 !important;
+                white-space: normal !important;
+            }
+
+            .logo-text b { font-size: 18px !important; }
+            .logo-text span {
+                font-size: 8px !important;
+                letter-spacing: .8px !important;
+            }
+
+            .nav-links .cart-btn,
+            .nav-links .login-btn {
+                font-size: 12px !important;
+                min-height: 44px !important;
+                padding: 10px 12px !important;
+            }
+
+            .nav-links .logout-link,
+            .nav-links a[href="logout.php"],
+            .nav-links a[style*="ef4444"] {
+                font-size: 12px !important;
+                line-height: 1.3 !important;
+                padding: 9px 5px !important;
+            }
+
+            .nav-top > .search input {
+                font-size: 16px !important;
+                line-height: 1.35 !important;
+            }
+
+            .categories ul li a {
+                font-size: 10.5px !important;
+                line-height: 1.25 !important;
+                min-height: 40px !important;
+                padding: 10px 12px !important;
+            }
+
+            .categories i { font-size: 13px !important; }
+
+            .search-status {
+                font-size: 14px !important;
+                line-height: 1.5 !important;
+                padding: 12px 14px !important;
+            }
+
+            .hero-badge {
+                font-size: 11px !important;
+                line-height: 1.4 !important;
+                padding: 8px 12px !important;
+            }
+
+            .hero-content h1 {
+                font-size: clamp(30px, 8.5vw, 36px) !important;
+                line-height: 1.16 !important;
+            }
+
+            .hero-content p {
+                font-size: 15px !important;
+                line-height: 1.65 !important;
+            }
+
+            .btn-join {
+                font-size: 14px !important;
+                min-height: 48px !important;
+                padding: 13px 16px !important;
+            }
+
+            .stat-item { padding: 18px 9px !important; }
+            .stat-item strong {
+                font-size: 20px !important;
+                line-height: 1.25 !important;
+            }
+            .stat-item span {
+                font-size: 11px !important;
+                line-height: 1.4 !important;
+            }
+
+            .section-kicker {
+                font-size: 11px !important;
+                line-height: 1.4 !important;
+                letter-spacing: 1px !important;
+            }
+
+            .section-heading h2 {
+                font-size: 26px !important;
+                line-height: 1.25 !important;
+            }
+
+            .section-heading p {
+                font-size: 14px !important;
+                line-height: 1.6 !important;
+            }
+
+            .badge {
+                font-size: 11px !important;
+                line-height: 1.35 !important;
+            }
+
+            .promo-card .tag {
+                font-size: 10.5px !important;
+                line-height: 1.35 !important;
+            }
+
+            .promo-card h3 {
+                font-size: 21px !important;
+                line-height: 1.25 !important;
+            }
+
+            .promo-card p {
+                font-size: 14px !important;
+                line-height: 1.65 !important;
+            }
+
+            .promo-meta {
+                font-size: 12px !important;
+                line-height: 1.45 !important;
+                flex-wrap: wrap !important;
+            }
+
+            .service-card h4 {
+                font-size: 17px !important;
+                line-height: 1.35 !important;
+            }
+
+            .service-card a {
+                display: inline-flex !important;
+                align-items: center !important;
+                justify-content: center !important;
+                gap: 5px !important;
+                min-height: 40px !important;
+                font-size: 13px !important;
+                line-height: 1.35 !important;
+            }
+
+            .t-card .stars { font-size: 15px !important; }
+            .t-text {
+                font-size: 14px !important;
+                line-height: 1.7 !important;
+            }
+            .t-user strong {
+                font-size: 13px !important;
+                line-height: 1.4 !important;
+            }
+            .t-user small {
+                font-size: 12px !important;
+                line-height: 1.45 !important;
+            }
+
+            .empty-reviews h3 {
+                font-size: 18px !important;
+                line-height: 1.35 !important;
+            }
+            .empty-reviews p {
+                font-size: 14px !important;
+                line-height: 1.6 !important;
+            }
+
+            .reviews-link {
+                min-height: 44px !important;
+                font-size: 14px !important;
+                line-height: 1.4 !important;
+            }
+
+            .cta-box h2 {
+                font-size: 25px !important;
+                line-height: 1.25 !important;
+            }
+            .cta-box p {
+                font-size: 14px !important;
+                line-height: 1.6 !important;
+            }
+            .btn-blue-solid,
+            .btn-blue-outline {
+                min-height: 46px !important;
+                font-size: 14px !important;
+                line-height: 1.35 !important;
+            }
+            .cta-footer {
+                font-size: 13px !important;
+                line-height: 1.5 !important;
+            }
+
+            .footer-main h4 {
+                font-size: 13px !important;
+                line-height: 1.4 !important;
+            }
+            .footer-main p,
+            .footer-main a {
+                font-size: 13px !important;
+                line-height: 1.7 !important;
+            }
+            .footer-bottom {
+                font-size: 11px !important;
+                line-height: 1.6 !important;
+            }
+
+            /* Avoid clipping long service names, emails, and promotional copy. */
+            .promo-body,
+            .service-card,
+            .t-card,
+            .cta-box,
+            .footer-main > div {
+                min-width: 0 !important;
+                overflow-wrap: anywhere !important;
+            }
+        }
+
+        @media (max-width: 420px) {
+            .logo-text b { font-size: 16px !important; }
+            .logo-text span { font-size: 7px !important; }
+            .nav-links .cart-btn,
+            .nav-links .login-btn { font-size: 11px !important; }
+            .categories ul li a {
+                font-size: 10px !important;
+                padding: 9px 10px !important;
+            }
+            .hero-content h1 { font-size: 30px !important; }
+            .section-heading h2 { font-size: 24px !important; }
+            .promo-card p,
+            .t-text,
+            .section-heading p,
+            .cta-box p { font-size: 13.5px !important; }
+        }
+
     </style>
 </head>
 <body>

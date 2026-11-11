@@ -1635,6 +1635,346 @@ try {
             }
         }
 
+        /* ============================================================
+           CUSTOMER HOMEPAGE — MOBILE READABILITY OVERRIDES
+           Keep the existing colors, structure, desktop styling and page
+           behavior; increase only mobile text and tap-target sizes.
+           ============================================================ */
+        @media (max-width: 680px) {
+            body {
+                font-size: 15px;
+                line-height: 1.65;
+                -webkit-text-size-adjust: 100%;
+                text-size-adjust: 100%;
+            }
+
+            .promo-bar {
+                font-size: 12px !important;
+                line-height: 1.45 !important;
+                white-space: normal !important;
+                padding: 8px 12px !important;
+            }
+
+            .logo-text b { font-size: 18px !important; }
+            .logo-text span {
+                font-size: 8px !important;
+                letter-spacing: .8px !important;
+            }
+
+            .nav-links .cart-btn {
+                font-size: 12px !important;
+                min-height: 44px !important;
+                height: auto !important;
+                padding: 10px 12px !important;
+            }
+
+            .nav-links a[style*="ef4444"] {
+                font-size: 12px !important;
+                padding: 9px 5px !important;
+            }
+
+            .nav-top > .search {
+                min-height: 48px !important;
+                height: 48px !important;
+            }
+
+            .nav-top > .search input {
+                font-size: 16px !important;
+                line-height: 1.35 !important;
+            }
+
+            .nav-top > .search button {
+                width: 38px !important;
+                height: 38px !important;
+                min-width: 38px !important;
+                flex-basis: 38px !important;
+            }
+
+            .categories ul {
+                gap: 5px !important;
+                padding: 7px 10px !important;
+            }
+
+            .categories ul li a {
+                min-height: 40px !important;
+                padding: 10px 12px !important;
+                gap: 7px !important;
+                font-size: 11px !important;
+                line-height: 1.25 !important;
+            }
+
+            .categories ul li a i { font-size: 13px !important; }
+
+            .search-status {
+                font-size: 14px !important;
+                line-height: 1.5 !important;
+                padding: 12px 14px !important;
+            }
+
+            .slide {
+                min-height: 500px;
+            }
+
+            .slide-inner {
+                min-height: 500px;
+                padding: 62px 18px 82px;
+            }
+
+            .hero-badge {
+                font-size: 12px !important;
+                padding: 9px 13px !important;
+            }
+
+            .hero-content h1 {
+                font-size: clamp(30px, 8.2vw, 37px) !important;
+                line-height: 1.16 !important;
+                letter-spacing: -.5px !important;
+            }
+
+            .hero-content p {
+                font-size: 15px !important;
+                line-height: 1.7 !important;
+                margin-bottom: 24px !important;
+            }
+
+            .btn-join {
+                min-height: 48px !important;
+                padding: 13px 16px !important;
+                font-size: 14px !important;
+                line-height: 1.35 !important;
+            }
+
+            .stats-wrap {
+                width: calc(100% - 24px) !important;
+            }
+
+            .stat-item {
+                padding: 17px 9px !important;
+            }
+
+            .stat-item i {
+                width: 38px !important;
+                height: 38px !important;
+                font-size: 15px !important;
+            }
+
+            .stat-item strong {
+                font-size: 19px !important;
+                line-height: 1.3 !important;
+            }
+
+            .stat-item span {
+                display: block;
+                font-size: 11px !important;
+                line-height: 1.4 !important;
+                margin-top: 3px;
+            }
+
+            .home-section {
+                padding: 48px 16px 0 !important;
+            }
+
+            .section-heading { margin-bottom: 23px !important; }
+            .section-kicker {
+                font-size: 11px !important;
+                line-height: 1.4 !important;
+                letter-spacing: 1px !important;
+            }
+
+            .section-heading h2 {
+                font-size: clamp(24px, 6.5vw, 28px) !important;
+                line-height: 1.25 !important;
+            }
+
+            .section-heading p {
+                font-size: 14px !important;
+                line-height: 1.6 !important;
+                margin-top: 9px !important;
+            }
+
+            .section-heading .badge,
+            .badge {
+                font-size: 11px !important;
+                line-height: 1.35 !important;
+                padding: 8px 12px !important;
+            }
+
+            .promo-grid,
+            .promo-grid.one-promo,
+            .promo-grid.two-promos {
+                gap: 16px !important;
+            }
+
+            .promo-body,
+            .promo-card:not(.has-image) .promo-body {
+                padding: 19px 17px !important;
+            }
+
+            .promo-card .tag {
+                font-size: 11px !important;
+                line-height: 1.3 !important;
+                padding: 6px 10px !important;
+            }
+
+            .promo-card h3 {
+                font-size: 21px !important;
+                line-height: 1.3 !important;
+            }
+
+            .promo-card p {
+                font-size: 14px !important;
+                line-height: 1.65 !important;
+            }
+
+            .promo-meta {
+                font-size: 12px !important;
+                line-height: 1.5 !important;
+                flex-wrap: wrap;
+            }
+
+            .service-grid,
+            .testimonial-grid {
+                gap: 15px !important;
+            }
+
+            .service-card {
+                min-height: 0 !important;
+                padding: 24px 18px !important;
+            }
+
+            .service-card i {
+                width: 60px !important;
+                height: 60px !important;
+                font-size: 25px !important;
+            }
+
+            .service-card h4 {
+                font-size: 18px !important;
+                line-height: 1.35 !important;
+            }
+
+            .service-card a {
+                display: inline-flex;
+                align-items: center;
+                gap: 6px;
+                min-height: 40px;
+                font-size: 14px !important;
+                line-height: 1.4 !important;
+            }
+
+            .testimonials {
+                margin-top: 52px !important;
+                padding: 50px 16px 62px !important;
+            }
+
+            .t-card { padding: 20px !important; }
+            .t-card .stars { font-size: 15px !important; }
+            .t-text {
+                font-size: 14px !important;
+                line-height: 1.75 !important;
+            }
+
+            .t-user { gap: 12px !important; }
+            .t-user strong {
+                font-size: 14px !important;
+                line-height: 1.4 !important;
+            }
+            .t-user small {
+                display: block;
+                font-size: 12px !important;
+                line-height: 1.5 !important;
+            }
+
+            .empty-reviews h3 {
+                font-size: 18px !important;
+                line-height: 1.35 !important;
+            }
+            .empty-reviews p {
+                font-size: 14px !important;
+                line-height: 1.6 !important;
+            }
+
+            .reviews-link {
+                min-height: 44px;
+                align-items: center;
+                font-size: 14px !important;
+                line-height: 1.4 !important;
+            }
+
+            .cta-area { padding: 30px 16px 38px !important; }
+            .cta-box { padding: 30px 18px !important; }
+            .cta-box h2 {
+                font-size: 25px !important;
+                line-height: 1.3 !important;
+            }
+            .cta-box p {
+                font-size: 15px !important;
+                line-height: 1.6 !important;
+            }
+
+            .btn-blue-solid,
+            .btn-blue-outline {
+                min-height: 48px !important;
+                padding: 12px 16px !important;
+                font-size: 14px !important;
+                line-height: 1.35 !important;
+            }
+
+            .cta-footer {
+                gap: 12px 18px !important;
+                font-size: 12px !important;
+                line-height: 1.5 !important;
+            }
+
+            footer { padding: 30px 16px 28px !important; }
+            .footer-main {
+                gap: 22px !important;
+                padding-bottom: 28px !important;
+            }
+            .footer-main h4 {
+                font-size: 13px !important;
+                line-height: 1.4 !important;
+                margin-bottom: 10px !important;
+            }
+            .footer-main p,
+            .footer-main a {
+                font-size: 13px !important;
+                line-height: 1.7 !important;
+                margin-bottom: 8px !important;
+            }
+            .socials a {
+                width: 40px !important;
+                height: 40px !important;
+            }
+            .footer-bottom {
+                padding-top: 18px !important;
+                font-size: 11px !important;
+                line-height: 1.55 !important;
+            }
+        }
+
+        @media (max-width: 420px) {
+            .logo-text b { font-size: 16px !important; }
+            .logo-text span {
+                font-size: 7px !important;
+                letter-spacing: .7px !important;
+            }
+
+            .nav-links .cart-btn {
+                min-height: 42px !important;
+                padding: 9px 10px !important;
+                font-size: 11px !important;
+            }
+
+            .categories ul li a {
+                font-size: 10.5px !important;
+                padding: 9px 11px !important;
+            }
+
+            .hero-content h1 { font-size: 30px !important; }
+            .stat-item span { font-size: 10.5px !important; }
+            .section-heading h2 { font-size: 24px !important; }
+        }
 </style>
 </head>
 <body>

@@ -982,7 +982,309 @@ $book_hotel    = $is_logged_in ? 'book_appointment.php?category=Pet Hotel' : 'lo
         flex-basis: 34px !important;
     }
 }
-</style>
+
+
+        /* ============================================================
+           CUSTOMER PET SERVICES — MOBILE READABILITY + HEADER MATCH
+           Keeps the existing design and PHP/booking/search behavior.
+           ============================================================ */
+        @media (max-width: 680px) {
+            /* Consistent one-row brand/login header + one search row. */
+            header { width: 100% !important; }
+            .promo-bar {
+                min-height: 30px;
+                padding: 6px 10px !important;
+                font-size: 11px !important;
+                line-height: 1.4;
+            }
+            .nav-top {
+                display: grid !important;
+                grid-template-columns: minmax(0, 1fr) auto !important;
+                grid-template-rows: auto auto !important;
+                align-items: center !important;
+                gap: 8px !important;
+                width: 100% !important;
+                padding: 9px 12px !important;
+            }
+            .nav-top > .logo {
+                grid-column: 1 !important;
+                grid-row: 1 !important;
+                width: auto !important;
+                max-width: 100% !important;
+                min-width: 0 !important;
+                overflow: hidden;
+                gap: 8px !important;
+            }
+            .nav-top > .logo .logo-text {
+                min-width: 0;
+                overflow: hidden;
+            }
+            .nav-top > .logo .logo-text b,
+            .nav-top > .logo .logo-text span {
+                display: block;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+            .nav-logo-img {
+                width: 42px !important;
+                height: 42px !important;
+                flex: 0 0 42px;
+            }
+            .logo-text b { font-size: 17px !important; }
+            .logo-text span {
+                font-size: 7px !important;
+                letter-spacing: .9px !important;
+            }
+            .nav-links {
+                grid-column: 2 !important;
+                grid-row: 1 !important;
+                display: flex !important;
+                width: auto !important;
+                min-width: 0 !important;
+                justify-content: flex-end !important;
+                align-items: center !important;
+                flex-wrap: nowrap !important;
+                gap: 6px !important;
+                margin: 0 !important;
+            }
+            .nav-links > span,
+            .nav-links .hello-user { display: none !important; }
+            .nav-links .cart-btn,
+            .nav-links .login-btn {
+                display: inline-flex !important;
+                align-items: center !important;
+                justify-content: center !important;
+                min-height: 44px !important;
+                height: 44px !important;
+                padding: 10px 13px !important;
+                border: 0 !important;
+                border-radius: 10px !important;
+                background: var(--brand-blue) !important;
+                color: var(--brand-yellow) !important;
+                font-family: inherit;
+                font-size: 11px !important;
+                font-weight: 800 !important;
+                line-height: 1.2;
+                text-decoration: none !important;
+                white-space: nowrap !important;
+            }
+            .nav-links .logout-link,
+            .nav-links a[href="logout.php"] {
+                min-height: 40px;
+                display: inline-flex;
+                align-items: center;
+                padding: 8px 4px !important;
+                margin: 0 !important;
+                font-size: 11px !important;
+                white-space: nowrap;
+            }
+            /* Keep one visible search bar under the logo/login row. */
+            .nav-top > .search {
+                display: flex !important;
+                grid-column: 1 / -1 !important;
+                grid-row: 2 !important;
+                width: 100% !important;
+                min-width: 0 !important;
+                min-height: 46px !important;
+                margin: 0 !important;
+                padding: 4px 6px 4px 11px !important;
+                border-radius: 11px !important;
+                box-sizing: border-box;
+            }
+            .nav-top > .search input {
+                display: block !important;
+                width: 100% !important;
+                min-width: 0 !important;
+                padding: 8px 5px !important;
+                font-size: 15px !important;
+                line-height: 1.3;
+            }
+            .nav-top > .search button {
+                width: 36px !important;
+                height: 36px !important;
+                min-width: 36px !important;
+                flex: 0 0 36px !important;
+            }
+            .mobile-search-wrap,
+            .mobile-search-wrap .search,
+            #mobileSiteSearchForm { display: none !important; }
+
+            /* Keep all service navigation visible and horizontally scrollable. */
+            .categories,
+            .categories.mobile-open {
+                display: block !important;
+                visibility: visible !important;
+                opacity: 1 !important;
+                max-height: none !important;
+                height: auto !important;
+                overflow: hidden !important;
+            }
+            .categories ul {
+                display: flex !important;
+                flex-wrap: nowrap !important;
+                width: 100% !important;
+                max-width: none !important;
+                justify-content: flex-start !important;
+                align-items: center !important;
+                gap: 4px !important;
+                padding: 6px 10px !important;
+                margin: 0 !important;
+                overflow-x: auto !important;
+                overflow-y: hidden !important;
+                -webkit-overflow-scrolling: touch;
+                scrollbar-width: none;
+            }
+            .categories ul::-webkit-scrollbar { display: none; }
+            .categories ul li { flex: 0 0 auto !important; }
+            .categories ul li a {
+                min-height: 38px;
+                padding: 9px 11px !important;
+                font-size: 10px !important;
+                gap: 6px !important;
+                white-space: nowrap !important;
+            }
+            .categories i { font-size: 11px !important; }
+
+            /* Match Home-page mobile body text readability. */
+            .hero-inner { padding: 40px 17px 36px !important; }
+            .eyebrow { font-size: 10px !important; }
+            .hero h1 {
+                font-size: 29px !important;
+                line-height: 1.2 !important;
+                margin: 15px 0 12px !important;
+            }
+            .hero p {
+                font-size: 14px !important;
+                line-height: 1.7 !important;
+            }
+            .hero-note {
+                display: grid !important;
+                grid-template-columns: 1fr;
+                gap: 8px !important;
+                margin-top: 17px !important;
+                font-size: 12px !important;
+                line-height: 1.55;
+            }
+            .services-wrap { padding: 39px 15px 56px !important; }
+            .section-heading { display: block !important; margin-bottom: 19px !important; }
+            .section-kicker { font-size: 10px !important; }
+            .section-heading h2 {
+                font-size: 23px !important;
+                line-height: 1.25 !important;
+            }
+            .section-heading p {
+                margin-top: 8px !important;
+                max-width: none;
+                text-align: left !important;
+                font-size: 13px !important;
+                line-height: 1.65 !important;
+            }
+            .services-grid {
+                grid-template-columns: 1fr !important;
+                gap: 16px !important;
+            }
+            .service-card {
+                min-height: 0 !important;
+                height: auto;
+                border-radius: 17px !important;
+            }
+            .service-visual { height: 150px !important; }
+            .visual-icon { width: 74px; height: 74px; font-size: 31px; }
+            .service-body { padding: 20px 17px 19px !important; }
+            .service-tag {
+                font-size: 10px !important;
+                padding: 6px 10px;
+                margin-bottom: 10px;
+            }
+            .service-card h3 {
+                font-size: 21px !important;
+                line-height: 1.3;
+                margin-bottom: 9px !important;
+            }
+            .service-card p.desc {
+                font-size: 14px !important;
+                line-height: 1.7 !important;
+                margin-bottom: 17px !important;
+            }
+            .button-group {
+                grid-template-columns: 1fr !important;
+                gap: 9px !important;
+            }
+            .btn-book,
+            .btn-secondary {
+                width: 100% !important;
+                min-height: 46px !important;
+                padding: 11px 14px !important;
+                font-size: 12px !important;
+            }
+            .booking-hint {
+                align-items: flex-start;
+                font-size: 12px !important;
+                line-height: 1.55;
+                margin-top: 10px !important;
+            }
+            .trust-strip {
+                grid-template-columns: 1fr !important;
+                gap: 14px !important;
+                margin-top: 19px !important;
+                padding: 17px !important;
+                border-radius: 17px !important;
+            }
+            .trust-item { align-items: flex-start !important; gap: 10px !important; }
+            .trust-item i {
+                width: 38px !important;
+                height: 38px !important;
+                flex: 0 0 38px !important;
+                font-size: 14px;
+            }
+            .trust-item strong {
+                font-size: 13px !important;
+                line-height: 1.4;
+            }
+            .trust-item span {
+                font-size: 12px !important;
+                line-height: 1.6 !important;
+            }
+            footer { padding: 43px 15px 25px !important; }
+            .footer-main {
+                grid-template-columns: 1fr !important;
+                gap: 23px !important;
+                padding-bottom: 29px !important;
+            }
+            .footer-main h4 {
+                font-size: 13px !important;
+                line-height: 1.4;
+                margin-bottom: 12px !important;
+            }
+            .footer-main p,
+            .footer-main a {
+                font-size: 13px !important;
+                line-height: 1.7 !important;
+                margin-bottom: 9px;
+                overflow-wrap: anywhere;
+            }
+            .socials { margin-top: 14px !important; }
+            .socials a { width: 36px !important; height: 36px !important; }
+            .footer-bottom {
+                padding-top: 19px !important;
+                font-size: 11px !important;
+                line-height: 1.6 !important;
+            }
+        }
+        @media (max-width: 420px) {
+            .nav-top { padding-left: 9px !important; padding-right: 9px !important; }
+            .nav-logo-img { width: 38px !important; height: 38px !important; flex-basis: 38px; }
+            .logo-text b { font-size: 15px !important; }
+            .logo-text span { font-size: 6px !important; letter-spacing: .7px !important; }
+            .nav-links .cart-btn,
+            .nav-links .login-btn { padding: 9px 10px !important; font-size: 10px !important; }
+            .hero h1 { font-size: 26px !important; }
+            .section-heading h2 { font-size: 21px !important; }
+            .service-card h3 { font-size: 19px !important; }
+        }
+
+    </style>
 </head>
 <body>
     <div class="promo-bar"><i class="fa-solid fa-phone"></i> Need help? Call us at (046) 887 4714</div>

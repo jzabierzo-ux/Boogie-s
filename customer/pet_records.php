@@ -1732,6 +1732,127 @@ footer{
 
 
 
+
+
+/* ===== CUSTOMER PET RECORDS: MOBILE READABILITY ===== */
+@media (max-width: 680px) {
+    .nav-top {
+        width: calc(100% - 24px);
+        min-height: 62px;
+        flex-wrap: nowrap;
+        gap: 8px;
+        padding: 8px 0;
+    }
+
+    .logo {
+        min-width: 0;
+        flex: 1 1 auto;
+        gap: 8px;
+        overflow: hidden;
+    }
+
+    .logo-text { min-width: 0; }
+    .logo-text b { font-size: 16px; white-space: nowrap; }
+    .logo-text span { font-size: 7px; letter-spacing: .8px; white-space: nowrap; }
+
+    .user-controls {
+        flex: 0 0 auto;
+        gap: 6px;
+        margin-left: auto;
+    }
+
+    .notification-bell,
+    .profile-trigger {
+        width: 40px;
+        min-width: 40px;
+        height: 40px;
+        min-height: 40px;
+    }
+
+    .profile-trigger {
+        padding: 3px;
+        justify-content: center;
+    }
+
+    .profile-trigger span,
+    .profile-trigger > i:last-child { display: none; }
+
+    .profile-avatar { width: 32px; height: 32px; }
+
+    .dropdown-menu {
+        max-width: calc(100vw - 24px);
+        max-height: min(70vh, 520px);
+        overflow-y: auto;
+    }
+
+    .dropdown-header { font-size: 12px; }
+    .dropdown-item { font-size: 13px; line-height: 1.55; }
+    .dropdown-item small { font-size: 11px !important; }
+
+    main {
+        width: calc(100% - 24px);
+        padding: 24px 0 48px;
+    }
+
+    .back-nav a { font-size: 12px; }
+    .page-heading h1 { font-size: 27px; line-height: 1.2; }
+    .page-heading p { font-size: 13px; line-height: 1.6; }
+    .page-kicker { font-size: 10px; }
+    .owner-chip { font-size: 11px; white-space: normal; line-height: 1.45; }
+
+    .pet-hero { padding: 18px; }
+    .pet-info h2 { font-size: 21px; }
+    .pet-details span { font-size: 10px; line-height: 1.4; }
+    .pet-profile-action {
+        min-height: 44px;
+        font-size: 12px;
+    }
+
+    .medical-alert h3 { font-size: 13px; line-height: 1.4; }
+    .medical-alert p { font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
+
+    .record-head h2 { font-size: 16px; line-height: 1.3; }
+    .record-head p { font-size: 11px; line-height: 1.5; }
+    .record-count { font-size: 10px; line-height: 1.35; }
+    .record-icon { width: 38px; height: 38px; flex-basis: 38px; font-size: 15px; }
+
+    /* Tables remain horizontally scrollable so no record columns are hidden. */
+    .table-wrap {
+        width: 100%;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+    table { min-width: 650px; }
+    th { font-size: 10px; padding: 12px 13px; }
+    td { font-size: 12px; line-height: 1.55; padding: 13px; }
+    .date-cell strong { font-size: 12px; }
+    .service-badge { font-size: 10px; line-height: 1.4; }
+    .empty-records { padding: 36px 16px; }
+    .empty-records p { font-size: 13px; line-height: 1.6; }
+
+    footer { padding: 42px 16px 24px; }
+    .footer-main { grid-template-columns: 1fr; gap: 22px; }
+    .footer-main h4 { font-size: 12px; }
+    .footer-main p,
+    .footer-main a { font-size: 12px; line-height: 1.65; }
+    .footer-bottom { font-size: 10px; line-height: 1.6; }
+}
+
+@media (max-width: 380px) {
+    .nav-top { width: calc(100% - 18px); }
+    .logo-text b { font-size: 15px; }
+    .nav-logo-img { width: 38px; height: 38px; }
+    .notification-bell,
+    .profile-trigger { width: 37px; min-width: 37px; height: 37px; min-height: 37px; }
+    .profile-avatar { width: 29px; height: 29px; }
+    main { width: calc(100% - 20px); }
+    .page-heading h1 { font-size: 24px; }
+    .pet-info h2 { font-size: 19px; }
+    .record-head { display: block; }
+    .record-count { display: inline-flex; margin-top: 8px; }
+    table { min-width: 620px; }
+}
+
 </style>
 
 </head>

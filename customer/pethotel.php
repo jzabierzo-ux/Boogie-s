@@ -4902,6 +4902,173 @@ try {
 
 
 
+
+
+        /* ===== MATCH CUSTOMER HOME MOBILE READABILITY ===== */
+        @media (max-width: 680px) {
+            /* Keep Pet Hotel text as readable as the Customer Home page. */
+            .promo-bar {
+                font-size: 12px !important;
+                line-height: 1.45 !important;
+                white-space: normal !important;
+            }
+
+            .logo-text b { font-size: 18px !important; }
+            .logo-text span {
+                font-size: 8px !important;
+                letter-spacing: .8px !important;
+            }
+
+            .nav-links .cart-btn,
+            .nav-links .login-btn {
+                font-size: 12px !important;
+                min-height: 44px !important;
+                padding: 10px 12px !important;
+            }
+
+            .nav-top > .search input {
+                font-size: 16px !important;
+                line-height: 1.35 !important;
+            }
+
+            .categories ul li a {
+                font-size: 10.5px !important;
+                line-height: 1.25 !important;
+                min-height: 40px !important;
+                padding: 10px 12px !important;
+            }
+
+            .categories i { font-size: 13px !important; }
+
+            .search-status {
+                font-size: 14px !important;
+                line-height: 1.5 !important;
+                padding: 12px 14px !important;
+            }
+
+            .eyebrow,
+            .service-tag {
+                font-size: 11px !important;
+                line-height: 1.4 !important;
+            }
+
+            .hero h1 { line-height: 1.16 !important; }
+            .hero p {
+                font-size: 15px !important;
+                line-height: 1.65 !important;
+            }
+
+            .hero-note {
+                font-size: 12px !important;
+                line-height: 1.5 !important;
+            }
+
+            .section-kicker {
+                font-size: 11px !important;
+                line-height: 1.4 !important;
+                letter-spacing: 1px !important;
+            }
+
+            .section-heading h2 {
+                font-size: 26px !important;
+                line-height: 1.25 !important;
+            }
+
+            .section-heading p {
+                font-size: 14px !important;
+                line-height: 1.6 !important;
+            }
+
+            .service-body h3 {
+                font-size: 19px !important;
+                line-height: 1.35 !important;
+            }
+
+            .service-name {
+                font-size: 13px !important;
+                line-height: 1.5 !important;
+            }
+
+            .service-description {
+                font-size: 14px !important;
+                line-height: 1.7 !important;
+            }
+
+            .price-label {
+                font-size: 12px !important;
+                line-height: 1.4 !important;
+            }
+
+            .price { font-size: 22px !important; }
+
+            .btn-book {
+                min-height: 46px !important;
+                font-size: 13px !important;
+                line-height: 1.35 !important;
+            }
+
+            .hotel-note-item strong {
+                font-size: 13px !important;
+                line-height: 1.4 !important;
+            }
+
+            .hotel-note-item span {
+                font-size: 12px !important;
+                line-height: 1.6 !important;
+            }
+
+            .no-data {
+                font-size: 14px !important;
+                line-height: 1.6 !important;
+            }
+
+            .footer-main h4 {
+                font-size: 13px !important;
+                line-height: 1.4 !important;
+            }
+
+            .footer-main p,
+            .footer-main a {
+                font-size: 13px !important;
+                line-height: 1.7 !important;
+            }
+
+            .footer-bottom {
+                font-size: 11px !important;
+                line-height: 1.6 !important;
+            }
+
+            .service-card,
+            .service-body,
+            .hotel-note-item,
+            .footer-main > div {
+                min-width: 0 !important;
+                overflow-wrap: anywhere !important;
+            }
+        }
+
+        @media (max-width: 420px) {
+            .logo-text b { font-size: 16px !important; }
+            .logo-text span { font-size: 7px !important; }
+
+            .hero h1 { font-size: 26px !important; }
+            .section-heading h2 { font-size: 24px !important; }
+
+            .section-heading p,
+            .service-description,
+            .hero p {
+                font-size: 13.5px !important;
+            }
+
+            .service-body h3 { font-size: 18px !important; }
+            .service-name { font-size: 12.5px !important; }
+
+            .footer-main h4 { font-size: 13px !important; }
+            .footer-main p,
+            .footer-main a { font-size: 13px !important; }
+            .footer-bottom { font-size: 11px !important; }
+        }
+
 </style>
 
 

@@ -2,7 +2,7 @@
 // Log out the current user even if the database or audit logging is unavailable.
 if (session_status() !== PHP_SESSION_ACTIVE) {
     // logout.php is in the project root, alongside this bootstrap file.
-    require_once __DIR__ . '/shared_session_bootstrap.php';
+    require_once __DIR__ . '/../shared_session_bootstrap.php';
 }
 
 // Preserve only the values needed for routing and the audit log before clearing the session.

@@ -1582,6 +1582,153 @@ if (isset($_POST['login_btn'])) {
             body.otp-screen input.otp-input { font-size: 21px; letter-spacing: 4px; }
         }
 
+    
+
+        /* ===== FINAL CUSTOMER LOGIN / OTP MOBILE SPACING ===== */
+        @media (max-width: 600px) {
+            html, body {
+                width: 100%;
+                min-height: 100%;
+            }
+
+            body.login-screen {
+                min-height: 100vh;
+                min-height: 100dvh;
+                padding: max(68px, calc(env(safe-area-inset-top) + 54px)) 14px
+                         max(24px, env(safe-area-inset-bottom));
+                align-items: flex-start;
+                justify-content: center;
+                overflow-y: auto;
+            }
+
+            body.login-screen .back-home {
+                position: fixed;
+                top: max(12px, env(safe-area-inset-top));
+                left: 14px;
+                right: 14px;
+                width: fit-content;
+                min-height: 40px;
+                display: inline-flex;
+                align-items: center;
+                font-size: 12px;
+                line-height: 1.4;
+                padding: 8px 0;
+            }
+
+            body.login-screen .login-card {
+                width: 100%;
+                max-width: 420px;
+                margin: 0 auto;
+                padding: 28px 20px 24px;
+                border-radius: 17px;
+            }
+
+            body.login-screen .form-group label {
+                font-size: 13px;
+                line-height: 1.4;
+            }
+
+            body.login-screen .form-group input:not(.otp-input) {
+                width: 100%;
+                min-height: 49px;
+                padding: 12px 13px;
+                font-size: 16px;
+                line-height: 1.4;
+            }
+
+            body.login-screen .login-btn,
+            body.login-screen .google-btn {
+                width: 100%;
+                min-height: 49px;
+                font-size: 14px;
+                line-height: 1.35;
+            }
+
+            body.login-screen .register-link {
+                font-size: 13px;
+                line-height: 1.6;
+            }
+
+            body.login-screen .footer-links a {
+                min-height: 36px;
+                padding: 7px 5px;
+                font-size: 12px;
+            }
+
+            body.login-screen .brand-footer {
+                font-size: 11px;
+                line-height: 1.5;
+            }
+
+            body.otp-screen {
+                min-height: 100vh;
+                min-height: 100dvh;
+                padding: max(68px, calc(env(safe-area-inset-top) + 54px)) 14px
+                         max(24px, env(safe-area-inset-bottom));
+                align-items: flex-start;
+                justify-content: center;
+                overflow-y: auto;
+            }
+
+            body.otp-screen .back-nav,
+            body.otp-screen .back-home {
+                position: fixed;
+                top: max(12px, env(safe-area-inset-top));
+                left: 14px;
+                right: 14px;
+                width: fit-content;
+                min-height: 40px;
+                padding: 8px 0;
+                font-size: 12px;
+                line-height: 1.4;
+            }
+
+            body.otp-screen .login-card,
+            body.otp-screen .register-card {
+                width: 100%;
+                max-width: 420px;
+                margin: 0 auto;
+                padding: 28px 20px 24px;
+                border-radius: 17px;
+            }
+
+            body.otp-screen .login-card p,
+            body.otp-screen .register-card .verification-copy,
+            body.otp-screen .register-card .subtitle {
+                font-size: 13px;
+                line-height: 1.65;
+            }
+
+            body.otp-screen input.otp-input {
+                min-height: 56px;
+                font-size: 22px;
+                letter-spacing: 5px;
+            }
+
+            body.otp-screen .login-btn,
+            body.otp-screen .btn-submit,
+            body.otp-screen .google-btn {
+                min-height: 49px;
+                font-size: 13px;
+            }
+        }
+
+        @media (max-width: 380px) {
+            body.login-screen {
+                padding-left: 10px;
+                padding-right: 10px;
+            }
+
+            body.login-screen .login-card {
+                padding: 25px 15px 21px;
+            }
+
+            body.otp-screen .login-card,
+            body.otp-screen .register-card {
+                padding: 25px 15px 21px;
+            }
+        }
+
     </style>
 
 </head>

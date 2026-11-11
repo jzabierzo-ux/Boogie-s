@@ -2620,7 +2620,129 @@ try {
         .service-card { min-height: 0; height: auto; align-self: start; }
         .service-body { flex: 0 1 auto; }
 
-</style>
+
+
+        /* ===== MOBILE READABILITY — MATCH CUSTOMER HOME ===== */
+        @media (max-width: 680px) {
+            .hero p {
+                font-size: 14px !important;
+                line-height: 1.7 !important;
+            }
+
+            .hero-note {
+                font-size: 12px !important;
+                line-height: 1.6 !important;
+                gap: 9px !important;
+            }
+
+            .section-heading p {
+                font-size: 13px !important;
+                line-height: 1.65 !important;
+            }
+
+            .service-tag {
+                font-size: 10px !important;
+                line-height: 1.4 !important;
+            }
+
+            .service-body h3 {
+                font-size: 19px !important;
+                line-height: 1.35 !important;
+            }
+
+            .service-name {
+                font-size: 13px !important;
+                line-height: 1.55 !important;
+            }
+
+            .service-description {
+                font-size: 14px !important;
+                line-height: 1.7 !important;
+                margin-bottom: 16px !important;
+            }
+
+            .price-label {
+                font-size: 10px !important;
+            }
+
+            .price {
+                font-size: 20px !important;
+            }
+
+            .btn-book {
+                min-height: 44px !important;
+                font-size: 12px !important;
+                padding: 10px 13px !important;
+            }
+
+            .no-data {
+                font-size: 13px !important;
+                line-height: 1.7 !important;
+                padding: 34px 17px !important;
+            }
+
+            .care-strip-heading h3 {
+                font-size: 17px !important;
+                line-height: 1.4 !important;
+            }
+
+            .care-strip-heading p {
+                font-size: 13px !important;
+                line-height: 1.7 !important;
+            }
+
+            .care-item strong {
+                font-size: 13px !important;
+                line-height: 1.5 !important;
+            }
+
+            .care-item span {
+                font-size: 12px !important;
+                line-height: 1.65 !important;
+            }
+
+            .vet-prep-note {
+                font-size: 12px !important;
+                line-height: 1.7 !important;
+            }
+
+            .footer-main h4 {
+                font-size: 13px !important;
+                line-height: 1.45 !important;
+                margin-bottom: 12px !important;
+            }
+
+            .footer-main p,
+            .footer-main a {
+                font-size: 13px !important;
+                line-height: 1.75 !important;
+                margin-bottom: 9px !important;
+            }
+
+            .footer-bottom {
+                font-size: 11px !important;
+                line-height: 1.65 !important;
+            }
+        }
+
+        @media (max-width: 420px) {
+            .service-description {
+                font-size: 13.5px !important;
+            }
+
+            .care-item span,
+            .vet-prep-note {
+                font-size: 12px !important;
+            }
+
+            .footer-main h4,
+            .footer-main p,
+            .footer-main a {
+                font-size: 13px !important;
+            }
+        }
+
+    </style>
 
 </head>
 

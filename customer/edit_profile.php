@@ -1265,6 +1265,108 @@ footer{
         font-size:8px;
     }
 }
+
+/* ===== FINAL MOBILE READABILITY + HEADER ALIGNMENT ===== */
+@media (max-width: 680px) {
+    /* Keep the brand and account controls together on one horizontal row. */
+    .nav-top {
+        display: flex;
+        flex-wrap: nowrap;
+        align-items: center;
+        justify-content: space-between;
+        width: calc(100% - 24px);
+        min-height: 58px;
+        gap: 8px;
+        padding: 8px 0;
+    }
+    .logo {
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow: hidden;
+    }
+    .logo-text { min-width: 0; }
+    .logo-text b { font-size: 16px; }
+    .logo-text span {
+        font-size: 7px;
+        letter-spacing: .8px;
+    }
+    .user-controls {
+        display: flex;
+        flex: 0 0 auto;
+        align-items: center;
+        gap: 5px;
+        white-space: nowrap;
+    }
+    .notification-btn,
+    .profile-link,
+    .logout-link {
+        width: 38px;
+        min-width: 38px;
+        height: 38px;
+        min-height: 38px;
+        flex: 0 0 38px;
+    }
+    .profile-link { padding: 3px; justify-content: center; }
+
+    /* Increase text sizes for easier reading and tapping on phones. */
+    .page-heading p { font-size: 13px; }
+    .security-chip { font-size: 11px; line-height: 1.5; }
+    .profile-card-body h2 { font-size: 18px; }
+    .profile-role { font-size: 12px; }
+    .photo-label { font-size: 12px; min-height: 46px; }
+    .photo-help { font-size: 11px; line-height: 1.55; }
+    .summary-item { padding: 10px; gap: 9px; }
+    .summary-item i { font-size: 12px; }
+    .summary-item span { font-size: 12px; line-height: 1.6; }
+
+    .form-card { padding: 18px; }
+    .form-card-head .kicker { font-size: 11px; }
+    .form-card-head h2 { font-size: 20px; }
+    .form-card-head p { font-size: 12px; line-height: 1.55; }
+    .status-chip { font-size: 10px; padding: 7px 10px; }
+    .form-group label { font-size: 13px; }
+    .field-note,
+    .field-help { font-size: 11px; line-height: 1.5; }
+    .form-control {
+        min-height: 48px;
+        padding: 11px 12px;
+        font-size: 16px;
+    }
+    .info-box { font-size: 12px; line-height: 1.6; padding: 12px; }
+    .alert { font-size: 12px; line-height: 1.6; }
+    .btn-save,
+    .btn-cancel { min-height: 46px; font-size: 13px; }
+
+    .notification-dropdown-header { font-size: 12px; }
+    .notification-dropdown-item { font-size: 12px; line-height: 1.55; }
+    .notification-dropdown-item small { font-size: 10px; }
+    .notification-dropdown-empty { font-size: 12px; }
+
+    .footer-main h4 { font-size: 12px; }
+    .footer-main p,
+    .footer-main a { font-size: 12px; line-height: 1.65; }
+    .footer-bottom { font-size: 10px; line-height: 1.55; }
+}
+@media (max-width: 380px) {
+    .nav-top { width: calc(100% - 18px); gap: 5px; }
+    .nav-logo-img { width: 36px; height: 36px; }
+    .logo { gap: 6px; }
+    .logo-text b { font-size: 14px; }
+    .logo-text span { font-size: 6px; letter-spacing: .5px; }
+    .user-controls { gap: 4px; }
+    .notification-btn,
+    .profile-link,
+    .logout-link {
+        width: 35px;
+        min-width: 35px;
+        height: 35px;
+        min-height: 35px;
+        flex-basis: 35px;
+    }
+    .form-card { padding: 14px; }
+    .form-actions { grid-template-columns: 1fr; }
+}
+
 </style>
 </head>
 <body>

@@ -6015,6 +6015,459 @@ main{
 
         .delete-form button { font:inherit; }
 
+
+
+/* ===== FINAL MOBILE READABILITY + HEADER ALIGNMENT ===== */
+@media (max-width: 680px) {
+    /* Keep the brand and account controls on one horizontal row. */
+    header .nav-top {
+        width: calc(100% - 24px) !important;
+        min-height: 58px !important;
+        padding: 8px 0 !important;
+        display: flex !important;
+        flex-wrap: nowrap !important;
+        align-items: center !important;
+        justify-content: space-between !important;
+        gap: 8px !important;
+    }
+
+    header .logo {
+        flex: 1 1 auto !important;
+        min-width: 0 !important;
+        max-width: none !important;
+        gap: 8px !important;
+        overflow: hidden;
+    }
+
+    header .nav-logo-img {
+        width: 40px !important;
+        height: 40px !important;
+        flex: 0 0 40px !important;
+    }
+
+    header .logo-text {
+        min-width: 0;
+    }
+
+    header .logo-text b {
+        font-size: 16px !important;
+        line-height: 1.15;
+        white-space: nowrap;
+    }
+
+    header .logo-text span {
+        font-size: 8px !important;
+        letter-spacing: .7px !important;
+        white-space: nowrap;
+    }
+
+    header .user-controls {
+        display: flex !important;
+        flex: 0 0 auto !important;
+        align-items: center !important;
+        gap: 6px !important;
+    }
+
+    header .notification-bell,
+    header .profile-trigger {
+        width: 40px !important;
+        min-width: 40px !important;
+        height: 40px !important;
+        min-height: 40px !important;
+        padding: 3px !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        border-radius: 10px !important;
+    }
+
+    header .profile-trigger span,
+    header .profile-trigger > i:last-child {
+        display: none !important;
+    }
+
+    header .profile-avatar {
+        width: 32px !important;
+        height: 32px !important;
+    }
+
+    header .dropdown-menu {
+        position: absolute !important;
+        top: calc(100% + 8px) !important;
+        right: 0 !important;
+        left: auto !important;
+        width: min(310px, calc(100vw - 20px)) !important;
+        max-width: calc(100vw - 20px) !important;
+        max-height: 70vh;
+        overflow-y: auto;
+    }
+
+    header .dropdown-header {
+        font-size: 12px !important;
+    }
+
+    header .dropdown-item {
+        padding: 12px 14px !important;
+        font-size: 12px !important;
+        line-height: 1.5;
+        overflow-wrap: anywhere;
+    }
+
+    header .dropdown-item small {
+        font-size: 10px !important;
+    }
+
+    .promo-bar {
+        padding: 7px 10px !important;
+        font-size: 11px !important;
+        line-height: 1.45;
+    }
+
+    main {
+        width: calc(100% - 24px) !important;
+        padding: 25px 0 48px !important;
+    }
+
+    .page-top {
+        margin-bottom: 19px;
+    }
+
+    .back-link {
+        font-size: 11px !important;
+        margin-bottom: 11px;
+    }
+
+    .page-heading-row {
+        display: block !important;
+    }
+
+    .page-kicker {
+        font-size: 10px !important;
+        padding: 7px 10px !important;
+    }
+
+    .page-heading h1 {
+        font-size: 27px !important;
+        line-height: 1.2;
+        overflow-wrap: anywhere;
+    }
+
+    .page-heading p {
+        font-size: 12px !important;
+        line-height: 1.6;
+    }
+
+    .page-heading-row > div:last-child {
+        width: 100%;
+        display: flex !important;
+        align-items: center;
+        gap: 9px !important;
+        margin-top: 14px;
+    }
+
+    .page-heading-row > div:last-child .btn-primary {
+        flex: 1 1 auto;
+        min-height: 46px;
+        padding: 0 12px;
+        font-size: 12px !important;
+        white-space: nowrap;
+    }
+
+    .header-stat {
+        min-width: 112px !important;
+        padding: 9px 10px !important;
+        border-radius: 11px;
+    }
+
+    .header-stat span {
+        font-size: 9px !important;
+        line-height: 1.35;
+    }
+
+    .header-stat strong {
+        font-size: 20px !important;
+    }
+
+    .alert {
+        padding: 11px 12px !important;
+        font-size: 11px !important;
+        line-height: 1.55;
+    }
+
+    .pet-grid {
+        grid-template-columns: minmax(0, 1fr) !important;
+        gap: 13px !important;
+    }
+
+    .pet-card {
+        padding: 17px !important;
+        border-radius: 16px;
+    }
+
+    .pet-card-top {
+        gap: 11px;
+        margin-bottom: 14px;
+    }
+
+    .pet-icon {
+        width: 46px;
+        height: 46px;
+        flex-basis: 46px;
+        font-size: 19px;
+    }
+
+    .pet-type-label {
+        font-size: 9px !important;
+        line-height: 1.4;
+    }
+
+    .pet-heading h2 {
+        font-size: 18px !important;
+        line-height: 1.3;
+        overflow-wrap: anywhere;
+    }
+
+    .pet-info-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        padding-top: 13px;
+    }
+
+    .info-item {
+        min-width: 0;
+        padding: 10px;
+    }
+
+    .info-item label {
+        font-size: 9px !important;
+        letter-spacing: .4px;
+    }
+
+    .info-item span {
+        font-size: 12px !important;
+        line-height: 1.5;
+        overflow-wrap: anywhere;
+    }
+
+    .pet-actions {
+        grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+        gap: 6px;
+        margin-top: 14px;
+    }
+
+    .delete-form {
+        min-width: 0;
+        margin: 0;
+    }
+
+    .pet-action,
+    .delete-form .pet-action {
+        width: 100%;
+        min-width: 0;
+        min-height: 43px;
+        padding: 5px 3px;
+        gap: 5px;
+        font-size: 10px !important;
+        line-height: 1.25;
+        text-align: center;
+        white-space: normal;
+    }
+
+    .empty-state {
+        padding: 43px 17px !important;
+        border-radius: 16px;
+    }
+
+    .empty-state h2 {
+        font-size: 19px !important;
+    }
+
+    .empty-state p {
+        font-size: 12px !important;
+        line-height: 1.6;
+    }
+
+    /* Add Pet modal: larger fields and readable health/care instructions. */
+    .modal {
+        padding: 10px !important;
+        align-items: center !important;
+        overflow-y: auto;
+    }
+
+    .modal-content {
+        width: 100% !important;
+        max-width: 520px;
+        max-height: calc(100vh - 20px) !important;
+        max-height: calc(100dvh - 20px) !important;
+        margin: auto !important;
+        border-radius: 16px;
+    }
+
+    .modal-head {
+        padding: 17px 16px !important;
+        gap: 10px;
+    }
+
+    .modal-head .kicker {
+        font-size: 10px !important;
+    }
+
+    .modal-head h2 {
+        font-size: 20px !important;
+        line-height: 1.25;
+    }
+
+    .modal-head p {
+        font-size: 12px !important;
+        line-height: 1.5;
+    }
+
+    .modal-close {
+        width: 40px;
+        height: 40px;
+        flex: 0 0 40px;
+    }
+
+    .modal-body {
+        padding: 17px 16px 19px !important;
+    }
+
+    .modal-body .form-grid {
+        grid-template-columns: minmax(0, 1fr) !important;
+        gap: 0;
+    }
+
+    .modal-body .form-group {
+        margin-bottom: 14px;
+    }
+
+    .modal-body .form-group label {
+        font-size: 12px !important;
+        line-height: 1.45;
+    }
+
+    .modal-body .form-control {
+        width: 100%;
+        min-height: 48px;
+        padding: 11px 12px;
+        font-size: 16px !important;
+        line-height: 1.4;
+    }
+
+    .modal-body textarea.form-control {
+        min-height: 115px !important;
+        font-size: 15px !important;
+        line-height: 1.55;
+    }
+
+    .modal-body .form-group small {
+        font-size: 11px !important;
+        line-height: 1.55 !important;
+    }
+
+    .modal-body > div[style*="background:#fff9e6"] {
+        padding: 12px !important;
+        margin: 8px 0 13px !important;
+    }
+
+    .modal-body > div[style*="background:#fff9e6"] > div {
+        font-size: 12px !important;
+        line-height: 1.45;
+    }
+
+    .modal-body > div[style*="background:#fff9e6"] p {
+        font-size: 11px !important;
+        line-height: 1.55 !important;
+    }
+
+    .modal-actions {
+        display: grid !important;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 9px;
+        margin-top: 17px;
+    }
+
+    .modal-cancel,
+    .modal-submit {
+        width: 100%;
+        min-height: 46px;
+        padding: 8px 10px;
+        font-size: 11px !important;
+        line-height: 1.3;
+    }
+
+    footer {
+        padding: 42px 15px 24px !important;
+    }
+
+    .footer-main {
+        grid-template-columns: 1fr !important;
+        gap: 23px;
+        padding-bottom: 27px;
+    }
+
+    .footer-main h4 {
+        font-size: 12px !important;
+    }
+
+    .footer-main p,
+    .footer-main a {
+        font-size: 12px !important;
+        line-height: 1.65;
+        overflow-wrap: anywhere;
+    }
+
+    .footer-bottom {
+        font-size: 10px !important;
+        line-height: 1.6;
+        padding-top: 18px;
+    }
+}
+
+@media (max-width: 380px) {
+    header .nav-top {
+        width: calc(100% - 18px) !important;
+    }
+
+    header .logo-text b {
+        font-size: 15px !important;
+    }
+
+    header .logo-text span {
+        font-size: 7px !important;
+    }
+
+    main {
+        width: calc(100% - 18px) !important;
+    }
+
+    .page-heading h1 {
+        font-size: 25px !important;
+    }
+
+    .page-heading-row > div:last-child {
+        gap: 7px !important;
+    }
+
+    .header-stat {
+        min-width: 102px !important;
+    }
+
+    .pet-card {
+        padding: 14px !important;
+    }
+
+    .pet-action,
+    .delete-form .pet-action {
+        font-size: 9.5px !important;
+        gap: 3px;
+    }
+
+    .modal-actions {
+        grid-template-columns: 1fr !important;
+    }
+}
+
 </style>
 
 

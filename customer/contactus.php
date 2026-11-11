@@ -40,7 +40,7 @@ $smtp_pass = defined('SMTP_PASS')
 
     ? SMTP_PASS
 
-    : (getenv('SMTP_PASS') ?: 'uyrxvppwuemortsp');
+    : (getenv('SMTP_PASS') ?: '');
 
 
 
@@ -3164,6 +3164,280 @@ $parent_text = ($total_reviews == 1) ? "happy fur-parent" : "happy fur-parents";
         flex-basis: 34px !important;
     }
 }
+
+
+
+        /* ===== FINAL MOBILE READABILITY — MATCH CUSTOMER HOME ===== */
+        @media (max-width: 680px) {
+            .contact-hero-inner {
+                padding: 40px 17px 36px !important;
+                gap: 22px !important;
+            }
+
+            .contact-hero h1 {
+                font-size: 30px !important;
+                line-height: 1.2 !important;
+            }
+
+            .contact-hero p {
+                font-size: 15px !important;
+                line-height: 1.65 !important;
+            }
+
+            .contact-hero-note {
+                font-size: 12px !important;
+                line-height: 1.5 !important;
+                gap: 9px !important;
+            }
+
+            .contact-section {
+                padding: 42px 16px 56px !important;
+            }
+
+            .contact-grid {
+                gap: 15px !important;
+            }
+
+            .info-card,
+            .form-card {
+                padding: 20px !important;
+                border-radius: 17px !important;
+            }
+
+            .card-heading {
+                margin-bottom: 19px !important;
+            }
+
+            .card-heading .kicker {
+                font-size: 11px !important;
+                line-height: 1.4 !important;
+            }
+
+            .card-heading h2 {
+                font-size: 24px !important;
+                line-height: 1.25 !important;
+            }
+
+            .card-heading p {
+                font-size: 14px !important;
+                line-height: 1.6 !important;
+            }
+
+            .info-item {
+                gap: 12px !important;
+                padding: 14px 0 !important;
+            }
+
+            .info-icon {
+                width: 42px !important;
+                height: 42px !important;
+                flex-basis: 42px !important;
+                font-size: 16px !important;
+            }
+
+            .info-item h4 {
+                font-size: 14px !important;
+                line-height: 1.4 !important;
+            }
+
+            .info-item p {
+                font-size: 14px !important;
+                line-height: 1.65 !important;
+                overflow-wrap: anywhere !important;
+            }
+
+            .form-group {
+                margin-bottom: 16px !important;
+            }
+
+            .form-group label {
+                font-size: 13px !important;
+                line-height: 1.4 !important;
+                margin-bottom: 7px !important;
+            }
+
+            .form-group input,
+            .form-group textarea {
+                font-size: 16px !important;
+                line-height: 1.5 !important;
+                padding: 12px 13px !important;
+            }
+
+            .form-group input {
+                min-height: 48px !important;
+            }
+
+            .form-group textarea {
+                min-height: 145px !important;
+                height: 145px !important;
+            }
+
+            .send-btn {
+                min-height: 48px !important;
+                font-size: 14px !important;
+                line-height: 1.4 !important;
+                padding: 12px 15px !important;
+            }
+
+            .reviews-section {
+                padding: 46px 16px 58px !important;
+            }
+
+            .reviews-header {
+                margin-bottom: 24px !important;
+            }
+
+            .reviews-kicker {
+                font-size: 11px !important;
+                line-height: 1.4 !important;
+            }
+
+            .reviews-header h2 {
+                font-size: 25px !important;
+                line-height: 1.25 !important;
+            }
+
+            .overall-stars {
+                font-size: 20px !important;
+            }
+
+            .overall-rating-text {
+                font-size: 13px !important;
+                line-height: 1.55 !important;
+            }
+
+            .reviews-grid {
+                gap: 13px !important;
+            }
+
+            .review-card {
+                padding: 19px !important;
+                border-radius: 16px !important;
+            }
+
+            .card-stars {
+                font-size: 14px !important;
+                margin-bottom: 11px !important;
+            }
+
+            .review-quote {
+                font-size: 14px !important;
+                line-height: 1.7 !important;
+                margin-bottom: 17px !important;
+                overflow-wrap: anywhere !important;
+            }
+
+            .reviewer-info {
+                padding-top: 13px !important;
+                gap: 10px !important;
+            }
+
+            .reviewer-avatar {
+                width: 40px !important;
+                height: 40px !important;
+                flex-basis: 40px !important;
+                font-size: 14px !important;
+            }
+
+            .reviewer-details h4 {
+                font-size: 13px !important;
+                line-height: 1.4 !important;
+            }
+
+            .reviewer-details p {
+                font-size: 12px !important;
+                line-height: 1.45 !important;
+            }
+
+            .reviews-empty {
+                padding: 36px 16px !important;
+            }
+
+            .reviews-empty h3 {
+                font-size: 18px !important;
+                line-height: 1.35 !important;
+            }
+
+            .reviews-empty p {
+                font-size: 14px !important;
+                line-height: 1.65 !important;
+            }
+
+            .read-more-container {
+                margin-top: 22px !important;
+            }
+
+            .read-more-link {
+                min-height: 44px !important;
+                font-size: 14px !important;
+                line-height: 1.4 !important;
+            }
+
+            footer {
+                padding: 42px 16px 24px !important;
+            }
+
+            .footer-main {
+                grid-template-columns: 1fr !important;
+                gap: 22px !important;
+                padding-bottom: 28px !important;
+            }
+
+            .footer-main h4 {
+                font-size: 13px !important;
+                line-height: 1.4 !important;
+                margin-bottom: 11px !important;
+            }
+
+            .footer-main p,
+            .footer-main a {
+                font-size: 13px !important;
+                line-height: 1.7 !important;
+                overflow-wrap: anywhere !important;
+            }
+
+            .socials {
+                margin-top: 14px !important;
+            }
+
+            .footer-bottom {
+                font-size: 11px !important;
+                line-height: 1.6 !important;
+                padding-top: 18px !important;
+            }
+        }
+
+        @media (max-width: 420px) {
+            .contact-hero h1 {
+                font-size: 28px !important;
+            }
+
+            .contact-hero p {
+                font-size: 14px !important;
+            }
+
+            .info-card,
+            .form-card {
+                padding: 17px !important;
+            }
+
+            .card-heading h2 {
+                font-size: 22px !important;
+            }
+
+            .info-item p,
+            .card-heading p,
+            .review-quote,
+            .reviews-empty p {
+                font-size: 13.5px !important;
+            }
+
+            .footer-main h4,
+            .footer-main p,
+            .footer-main a {
+                font-size: 13px !important;
+            }
+        }
 
 </style>
 

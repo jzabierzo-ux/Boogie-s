@@ -2293,6 +2293,394 @@ try {
             }
         }
 
+    
+
+        /* ===== MOBILE READABILITY IMPROVEMENTS ===== */
+        @media (max-width: 720px) {
+            body {
+                font-size: 15px;
+                -webkit-text-size-adjust: 100%;
+            }
+
+            .promo-bar {
+                font-size: 11px;
+                line-height: 1.45;
+            }
+
+            /* Keep the logo and account controls aligned in one compact row. */
+            .nav-top {
+                display: flex;
+                flex-direction: row;
+                align-items: center;
+                justify-content: space-between;
+                width: 100%;
+                padding: 10px 12px;
+                gap: 8px;
+            }
+
+            .logo {
+                flex: 1 1 auto;
+                min-width: 0;
+                gap: 8px;
+            }
+
+            .logo-text b {
+                font-size: 16px;
+            }
+
+            .logo-text span {
+                font-size: 8px;
+                letter-spacing: .7px;
+            }
+
+            .user-controls {
+                display: flex;
+                flex: 0 0 auto;
+                align-items: center;
+                gap: 7px;
+            }
+
+            .notification-bell,
+            .profile-trigger {
+                width: 42px;
+                min-width: 42px;
+                height: 42px;
+                min-height: 42px;
+            }
+
+            main {
+                width: calc(100% - 24px);
+                padding: 22px 0 44px;
+            }
+
+            .back-nav a {
+                font-size: 13px;
+            }
+
+            .schedule-kicker {
+                font-size: 10px;
+                line-height: 1.4;
+            }
+
+            .schedule-title h1 {
+                font-size: 28px;
+                line-height: 1.2;
+            }
+
+            .schedule-title p {
+                font-size: 14px;
+                line-height: 1.55;
+            }
+
+            .book-new-btn {
+                min-height: 46px;
+                font-size: 14px;
+            }
+
+            .alert {
+                font-size: 13px;
+                line-height: 1.55;
+                padding: 13px;
+            }
+
+            .filter-card {
+                padding: 13px;
+            }
+
+            .filter-search input,
+            .filter-select,
+            .filter-btn {
+                min-height: 46px;
+                height: 46px;
+                font-size: 14px;
+            }
+
+            .filter-search input {
+                padding-left: 38px;
+            }
+
+            .filter-search input::placeholder {
+                font-size: 13px;
+            }
+
+            .section-card {
+                padding: 16px;
+            }
+
+            .section-head .kicker {
+                font-size: 10px;
+            }
+
+            .section-head h2 {
+                font-size: 20px;
+                line-height: 1.3;
+            }
+
+            .section-head p {
+                font-size: 13px;
+                line-height: 1.5;
+            }
+
+            .section-count {
+                font-size: 11px;
+            }
+
+            .schedule-item {
+                gap: 12px;
+                padding: 14px;
+            }
+
+            .date-box {
+                width: 92px;
+            }
+
+            .date-box .date-month {
+                font-size: 11px;
+            }
+
+            .date-box .date-day {
+                font-size: 25px;
+            }
+
+            .date-box .date-week {
+                font-size: 10px;
+            }
+
+            .schedule-service {
+                font-size: 16px;
+                line-height: 1.4;
+                overflow-wrap: anywhere;
+            }
+
+            .schedule-details {
+                gap: 8px 12px;
+            }
+
+            .schedule-detail {
+                font-size: 12px;
+                line-height: 1.45;
+            }
+
+            .schedule-detail i {
+                font-size: 12px;
+            }
+
+            .schedule-note {
+                font-size: 12px;
+                line-height: 1.5;
+                overflow-wrap: anywhere;
+            }
+
+            .schedule-status {
+                gap: 8px;
+            }
+
+            .status-pill {
+                font-size: 10px;
+                line-height: 1.35;
+                padding: 6px 10px;
+                white-space: normal;
+            }
+
+            .payment-status,
+            .feedback-schedule {
+                font-size: 12px;
+                line-height: 1.45;
+                text-align: left;
+                white-space: normal;
+            }
+
+            .schedule-action {
+                display: flex;
+                flex-wrap: wrap;
+                align-items: stretch;
+                gap: 8px;
+            }
+
+            .btn-cancel-schedule,
+            .btn-review-schedule,
+            .btn-reschedule-schedule {
+                min-height: 44px;
+                padding: 10px 12px;
+                font-size: 12px;
+                line-height: 1.35;
+            }
+
+            .cancellation-locked-note {
+                max-width: 100%;
+                min-height: 40px;
+                padding: 9px 11px;
+                font-size: 12px;
+            }
+
+            .schedule-empty {
+                padding: 42px 14px;
+            }
+
+            .schedule-empty h3 {
+                font-size: 19px;
+            }
+
+            .schedule-empty p {
+                font-size: 13px;
+                line-height: 1.6;
+            }
+
+            .info-mini {
+                padding: 13px;
+            }
+
+            .info-mini strong {
+                font-size: 13px;
+            }
+
+            .info-mini span {
+                font-size: 12px;
+                line-height: 1.55;
+            }
+
+            /* Both dialogs use the same mobile bottom-sheet sizing. */
+            .modal-overlay {
+                padding: 10px;
+                align-items: flex-end;
+            }
+
+            .modal-content,
+            .reschedule-modal-content {
+                width: 100%;
+                max-width: 560px;
+                max-height: 92vh;
+                overflow-y: auto;
+                padding: 18px;
+                border-radius: 18px 18px 12px 12px;
+            }
+
+            .modal-header h2 {
+                font-size: 19px;
+                line-height: 1.3;
+            }
+
+            .modal-header p {
+                font-size: 13px;
+                line-height: 1.5;
+            }
+
+            .booking-details-box {
+                padding: 13px;
+            }
+
+            .booking-details-box > p {
+                font-size: 11px;
+            }
+
+            .booking-details-box h3 {
+                font-size: 17px;
+                overflow-wrap: anywhere;
+            }
+
+            .detail-row {
+                font-size: 13px;
+                line-height: 1.5;
+            }
+
+            .reschedule-help,
+            .important-warning {
+                font-size: 12px;
+                line-height: 1.6;
+                padding: 12px;
+            }
+
+            .reschedule-form-row {
+                grid-template-columns: 1fr;
+                gap: 0;
+            }
+
+            .modal-form-group label {
+                font-size: 13px;
+            }
+
+            .modal-form-group input,
+            .modal-form-group select {
+                width: 100%;
+                min-height: 46px;
+                height: 46px;
+                padding: 0 12px;
+                font-size: 16px;
+            }
+
+            .modal-actions {
+                flex-direction: column;
+                gap: 9px;
+            }
+
+            .modal-actions button {
+                width: 100%;
+                min-height: 46px;
+                font-size: 13px;
+            }
+
+            footer {
+                padding: 40px 16px 24px;
+            }
+
+            .footer-main h4 {
+                font-size: 13px;
+            }
+
+            .footer-main p,
+            .footer-main a {
+                font-size: 13px;
+                line-height: 1.65;
+            }
+
+            .footer-bottom {
+                font-size: 11px;
+                line-height: 1.6;
+            }
+
+            .dropdown-header {
+                font-size: 12px;
+            }
+
+            .dropdown-item {
+                font-size: 13px;
+                line-height: 1.5;
+            }
+        }
+
+        @media (max-width: 420px) {
+            .logo-text b {
+                font-size: 15px;
+            }
+
+            .logo-text span {
+                font-size: 7px;
+            }
+
+            main {
+                width: calc(100% - 20px);
+            }
+
+            .schedule-title h1 {
+                font-size: 25px;
+            }
+
+            .schedule-details {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+            }
+
+            .schedule-detail:last-child {
+                grid-column: 1 / -1;
+            }
+
+            .btn-cancel-schedule,
+            .btn-review-schedule,
+            .btn-reschedule-schedule {
+                font-size: 11px;
+            }
+        }
+
     </style>
 </head>
 

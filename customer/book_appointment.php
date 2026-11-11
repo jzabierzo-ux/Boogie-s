@@ -2989,6 +2989,395 @@ if ($error_msg !== '') {
             }
         }
 
+
+
+        /* ===== FINAL CUSTOMER MOBILE READABILITY / BOOKING LAYOUT ===== */
+        @media (max-width: 680px) {
+            /* Keep the customer header aligned on one row. */
+            header { width: 100%; }
+            .nav-top {
+                width: 100%;
+                max-width: none;
+                display: flex;
+                flex-wrap: nowrap;
+                align-items: center;
+                justify-content: space-between;
+                gap: 8px;
+                padding: 9px 12px;
+            }
+            .nav-top > .logo {
+                min-width: 0;
+                width: auto;
+                flex: 1 1 auto;
+                gap: 8px;
+                overflow: hidden;
+            }
+            .nav-logo-img {
+                width: 42px;
+                height: 42px;
+                flex: 0 0 42px;
+            }
+            .logo-text { min-width: 0; overflow: hidden; }
+            .logo-text b {
+                font-size: 17px;
+                white-space: nowrap;
+            }
+            .logo-text span {
+                font-size: 7px;
+                letter-spacing: .85px;
+                white-space: nowrap;
+            }
+            .user-controls {
+                width: auto;
+                flex: 0 0 auto;
+                justify-content: flex-end;
+                gap: 7px;
+            }
+            .notification-bell,
+            .profile-trigger {
+                width: 42px;
+                min-width: 42px;
+                height: 42px;
+            }
+            .profile-trigger {
+                min-height: 42px;
+                justify-content: center;
+                padding: 3px;
+            }
+            .profile-trigger span,
+            .profile-trigger > .fa-chevron-down { display: none; }
+            .profile-img {
+                width: 34px !important;
+                height: 34px !important;
+            }
+            .dropdown-menu {
+                position: fixed;
+                top: 72px;
+                right: 10px;
+                left: auto;
+                width: min(270px, calc(100vw - 20px));
+                max-width: calc(100vw - 20px);
+                max-height: calc(100vh - 86px);
+                overflow-y: auto;
+            }
+            .dropdown-menu[style*="width:210px"] {
+                width: min(210px, calc(100vw - 20px)) !important;
+            }
+            .dropdown-header { font-size: 12px; }
+            .dropdown-item { font-size: 13px; line-height: 1.5; }
+
+            main {
+                width: calc(100% - 28px);
+                padding: 25px 0 48px;
+            }
+            .page-intro { margin-bottom: 18px; }
+            .back-nav { margin-bottom: 11px; }
+            .back-nav a { font-size: 12px; }
+            .page-title-row { display: block; }
+            .page-kicker {
+                font-size: 10px;
+                padding: 6px 10px;
+                margin-bottom: 9px;
+            }
+            .page-title h1 {
+                font-size: 27px;
+                line-height: 1.2;
+                letter-spacing: -.4px;
+            }
+            .page-title p {
+                font-size: 14px;
+                line-height: 1.6;
+            }
+            .booking-summary-pill {
+                width: 100%;
+                margin-top: 12px;
+                justify-content: center;
+                white-space: normal;
+                text-align: center;
+                padding: 10px 12px;
+                font-size: 12px;
+                line-height: 1.5;
+            }
+            .booking-layout {
+                grid-template-columns: minmax(0, 1fr);
+                gap: 15px;
+            }
+            .booking-card,
+            .side-card { border-radius: 17px; }
+            .booking-card { padding: 18px 16px; }
+            .booking-card > form { min-width: 0; }
+            .form-group { margin-bottom: 16px; }
+            .form-row {
+                grid-template-columns: minmax(0, 1fr);
+                gap: 0;
+            }
+            .booking-card label {
+                font-size: 13px;
+                line-height: 1.45;
+                margin-bottom: 7px;
+            }
+            .booking-card input[type="text"],
+            .booking-card input[type="date"],
+            .booking-card select,
+            .booking-card textarea,
+            .booking-card input[type="file"] {
+                width: 100%;
+                min-width: 0;
+                min-height: 48px;
+                padding: 11px 12px;
+                font-size: 16px;
+                line-height: 1.4;
+            }
+            .booking-card input[type="file"] {
+                min-height: 50px;
+                padding: 10px;
+                font-size: 13px;
+            }
+            .booking-card textarea {
+                min-height: 115px;
+                line-height: 1.55;
+            }
+            .booking-card .header-section {
+                padding-bottom: 15px;
+                margin-bottom: 18px;
+            }
+            .booking-card .header-section h1 { font-size: 20px; }
+            .booking-card .header-section p {
+                font-size: 13px;
+                line-height: 1.6;
+            }
+            .booking-card .walkin-notice,
+            .booking-card .vet-info-box {
+                font-size: 12.5px;
+                line-height: 1.6;
+                padding: 12px;
+            }
+            #vetVisitDetailsContainer > p,
+            #customCutDescriptionContainer > p,
+            #bookingDatePolicy,
+            #availabilityMessage,
+            #checkoutDateGroup > p,
+            #pickupTimeGroup > p {
+                font-size: 12px !important;
+                line-height: 1.6 !important;
+            }
+            .booking-card .alert,
+            .booking-card .alert-warning,
+            .booking-card .alert-error {
+                font-size: 13px;
+                line-height: 1.6;
+            }
+            .booking-card .price-display {
+                padding: 17px 13px;
+                margin-bottom: 16px;
+                border-radius: 14px;
+            }
+            .booking-card .price-display p {
+                font-size: 11px;
+                line-height: 1.5;
+            }
+            .booking-card .price-display h2 { font-size: 29px; }
+            .booking-card .gcash-section {
+                padding: 16px 13px;
+                border-radius: 14px;
+                margin-bottom: 16px;
+            }
+            .booking-card .gcash-section h4 {
+                font-size: 15px;
+                line-height: 1.4;
+            }
+            .booking-card .gcash-section p {
+                font-size: 13px;
+                line-height: 1.65;
+            }
+            .gcash-qr-card {
+                width: 100%;
+                max-width: 310px;
+                padding: 8px 8px 0;
+            }
+            .gcash-qr-inner { padding: 12px 12px 9px; }
+            .gcash-qr-title {
+                font-size: 12px;
+                line-height: 1.45;
+            }
+            .gcash-qr-image {
+                width: min(245px, 100%);
+                max-width: 100%;
+            }
+            .booking-card .gcash-section .gcash-qr-caption,
+            .gcash-qr-caption {
+                font-size: 12px !important;
+                line-height: 1.55 !important;
+            }
+            .gcash-scan-strip {
+                font-size: 10px;
+                line-height: 1.5;
+                padding: 10px 8px;
+            }
+            .gcash-number {
+                display: flex;
+                width: 100%;
+                flex-wrap: wrap;
+                overflow-wrap: anywhere;
+                word-break: break-word;
+                padding: 10px;
+                font-size: 13px;
+                line-height: 1.5;
+            }
+            .gcash-account-card {
+                padding: 14px 13px;
+                margin-bottom: 17px;
+            }
+            .gcash-account-label { font-size: 11px; }
+            .gcash-account-name { font-size: 17px; }
+            .gcash-account-number {
+                width: 100%;
+                flex-wrap: wrap;
+                font-size: 14px;
+                line-height: 1.5;
+                overflow-wrap: anywhere;
+            }
+            .booking-card .booking-policy-notice {
+                padding: 11px 12px;
+                margin: 12px 0 10px;
+                font-size: 13px;
+                line-height: 1.5;
+            }
+            .booking-card .booking-policy-notice h4 {
+                font-size: 14px;
+                line-height: 1.35;
+                margin-bottom: 7px;
+            }
+            .booking-card .booking-policy-item,
+            .booking-card .booking-policy-alert,
+            .booking-card .booking-policy-emergency {
+                font-size: 13px;
+                line-height: 1.5;
+            }
+            .booking-card .booking-policy-item { margin: 7px 0; }
+            .booking-card .booking-policy-alert,
+            .booking-card .booking-policy-emergency {
+                padding: 9px 10px;
+                margin: 8px 0;
+            }
+            .booking-card .terms-container {
+                padding: 13px;
+                margin-bottom: 16px;
+                font-size: 13px;
+                line-height: 1.65;
+            }
+            .booking-card .terms-container label {
+                align-items: flex-start;
+                gap: 10px;
+                font-size: 13px;
+                line-height: 1.65;
+            }
+            .booking-card .terms-container input[type="checkbox"] {
+                width: 20px;
+                height: 20px;
+                flex-basis: 20px;
+                margin-top: 2px;
+            }
+            .booking-card .btn-submit {
+                min-height: 49px;
+                padding: 12px 14px;
+                font-size: 13px;
+                line-height: 1.45;
+            }
+            .side-card {
+                position: static;
+                padding: 18px 16px;
+            }
+            .side-kicker { font-size: 10px; }
+            .side-card h3 { font-size: 20px; }
+            .side-card > p {
+                font-size: 13px;
+                line-height: 1.65;
+                margin-bottom: 15px;
+            }
+            .step-list { gap: 13px; }
+            .step-item { gap: 10px; }
+            .step-icon {
+                width: 36px;
+                height: 36px;
+                flex-basis: 36px;
+                border-radius: 10px;
+                font-size: 14px;
+            }
+            .step-item strong { font-size: 13px; }
+            .step-item span {
+                font-size: 12px;
+                line-height: 1.55;
+            }
+            .side-note {
+                margin-top: 16px;
+                padding: 12px;
+                font-size: 12px;
+                line-height: 1.65;
+            }
+            footer { padding: 43px 15px 25px; }
+            .footer-main {
+                grid-template-columns: 1fr;
+                gap: 23px;
+                padding-bottom: 29px;
+            }
+            .footer-main h4 {
+                font-size: 13px;
+                line-height: 1.45;
+                margin-bottom: 12px;
+            }
+            .footer-main p,
+            .footer-main a {
+                font-size: 13px;
+                line-height: 1.7;
+            }
+            .socials { margin-top: 14px; }
+            .socials a {
+                width: 36px;
+                height: 36px;
+            }
+            .footer-bottom {
+                font-size: 11px;
+                line-height: 1.6;
+                padding-top: 19px;
+            }
+        }
+
+        @media (max-width: 420px) {
+            .nav-top { padding-left: 9px; padding-right: 9px; }
+            .nav-logo-img {
+                width: 38px;
+                height: 38px;
+                flex-basis: 38px;
+            }
+            .logo-text b { font-size: 15px; }
+            .logo-text span { font-size: 6px; letter-spacing: .7px; }
+            .user-controls { gap: 6px; }
+            .notification-bell,
+            .profile-trigger {
+                width: 40px;
+                min-width: 40px;
+                height: 40px;
+            }
+            .profile-img {
+                width: 32px !important;
+                height: 32px !important;
+            }
+            main { width: calc(100% - 22px); }
+            .page-title h1 { font-size: 25px; }
+            .booking-card { padding: 15px 13px; }
+            .booking-card input[type="file"] { font-size: 12px; }
+            .gcash-account-name { font-size: 16px; }
+            .booking-card .booking-policy-notice,
+            .booking-card .booking-policy-item,
+            .booking-card .booking-policy-alert,
+            .booking-card .booking-policy-emergency,
+            .booking-card .terms-container,
+            .booking-card .terms-container label {
+                font-size: 12.5px;
+            }
+        }
+
     </style>
 </head>
 
@@ -3308,25 +3697,26 @@ if ($error_msg !== '') {
                 </div>
 
                 <section class="booking-policy-notice" id="bookingPolicies" aria-labelledby="bookingPoliciesTitle">
-                    <h4 id="bookingPoliciesTitle"><i class="fa-solid fa-circle-exclamation" aria-hidden="true"></i> Important Booking Policies — Please Read Before Confirming</h4>
+                    <h4 id="bookingPoliciesTitle"><i class="fa-solid fa-circle-exclamation" aria-hidden="true"></i> Booking Policies</h4>
 
                     <div class="booking-policy-item">
-                        <strong>Late arrival and first missed appointment:</strong>
-                        A 30-minute grace period applies. If you miss your scheduled appointment beyond the grace period, you may request one reschedule within 3 days, subject to availability. The payment remains valid for the same service.
+                        <strong>Late arrival / first missed appointment:</strong>
+                        A 30-minute grace period is allowed. After that, you may request one reschedule within 3 days, subject to availability. Your payment remains valid for the same service.
                     </div>
 
                     <div class="booking-policy-alert" role="note" aria-label="No-show and non-refundable policy">
-                        <strong><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> NO-SHOW &amp; NON-REFUNDABLE POLICY:</strong>
-                        If you also miss the rescheduled appointment, the booking will be marked <strong>NO-SHOW</strong> and the payment will be <strong>NON-REFUNDABLE</strong>. Please make sure you can attend the selected date and time.
+                        <strong><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> NO-SHOW / NON-REFUNDABLE:</strong>
+                        Missing your rescheduled appointment will be marked <strong>NO-SHOW</strong>. Payment will be <strong>NON-REFUNDABLE</strong>.
                     </div>
 
                     <div class="booking-policy-emergency">
-                        <strong>Emergency leave or service personnel unavailability:</strong>
-                        If the assigned service personnel must take emergency leave or becomes unexpectedly unavailable, the Admin may reschedule your booking to an available date and time and notify you. An Admin-initiated reschedule due to staff unavailability will not be treated as a customer No-Show; your existing payment will remain valid for the same service on the agreed replacement schedule.
+                        <strong>Staff emergency / unavailability:</strong>
+                        If staff are unavailable, the Admin may arrange a new schedule and notify you. This will not count as your No-Show, and your payment remains valid for the same service.
                     </div>
 
                     <div class="booking-policy-item">
-                        <strong>Payment confirmation:</strong> Online bookings remain pending until the Admin verifies the GCash payment and confirms the reservation.
+                        <strong>Payment confirmation:</strong>
+                        Your booking is pending until the Admin verifies your GCash payment and confirms it.
                     </div>
                 </section>
 
