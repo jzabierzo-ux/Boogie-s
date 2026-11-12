@@ -340,7 +340,9 @@ if (!defined('SMTP_EMAIL')) {
     define('SMTP_EMAIL', getenv('SMTP_EMAIL') ?: 'boogiespetcare@gmail.com');
 }
 if (!defined('SMTP_PASS')) {
-    define('SMTP_PASS', getenv('SMTP_PASS') ?: 'uyrxvppwuemortsp');
+    // Keep SMTP credentials outside the source code. Configure SMTP_PASS
+    // in the deployment environment before enabling Google login OTP emails.
+    define('SMTP_PASS', getenv('SMTP_PASS') ?: '');
 }
 
 $smtpEmail = trim((string)SMTP_EMAIL);

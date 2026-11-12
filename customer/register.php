@@ -22,7 +22,9 @@ if (!defined('SMTP_EMAIL')) {
     define('SMTP_EMAIL', getenv('SMTP_EMAIL') ?: 'boogiespetcare@gmail.com');
 }
 if (!defined('SMTP_PASS')) {
-    define('SMTP_PASS', getenv('SMTP_PASS') ?: 'uyrxvppwuemortsp');
+    // SMTP credentials must be supplied through the hosting environment.
+    // Never keep a Gmail App Password in source code or a repository.
+    define('SMTP_PASS', getenv('SMTP_PASS') ?: '');
 }
 
 // Registration verification codes expire after 15 minutes and allow at most five attempts.
