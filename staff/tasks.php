@@ -3,47 +3,91 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../shared_session_bootstrap.php';
 
-/** Normalize the veterinary role labels accepted by the Personnel login. */
-function normalizeTasksPersonnelRole($role): string
-{
+/** Normalize legacy database roles while authorizing through the three system roles. */
+$normalizeTasksDatabaseRole = static function ($role): string {
     $role = strtolower(trim((string)$role));
-    $normalized = preg_replace('/[\s_-]+/', ' ', $role) ?? $role;
     $aliases = [
+        'administrator' => 'admin',
+        'shop manager' => 'manager',
+        'shop_manager' => 'manager',
         'vet' => 'veterinarian',
         'veterinary' => 'veterinarian',
-        'veterinarian' => 'veterinarian',
-        'vet assistant' => 'vet_assistant',
+        'front desk' => 'receptionist',
+        'front desk / receptionist' => 'receptionist',
+        'front_desk' => 'receptionist',
+        'front_desk_receptionist' => 'receptionist',
         'veterinary assistant' => 'vet_assistant',
-        'vet nurse' => 'vet_nurse',
+        'vet assistant' => 'vet_assistant',
+        'veterinary_assistant' => 'vet_assistant',
         'veterinary nurse' => 'vet_nurse',
+        'vet nurse' => 'vet_nurse',
+        'veterinary_nurse' => 'vet_nurse',
+        'grooming staff' => 'groomer',
+        'grooming staff / groomer' => 'groomer',
+        'grooming_staff' => 'groomer',
+        'grooming_staff_groomer' => 'groomer',
+        'pet hotel staff' => 'pet_hotel_staff',
+        'pet hotel staff / attendant' => 'pet_hotel_staff',
+        'pet_hotel_attendant' => 'pet_hotel_staff',
+        'pet_hotel_staff_attendant' => 'pet_hotel_staff',
+        'staff' => 'groomer',
+        'supervisor' => 'receptionist',
     ];
 
-    return $aliases[$normalized] ?? str_replace(' ', '_', $normalized);
-}
+    return $aliases[$role] ?? $role;
+};
+
+$mapTasksSystemRole = static function (string $databaseRole): string {
+    if ($databaseRole === 'admin') {
+        return 'admin';
+    }
+
+    if (in_array($databaseRole, ['manager', 'receptionist', 'groomer', 'pet_hotel_staff'], true)) {
+        return 'staff';
+    }
+
+    if (in_array($databaseRole, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)) {
+        return 'veterinarian';
+    }
+
+    return '';
+};
 
 /* -------------------------------------------------------------------------
-   AUTHENTICATION — VETERINARY TEAM ONLY
-   A valid Staff session must not carry an Admin portal flag.
+   AUTHENTICATION — VETERINARIAN SYSTEM ROLE ONLY
+   The revised login stores the canonical system role separately from the
+   legacy database role. Admin and operational Staff must never enter here.
    ------------------------------------------------------------------------- */
-$currentRole = normalizeTasksPersonnelRole($_SESSION['role'] ?? '');
-$loggedIn = ($_SESSION['logged_in'] ?? false) === true;
-$staffSession = ($_SESSION['staff_logged_in'] ?? false) === true;
-$adminSession = ($_SESSION['admin_logged_in'] ?? false) === true;
+$currentRole = $normalizeTasksDatabaseRole($_SESSION['role'] ?? '');
+$currentSystemRole = strtolower(trim((string)($_SESSION['system_role'] ?? '')));
+$loggedIn = in_array($_SESSION['logged_in'] ?? null, [true, 1, '1'], true);
+$staffSession = in_array($_SESSION['staff_logged_in'] ?? null, [true, 1, '1'], true);
+$adminSession = in_array($_SESSION['admin_logged_in'] ?? null, [true, 1, '1'], true);
 $userId = filter_var(
     $_SESSION['user_id'] ?? null,
     FILTER_VALIDATE_INT,
     ['options' => ['min_range' => 1]]
 );
-$vetRoles = ['veterinarian', 'vet_assistant', 'vet_nurse'];
 
-if (!$loggedIn || !$staffSession || $adminSession || !in_array($currentRole, $vetRoles, true)
-    || $userId === false || $userId === null) {
-    if ($adminSession) {
-        http_response_code(403);
-        exit('Access denied. This page is for the Veterinary Staff portal only.');
-    }
+// An Admin flag always blocks this endpoint, including conflicting dual-portal sessions.
+if ($adminSession) {
+    http_response_code(403);
+    exit('Access denied. Admin accounts cannot access Veterinary Tasks.');
+}
+
+if (!$loggedIn || !$staffSession) {
     header('Location: stafflogin.php');
     exit;
+}
+
+if (
+    $currentSystemRole !== 'veterinarian'
+    || $mapTasksSystemRole($currentRole) !== 'veterinarian'
+    || $userId === false
+    || $userId === null
+) {
+    http_response_code(403);
+    exit('Access denied. This page is for Veterinarian accounts only.');
 }
 $userId = (int)$userId;
 
@@ -60,7 +104,7 @@ header('Cross-Origin-Resource-Policy: same-origin');
 // Open the database only after the session flags, role, and user ID pass validation.
 require_once __DIR__ . '/../db_supabase.php';
 
-// Confirm that the role stored in the database still matches this Staff session.
+// Re-check the database role so stale sessions cannot retain access after a role change.
 try {
     $identityStmt = $pdo->prepare('SELECT role FROM public.users WHERE id = :user_id LIMIT 1');
     $identityStmt->execute([':user_id' => $userId]);
@@ -68,11 +112,18 @@ try {
 } catch (Throwable $e) {
     error_log('Tasks personnel identity verification failed: ' . $e->getMessage());
     http_response_code(503);
-    exit('Unable to verify the staff account right now. Please try again.');
+    exit('Unable to verify the Veterinarian account right now. Please try again.');
 }
 
-$databaseRole = $databaseRoleValue !== false ? normalizeTasksPersonnelRole($databaseRoleValue) : '';
-if (!in_array($databaseRole, $vetRoles, true) || !hash_equals($databaseRole, $currentRole)) {
+$databaseRole = $databaseRoleValue !== false
+    ? $normalizeTasksDatabaseRole($databaseRoleValue)
+    : '';
+$databaseSystemRole = $mapTasksSystemRole($databaseRole);
+if (
+    $databaseRole === ''
+    || $databaseRole !== $currentRole
+    || $databaseSystemRole !== 'veterinarian'
+) {
     http_response_code(403);
     exit('Access denied. Your account is not authorized for the Veterinary Tasks page.');
 }
@@ -86,8 +137,34 @@ $tasksCsrf = $_SESSION['tasks_csrf'];
 // Keep the variable name expected by the existing page markup.
 $tasks_csrf = $tasksCsrf;
 
+/** Return the correct unread value for the actual PostgreSQL notifications.is_read type. */
+function tasksNotificationReadValue(PDO $pdo): string
+{
+    $typeStmt = $pdo->prepare("SELECT data_type
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'notifications'
+          AND column_name = 'is_read'
+        LIMIT 1");
+    $typeStmt->execute();
+    $columnType = strtolower(trim((string)$typeStmt->fetchColumn()));
+
+    if ($columnType === 'boolean') {
+        return 'FALSE';
+    }
+    if (in_array($columnType, ['smallint', 'integer', 'bigint', 'numeric', 'decimal', 'real', 'double precision'], true)) {
+        return '0';
+    }
+    if (in_array($columnType, ['text', 'character varying', 'character'], true)) {
+        return "'false'";
+    }
+
+    throw new RuntimeException('Unsupported or missing public.notifications.is_read column type.');
+}
+
 /* -------------------------------------------------------------------------
-   COMPLETE TASK — ONLY A CONFIRMED VETERINARY APPOINTMENT CAN BE COMPLETED
+   COMPLETE TASK — CONFIRMED AND VERIFIED VETERINARY APPOINTMENTS ONLY
+   GCash bookings must have a Paid status set by Admin/Manager verification.
    ------------------------------------------------------------------------- */
 $requestMethod = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'));
 if (!in_array($requestMethod, ['GET', 'POST'], true)) {
@@ -96,6 +173,7 @@ if (!in_array($requestMethod, ['GET', 'POST'], true)) {
     exit('Method not allowed.');
 }
 
+$flash_message = '';
 if ($requestMethod === 'POST') {
     if (!isset($_POST['complete_task'])) {
         header('Allow: GET, POST');
@@ -119,27 +197,89 @@ if ($requestMethod === 'POST') {
     }
 
     try {
-        // The conditional UPDATE is atomic and prevents repeated/stale completion requests.
-        $completeStmt = $pdo->prepare("
-            UPDATE public.appointments
-            SET booking_status = 'Completed'
-            WHERE id = :appointment_id
-              AND LOWER(BTRIM(COALESCE(booking_status, ''))) = 'confirmed'
-              AND LOWER(BTRIM(COALESCE(service, ''))) LIKE 'vet services%'
-        ");
-        $completeStmt->execute([':appointment_id' => (int)$appointmentId]);
+        $pdo->beginTransaction();
 
-        if ($completeStmt->rowCount() !== 1) {
-            error_log('Veterinary task completion skipped: appointment not found, not confirmed, or not a Vet Services booking.');
+        // Lock the appointment while checking status and payment verification.
+        $appointmentStmt = $pdo->prepare("SELECT a.id, a.user_id, a.service, a.booking_status,
+                a.payment_method, a.payment_status, p.name AS pet_name
+            FROM public.appointments a
+            LEFT JOIN public.pets p ON p.id = a.pet_id
+            WHERE a.id = :appointment_id
+            LIMIT 1
+            FOR UPDATE OF a");
+        $appointmentStmt->execute([':appointment_id' => (int)$appointmentId]);
+        $appointment = $appointmentStmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$appointment) {
+            $pdo->rollBack();
+            $flash_message = 'Appointment not found.';
+        } elseif (stripos((string)($appointment['service'] ?? ''), 'Vet Services') !== 0) {
+            $pdo->rollBack();
+            $flash_message = 'This task is not part of the veterinary schedule.';
+        } else {
+            $currentStatus = strtolower(trim((string)($appointment['booking_status'] ?? '')));
+            $paymentMethod = strtolower(trim((string)($appointment['payment_method'] ?? '')));
+            $paymentStatus = strtolower(trim((string)($appointment['payment_status'] ?? '')));
+            $requiresVerifiedGcash = ($paymentMethod === 'gcash' && $paymentStatus !== 'paid');
+
+            if ($currentStatus !== 'confirmed') {
+                $pdo->rollBack();
+                $flash_message = 'Only confirmed veterinary appointments can be marked as completed.';
+            } elseif ($requiresVerifiedGcash) {
+                $pdo->rollBack();
+                $flash_message = 'GCash payment must be verified by Admin or Manager before this task can be completed.';
+            } else {
+                // Repeat the payment and status checks in SQL to protect against stale or concurrent requests.
+                $completeStmt = $pdo->prepare("UPDATE public.appointments
+                    SET booking_status = 'Completed'
+                    WHERE id = :appointment_id
+                      AND LOWER(BTRIM(COALESCE(service, ''))) LIKE 'vet services%'
+                      AND LOWER(BTRIM(COALESCE(booking_status, ''))) = 'confirmed'
+                      AND (
+                          LOWER(BTRIM(COALESCE(payment_method, ''))) <> 'gcash'
+                          OR LOWER(BTRIM(COALESCE(payment_status, ''))) = 'paid'
+                      )");
+                $completeStmt->execute([':appointment_id' => (int)$appointmentId]);
+
+                if ($completeStmt->rowCount() !== 1) {
+                    $pdo->rollBack();
+                    $flash_message = 'The task was not updated. Its appointment or payment status may have changed.';
+                } else {
+                    $customerId = (int)($appointment['user_id'] ?? 0);
+                    if ($customerId > 0) {
+                        $notificationReadValue = tasksNotificationReadValue($pdo);
+                        $petName = trim((string)($appointment['pet_name'] ?? '')) ?: 'Unknown Pet';
+                        $serviceName = trim((string)($appointment['service'] ?? '')) ?: 'Veterinary';
+                        $notificationStmt = $pdo->prepare("INSERT INTO public.notifications
+                            (user_id, title, message, type, is_read, created_at)
+                            VALUES (:user_id, :title, :message, 'booking', {$notificationReadValue}, NOW())");
+                        $notificationStmt->execute([
+                            ':user_id' => $customerId,
+                            ':title' => 'Appointment Completed',
+                            ':message' => "Your {$serviceName} appointment for {$petName} has been Completed.",
+                        ]);
+                    }
+
+                    $pdo->commit();
+                    $flash_message = 'Appointment successfully marked as Completed.';
+                }
+            }
         }
     } catch (Throwable $e) {
-        error_log('Task completion update failed: ' . $e->getMessage());
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        error_log('Veterinary task completion failed: ' . $e->getMessage());
+        $flash_message = 'Unable to complete the task right now. Please try again.';
     }
 
-    // PRG prevents accidental duplicate submissions when the page is refreshed.
+    $_SESSION['tasks_flash'] = $flash_message;
     header('Location: tasks.php', true, 303);
     exit;
 }
+
+$flash_message = (string)($_SESSION['tasks_flash'] ?? '');
+unset($_SESSION['tasks_flash']);
 
 /* -------------------------------------------------------------------------
    STAFF PROFILE
@@ -237,11 +377,13 @@ try {
             a.id,
             a.service,
             a.booking_status,
+            a.payment_method,
+            a.payment_status,
             a.appointment_date,
             a.appointment_time,
             p.name AS pet_name
-        FROM appointments a
-        LEFT JOIN pets p ON p.id = a.pet_id
+        FROM public.appointments a
+        LEFT JOIN public.pets p ON p.id = a.pet_id
         WHERE LOWER(BTRIM(COALESCE(a.booking_status, ''))) IN ('pending', 'confirmed', 'completed', 'rescheduled')
           AND LOWER(BTRIM(COALESCE(a.service, ''))) LIKE 'vet services%'
         ORDER BY
@@ -258,7 +400,7 @@ try {
 $total_tasks = count($tasks);
 $completed_tasks = 0;
 foreach ($tasks as $taskRow) {
-    if (($taskRow['booking_status'] ?? '') === 'Completed') {
+    if (strtolower(trim((string)($taskRow['booking_status'] ?? ''))) === 'completed') {
         $completed_tasks++;
     }
 }
@@ -2226,6 +2368,12 @@ input, select, textarea, button, img { max-width:100%; }
                 <h1 style="font-size: 24px; font-weight: 800; color: var(--sidebar-navy);">My Tasks</h1>
                 <p style="color: var(--text-muted); font-size: 14px; font-weight: 500;">Manage and track your daily medical procedures</p>
             </div>
+            <?php if ($flash_message !== ''): ?>
+                <div role="status" aria-live="polite" style="margin:-8px 0 22px; padding:12px 16px; border-radius:10px; background:#eff6ff; color:#1e40af; border:1px solid #bfdbfe; font-size:13px; font-weight:600;">
+                    <i class="fas fa-circle-info" style="margin-right:6px;" aria-hidden="true"></i>
+                    <?php echo htmlspecialchars($flash_message, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
+                </div>
+            <?php endif; ?>
 
             <div class="stats-grid">
                 <div class="stat-card c-total">
@@ -2255,8 +2403,15 @@ input, select, textarea, button, img { max-width:100%; }
                         <?php foreach ($tasks as $task): ?>
                             <?php
                                 $task_status = strtolower(trim((string)($task['booking_status'] ?? '')));
+                                $payment_method = strtolower(trim((string)($task['payment_method'] ?? '')));
+                                $payment_status = strtolower(trim((string)($task['payment_status'] ?? '')));
                                 $is_done = ($task_status === 'completed');
-                                $can_complete = ($task_status === 'confirmed');
+                                $awaiting_gcash_verification = (
+                                    !$is_done
+                                    && $payment_method === 'gcash'
+                                    && $payment_status !== 'paid'
+                                );
+                                $can_complete = ($task_status === 'confirmed' && !$awaiting_gcash_verification);
                                 $status_class = $is_done
                                     ? 'badge-completed'
                                     : ($can_complete
@@ -2278,6 +2433,10 @@ input, select, textarea, button, img { max-width:100%; }
                                         <div class="btn-toggle" aria-label="Completed">
                                             <i class="fas fa-check" style="font-size: 16px;"></i>
                                         </div>
+                                    <?php elseif ($awaiting_gcash_verification): ?>
+                                        <div class="task-waiting-indicator" title="Awaiting Admin/Manager GCash verification" aria-label="Awaiting Admin/Manager GCash verification">
+                                            <i class="fas fa-lock" aria-hidden="true"></i>
+                                        </div>
                                     <?php else: ?>
                                         <div class="task-waiting-indicator" title="Awaiting appointment confirmation" aria-label="Awaiting appointment confirmation">
                                             <i class="fas fa-clock" aria-hidden="true"></i>
@@ -2298,6 +2457,9 @@ input, select, textarea, button, img { max-width:100%; }
                                     <span class="status-badge <?php echo $status_class; ?>">
                                         <?php echo htmlspecialchars((string)($task['booking_status'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>
                                     </span>
+                                    <?php if ($awaiting_gcash_verification): ?>
+                                        <small style="display:block; margin-top:6px; color:#92400e; font-size:10px; font-weight:600;">Awaiting Admin/Manager GCash verification</small>
+                                    <?php endif; ?>
                                 </div>
                             </div>
                             

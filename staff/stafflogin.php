@@ -12,7 +12,8 @@ header('Referrer-Policy: strict-origin-when-cross-origin');
 header('X-Frame-Options: DENY');
 
 /*
- * Normalize legacy role labels without changing the stored database role.
+ * Normalize legacy database role labels while preserving the role values
+ * expected by existing protected pages.
  */
 function normalizePersonnelRole($role): string
 {
@@ -48,18 +49,43 @@ function normalizePersonnelRole($role): string
     return $aliases[$role] ?? $role;
 }
 
-/** Only personnel roles may use this login; Admin has a separate login page. */
-function isAllowedPersonnelRole(string $role): bool
+/**
+ * Map database roles to the three system roles used by the revised portal.
+ * Existing role values are retained separately for compatibility with older
+ * page-level permission checks.
+ */
+function personnelSystemRole(string $databaseRole): string
 {
-    return in_array($role, [
+    $databaseRole = normalizePersonnelRole($databaseRole);
+
+    if ($databaseRole === 'admin') {
+        return 'admin';
+    }
+
+    if (in_array($databaseRole, [
         'manager',
         'receptionist',
         'groomer',
         'pet_hotel_staff',
+    ], true)) {
+        return 'staff';
+    }
+
+    if (in_array($databaseRole, [
         'veterinarian',
         'vet_assistant',
         'vet_nurse',
-    ], true);
+    ], true)) {
+        return 'veterinarian';
+    }
+
+    return '';
+}
+
+/** Only Staff and Veterinarian accounts may use this portal; Admin is separate. */
+function isAllowedPersonnelRole(string $role): bool
+{
+    return in_array(personnelSystemRole($role), ['staff', 'veterinarian'], true);
 }
 
 /** Write an account event without allowing an audit-log failure to break login. */
@@ -116,6 +142,7 @@ function showPersonnelLoginError(string $message): void
 // Keep already-authenticated users in the correct portal. A Staff session must
 // never carry the Admin flag, and an Admin session must never carry the Staff flag.
 $sessionRole = normalizePersonnelRole($_SESSION['role'] ?? '');
+$sessionSystemRole = personnelSystemRole($sessionRole);
 $sessionLoggedIn = ($_SESSION['logged_in'] ?? false) === true;
 $adminFlag = ($_SESSION['admin_logged_in'] ?? false) === true;
 $staffFlag = ($_SESSION['staff_logged_in'] ?? false) === true;
@@ -127,9 +154,10 @@ $sessionUserId = filter_var(
 $validSessionUser = $sessionUserId !== false && $sessionUserId !== null;
 
 $validAdminSession = $sessionLoggedIn && $adminFlag && !$staffFlag
-    && $sessionRole === 'admin' && $validSessionUser;
+    && $sessionSystemRole === 'admin' && $validSessionUser;
 $validStaffSession = $sessionLoggedIn && $staffFlag && !$adminFlag
-    && isAllowedPersonnelRole($sessionRole) && $validSessionUser;
+    && in_array($sessionSystemRole, ['staff', 'veterinarian'], true)
+    && $validSessionUser;
 
 if ($validAdminSession) {
     header('Location: ../admin/admindashboard.php?portal=admin');
@@ -137,7 +165,7 @@ if ($validAdminSession) {
 }
 
 if ($validStaffSession) {
-    if (in_array($sessionRole, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)) {
+    if ($sessionSystemRole === 'veterinarian') {
         header('Location: staffdashboard.php');
     } else {
         header('Location: ../admin/admindashboard.php?portal=staff');
@@ -225,14 +253,17 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             showPersonnelLoginError('Invalid username/email or password.');
         }
 
+        // Keep the normalized database role for existing page permissions, while
+        // using the new system role for portal access and destination routing.
         $normalizedRole = normalizePersonnelRole($user['role'] ?? '');
+        $systemRole = personnelSystemRole($normalizedRole);
 
-        if ($normalizedRole === 'admin') {
+        if ($systemRole === 'admin') {
             logPersonnelAccount($pdo, (int)$databaseUserId, 'LOGIN', 'FAILED');
             showPersonnelLoginError('This account is not authorized for the Personnel Portal.');
         }
 
-        if (!isAllowedPersonnelRole($normalizedRole)) {
+        if (!in_array($systemRole, ['staff', 'veterinarian'], true)) {
             logPersonnelAccount($pdo, (int)$databaseUserId, 'LOGIN', 'FAILED');
             http_response_code(403);
             showPersonnelLoginError('This account does not have an authorized personnel role.');
@@ -249,6 +280,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         $_SESSION['staff_logged_in'] = true;
         $_SESSION['user_id'] = (int)$databaseUserId;
         $_SESSION['role'] = $normalizedRole;
+        $_SESSION['system_role'] = $systemRole;
 
         logPersonnelAccount($pdo, (int)$databaseUserId, 'LOGIN', 'SUCCESS');
 
@@ -259,13 +291,14 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         $position = trim((string)($user['position'] ?? ''));
         $_SESSION['staff_position'] = $position !== '' ? $position : 'Personnel';
 
-        // Route each role to its intended area; destination pages must authorize independently.
-        if (in_array($normalizedRole, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)) {
+        // Route by the revised system role. Destination pages must still
+        // perform their own authorization checks for every protected request.
+        if ($systemRole === 'veterinarian') {
             header('Location: staffdashboard.php');
             exit();
         }
 
-        if (in_array($normalizedRole, ['manager', 'receptionist', 'groomer', 'pet_hotel_staff'], true)) {
+        if ($systemRole === 'staff') {
             header('Location: ../admin/admindashboard.php?portal=staff');
             exit();
         }
@@ -406,13 +439,10 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         <div class="brand-logo-wrap" style="grid-area:logo"><img src="../admin/bg.png" class="brand-logo" alt="Boogie's Pet Care Services logo"></div>
         <p class="brand-eyebrow" style="grid-area:eyebrow">Boogie's Pet Care &amp; Services</p>
         <h1 class="brand-title" style="grid-area:title">Your work. Their care.</h1>
-        <p class="brand-description" style="grid-area:description">Sign in to access the staff tools for bookings, customer details, and pet care records assigned to your role.</p>
+        <p class="brand-description" style="grid-area:description">Sign in to access the Staff or Veterinarian tools assigned to your account.</p>
         <div class="role-list" style="grid-area:roles" aria-label="Authorized personnel roles">
-          <span class="role-chip">Manager</span>
-          <span class="role-chip">Receptionist</span>
-          <span class="role-chip">Groomer</span>
-          <span class="role-chip">Pet Hotel Staff</span>
-          <span class="role-chip">Veterinary Team</span>
+          <span class="role-chip">Staff</span>
+          <span class="role-chip">Veterinarian</span>
         </div>
       </div>
       <div class="brand-footer"><i class="fa-solid fa-shield-halved" aria-hidden="true"></i> Secure access for authorized personnel</div>
@@ -423,7 +453,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
       <h2 class="form-title" id="login-title">Welcome back</h2>
       <p class="form-subtitle">Enter your assigned username or email and password to continue.</p>
 
-      <div class="security-note"><i class="fa-solid fa-circle-info" aria-hidden="true"></i><div><strong>Staff access only.</strong> Your account permissions determine which pages and actions you can use.</div></div>
+      <div class="security-note"><i class="fa-solid fa-circle-info" aria-hidden="true"></i><div><strong>Authorized personnel only.</strong> Staff and Veterinarian accounts are directed to the tools allowed for their system role.</div></div>
 
       <form action="<?php echo htmlspecialchars((string)($_SERVER['PHP_SELF'] ?? 'stafflogin.php'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>" method="POST" autocomplete="on">
         <input type="hidden" name="personnel_login_csrf" value="<?php echo htmlspecialchars($_SESSION['personnel_login_csrf'], ENT_QUOTES, 'UTF-8'); ?>">

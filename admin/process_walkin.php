@@ -169,6 +169,8 @@ $appointment_date = walkinPostString('appointment_date');
 $appointment_time = walkinPostString('appointment_time');
 $pickup_time = walkinPostString('pickup_time');
 $checkout_date = walkinPostString('checkout_date');
+$discount_percent_raw = walkinPostString('discount_percent', '0');
+$discount_percent = is_numeric($discount_percent_raw) ? (float)$discount_percent_raw : -1;
 $is_daycare = ($service_category === 'Pet Hotel' && stripos($specific_service, 'daycare') !== false);
 
 
@@ -490,7 +492,14 @@ if (!preg_match('/^09\d{9}$/', $contact_number)) {
 
 }
 
-
+if ($discount_percent < 0 || $discount_percent > 99.99) {
+    walkinRedirect('Please enter a discount percentage from 0 to 99.99.');
+}
+$can_apply_manual_discount = in_array($current_role, ['admin', 'manager', 'receptionist'], true);
+if ($discount_percent > 0 && !$can_apply_manual_discount) {
+    http_response_code(403);
+    exit('Access denied. Only Admin, Manager, or Front Desk can apply a walk-in discount.');
+}
 
 if (!isset($pricing_data[$pet_type][$service_category][$specific_service])) {
 
@@ -618,6 +627,10 @@ if ($is_overnight_boarding) {
     $checkout_date = '';
     $pickup_time = '';
 }
+
+$service_subtotal = round((float)$service_fee, 2);
+$discount_amount = round($service_subtotal * ($discount_percent / 100), 2);
+$final_total_price = max(0, round($service_subtotal - $discount_amount, 2));
 
 $walkin_now_manila = new DateTimeImmutable('now', new DateTimeZone('Asia/Manila'));
 if ($appointment_date < $walkin_now_manila->format('Y-m-d')) {
@@ -1127,6 +1140,14 @@ try {
 
                 total_price,
 
+                discount_percent,
+
+                discount_amount,
+
+                promo_id,
+
+                promo_title,
+
                 payment_method,
 
                 payment_status,
@@ -1159,6 +1180,14 @@ try {
 
                 :total_price,
 
+                :discount_percent,
+
+                :discount_amount,
+
+                NULL,
+
+                NULL,
+
                 'Cash (Walk-in)',
 
                 'Pending',
@@ -1189,9 +1218,13 @@ try {
 
         ':appointment_time' => $appointment_time,
 
-        ':service_fee' => $service_fee,
+        ':service_fee' => $service_subtotal,
 
-        ':total_price' => $service_fee,
+        ':total_price' => $final_total_price,
+
+        ':discount_percent' => $discount_percent,
+
+        ':discount_amount' => $discount_amount,
 
         ':vet_doctor' => $service_category === 'Vet Services' ? 'Dr. Faith Casayuran' : null,
         ':checkout_date' => $is_overnight_boarding ? $checkout_date : null,
@@ -1205,7 +1238,8 @@ try {
 
 
 
-    $_SESSION['alert_msg'] = 'Walk-in booking created and confirmed. Payment remains Pending until cash is actually received. Total: ₱' . number_format($service_fee, 2);
+    $_SESSION['alert_msg'] = 'Walk-in booking created and confirmed. Payment remains Pending until cash is actually received. Final amount: ₱' . number_format($final_total_price, 2)
+        . ($discount_amount > 0 ? ' (Base ₱' . number_format($service_subtotal, 2) . ', Discount ' . number_format($discount_percent, 2) . '% = ₱' . number_format($discount_amount, 2) . ')' : '');
 
 } catch (Throwable $e) {
 

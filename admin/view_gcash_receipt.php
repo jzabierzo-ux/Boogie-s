@@ -37,10 +37,19 @@ $adminAuthorized = (
     && ($_SESSION['staff_logged_in'] ?? false) !== true
     && $role === 'admin'
     && $adminUserId !== false
+    && $adminUserId !== null
+);
+$managerAuthorized = (
+    ($_SESSION['logged_in'] ?? false) === true
+    && ($_SESSION['staff_logged_in'] ?? false) === true
+    && ($_SESSION['admin_logged_in'] ?? false) !== true
+    && $role === 'manager'
+    && $adminUserId !== false
+    && $adminUserId !== null
 );
 
-if (!$adminAuthorized) {
-    gcashReceiptFail(403, 'Access denied. Admin authentication is required.');
+if (!$adminAuthorized && !$managerAuthorized) {
+    gcashReceiptFail(403, 'Access denied. Admin or Manager authentication is required.');
 }
 
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'GET') {
@@ -57,8 +66,24 @@ if ($bookingId === false) {
     gcashReceiptFail(400, 'Invalid booking request.');
 }
 
-// Establish the database connection only after Admin authorization and request validation.
+// Establish the database connection only after privileged authorization and request validation.
 require_once __DIR__ . '/../db_supabase.php';
+
+// Re-check the Manager role against the database before exposing private payment evidence.
+if ($managerAuthorized) {
+    try {
+        $managerRoleStmt = $pdo->prepare('SELECT role FROM public.users WHERE id = :user_id LIMIT 1');
+        $managerRoleStmt->execute([':user_id' => (int)$adminUserId]);
+        $storedRole = strtolower(trim((string)$managerRoleStmt->fetchColumn()));
+        $storedRole = preg_replace('/[\s-]+/', '_', $storedRole) ?? $storedRole;
+        if (!in_array($storedRole, ['manager', 'shop_manager'], true)) {
+            gcashReceiptFail(403, 'Access denied. The Manager role is no longer active.');
+        }
+    } catch (Throwable $e) {
+        error_log('GCash receipt Manager-role verification failed: ' . $e->getMessage());
+        gcashReceiptFail(503, 'Unable to verify Manager access right now.');
+    }
+}
 
 try {
     $bookingStmt = $pdo->prepare('

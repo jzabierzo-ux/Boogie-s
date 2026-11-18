@@ -3,32 +3,88 @@ require_once __DIR__ . '/../shared_session_bootstrap.php';
 
 date_default_timezone_set('Asia/Manila');
 
-// This page belongs only to the Veterinarian Portal. Require an exclusive,
-// authenticated Staff session; an Admin session must never enter this page.
+// This page belongs only to the Veterinarian system role. Keep legacy database
+// roles for existing accounts, but authorize through the revised three-role map.
+$normalizePersonnelDatabaseRole = static function ($role): string {
+    $role = strtolower(trim((string)$role));
+    static $aliases = [
+        'administrator' => 'admin',
+        'shop manager' => 'manager',
+        'shop_manager' => 'manager',
+        'vet' => 'veterinarian',
+        'veterinary' => 'veterinarian',
+        'front desk' => 'receptionist',
+        'front desk / receptionist' => 'receptionist',
+        'front_desk' => 'receptionist',
+        'front_desk_receptionist' => 'receptionist',
+        'veterinary assistant' => 'vet_assistant',
+        'vet assistant' => 'vet_assistant',
+        'veterinary_assistant' => 'vet_assistant',
+        'veterinary nurse' => 'vet_nurse',
+        'vet nurse' => 'vet_nurse',
+        'veterinary_nurse' => 'vet_nurse',
+        'grooming staff' => 'groomer',
+        'grooming staff / groomer' => 'groomer',
+        'grooming_staff' => 'groomer',
+        'grooming_staff_groomer' => 'groomer',
+        'pet hotel staff' => 'pet_hotel_staff',
+        'pet hotel staff / attendant' => 'pet_hotel_staff',
+        'pet_hotel_attendant' => 'pet_hotel_staff',
+        'pet_hotel_staff_attendant' => 'pet_hotel_staff',
+        'staff' => 'groomer',
+        'supervisor' => 'receptionist',
+    ];
+
+    return $aliases[$role] ?? $role;
+};
+
+$mapPersonnelSystemRole = static function (string $databaseRole): string {
+    if ($databaseRole === 'admin') {
+        return 'admin';
+    }
+    if (in_array($databaseRole, ['manager', 'receptionist', 'groomer', 'pet_hotel_staff'], true)) {
+        return 'staff';
+    }
+    if (in_array($databaseRole, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)) {
+        return 'veterinarian';
+    }
+    return '';
+};
+
 $raw_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
-$normalized_role = preg_replace('/[\\s_-]+/', ' ', $raw_role) ?? '';
-$role_aliases = [
-    'vet' => 'veterinarian',
-    'veterinary' => 'veterinarian',
-];
-$current_role = $role_aliases[$normalized_role] ?? $normalized_role;
-$is_logged_in = ($_SESSION['logged_in'] ?? false) === true;
-$is_staff_session = ($_SESSION['staff_logged_in'] ?? false) === true
-    && ($_SESSION['admin_logged_in'] ?? false) !== true;
+$current_role = $normalizePersonnelDatabaseRole($raw_role);
+$current_system_role = strtolower(trim((string)($_SESSION['system_role'] ?? '')));
+$is_logged_in = in_array($_SESSION['logged_in'] ?? null, [true, 1, '1'], true);
+$is_staff_session = in_array($_SESSION['staff_logged_in'] ?? null, [true, 1, '1'], true);
+$is_admin_session = in_array($_SESSION['admin_logged_in'] ?? null, [true, 1, '1'], true);
+
+// An Admin flag always blocks this page, including conflicting dual-portal sessions.
+if ($is_admin_session) {
+    http_response_code(403);
+    exit('Access denied. Admin accounts cannot access Veterinary Appointments.');
+}
+
+if (!$is_logged_in || !$is_staff_session) {
+    header('Location: stafflogin.php');
+    exit();
+}
+
+if (
+    $current_system_role !== 'veterinarian'
+    || $mapPersonnelSystemRole($current_role) !== 'veterinarian'
+) {
+    http_response_code(403);
+    exit('Access denied. This page is for Veterinarian accounts only.');
+}
+
 $staff_user_id = filter_var(
     $_SESSION['user_id'] ?? null,
     FILTER_VALIDATE_INT,
     ['options' => ['min_range' => 1]]
 );
-$is_vet_role = ($current_role === 'veterinarian');
-
-if (!$is_logged_in || !$is_staff_session || !$is_vet_role || $staff_user_id === false || $staff_user_id === null) {
-    if (!$is_logged_in || !$is_staff_session) {
-        header('Location: stafflogin.php');
-        exit();
-    }
+if ($staff_user_id === false || $staff_user_id === null) {
     http_response_code(403);
-    exit('Access denied. This page is for authorized veterinary personnel only.');
+    exit('Access denied. The Veterinarian account session is invalid. Please sign in again.');
 }
 
 // Do not allow a cached page to expose another user's appointment information.
@@ -55,9 +111,13 @@ try {
     exit('Unable to verify your staff account right now. Please try again.');
 }
 
-$databaseRoleNormalized = preg_replace('/[\\s_-]+/', ' ', strtolower(trim((string)$databaseRoleRaw))) ?? '';
-$databaseRole = $role_aliases[$databaseRoleNormalized] ?? $databaseRoleNormalized;
-if ($databaseRole !== 'veterinarian' || $databaseRole !== $current_role) {
+$databaseRole = $normalizePersonnelDatabaseRole($databaseRoleRaw);
+$databaseSystemRole = $mapPersonnelSystemRole($databaseRole);
+if (
+    $databaseRole === ''
+    || $databaseRole !== $current_role
+    || $databaseSystemRole !== 'veterinarian'
+) {
     http_response_code(403);
     exit('Access denied. Your account is not authorized for veterinary appointments.');
 }
@@ -300,7 +360,7 @@ if ($request_method === 'POST' && array_key_exists('clinic_reschedule_action', $
                 trim($rawRescheduleDate),
                 trim($rawRescheduleTime),
                 trim($rawRescheduleReason),
-                $current_role
+                $current_system_role
             );
             $flash_message = is_array($clinicRescheduleResult)
                 ? (string)($clinicRescheduleResult['message'] ?? 'Unable to process the clinic-initiated reschedule.')
@@ -348,7 +408,7 @@ if ($request_method === 'POST' && array_key_exists('appointment_action', $_POST)
             // Lock only the appointment row; LEFT JOIN keeps the appointment
             // available for validation even if its pet record is missing.
             $appointment_stmt = $pdo->prepare("SELECT a.id, a.user_id, a.service, a.booking_status,
-                    p.name AS pet_real_name
+                    a.payment_method, a.payment_status, p.name AS pet_real_name
                 FROM public.appointments a
                 LEFT JOIN public.pets p ON p.id = a.pet_id
                 WHERE a.id = :id
@@ -368,12 +428,21 @@ if ($request_method === 'POST' && array_key_exists('appointment_action', $_POST)
                 if ($current_status === '') {
                     $current_status = 'pending';
                 }
+                $payment_method = strtolower(trim((string)($appointment['payment_method'] ?? '')));
+                $payment_status = strtolower(trim((string)($appointment['payment_status'] ?? '')));
+                $requires_verified_gcash = in_array($action, ['confirm', 'complete'], true)
+                    && $payment_method === 'gcash'
+                    && $payment_status !== 'paid';
+
                 $transition_allowed = (
                     (($action === 'confirm' || $action === 'cancel') && $current_status === 'pending') ||
                     ($action === 'complete' && $current_status === 'confirmed')
                 );
 
-                if (!$transition_allowed) {
+                if ($requires_verified_gcash) {
+                    $pdo->rollBack();
+                    $flash_message = 'GCash payment must be verified by Admin or Manager before this appointment can be confirmed or completed.';
+                } elseif (!$transition_allowed) {
                     $pdo->rollBack();
                     $flash_message = 'That appointment cannot be changed from its current status.';
                 } else {
@@ -385,10 +454,14 @@ if ($request_method === 'POST' && array_key_exists('appointment_action', $_POST)
                     $new_status = $new_status_map[$action];
 
                     // Guard the write again in SQL against stale or concurrent actions.
+                    // GCash confirmation/completion must follow Admin/Manager verification.
                     $update_stmt = $pdo->prepare("UPDATE public.appointments
                         SET booking_status = :new_status
                         WHERE id = :id
                           AND LOWER(BTRIM(COALESCE(service, ''))) LIKE 'vet services%'
+                          AND (:requires_paid_gcash = 0
+                               OR LOWER(BTRIM(COALESCE(payment_method, ''))) <> 'gcash'
+                               OR LOWER(BTRIM(COALESCE(payment_status, ''))) = 'paid')
                           AND (
                               ((:pending_target = 'Confirmed' OR :cancel_target = 'Cancelled')
                                   AND LOWER(BTRIM(COALESCE(booking_status, ''))) IN ('pending', ''))
@@ -401,6 +474,7 @@ if ($request_method === 'POST' && array_key_exists('appointment_action', $_POST)
                         ':pending_target' => $new_status,
                         ':cancel_target' => $new_status,
                         ':complete_target' => $new_status,
+                        ':requires_paid_gcash' => in_array($action, ['confirm', 'complete'], true) ? 1 : 0,
                     ]);
 
                     if ($update_stmt->rowCount() !== 1) {
@@ -516,6 +590,8 @@ try {
             a.appointment_date::text AS appointment_date,
             a.appointment_time::text AS appointment_time,
             a.booking_status,
+            a.payment_method,
+            a.payment_status,
             a.remarks,
             p.name AS pet_name
         FROM public.appointments a
@@ -2785,13 +2861,19 @@ input, select, textarea, button, img { max-width:100%; }
                                         . ' data-remarks="' . $remarks_attr . '"><i class="fas fa-file-medical"></i></button>';
 
                                     if ($status_lower === 'pending') {
-                                        echo '<form method="POST" action="appointments.php" style="display:inline; margin:0;" onsubmit="return confirm(\'Confirm this appointment?\');">';
-                                        echo '<input type="hidden" name="appointment_action" value="confirm">';
-                                        echo '<input type="hidden" name="appointment_id" value="' . (int)$row['id'] . '">';
-                                        echo '<input type="hidden" name="return_status" value="' . htmlspecialchars($filter_status, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '">';
-                                        echo '<input type="hidden" name="csrf_token" value="' . htmlspecialchars($csrf_token, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '">';
-                                        echo '<button type="submit" class="btn-icon btn-confirm" title="Confirm Appointment"><i class="fas fa-check"></i></button>';
-                                        echo '</form>';
+                                        $row_payment_method = strtolower(trim((string)($row['payment_method'] ?? '')));
+                                        $row_payment_status = strtolower(trim((string)($row['payment_status'] ?? '')));
+                                        if ($row_payment_method === 'gcash' && $row_payment_status !== 'paid') {
+                                            echo '<span style="color:#92400e;font-size:11px;font-weight:600;">Awaiting Admin/Manager GCash verification</span>';
+                                        } else {
+                                            echo '<form method="POST" action="appointments.php" style="display:inline; margin:0;" onsubmit="return confirm(\'Confirm this appointment?\');">';
+                                            echo '<input type="hidden" name="appointment_action" value="confirm">';
+                                            echo '<input type="hidden" name="appointment_id" value="' . (int)$row['id'] . '">';
+                                            echo '<input type="hidden" name="return_status" value="' . htmlspecialchars($filter_status, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '">';
+                                            echo '<input type="hidden" name="csrf_token" value="' . htmlspecialchars($csrf_token, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '">';
+                                            echo '<button type="submit" class="btn-icon btn-confirm" title="Confirm Appointment"><i class="fas fa-check"></i></button>';
+                                            echo '</form>';
+                                        }
 
                                         echo '<form method="POST" action="appointments.php" style="display:inline; margin:0;" onsubmit="return confirm(\'Cancel this appointment?\');">';
                                         echo '<input type="hidden" name="appointment_action" value="cancel">';

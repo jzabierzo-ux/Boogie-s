@@ -1,44 +1,117 @@
 <?php
 require_once __DIR__ . '/../shared_session_bootstrap.php';
 
+date_default_timezone_set('Asia/Manila');
+ini_set('display_errors', '0');
+
 /*
- * shared_session_bootstrap.php already loads db_supabase.php because the
- * session store itself uses the PostgreSQL connection. Do not include it again.
+ * shared_session_bootstrap.php initializes the shared PostgreSQL connection
+ * and session used by the Staff portal. Do not start a second session here.
  */
 
-// This page is restricted to an authenticated veterinarian Staff session.
-$roleAliases = [
-    'vet' => 'veterinarian',
-    'veterinary' => 'veterinarian',
-];
-$normalizeMedicalRole = static function ($role) use ($roleAliases): string {
-    $normalized = strtolower(trim((string)$role));
-    return $roleAliases[$normalized] ?? $normalized;
-};
+/**
+ * Normalize legacy users.role values without changing the stored database role.
+ * This keeps existing Veterinarian, Vet Assistant, and Vet Nurse accounts
+ * compatible with the revised three-system-role setup.
+ */
+function normalizeMedicalDatabaseRole($role): string
+{
+    $role = strtolower(trim((string)$role));
+    $role = preg_replace('/[\s_-]+/', ' ', $role) ?? $role;
 
-$currentRole = $normalizeMedicalRole($_SESSION['role'] ?? '');
-$loggedIn = ($_SESSION['logged_in'] ?? false) === true;
-$staffLoggedIn = ($_SESSION['staff_logged_in'] ?? false) === true;
-$adminLoggedIn = !empty($_SESSION['admin_logged_in']);
-$staffUserIdRaw = $_SESSION['user_id'] ?? $_SESSION['staff_id'] ?? null;
-$staffUserId = (is_string($staffUserIdRaw) || is_int($staffUserIdRaw))
-    ? filter_var($staffUserIdRaw, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]])
+    $aliases = [
+        'administrator' => 'admin',
+        'admin' => 'admin',
+
+        'shop manager' => 'manager',
+        'manager' => 'manager',
+
+        'front desk' => 'receptionist',
+        'front desk receptionist' => 'receptionist',
+        'front desk / receptionist' => 'receptionist',
+        'receptionist' => 'receptionist',
+
+        'grooming staff' => 'groomer',
+        'grooming staff / groomer' => 'groomer',
+        'groomer' => 'groomer',
+
+        'pet hotel attendant' => 'pet_hotel_staff',
+        'pet hotel staff' => 'pet_hotel_staff',
+        'pet hotel staff / attendant' => 'pet_hotel_staff',
+
+        'vet' => 'veterinarian',
+        'veterinary' => 'veterinarian',
+        'veterinarian' => 'veterinarian',
+
+        'vet assistant' => 'vet_assistant',
+        'veterinary assistant' => 'vet_assistant',
+
+        'vet nurse' => 'vet_nurse',
+        'veterinary nurse' => 'vet_nurse',
+    ];
+
+    return $aliases[$role] ?? str_replace(' ', '_', $role);
+}
+
+/** Map a normalized database role to one of the three official system roles. */
+function medicalSystemRoleFromDatabaseRole(string $databaseRole): string
+{
+    if ($databaseRole === 'admin') {
+        return 'admin';
+    }
+
+    if (in_array($databaseRole, ['manager', 'receptionist', 'groomer', 'pet_hotel_staff'], true)) {
+        return 'staff';
+    }
+
+    if (in_array($databaseRole, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)) {
+        return 'veterinarian';
+    }
+
+    return '';
+}
+
+/* -------------------------------------------------------------------------
+   AUTHENTICATION — VETERINARIAN SYSTEM ROLE ONLY
+   Admin and operational Staff must not edit veterinary medical records.
+   The original users.role value remains in the session for compatibility.
+   ------------------------------------------------------------------------- */
+$currentDatabaseRole = normalizeMedicalDatabaseRole($_SESSION['role'] ?? '');
+$currentSystemRole = strtolower(trim((string)($_SESSION['system_role'] ?? '')));
+
+$loggedIn = in_array($_SESSION['logged_in'] ?? null, [true, 1, '1'], true);
+$staffLoggedIn = in_array($_SESSION['staff_logged_in'] ?? null, [true, 1, '1'], true);
+$adminLoggedIn = in_array($_SESSION['admin_logged_in'] ?? null, [true, 1, '1'], true);
+
+$userIdRaw = $_SESSION['user_id'] ?? $_SESSION['staff_id'] ?? null;
+$userId = (is_string($userIdRaw) || is_int($userIdRaw))
+    ? filter_var($userIdRaw, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]])
     : false;
 
-if (
-    !$loggedIn ||
-    !$staffLoggedIn ||
-    $adminLoggedIn ||
-    $currentRole !== 'veterinarian' ||
-    $staffUserId === false ||
-    $staffUserId === null
-) {
+// An Admin portal flag always blocks this endpoint, even if both flags are set.
+if ($adminLoggedIn) {
+    http_response_code(403);
+    exit('Access denied. Admin accounts cannot edit veterinary medical records.');
+}
+
+if (!$loggedIn || !$staffLoggedIn) {
     header('Location: stafflogin.php');
     exit();
 }
 
+if (
+    $currentSystemRole !== 'veterinarian' ||
+    medicalSystemRoleFromDatabaseRole($currentDatabaseRole) !== 'veterinarian' ||
+    $userId === false ||
+    $userId === null
+) {
+    http_response_code(403);
+    exit('Access denied. This page is for Veterinarian accounts only.');
+}
+$userId = (int)$userId;
+
 // Medical and patient information must not be stored in browser or shared caches.
-header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+header('Cache-Control: private, no-store, no-cache, must-revalidate, max-age=0');
 header('Pragma: no-cache');
 header('Expires: 0');
 header('X-Content-Type-Options: nosniff');
@@ -54,8 +127,47 @@ if (!isset($pdo) || !($pdo instanceof PDO)) {
 
 date_default_timezone_set('Asia/Manila');
 
-// --- CSRF TOKEN ---
-if (!isset($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token']) || $_SESSION['csrf_token'] === '') {
+// Re-check the current database role on every request. A stale session must not
+// retain medical-record access after the account role changes or is deleted.
+try {
+    $accountStmt = $pdo->prepare(
+        'SELECT role, full_name, profile_image
+         FROM public.users
+         WHERE id = :id
+         LIMIT 1'
+    );
+    $accountStmt->execute([':id' => $userId]);
+    $accountData = $accountStmt->fetch(PDO::FETCH_ASSOC);
+} catch (Throwable $e) {
+    error_log('Edit medical records account verification failed: ' . $e->getMessage());
+    http_response_code(503);
+    exit('Medical records are temporarily unavailable. Please try again.');
+}
+
+$databaseRole = $accountData
+    ? normalizeMedicalDatabaseRole($accountData['role'] ?? '')
+    : '';
+
+if (
+    !$accountData ||
+    $databaseRole === '' ||
+    $databaseRole !== $currentDatabaseRole ||
+    medicalSystemRoleFromDatabaseRole($databaseRole) !== 'veterinarian'
+) {
+    http_response_code(403);
+    exit('You are not authorized to access veterinary medical records. Please sign in again.');
+}
+
+// Do not overwrite $_SESSION['role'] with the combined system role.
+// Keep the normalized legacy database role and use $_SESSION['system_role']
+// separately for the three-role access model.
+$staff_data = $accountData;
+
+if (
+    !isset($_SESSION['csrf_token']) ||
+    !is_string($_SESSION['csrf_token']) ||
+    !preg_match('/^[a-f0-9]{64}$/i', $_SESSION['csrf_token'])
+) {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
 }
 $csrf_token = (string)$_SESSION['csrf_token'];
@@ -111,35 +223,12 @@ function editMedicalResolveProfileImageUrl(?string $storedPath): string
 }
 
 $staff_name = (string)($_SESSION['staff_name'] ?? 'Doctor');
-$profile_img_path = '';
-$profile_img_url = '';
-$full_display_name = $staff_name;
-
-try {
-    // Verify the account's current database role; session values alone are not trusted.
-    $get_staff_stmt = $pdo->prepare(
-        'SELECT role, full_name, profile_image FROM users WHERE id = :id LIMIT 1'
-    );
-    $get_staff_stmt->execute([':id' => (int)$staffUserId]);
-    $staff_data = $get_staff_stmt->fetch(PDO::FETCH_ASSOC);
-} catch (PDOException $e) {
-    error_log('Edit medical records staff account lookup failed: ' . $e->getMessage());
-    http_response_code(503);
-    exit('Medical records are temporarily unavailable. Please try again.');
-}
-
-if (!$staff_data || $normalizeMedicalRole($staff_data['role'] ?? '') !== 'veterinarian') {
-    http_response_code(403);
-    exit('You are not authorized to access veterinary medical records.');
-}
-
-// Keep the canonical role after both the session and database checks pass.
-$_SESSION['role'] = 'veterinarian';
 $profile_img_path = (string)($staff_data['profile_image'] ?? '');
-if (!empty($staff_data['full_name'])) {
-    $full_display_name = (string)$staff_data['full_name'];
-    $_SESSION['staff_name'] = $full_display_name;
-    $_SESSION['user_name'] = $full_display_name;
+$profile_img_url = '';
+$full_display_name = trim((string)($staff_data['full_name'] ?? ''));
+
+if ($full_display_name === '') {
+    $full_display_name = trim($staff_name) !== '' ? $staff_name : 'Doctor';
 }
 
 $profile_img_url = editMedicalResolveProfileImageUrl($profile_img_path);
@@ -269,12 +358,12 @@ if ($method === 'POST') {
 
     // Breed, age, and weight may be left blank when the owner has not supplied them.
     // Weight is text-compatible to preserve existing values such as "Medium (6-10kg)".
-    $validPetTypes = ['Dog', 'Cat', 'Other'];
+    $validPetTypes = ['Dog', 'Cat'];
     $validGenders = ['Male', 'Female', 'Unknown'];
 
     if ($petFields['name'] === '' || editMedicalTextLength($petFields['name']) > 120) {
         $error_msg = 'Pet name is required and must not exceed 120 characters.';
-    } elseif (!in_array($petFields['pet_type'], $validPetTypes, true)) {
+    } elseif (!in_array($petFields['pet_type'], $validPetTypes, true) && $petFields['pet_type'] !== (string)($row['pet_type'] ?? '')) {
         $error_msg = 'Please select a valid pet type.';
     } elseif (!in_array($petFields['gender'], $validGenders, true)) {
         $error_msg = 'Please select a valid gender.';
@@ -2248,11 +2337,16 @@ input, select, textarea, button, img { max-width:100%; }
 
                         <div class="form-group">
                             <label for="pet_type">Pet Type <span class="required-mark">*</span></label>
+                            <?php if (in_array($petFields['pet_type'], ['Dog', 'Cat'], true)): ?>
                             <select class="form-control" id="pet_type" name="pet_type" required>
                                 <option value="Dog" <?php echo $petFields['pet_type'] === 'Dog' ? 'selected' : ''; ?>>Dog</option>
                                 <option value="Cat" <?php echo $petFields['pet_type'] === 'Cat' ? 'selected' : ''; ?>>Cat</option>
-                                <option value="Other" <?php echo $petFields['pet_type'] === 'Other' ? 'selected' : ''; ?>>Other</option>
                             </select>
+                        <?php else: ?>
+                            <input class="form-control" type="text" value="<?php echo htmlspecialchars($petFields['pet_type'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?> (existing record)" readonly>
+                            <input type="hidden" name="pet_type" value="<?php echo htmlspecialchars($petFields['pet_type'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
+                            <small class="field-help">This older pet type is kept for this existing record. New pet profiles accept dogs and cats only.</small>
+                        <?php endif; ?>
                         </div>
 
                         <div class="form-group">

@@ -98,6 +98,8 @@ if (!$admin_session_valid && !$staff_session_valid) {
 }
 
 $is_admin = $admin_session_valid;
+// Keep the previously approved RBAC rule: only Admin and verified Manager may verify GCash.
+$can_verify_gcash = $is_admin || ($staff_session_valid && $current_role === 'manager');
 $is_service_staff = in_array($current_role, ['groomer', 'pet_hotel_staff'], true);
 $booking_page_roles = ['admin', 'manager', 'receptionist', 'groomer', 'pet_hotel_staff'];
 if (!in_array($current_role, $booking_page_roles, true)) {
@@ -107,6 +109,25 @@ if (!in_array($current_role, $booking_page_roles, true)) {
 
 // Do not load the database, SMS provider, or booking helpers before access is verified.
 require_once __DIR__ . '/../db_supabase.php';
+
+// Re-check Manager identity before allowing privileged GCash verification.
+if ($staff_session_valid && $current_role === 'manager') {
+    try {
+        $managerRoleStmt = $pdo->prepare('SELECT role FROM public.users WHERE id = :user_id LIMIT 1');
+        $managerRoleStmt->execute([':user_id' => (int)$sessionUserId]);
+        $storedManagerRole = strtolower(trim((string)$managerRoleStmt->fetchColumn()));
+        $storedManagerRole = preg_replace('/[\s-]+/', '_', $storedManagerRole) ?? $storedManagerRole;
+        if (!in_array($storedManagerRole, ['manager', 'shop_manager'], true)) {
+            http_response_code(403);
+            exit('Access denied. Your Manager role is no longer active. Please sign in again.');
+        }
+    } catch (Throwable $e) {
+        error_log('Manager role verification failed in booking manager: ' . $e->getMessage());
+        http_response_code(503);
+        exit('Unable to verify Manager permissions right now. Please try again.');
+    }
+}
+
 require_once __DIR__ . '/../includes/iprog_sms.php';
 require_once __DIR__ . '/../includes/clinic_reschedule.php';
 
@@ -1018,11 +1039,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['booking_action'])) {
         $paymentStatusNow = strtolower(trim((string)($bookingForAccess['payment_status'] ?? '')));
         $bookingStatusNow = strtolower(trim((string)($bookingForAccess['booking_status'] ?? 'pending')));
 
-        // Only Admin may verify GCash after checking the real transaction.
+        // Only Admin and verified Manager may verify GCash after checking the real transaction.
         if ($new_status === 'verify_gcash') {
-            if (!$is_admin) {
+            if (!$can_verify_gcash) {
                 http_response_code(403);
-                exit('Only the Admin can verify GCash payments.');
+                exit('Only an authorized Admin or Manager can verify GCash payments.');
             }
             $hasPaymentEvidence = trim((string)($bookingForAccess['gcash_ref'] ?? '')) !== ''
                 || trim((string)($bookingForAccess['gcash_receipt'] ?? '')) !== '';
@@ -1035,7 +1056,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['booking_action'])) {
 
         // Staff may request review; this action does not modify either status.
         if ($new_status === 'notify_gcash') {
-            if ($is_admin || $paymentMethodNow !== 'gcash' || $paymentStatusNow !== 'pending verification' || $bookingStatusNow !== 'pending') {
+            if ($can_verify_gcash || $paymentMethodNow !== 'gcash' || $paymentStatusNow !== 'pending verification' || $bookingStatusNow !== 'pending') {
                 $_SESSION['alert_msg'] = 'Only unverified GCash bookings can be sent to the Admin for review.';
                 header('Location: managebooking.php');
                 exit();
@@ -1318,7 +1339,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['booking_action'])) {
                 // Payment may be collected after the service is finished.
                 // Completing service never verifies or changes payment status.
                 if ($paymentMethodNow === 'gcash' && $paymentStatusNow !== 'paid') {
-                    $_SESSION['alert_msg'] = 'GCash must be verified by the Admin before this booking can be completed.';
+                    $_SESSION['alert_msg'] = 'GCash must be verified by an authorized Admin or Manager before this booking can be completed.';
                     header('Location: managebooking.php');
                     exit();
                 }
@@ -1341,7 +1362,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['booking_action'])) {
             } elseif ($new_status === 'Confirmed') {
                 // Confirmation is not evidence of payment.
                 if ($paymentMethodNow === 'gcash' && $paymentStatusNow !== 'paid') {
-                    $_SESSION['alert_msg'] = 'GCash payment must be verified by the Admin before this booking can be confirmed.';
+                    $_SESSION['alert_msg'] = 'GCash payment must be verified by an authorized Admin or Manager before this booking can be confirmed.';
                     header('Location: managebooking.php');
                     exit();
                 }
@@ -1648,6 +1669,7 @@ try {
     $bookings_sql = "
         SELECT a.id, a.appointment_date, a.appointment_time, a.appointment_type,
                a.booking_status, a.service, a.service_fee, a.total_price,
+               a.discount_percent, a.discount_amount, a.promo_title,
                a.payment_method, a.payment_status, a.gcash_ref, a.gcash_receipt,
                a.pickup_time, a.vet_doctor, a.remarks, p.name AS pet_display_name
         FROM appointments a
@@ -2551,7 +2573,10 @@ if ($is_admin) {
                                     $raw_status = $row['booking_status'] ?? '';
                                     $display_status = (empty($raw_status)) ? 'Pending' : $raw_status;
                                     
-                                    $fee = isset($row['service_fee']) ? $row['service_fee'] : (isset($row['total_price']) ? $row['total_price'] : 0);
+                                    $base_fee = isset($row['service_fee']) ? (float)$row['service_fee'] : (isset($row['total_price']) ? (float)$row['total_price'] : 0.0);
+                                    $fee = isset($row['total_price']) ? (float)$row['total_price'] : $base_fee;
+                                    $booking_discount_percent = (float)($row['discount_percent'] ?? 0);
+                                    $booking_discount_amount = (float)($row['discount_amount'] ?? 0);
                                     $pay_method = !empty($row['payment_method']) ? $row['payment_method'] : 'N/A';
                                     $pay_status = !empty($row['payment_status']) ? $row['payment_status'] : 'Pending';
                                     
@@ -2599,6 +2624,10 @@ if ($is_admin) {
                                         <td>
                                             <div style="display: flex; flex-direction: column; gap: 4px;">
                                                 <strong style="color: var(--navy-dark); font-size: 15px;">₱<?php echo number_format($fee, 2); ?></strong>
+                                                <?php if ($booking_discount_amount > 0): ?>
+                                                    <small style="font-size:10px;color:#0f766e;font-weight:700;">Discount <?php echo number_format($booking_discount_percent, 2); ?>% (-₱<?php echo number_format($booking_discount_amount, 2); ?>)<?php echo !empty($row['promo_title']) ? ' · ' . htmlspecialchars((string)$row['promo_title'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') : ''; ?></small>
+                                                    <small style="font-size:10px;color:#64748b;">Regular: ₱<?php echo number_format($base_fee, 2); ?></small>
+                                                <?php endif; ?>
                                                 <div style="display: flex; align-items: center; gap: 6px;">
                                                     <span style="font-size: 11px; color: #64748b; font-weight: bold;"><?php echo htmlspecialchars($pay_method); ?></span>
                                                     <span style="color: <?php echo $pay_color; ?>; background: <?php echo $pay_bg; ?>; font-weight: 700; padding: 2px 6px; border-radius: 4px; font-size: 10px; letter-spacing: 0.5px;">
@@ -2610,7 +2639,7 @@ if ($is_admin) {
                                                     <span style="font-size: 11px; color: #0284c7; font-weight: 700; margin-top: 2px;">
                                                         Ref: <?php echo htmlspecialchars($row['gcash_ref']); ?>
                                                     </span>
-                                                    <?php if (!empty($row['gcash_receipt']) && $is_admin): ?>
+                                                    <?php if (!empty($row['gcash_receipt']) && $can_verify_gcash): ?>
                                                         <button type="button"
                                                             class="gcash-receipt-open"
                                                             data-booking-id="<?php echo (int)$row['id']; ?>"
@@ -2638,7 +2667,7 @@ if ($is_admin) {
                                                     $isCashMethod = strpos(strtolower((string)$pay_method), 'cash') !== false;
                                                 ?>
                                                 <?php if ($isGcashPending): ?>
-                                                    <?php if ($is_admin): ?>
+                                                    <?php if ($can_verify_gcash): ?>
                                                         <?php renderBookingActionForm('verify_gcash', $bookingId, 'btn-verify-gcash', '<i class="fa-solid fa-money-bill-wave"></i> Verify', 'Verify GCash payment', 'Only verify after checking the actual GCash transaction and receipt/reference. Continue?', $csrf_token); ?>
                                                         <?php renderBookingActionForm('Cancelled', $bookingId, 'btn-icon btn-icon-cancel', '<i class="fas fa-times"></i>', 'Reject and cancel booking', 'Reject and cancel this booking?', $csrf_token); ?>
                                                     <?php else: ?>
@@ -2939,9 +2968,27 @@ if ($is_admin) {
                 </div>
 
                 <div class="modal-form-group">
-                    <label>Service Amount (₱) *</label>
+                    <label>Regular Service Amount (₱) *</label>
                     <input type="number" step="0.01" name="amount" id="walkinAmount" required readonly placeholder="0.00" style="font-weight:700;background:#f8fafc;">
-                    <small style="display:block;margin-top:6px;color:#64748b;font-size:11px;">Payment can be collected later. Saving the walk-in will keep payment status as Pending.</small>
+                </div>
+                <div class="modal-form-group">
+                    <label for="walkinDiscountPercent">Discount (%)</label>
+                    <?php if (in_array($current_role, ['admin', 'manager', 'receptionist'], true)): ?>
+                        <input type="number" name="discount_percent" id="walkinDiscountPercent" min="0" max="99.99" step="0.01" value="0" oninput="updateWalkinPrice()" style="width:100%;padding:10px 12px;border:1px solid #cbd5e1;border-radius:9px;background:#fff;">
+                        <small style="display:block;margin-top:6px;color:#64748b;font-size:11px;">Default is 0%. Enter a discount only when authorized and approved.</small>
+                    <?php else: ?>
+                        <input type="hidden" name="discount_percent" value="0">
+                        <input type="number" id="walkinDiscountPercent" value="0" readonly style="width:100%;padding:10px 12px;border:1px solid #e2e8f0;border-radius:9px;background:#f8fafc;">
+                        <small style="display:block;margin-top:6px;color:#64748b;font-size:11px;">Only Admin, Manager, or Front Desk can apply a manual discount.</small>
+                    <?php endif; ?>
+                </div>
+                <div style="margin:0 0 15px;padding:12px 14px;border:1px solid #bbf7d0;border-radius:10px;background:#f0fdf4;">
+                    <div style="font-size:11px;color:#166534;font-weight:800;text-transform:uppercase;">Final Amount After Discount</div>
+                    <div id="walkinFinalAmount" style="font-size:22px;color:#166534;font-weight:800;margin-top:3px;">₱0.00</div>
+                    <small id="walkinDiscountSummary" style="font-size:11px;color:#64748b;">No discount applied.</small>
+                </div>
+                <div class="modal-form-group">
+                    <small style="display:block;margin-top:6px;color:#64748b;font-size:11px;">Payment can be collected later. Saving the walk-in will keep payment status as Pending until cash is actually received.</small>
                 </div>
 
                 <div class="modal-actions" style="margin-top:20px;">
@@ -3535,6 +3582,9 @@ if ($is_admin) {
             const priceText = document.getElementById('walkinPriceText');
             const priceNote = document.getElementById('walkinPriceNote');
             const amountInput = document.getElementById('walkinAmount');
+            const discountInput = document.getElementById('walkinDiscountPercent');
+            const finalAmountDisplay = document.getElementById('walkinFinalAmount');
+            const discountSummary = document.getElementById('walkinDiscountSummary');
             const saveBtn = document.getElementById('walkinSaveBtn');
             const serviceData = walkinPricingData[petType]?.[category]?.[service];
             const isBoarding = category === 'Pet Hotel' && service.toLowerCase().includes('boarding');
@@ -3560,6 +3610,8 @@ if ($is_admin) {
             if (!baseValid) {
                 priceBox.style.display = 'none';
                 amountInput.value = '';
+                if (finalAmountDisplay) finalAmountDisplay.textContent = '₱0.00';
+                if (discountSummary) discountSummary.textContent = 'No discount applied.';
                 saveBtn.disabled = true;
                 saveBtn.style.opacity = '.55';
                 saveBtn.style.cursor = 'not-allowed';
@@ -3575,6 +3627,8 @@ if ($is_admin) {
                     priceNote.textContent = 'Choose valid drop-off and expected pickup times to calculate the full daycare fee.';
                     priceBox.style.display = 'block';
                     amountInput.value = '';
+                    if (finalAmountDisplay) finalAmountDisplay.textContent = '₱0.00';
+                    if (discountSummary) discountSummary.textContent = 'Choose valid service times first.';
                     saveBtn.disabled = true;
                     saveBtn.style.opacity = '.55';
                     saveBtn.style.cursor = 'not-allowed';
@@ -3595,6 +3649,8 @@ if ($is_admin) {
                     priceNote.textContent = 'Price per night. Select a check-out date after check-in to calculate the total.';
                     priceBox.style.display = 'block';
                     amountInput.value = '';
+                    if (finalAmountDisplay) finalAmountDisplay.textContent = '₱0.00';
+                    if (discountSummary) discountSummary.textContent = 'Choose a valid check-out date first.';
                     saveBtn.disabled = true;
                     saveBtn.style.opacity = '.55';
                     saveBtn.style.cursor = 'not-allowed';
@@ -3607,10 +3663,20 @@ if ($is_admin) {
                     ' to ' + formatWalkinDate(checkOutDate) + ').';
             }
 
-            priceText.textContent = '₱' + totalPrice.toFixed(2);
+            const discountPercent = discountInput ? Math.max(0, Math.min(99.99, Number(discountInput.value || 0))) : 0;
+            const discountAmount = Math.round((totalPrice * discountPercent / 100) * 100) / 100;
+            const finalTotal = Math.max(0, totalPrice - discountAmount);
+            priceText.textContent = '₱' + finalTotal.toFixed(2);
             priceNote.textContent = priceNoteText;
+            if (discountPercent > 0) {
+                priceNote.textContent += ' Discount: ' + discountPercent.toFixed(2) + '% (-₱' + discountAmount.toFixed(2) + ').';
+            }
             priceBox.style.display = 'block';
             amountInput.value = totalPrice.toFixed(2);
+            if (finalAmountDisplay) finalAmountDisplay.textContent = '₱' + finalTotal.toFixed(2);
+            if (discountSummary) discountSummary.textContent = discountPercent > 0
+                ? 'Regular ₱' + totalPrice.toFixed(2) + ' less ' + discountPercent.toFixed(2) + '% (₱' + discountAmount.toFixed(2) + ').'
+                : 'No discount applied.';
             const appointmentTime = document.getElementById('walkinTime').value;
             const capacityAllowsSave = walkinAvailabilityState === 'available' && appointmentTime !== '' && (!isDaycare || pickupTime !== '');
             saveBtn.disabled = !capacityAllowsSave;
@@ -3683,6 +3749,12 @@ if ($is_admin) {
             document.getElementById('walkinHaircutStyle').required = false;
             document.getElementById('walkinPriceBox').style.display = 'none';
             document.getElementById('walkinAmount').value = '';
+            const discountInput = document.getElementById('walkinDiscountPercent');
+            if (discountInput) discountInput.value = '0';
+            const finalAmount = document.getElementById('walkinFinalAmount');
+            if (finalAmount) finalAmount.textContent = '₱0.00';
+            const discountSummary = document.getElementById('walkinDiscountSummary');
+            if (discountSummary) discountSummary.textContent = 'No discount applied.';
             document.getElementById('walkinSaveBtn').disabled = true;
             document.getElementById('walkinSaveBtn').style.opacity = '.55';
             document.getElementById('walkinSaveBtn').style.cursor = 'not-allowed';

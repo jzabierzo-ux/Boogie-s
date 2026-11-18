@@ -1,6 +1,5 @@
 <?php
 require_once __DIR__ . '/../shared_session_bootstrap.php';
-require_once __DIR__ . '/../db_supabase.php';
 
 // Strict Admin-only authorization. The role and the dedicated Admin session
 // marker must both be valid; a Staff session must never inherit Admin access.
@@ -12,9 +11,11 @@ $is_admin_session = (
     ($_SESSION['admin_logged_in'] ?? false) === true &&
     ($_SESSION['staff_logged_in'] ?? false) !== true &&
     $current_role === 'admin' &&
-    isset($_SESSION['user_id']) &&
-    is_numeric($_SESSION['user_id']) &&
-    (int)$_SESSION['user_id'] > 0
+    filter_var(
+        $_SESSION['user_id'] ?? null,
+        FILTER_VALIDATE_INT,
+        ['options' => ['min_range' => 1]]
+    ) !== false
 );
 
 if (!$is_admin_session) {
@@ -29,48 +30,87 @@ if (!$is_admin_session) {
     exit('Access denied. Admin only.');
 }
 
+// Connect to the database only after the session-level Admin check has passed.
+require_once __DIR__ . '/../db_supabase.php';
+
+// Confirm the account still has an Admin role in the database. This prevents
+// an old Admin session from retaining access after its role is changed.
+$adminUserId = (int)($_SESSION['user_id'] ?? 0);
+try {
+    $adminRoleStmt = $pdo->prepare(
+        "SELECT LOWER(BTRIM(COALESCE(role, ''))) FROM users WHERE id = :id LIMIT 1"
+    );
+    $adminRoleStmt->execute([':id' => $adminUserId]);
+    $databaseRole = (string)($adminRoleStmt->fetchColumn() ?: '');
+} catch (Throwable $e) {
+    error_log('Personnel authorization check failed: ' . $e->getMessage());
+    http_response_code(503);
+    exit('Unable to verify Admin authorization. Please try again later.');
+}
+
+if (!in_array($databaseRole, ['admin', 'administrator'], true)) {
+    http_response_code(403);
+    exit('Access denied. Your account is not authorized to manage personnel.');
+}
+
 if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
 }
 $csrf_token = (string)$_SESSION['csrf_token'];
 
+/** Present legacy personnel roles under the three roles approved by the panel. */
 function personnelRoleLabel(string $role): string
 {
     $role = strtolower(trim($role));
-    $labels = [
-        'admin' => 'Admin',
-        'administrator' => 'Admin',
-        'manager' => 'Manager',
-        'receptionist' => 'Receptionist / Front Desk',
-        'supervisor' => 'Receptionist / Front Desk (Legacy)',
-        'groomer' => 'Groomer',
-        'staff' => 'Groomer (Legacy Staff)',
-        'pet_hotel_staff' => 'Pet Hotel Staff / Attendant',
-        'vet' => 'Veterinarian (Legacy)',
-        'veterinarian' => 'Veterinarian',
-        'vet_assistant' => 'Veterinary Assistant',
-        'vet_nurse' => 'Veterinary Nurse',
-    ];
-    return $labels[$role] ?? ucfirst(str_replace('_', ' ', $role));
+
+    if (in_array($role, ['admin', 'administrator'], true)) {
+        return 'Admin';
+    }
+    if (in_array($role, ['vet', 'veterinarian', 'vet_assistant', 'vet_nurse'], true)) {
+        return 'Veterinarian';
+    }
+    if (in_array($role, ['manager', 'receptionist', 'supervisor', 'groomer', 'staff', 'pet_hotel_staff'], true)) {
+        return 'Staff';
+    }
+
+    return ucfirst(str_replace('_', ' ', $role));
+}
+
+/** Show only the unified role as the personnel assignment in this screen. */
+function personnelDisplayPosition(string $role, string $storedPosition = ''): string
+{
+    $role = strtolower(trim($role));
+
+    if (in_array($role, ['admin', 'administrator'], true)) {
+        return 'Administrator';
+    }
+    if (in_array($role, ['vet', 'veterinarian', 'vet_assistant', 'vet_nurse'], true)) {
+        return 'Veterinarian';
+    }
+    if (in_array($role, ['manager', 'receptionist', 'supervisor', 'groomer', 'staff', 'pet_hotel_staff'], true)) {
+        return 'Staff';
+    }
+
+    $storedPosition = trim($storedPosition);
+    return $storedPosition !== '' ? $storedPosition : 'Personnel';
 }
 
 function personnelRoleIcon(string $role): string
 {
-    return match (strtolower(trim($role))) {
-        'vet', 'veterinarian' => 'fas fa-user-md',
-        'vet_assistant', 'vet_nurse' => 'fas fa-user-nurse',
-        'staff', 'groomer' => 'fas fa-paw',
-        'pet_hotel_staff' => 'fas fa-house',
-        'supervisor', 'receptionist' => 'fas fa-headset',
-        'admin', 'administrator' => 'fas fa-user-gear',
-        default => 'fas fa-user-tie',
-    };
+    $role = strtolower(trim($role));
+    if (in_array($role, ['admin', 'administrator'], true)) {
+        return 'fas fa-user-gear';
+    }
+    if (in_array($role, ['vet', 'veterinarian', 'vet_assistant', 'vet_nurse'], true)) {
+        return 'fas fa-user-md';
+    }
+    return 'fas fa-user-tie';
 }
 
 // Deletion is POST-only and protected by a CSRF token.
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_staff'])) {
-    $posted_token = (string)($_POST['csrf_token'] ?? '');
-    if ($posted_token === '' || !hash_equals($csrf_token, $posted_token)) {
+    $posted_token = $_POST['csrf_token'] ?? '';
+    if (!is_string($posted_token) || $posted_token === '' || !hash_equals($csrf_token, $posted_token)) {
         http_response_code(403);
         exit('Invalid or expired request token. Refresh the page and try again.');
     }
@@ -85,7 +125,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_staff'])) {
     try {
         $delete_stmt = $pdo->prepare("            DELETE FROM users
             WHERE id = :delete_id
-              AND LOWER(COALESCE(role, '')) IN (
+              AND LOWER(BTRIM(COALESCE(role, ''))) IN (
                   'manager', 'receptionist', 'groomer', 'pet_hotel_staff',
                   'veterinarian', 'vet_assistant', 'vet_nurse',
                   'vet', 'supervisor', 'staff'
@@ -202,13 +242,13 @@ try {
     $stats_sql = "
         SELECT
             COUNT(*) FILTER (
-                WHERE LOWER(COALESCE(role, '')) IN ($non_admin_roles_sql)
+                WHERE LOWER(BTRIM(COALESCE(role, ''))) IN ($non_admin_roles_sql)
             ) AS total_staff,
             COUNT(*) FILTER (
-                WHERE LOWER(COALESCE(role, '')) IN ($personnel_roles_sql)$search_count_sql
+                WHERE LOWER(BTRIM(COALESCE(role, ''))) IN ($personnel_roles_sql)$search_count_sql
             ) AS total_matches
         FROM users
-        WHERE LOWER(COALESCE(role, '')) IN ($personnel_roles_sql)
+        WHERE LOWER(BTRIM(COALESCE(role, ''))) IN ($personnel_roles_sql)
     ";
     $stats_stmt = $pdo->prepare($stats_sql);
     $stats_stmt->execute($stats_params);
@@ -224,7 +264,7 @@ try {
         $list_sql = "
             SELECT id, role, position, full_name, username
             FROM users
-            WHERE LOWER(COALESCE(role, '')) IN ($personnel_roles_sql)
+            WHERE LOWER(BTRIM(COALESCE(role, ''))) IN ($personnel_roles_sql)
         ";
         $list_params = [];
         if ($search !== '') {
@@ -913,7 +953,7 @@ try {
 
                     <h1>Personnel Management</h1>
 
-                    <p>Manage personnel accounts, system access, and assigned positions.</p>
+                    <p>Manage Admin, Staff, and Veterinarian accounts and system access.</p>
 
                 </div>
 
@@ -995,7 +1035,7 @@ try {
                             </div>
                             <div class="staff-info">
 
-                                <span class="position"><?php echo htmlspecialchars($staff['position'] ?? 'Personnel'); ?></span>
+                                <span class="position"><?php echo htmlspecialchars(personnelDisplayPosition((string)($staff['role'] ?? ''), (string)($staff['position'] ?? '')), ENT_QUOTES, 'UTF-8'); ?></span>
 
                                 <h3><?php echo htmlspecialchars($staff['full_name']); ?></h3>
 
@@ -1114,58 +1154,20 @@ try {
 
 
 
-                <div class="form-row">
+                <div class="form-group">
 
-                    <div class="form-group">
+                    <label for="personnelRole">System Role / Access</label>
 
-                        <label>System Role / Access</label>
+                    <select id="personnelRole" name="role" required>
+                        <option value="" selected disabled>Select one system role</option>
+                        <option value="admin">Admin</option>
+                        <option value="manager">Staff</option>
+                        <option value="veterinarian">Veterinarian</option>
+                    </select>
 
-                        <select name="role" required>
-                            <option value="groomer" selected>Groomer</option>
-                            <option value="pet_hotel_staff">Pet Hotel Staff / Attendant</option>
-                            <option value="receptionist">Receptionist / Front Desk</option>
-                            <option value="veterinarian">Veterinarian</option>
-                            <option value="vet_assistant">Veterinary Assistant</option>
-                            <option value="vet_nurse">Veterinary Nurse</option>
-                            <option value="manager">Manager</option>
-                            <option value="admin">Admin</option>
-                        </select>
-
-                    </div>
-
-                    <div class="form-group">
-
-                        <label>Position / Assignment</label>
-
-                        <input type="text" name="position" list="personnelPositions" required placeholder="e.g. Vet Nurse">
-
-                        <datalist id="personnelPositions">
-
-                            <option value="Administrator">
-
-                            <option value="Shop Manager">
-
-                            <option value="Supervisor">
-
-                            <option value="Front Desk / Receptionist">
-
-                            <option value="Veterinarian">
-
-                            <option value="Vet Assistant">
-
-                            <option value="Vet Nurse">
-
-                            <option value="Groomer">
-
-                            <option value="Pet Hotel Staff / Attendant">
-
-                        </datalist>
-
-                    </div>
+                    <p style="font-size:11px; color:#64748b; margin:7px 0 0; line-height:1.5;">Only three account types are available: Admin, Staff, and Veterinarian. Staff combines the former Manager and Front Desk roles. The position is displayed automatically.</p>
 
                 </div>
-
-                <div style="font-size:11px; color:#64748b; margin-top:-4px; margin-bottom:8px; line-height:1.5;">System access controls what the account can open. Position describes the person's actual job and can be customized.</div>
 
 
 

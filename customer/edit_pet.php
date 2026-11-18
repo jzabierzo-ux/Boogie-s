@@ -365,7 +365,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $error_msg = "Invalid pet ID.";
     } elseif (
         $p_name === '' || strlen($p_name) > 100 || preg_match('/[\x00-\x1F\x7F]/', $p_name) ||
-        !in_array($p_type, ['Dog', 'Cat'], true) ||
+        (!in_array($p_type, ['Dog', 'Cat'], true) && $p_type !== trim((string)($pet_data['pet_type'] ?? ''))) ||
         $p_breed === '' || strlen($p_breed) > 100 || preg_match('/[\x00-\x1F\x7F]/', $p_breed) ||
         $p_age === '' || !is_numeric($p_age) || !is_finite((float)$p_age) || (float)$p_age < 0 || (float)$p_age > 100 ||
         $p_weight === '' || !is_numeric($p_weight) || !is_finite((float)$p_weight) || (float)$p_weight < 0 ||
@@ -2812,45 +2812,16 @@ img, input, select, button{
 
 
 
-                        <select
-
-                            id="p_type"
-
-                            name="p_type"
-
-                            class="form-control"
-
-                            required
-
-                        >
-
-                            <option
-
-                                value="Dog"
-
-                                <?php echo (isset($pet_data['pet_type']) && $pet_data['pet_type'] == 'Dog') ? 'selected' : ''; ?>
-
-                            >
-
-                                Dog
-
-                            </option>
-
-
-
-                            <option
-
-                                value="Cat"
-
-                                <?php echo (isset($pet_data['pet_type']) && $pet_data['pet_type'] == 'Cat') ? 'selected' : ''; ?>
-
-                            >
-
-                                Cat
-
-                            </option>
-
+                        <?php if (in_array((string)($pet_data['pet_type'] ?? ''), ['Dog', 'Cat'], true)): ?>
+                        <select id="p_type" name="p_type" class="form-control" required>
+                            <option value="Dog" <?php echo $pet_data['pet_type'] === 'Dog' ? 'selected' : ''; ?>>Dog</option>
+                            <option value="Cat" <?php echo $pet_data['pet_type'] === 'Cat' ? 'selected' : ''; ?>>Cat</option>
                         </select>
+                    <?php else: ?>
+                        <input type="text" class="form-control" value="<?php echo htmlspecialchars((string)$pet_data['pet_type'], ENT_QUOTES, 'UTF-8'); ?> (existing record)" readonly>
+                        <input type="hidden" name="p_type" value="<?php echo htmlspecialchars((string)$pet_data['pet_type'], ENT_QUOTES, 'UTF-8'); ?>">
+                        <small class="field-help">This older pet type is kept for this existing record. New pet profiles accept dogs and cats only.</small>
+                    <?php endif; ?>
 
                     </div>
 

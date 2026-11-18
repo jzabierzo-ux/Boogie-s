@@ -11,20 +11,26 @@ header('X-Content-Type-Options: nosniff');
 header('X-Frame-Options: SAMEORIGIN');
 header('Referrer-Policy: strict-origin-when-cross-origin');
 
-/** Normalize legacy veterinary role names to the canonical session role. */
+/** Normalize supported legacy veterinary role names to the canonical system role. */
 function staffEditPetNormalizeRole($value): string
 {
-    $role = is_scalar($value) ? strtolower(trim((string)$value)) : '';
-    $role = preg_replace('/[\\s_-]+/', ' ', $role) ?? '';
+    if (!is_scalar($value)) {
+        return '';
+    }
+
+    $role = strtolower(trim((string)$value));
+    $role = preg_replace('/[\s_-]+/', ' ', $role) ?? '';
+
     $aliases = [
         'vet' => 'veterinarian',
         'veterinary' => 'veterinarian',
         'veterinarian' => 'veterinarian',
-        'vet assistant' => 'vet_assistant',
-        'veterinary assistant' => 'vet_assistant',
-        'vet nurse' => 'vet_nurse',
-        'veterinary nurse' => 'vet_nurse',
+        'vet assistant' => 'veterinarian',
+        'veterinary assistant' => 'veterinarian',
+        'vet nurse' => 'veterinarian',
+        'veterinary nurse' => 'veterinarian',
     ];
+
     return $aliases[$role] ?? str_replace(' ', '_', $role);
 }
 
@@ -66,28 +72,25 @@ function staffEditPetAlertRedirect(string $message, int $statusCode = 200): void
 }
 
 /* -------------------------------------------------------------------------
- * AUTHENTICATION — VETERINARY STAFF ONLY.
- * Reject Admin and mixed Admin/Staff sessions, even if role text is forged.
+ * AUTHENTICATION — VETERINARIAN SYSTEM ROLE ONLY.
+ * Legacy Vet Assistant/Vet Nurse database roles map to Veterinarian.
+ * Admin and non-veterinary Staff sessions are rejected.
  * ---------------------------------------------------------------------- */
-$currentRole = staffEditPetNormalizeRole($_SESSION['role'] ?? '');
+$sessionRole = staffEditPetNormalizeRole($_SESSION['system_role'] ?? $_SESSION['role'] ?? '');
 $loggedIn = ($_SESSION['logged_in'] ?? false) === true;
 $staffLoggedIn = ($_SESSION['staff_logged_in'] ?? false) === true;
 $adminLoggedIn = ($_SESSION['admin_logged_in'] ?? false) === true;
-$userId = staffEditPetPositiveInt($_SESSION['user_id'] ?? null);
-$allowedVeterinaryRoles = ['veterinarian', 'vet_assistant', 'vet_nurse'];
+$userId = staffEditPetPositiveInt($_SESSION['user_id'] ?? $_SESSION['staff_id'] ?? null);
 
 if (!$loggedIn || !$staffLoggedIn) {
     header('Location: stafflogin.php', true, 303);
     exit();
 }
 
-if ($adminLoggedIn || !in_array($currentRole, $allowedVeterinaryRoles, true) || $userId === false) {
+if ($adminLoggedIn || $sessionRole !== 'veterinarian' || $userId === false) {
     http_response_code(403);
-    exit('Access denied. A valid veterinary Staff session is required.');
+    exit('Access denied. A valid Veterinarian session is required.');
 }
-
-// Keep the canonical role consistently in the Staff session.
-$_SESSION['role'] = $currentRole;
 
 if (!isset($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token']) || !preg_match('/^[a-f0-9]{64}$/', $_SESSION['csrf_token'])) {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
@@ -127,12 +130,14 @@ if (!isset($pdo) || !($pdo instanceof PDO)) {
     exit('Database connection is temporarily unavailable.');
 }
 
-// Confirm that the signed-in account still has the same veterinary role in the database.
+// Verify the live database role on every request; legacy veterinary roles
+// are normalized to the same canonical Veterinarian system role.
 try {
     $accountStmt = $pdo->prepare('SELECT role FROM users WHERE id = :user_id LIMIT 1');
     $accountStmt->execute([':user_id' => (int)$userId]);
     $databaseRole = staffEditPetNormalizeRole($accountStmt->fetchColumn());
-    if (!in_array($databaseRole, $allowedVeterinaryRoles, true) || $databaseRole !== $currentRole) {
+
+    if ($databaseRole !== 'veterinarian' || $databaseRole !== $sessionRole) {
         http_response_code(403);
         exit('Access denied. The account role is not authorized for this page.');
     }
@@ -193,7 +198,7 @@ if ($method === 'POST') {
             staffEditPetLength($medicalHistory) > 5000
         ) {
             $errorMessage = 'Some pet information is too long. Please shorten the entries and try again.';
-        } elseif (!in_array($petType, ['Dog', 'Cat', 'Other'], true)) {
+        } elseif (!in_array($petType, ['Dog', 'Cat'], true) && $petType !== (string)($petData['pet_type'] ?? '')) {
             $errorMessage = 'Invalid pet type selected.';
         } elseif (!in_array($gender, ['Male', 'Female'], true)) {
             $errorMessage = 'Invalid gender selected.';
@@ -1132,15 +1137,16 @@ $pet_id = $petId;
 
                         <label>Pet Type *</label>
 
+                        <?php if (in_array((string)($pet_data['pet_type'] ?? ''), ['Dog', 'Cat'], true)): ?>
                         <select name="pet_type" class="form-control" required>
-
-                            <option value="Dog" <?php echo (isset($pet_data['pet_type']) && $pet_data['pet_type'] === 'Dog') ? 'selected' : ''; ?>>Dog</option>
-
-                            <option value="Cat" <?php echo (isset($pet_data['pet_type']) && $pet_data['pet_type'] === 'Cat') ? 'selected' : ''; ?>>Cat</option>
-
-                            <option value="Other" <?php echo (isset($pet_data['pet_type']) && $pet_data['pet_type'] === 'Other') ? 'selected' : ''; ?>>Other</option>
-
+                            <option value="Dog" <?php echo $pet_data['pet_type'] === 'Dog' ? 'selected' : ''; ?>>Dog</option>
+                            <option value="Cat" <?php echo $pet_data['pet_type'] === 'Cat' ? 'selected' : ''; ?>>Cat</option>
                         </select>
+                    <?php else: ?>
+                        <input type="text" class="form-control" value="<?php echo htmlspecialchars((string)$pet_data['pet_type'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?> (existing record)" readonly>
+                        <input type="hidden" name="pet_type" value="<?php echo htmlspecialchars((string)$pet_data['pet_type'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
+                        <small class="form-text">This older pet type is kept for this existing record. New pet profiles accept dogs and cats only.</small>
+                    <?php endif; ?>
 
                     </div>
 

@@ -515,7 +515,7 @@ if (isset($_POST['add_pet'])) {
 
 
 
-    if (!in_array($pet_type, ['Dog', 'Cat', 'Other'], true) ||
+    if (!in_array($pet_type, ['Dog', 'Cat'], true) ||
 
         !in_array($gender, ['Male', 'Female', 'Unknown'], true) ||
 
@@ -829,6 +829,182 @@ if (isset($_POST['add_pet'])) {
 
 
 
+// --- CREATE A PET FAMILY / LITTER GROUP ---
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && isset($_POST['create_pet_group'])) {
+    $submitted_csrf = (string)($_POST['csrf_token'] ?? '');
+    if (!hash_equals($petprofile_csrf, $submitted_csrf)) {
+        http_response_code(403);
+        exit('Invalid request. Refresh the page and try again.');
+    }
+
+    $mother_pet_id = filter_var($_POST['mother_pet_id'] ?? null, FILTER_VALIDATE_INT);
+    $group_name = trim((string)($_POST['group_name'] ?? ''));
+    $raw_puppies = $_POST['puppies'] ?? [];
+
+    if (!$mother_pet_id || $mother_pet_id <= 0 || !is_array($raw_puppies)) {
+        $_SESSION['pet_group_flash_error'] = 'Please select a mother dog and add at least one puppy.';
+        header('Location: petprofile.php?group_error=1');
+        exit();
+    }
+
+    if (strlen($group_name) > 120 || count($raw_puppies) > 20) {
+        $_SESSION['pet_group_flash_error'] = 'The group name is too long or the group contains too many puppies. Limit: 20 puppies per group.';
+        header('Location: petprofile.php?group_error=1');
+        exit();
+    }
+
+    $validated_puppies = [];
+    foreach ($raw_puppies as $index => $puppy) {
+        if (!is_array($puppy)) {
+            $_SESSION['pet_group_flash_error'] = 'Invalid puppy information was submitted. Please try again.';
+            header('Location: petprofile.php?group_error=1');
+            exit();
+        }
+        foreach (['name', 'breed', 'age', 'weight', 'gender', 'medical_history', 'special_needs'] as $field_name) {
+            if (isset($puppy[$field_name]) && !is_scalar($puppy[$field_name])) {
+                $_SESSION['pet_group_flash_error'] = 'Invalid puppy information was submitted. Please try again.';
+                header('Location: petprofile.php?group_error=1');
+                exit();
+            }
+        }
+        $name = trim((string)($puppy['name'] ?? ''));
+        $breed = trim((string)($puppy['breed'] ?? ''));
+        $age = trim((string)($puppy['age'] ?? ''));
+        $weight = trim((string)($puppy['weight'] ?? ''));
+        $gender = trim((string)($puppy['gender'] ?? ''));
+        $medical_history = trim((string)($puppy['medical_history'] ?? ''));
+        $special_needs = trim((string)($puppy['special_needs'] ?? ''));
+
+        // Ignore a fully untouched extra row, but validate every row that has any input.
+        $has_any_value = ($name . $breed . $age . $weight . $gender . $medical_history . $special_needs) !== '';
+        if (!$has_any_value) {
+            continue;
+        }
+
+        if ($name === '' || $breed === '' || $age === '' || $weight === '' || $gender === '') {
+            $_SESSION['pet_group_flash_error'] = 'Complete the required details for every puppy, or remove an unused puppy row.';
+            header('Location: petprofile.php?group_error=1');
+            exit();
+        }
+        if (
+            strlen($name) > 120 || strlen($breed) > 120 || strlen($age) > 40 ||
+            !is_numeric($age) || (float)$age < 0 || (float)$age > 100 ||
+            !is_numeric($weight) || (float)$weight <= 0 || (float)$weight > 1000 ||
+            !in_array($gender, ['Male', 'Female', 'Unknown'], true) ||
+            strlen($medical_history) > 4000 || strlen($special_needs) > 4000
+        ) {
+            $_SESSION['pet_group_flash_error'] = 'Please check the puppy details. Age, weight, gender, and text lengths must be valid.';
+            header('Location: petprofile.php?group_error=1');
+            exit();
+        }
+
+        $validated_puppies[] = [
+            'name' => $name,
+            'breed' => $breed,
+            'age' => $age,
+            'weight' => (float)$weight,
+            'gender' => $gender,
+            'medical_history' => $medical_history,
+            'special_needs' => $special_needs,
+        ];
+    }
+
+    if (count($validated_puppies) < 1) {
+        $_SESSION['pet_group_flash_error'] = 'Add at least one puppy to create a group.';
+        header('Location: petprofile.php?group_error=1');
+        exit();
+    }
+
+    try {
+        $pdo->beginTransaction();
+
+        // The mother must be a Dog owned by the currently authenticated customer.
+        $mother_stmt = $pdo->prepare("
+            SELECT id, name, pet_type
+            FROM pets
+            WHERE id = :pet_id AND owner_id = :owner_id
+            FOR UPDATE
+        ");
+        $mother_stmt->execute([':pet_id' => $mother_pet_id, ':owner_id' => $user_id]);
+        $mother_pet = $mother_stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$mother_pet || strtolower(trim((string)$mother_pet['pet_type'])) !== 'dog') {
+            throw new RuntimeException('The selected mother profile is not a valid Dog profile owned by this account.');
+        }
+
+        // A dog may be the mother of multiple litters over time.
+
+
+        if ($group_name === '') {
+            $group_name = trim((string)$mother_pet['name']) . "'s Litter";
+            if (function_exists('mb_substr')) {
+                $group_name = mb_substr($group_name, 0, 120, 'UTF-8');
+            } else {
+                $group_name = substr($group_name, 0, 120);
+            }
+        }
+
+        $create_group_stmt = $pdo->prepare("
+            INSERT INTO pet_groups (owner_id, mother_pet_id, group_name, created_at)
+            VALUES (:owner_id, :mother_pet_id, :group_name, CURRENT_TIMESTAMP)
+            RETURNING id
+        ");
+        $create_group_stmt->execute([
+            ':owner_id' => $user_id,
+            ':mother_pet_id' => $mother_pet_id,
+            ':group_name' => $group_name,
+        ]);
+        $group_id = (int)$create_group_stmt->fetchColumn();
+        if ($group_id <= 0) {
+            throw new RuntimeException('The pet group could not be created.');
+        }
+
+        $insert_puppy_stmt = $pdo->prepare("
+            INSERT INTO pets (
+                owner_id, name, pet_type, breed, age, weight, gender,
+                medical_history, special_needs, created_at
+            ) VALUES (
+                :owner_id, :name, 'Dog', :breed, :age, :weight, :gender,
+                :medical_history, :special_needs, CURRENT_TIMESTAMP
+            ) RETURNING id
+        ");
+        $insert_member_stmt = $pdo->prepare("
+            INSERT INTO pet_group_members (group_id, pet_id, relationship, created_at)
+            VALUES (:group_id, :pet_id, 'puppy', CURRENT_TIMESTAMP)
+        ");
+
+        foreach ($validated_puppies as $puppy) {
+            $insert_puppy_stmt->execute([
+                ':owner_id' => $user_id,
+                ':name' => $puppy['name'],
+                ':breed' => $puppy['breed'],
+                ':age' => $puppy['age'],
+                ':weight' => $puppy['weight'],
+                ':gender' => $puppy['gender'],
+                ':medical_history' => $puppy['medical_history'],
+                ':special_needs' => $puppy['special_needs'],
+            ]);
+            $puppy_id = (int)$insert_puppy_stmt->fetchColumn();
+            if ($puppy_id <= 0) {
+                throw new RuntimeException('A puppy profile could not be saved.');
+            }
+            $insert_member_stmt->execute([':group_id' => $group_id, ':pet_id' => $puppy_id]);
+        }
+
+        $pdo->commit();
+        $_SESSION['pet_group_flash_success'] = count($validated_puppies) . ' puppy profile(s) were added to ' . $group_name . '.';
+        header('Location: petprofile.php?success=group_created');
+        exit();
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        error_log('Pet group creation failed: ' . $e->getMessage());
+        $_SESSION['pet_group_flash_error'] = 'Unable to create the group. Please check that the Pet Group database setup has been completed and try again.';
+        header('Location: petprofile.php?group_error=1');
+        exit();
+    }
+}
+
 // --- LOGIC PARA SA PAG-DELETE NG PET (POST + CSRF) ---
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_pet'])) {
@@ -951,6 +1127,68 @@ try {
 
 }
 
+
+
+// --- PET FAMILY / LITTER GROUPS ---
+$pet_groups = [];
+$pet_group_puppies = [];
+$eligible_mother_pets = [];
+$pet_group_schema_ready = true;
+$pet_group_flash_success = $_SESSION['pet_group_flash_success'] ?? '';
+$pet_group_flash_error = $_SESSION['pet_group_flash_error'] ?? '';
+unset($_SESSION['pet_group_flash_success'], $_SESSION['pet_group_flash_error']);
+
+try {
+    $groups_stmt = $pdo->prepare("
+        SELECT
+            g.id AS group_id,
+            g.group_name,
+            g.created_at AS group_created_at,
+            m.id AS mother_pet_id,
+            m.name AS mother_name,
+            m.breed AS mother_breed,
+            COUNT(gm.id) AS puppy_count
+        FROM pet_groups g
+        INNER JOIN pets m ON m.id = g.mother_pet_id
+        LEFT JOIN pet_group_members gm ON gm.group_id = g.id
+        WHERE g.owner_id = :owner_id
+        GROUP BY g.id, m.id
+        ORDER BY g.created_at DESC, g.id DESC
+    ");
+    $groups_stmt->execute([':owner_id' => $user_id]);
+    $pet_groups = $groups_stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    $puppies_stmt = $pdo->prepare("
+        SELECT
+            p.id, p.name, p.breed, p.age, p.weight, p.gender,
+            p.medical_history, p.special_needs
+        FROM pet_group_members gm
+        INNER JOIN pet_groups g ON g.id = gm.group_id
+        INNER JOIN pets p ON p.id = gm.pet_id
+        WHERE g.owner_id = :owner_id AND gm.group_id = :group_id
+        ORDER BY p.id ASC
+    ");
+    foreach ($pet_groups as $group_row) {
+        $puppies_stmt->execute([
+            ':owner_id' => $user_id,
+            ':group_id' => (int)$group_row['group_id'],
+        ]);
+        $pet_group_puppies[(int)$group_row['group_id']] = $puppies_stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    $mother_options_stmt = $pdo->prepare("
+        SELECT p.id, p.name, p.breed
+        FROM pets p
+        WHERE p.owner_id = :owner_id
+          AND LOWER(TRIM(p.pet_type)) = 'dog'
+        ORDER BY p.name ASC, p.id ASC
+    ");
+    $mother_options_stmt->execute([':owner_id' => $user_id]);
+    $eligible_mother_pets = $mother_options_stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    $pet_group_schema_ready = false;
+    error_log('Pet group data load failed: ' . $e->getMessage());
+}
 
 
 ?>
@@ -6468,6 +6706,53 @@ main{
     }
 }
 
+
+
+/* ===== PET FAMILY / LITTER GROUPS ===== */
+.pet-groups-section{margin:0 0 26px;background:#fff;border:1px solid var(--line);border-radius:18px;padding:20px;box-shadow:var(--shadow)}
+.pet-groups-heading{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:14px}
+.pet-groups-heading h2{color:var(--brand-blue);font-size:18px;font-weight:800}
+.pet-groups-heading p{color:var(--muted);font-size:10px;margin-top:3px}
+.pet-groups-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:13px}
+.pet-group-card{border:1px solid #e4ebf2;border-radius:14px;padding:15px;background:#fbfdff;min-width:0}
+.pet-group-card h3{color:var(--brand-blue);font-size:14px;font-weight:800;margin-bottom:8px;overflow-wrap:anywhere}
+.pet-group-mother{display:flex;align-items:center;gap:9px;padding:10px;background:#fff8df;border:1px solid #f4e4ad;border-radius:10px;margin-bottom:10px}
+.pet-group-mother i{color:#9a7600;font-size:19px}
+.pet-group-mother strong{display:block;color:var(--brand-blue);font-size:11px}
+.pet-group-mother small{display:block;color:#7f8792;font-size:9px}
+.pet-group-card details{border-top:1px solid #e8edf2;padding-top:9px}
+.pet-group-card summary{cursor:pointer;color:var(--brand-blue);font-size:10px;font-weight:800;list-style:none}
+.pet-group-card summary::-webkit-details-marker{display:none}
+.pet-group-card summary:after{content:'+';float:right;font-size:15px;line-height:10px}
+.pet-group-card details[open] summary:after{content:'−'}
+.pet-group-puppy-list{display:grid;gap:7px;margin-top:10px}
+.pet-group-puppy{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 9px;background:#fff;border:1px solid #e9eef3;border-radius:9px}
+.pet-group-puppy strong{display:block;color:var(--text);font-size:10px}
+.pet-group-puppy small{display:block;color:var(--muted);font-size:9px}
+.pet-group-puppy a{color:var(--brand-blue);font-size:9px;font-weight:800;text-decoration:none;white-space:nowrap}
+.pet-group-note{padding:12px 13px;background:#f8fafc;border:1px dashed #d8e1e9;border-radius:11px;color:var(--muted);font-size:10px;line-height:1.55}
+.pet-group-modal-content{max-width:820px}
+.pet-group-intro{padding:11px 13px;background:#f0f7ff;border:1px solid #d9eafa;border-radius:10px;color:#315574;font-size:10px;line-height:1.55;margin-bottom:15px}
+.puppy-entry{border:1px solid #e1e8ef;background:#fbfdff;border-radius:12px;padding:13px;margin:12px 0}
+.puppy-entry-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
+.puppy-entry-head strong{font-size:11px;color:var(--brand-blue)}
+.puppy-remove{border:1px solid #f0d0d2;background:#fff5f5;color:#b43b43;border-radius:8px;padding:6px 9px;font-size:9px;font-weight:800;cursor:pointer}
+.puppy-entry-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:0 12px}
+.puppy-entry-grid .form-group{margin-bottom:10px}
+.puppy-entry-grid .form-control{background:#fff}
+.puppy-add-button{border:1px dashed #9db4c9;background:#f5f9fc;color:var(--brand-blue);padding:10px 13px;border-radius:10px;font-size:10px;font-weight:800;cursor:pointer}
+.puppy-entry-help{color:var(--muted);font-size:9px;line-height:1.5;margin-top:6px}
+.pet-group-form-actions{display:flex;justify-content:flex-end;gap:9px;margin-top:17px}
+@media(max-width:680px){
+ .pet-groups-section{padding:15px;border-radius:15px}
+ .pet-groups-heading{align-items:flex-start;flex-direction:column}
+ .pet-groups-heading .btn-primary{width:100%}
+ .pet-group-modal-content{max-width:100%}
+ .puppy-entry-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:0 9px}
+ .pet-group-form-actions{display:grid;grid-template-columns:1fr 1.4fr}
+}
+@media(max-width:420px){.puppy-entry-grid{grid-template-columns:1fr}}
+
 </style>
 
 
@@ -6985,6 +7270,13 @@ main{
 
                     </button>
 
+                    <?php if ($pet_group_schema_ready && !empty($eligible_mother_pets)): ?>
+                        <button type="button" class="btn-primary" data-open-pet-group-modal>
+                            <i class="fa-solid fa-people-roof"></i>
+                            Create a Group
+                        </button>
+                    <?php endif; ?>
+
 
 
 
@@ -7022,6 +7314,13 @@ main{
 
 
 
+
+        <?php if ($pet_group_flash_success !== ''): ?>
+            <div class="alert success"><i class="fa-solid fa-circle-check"></i><div><?php echo htmlspecialchars($pet_group_flash_success, ENT_QUOTES, 'UTF-8'); ?></div></div>
+        <?php endif; ?>
+        <?php if ($pet_group_flash_error !== ''): ?>
+            <div class="alert" style="background:#fff0f1;border:1px solid #f3d0d4;color:#a52f3d;"><i class="fa-solid fa-circle-exclamation"></i><div><?php echo htmlspecialchars($pet_group_flash_error, ENT_QUOTES, 'UTF-8'); ?></div></div>
+        <?php endif; ?>
 
         <?php if(isset($_GET['success'])): ?>
 
@@ -7078,6 +7377,60 @@ main{
 
 
 
+
+        <section class="pet-groups-section" aria-labelledby="petGroupsTitle">
+            <div class="pet-groups-heading">
+                <div>
+                    <h2 id="petGroupsTitle"><i class="fa-solid fa-people-roof"></i> Pet Family Groups</h2>
+                    <p>Keep a mother dog and her puppies together while maintaining a separate profile and health information for each puppy.</p>
+                </div>
+                <?php if ($pet_group_schema_ready && !empty($eligible_mother_pets)): ?>
+                    <button type="button" class="btn-primary" data-open-pet-group-modal><i class="fa-solid fa-plus"></i> Create a Group</button>
+                <?php endif; ?>
+            </div>
+
+            <?php if (!$pet_group_schema_ready): ?>
+                <div class="pet-group-note">Pet Group database setup is required before this feature can be used. Ask the system administrator to run the supplied SQL migration in the Supabase SQL Editor.</div>
+            <?php elseif (empty($pet_groups)): ?>
+                <?php if (empty($eligible_mother_pets)): ?>
+                    <div class="pet-group-note">Register a Dog profile first. You can then create a group, select the mother dog, and add multiple puppies in one form.</div>
+                <?php else: ?>
+                    <div class="pet-group-note">No family groups yet. Select <strong>Create a Group</strong> to choose a registered mother dog and add her puppies together.</div>
+                <?php endif; ?>
+            <?php else: ?>
+                <div class="pet-groups-grid">
+                    <?php foreach ($pet_groups as $group): ?>
+                        <?php $group_id = (int)$group['group_id']; $group_puppies = $pet_group_puppies[$group_id] ?? []; ?>
+                        <article class="pet-group-card">
+                            <h3><?php echo htmlspecialchars($group['group_name'], ENT_QUOTES, 'UTF-8'); ?></h3>
+                            <div class="pet-group-mother">
+                                <i class="fa-solid fa-dog"></i>
+                                <div>
+                                    <strong><?php echo htmlspecialchars($group['mother_name'], ENT_QUOTES, 'UTF-8'); ?> <span style="font-weight:500;color:#8a6a00;">(Mother)</span></strong>
+                                    <small><?php echo htmlspecialchars($group['mother_breed'] ?? 'Breed not set', ENT_QUOTES, 'UTF-8'); ?></small>
+                                    <small><a href="pet_records.php?id=<?php echo (int)$group['mother_pet_id']; ?>" style="color:var(--brand-blue);font-weight:800;text-decoration:none;">View Mother's Records</a></small>
+                                </div>
+                            </div>
+                            <details>
+                                <summary><?php echo count($group_puppies); ?> Puppy Profile(s) — View Group</summary>
+                                <div class="pet-group-puppy-list">
+                                    <?php foreach ($group_puppies as $puppy): ?>
+                                        <div class="pet-group-puppy">
+                                            <div>
+                                                <strong><?php echo htmlspecialchars($puppy['name'], ENT_QUOTES, 'UTF-8'); ?></strong>
+                                                <small><?php echo htmlspecialchars($puppy['breed'] ?? 'Breed not set', ENT_QUOTES, 'UTF-8'); ?> · <?php echo htmlspecialchars($puppy['gender'] ?? 'Gender not set', ENT_QUOTES, 'UTF-8'); ?></small>
+                                            </div>
+                                            <a href="pet_records.php?id=<?php echo (int)$puppy['id']; ?>">View Records</a>
+                                        </div>
+                                    <?php endforeach; ?>
+                                </div>
+                            </details>
+                            <p class="puppy-entry-help" style="margin-top:9px;">Created <?php echo htmlspecialchars(date('M d, Y', strtotime((string)$group['group_created_at'])), ENT_QUOTES, 'UTF-8'); ?></p>
+                        </article>
+                    <?php endforeach; ?>
+                </div>
+            <?php endif; ?>
+        </section>
 
         <?php if (!empty($pets)): ?>
 
@@ -7523,6 +7876,84 @@ main{
 
 
 
+    <?php if ($pet_group_schema_ready && !empty($eligible_mother_pets)): ?>
+    <div id="petGroupModal" class="modal" aria-hidden="true">
+        <div class="modal-content pet-group-modal-content" role="dialog" aria-modal="true" aria-labelledby="petGroupTitle">
+            <div class="modal-head">
+                <div>
+                    <div class="kicker">Pet family registration</div>
+                    <h2 id="petGroupTitle">Create a Mother & Puppies Group</h2>
+                    <p>Choose an existing mother dog, then register her puppies together.</p>
+                </div>
+                <button type="button" class="modal-close" data-close-pet-group-modal aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body">
+                <div class="pet-group-intro"><strong>How this works:</strong> The mother must already have a Dog profile. Each puppy will also receive an individual Dog profile, so its medical and booking records remain separate while being shown under one group.</div>
+                <form method="POST" action="petprofile.php" id="createPetGroupForm">
+                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($petprofile_csrf, ENT_QUOTES, 'UTF-8'); ?>">
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label for="pet_group_name">Group Name (Optional)</label>
+                            <input type="text" id="pet_group_name" name="group_name" class="form-control" maxlength="120" placeholder="e.g. Bella's Litter">
+                        </div>
+                        <div class="form-group">
+                            <label for="mother_pet_id">Mother Dog</label>
+                            <select id="mother_pet_id" name="mother_pet_id" class="form-control" required>
+                                <option value="" disabled selected>Select Mother Dog</option>
+                                <?php foreach ($eligible_mother_pets as $mother_option): ?>
+                                    <option value="<?php echo (int)$mother_option['id']; ?>"><?php echo htmlspecialchars($mother_option['name'] . (!empty($mother_option['breed']) ? ' — ' . $mother_option['breed'] : ''), ENT_QUOTES, 'UTF-8'); ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin:17px 0 7px;">
+                        <div>
+                            <h3 style="color:var(--brand-blue);font-size:13px;font-weight:800;">Puppy Profiles</h3>
+                            <p class="puppy-entry-help">Add each puppy below. Every puppy gets its own health information and pet record.</p>
+                        </div>
+                        <button type="button" class="puppy-add-button" id="addPuppyRowButton"><i class="fa-solid fa-plus"></i> Add Puppy</button>
+                    </div>
+
+                    <div id="puppyRows">
+                        <div class="puppy-entry" data-puppy-row>
+                            <div class="puppy-entry-head"><strong data-puppy-title>Puppy 1</strong><button type="button" class="puppy-remove" data-remove-puppy style="display:none;">Remove</button></div>
+                            <div class="puppy-entry-grid">
+                                <div class="form-group"><label>Pet Name</label><input type="text" name="puppies[0][name]" class="form-control" maxlength="120" required placeholder="e.g. Coco"></div>
+                                <div class="form-group"><label>Breed</label><input type="text" name="puppies[0][breed]" class="form-control" maxlength="120" required placeholder="e.g. Shih Tzu"></div>
+                                <div class="form-group"><label>Age (Years)</label><input type="number" name="puppies[0][age]" class="form-control" min="0" max="100" step="0.1" required placeholder="e.g. 0"></div>
+                                <div class="form-group"><label>Weight (kg)</label><input type="number" name="puppies[0][weight]" class="form-control" min="0.1" max="1000" step="0.1" required placeholder="e.g. 0.8"></div>
+                                <div class="form-group"><label>Gender</label><select name="puppies[0][gender]" class="form-control" required><option value="" disabled selected>Select Gender</option><option value="Male">Male</option><option value="Female">Female</option><option value="Unknown">Unknown</option></select></div>
+                                <div class="form-group"><label>Health Information (Optional)</label><input type="text" name="puppies[0][medical_history]" class="form-control" maxlength="4000" placeholder="Allergies, conditions, or None"></div>
+                                <div class="form-group" style="grid-column:1/-1;"><label>Behavior & Special Care (Optional)</label><textarea name="puppies[0][special_needs]" class="form-control" rows="2" maxlength="4000" style="min-height:65px;resize:vertical;" placeholder="Care instructions or None"></textarea></div>
+                            </div>
+                        </div>
+                    </div>
+                    <template id="puppyRowTemplate">
+                        <div class="puppy-entry" data-puppy-row>
+                            <div class="puppy-entry-head"><strong data-puppy-title>Puppy __INDEX_LABEL__</strong><button type="button" class="puppy-remove" data-remove-puppy>Remove</button></div>
+                            <div class="puppy-entry-grid">
+                                <div class="form-group"><label>Pet Name</label><input type="text" name="puppies[__INDEX__][name]" class="form-control" maxlength="120" required placeholder="e.g. Coco"></div>
+                                <div class="form-group"><label>Breed</label><input type="text" name="puppies[__INDEX__][breed]" class="form-control" maxlength="120" required placeholder="e.g. Shih Tzu"></div>
+                                <div class="form-group"><label>Age (Years)</label><input type="number" name="puppies[__INDEX__][age]" class="form-control" min="0" max="100" step="0.1" required placeholder="e.g. 0"></div>
+                                <div class="form-group"><label>Weight (kg)</label><input type="number" name="puppies[__INDEX__][weight]" class="form-control" min="0.1" max="1000" step="0.1" required placeholder="e.g. 0.8"></div>
+                                <div class="form-group"><label>Gender</label><select name="puppies[__INDEX__][gender]" class="form-control" required><option value="" disabled selected>Select Gender</option><option value="Male">Male</option><option value="Female">Female</option><option value="Unknown">Unknown</option></select></div>
+                                <div class="form-group"><label>Health Information (Optional)</label><input type="text" name="puppies[__INDEX__][medical_history]" class="form-control" maxlength="4000" placeholder="Allergies, conditions, or None"></div>
+                                <div class="form-group" style="grid-column:1/-1;"><label>Behavior & Special Care (Optional)</label><textarea name="puppies[__INDEX__][special_needs]" class="form-control" rows="2" maxlength="4000" style="min-height:65px;resize:vertical;" placeholder="Care instructions or None"></textarea></div>
+                            </div>
+                        </div>
+                    </template>
+
+                    <div class="pet-group-form-actions">
+                        <button type="button" class="modal-cancel" data-close-pet-group-modal>Cancel</button>
+                        <button type="submit" name="create_pet_group" value="1" class="modal-submit"><i class="fa-solid fa-floppy-disk"></i> Save Group & Puppies</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+    <?php endif; ?>
+
     <div id="addPetModal" class="modal" aria-hidden="true">
 
 
@@ -7690,12 +8121,7 @@ main{
 
 
                                 <option value="Cat">Cat</option>
-
-                                <option value="Other">Other</option>
-
-
-
-                            </select>
+</select>
 
 
 
@@ -8678,10 +9104,84 @@ main{
 
 
 
+    <script>
+    (function () {
+        const groupModal = document.getElementById('petGroupModal');
+        const openButtons = document.querySelectorAll('[data-open-pet-group-modal]');
+        const closeButtons = document.querySelectorAll('[data-close-pet-group-modal]');
+        const rowsContainer = document.getElementById('puppyRows');
+        const rowTemplate = document.getElementById('puppyRowTemplate');
+        const addRowButton = document.getElementById('addPuppyRowButton');
+        let nextPuppyIndex = 1;
 
+        function openGroupModal() {
+            if (!groupModal) return;
+            groupModal.classList.add('active');
+            groupModal.setAttribute('aria-hidden', 'false');
+            document.body.style.overflow = 'hidden';
+            const motherSelect = document.getElementById('mother_pet_id');
+            if (motherSelect) window.setTimeout(() => motherSelect.focus(), 60);
+        }
+
+        function closeGroupModal() {
+            if (!groupModal) return;
+            groupModal.classList.remove('active');
+            groupModal.setAttribute('aria-hidden', 'true');
+            document.body.style.overflow = '';
+        }
+
+        openButtons.forEach(button => button.addEventListener('click', openGroupModal));
+        closeButtons.forEach(button => button.addEventListener('click', closeGroupModal));
+        if (groupModal) {
+            groupModal.addEventListener('click', event => {
+                if (event.target === groupModal) closeGroupModal();
+            });
+        }
+
+        function refreshPuppyRowControls() {
+            if (!rowsContainer) return;
+            const rows = rowsContainer.querySelectorAll('[data-puppy-row]');
+            rows.forEach((row, index) => {
+                const title = row.querySelector('[data-puppy-title]');
+                const remove = row.querySelector('[data-remove-puppy]');
+                if (title) title.textContent = 'Puppy ' + (index + 1);
+                if (remove) remove.style.display = rows.length > 1 ? 'inline-flex' : 'none';
+            });
+        }
+
+        if (addRowButton && rowTemplate && rowsContainer) {
+            addRowButton.addEventListener('click', function () {
+                if (rowsContainer.querySelectorAll('[data-puppy-row]').length >= 20) {
+                    alert('A group can contain up to 20 puppies at a time.');
+                    return;
+                }
+                const html = rowTemplate.innerHTML
+                    .replace(/__INDEX__/g, String(nextPuppyIndex))
+                    .replace(/__INDEX_LABEL__/g, String(rowsContainer.querySelectorAll('[data-puppy-row]').length + 1));
+                const wrapper = document.createElement('div');
+                wrapper.innerHTML = html.trim();
+                rowsContainer.appendChild(wrapper.firstElementChild);
+                nextPuppyIndex++;
+                refreshPuppyRowControls();
+            });
+
+            rowsContainer.addEventListener('click', function (event) {
+                const removeButton = event.target.closest('[data-remove-puppy]');
+                if (!removeButton) return;
+                const row = removeButton.closest('[data-puppy-row]');
+                if (row) row.remove();
+                refreshPuppyRowControls();
+            });
+        }
+
+        refreshPuppyRowControls();
+        document.addEventListener('keydown', event => {
+            if (event.key === 'Escape' && groupModal && groupModal.classList.contains('active')) {
+                closeGroupModal();
+            }
+        });
+    })();
+    </script>
 
 </body>
-
-
-
 </html>

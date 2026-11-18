@@ -145,6 +145,13 @@ function bookingReceiptStorageRequest(string $method, string $objectPath, ?strin
 $bookingManilaTimezone = new DateTimeZone('Asia/Manila');
 $minimumOnlineBookingDate = (new DateTimeImmutable('tomorrow', $bookingManilaTimezone))->format('Y-m-d');
 
+// Preserve a customer-selected homepage promotion while an unauthenticated visitor signs in.
+$incomingPromoValue = $_GET['promo_id'] ?? null;
+$incomingPromoId = is_scalar($incomingPromoValue) ? filter_var((string)$incomingPromoValue, FILTER_VALIDATE_INT) : false;
+if ($incomingPromoId !== false && $incomingPromoId > 0) {
+    $_SESSION['pending_booking_promo_id'] = (int)$incomingPromoId;
+}
+
 /**
  * Format notification timestamps consistently with the Customer Dashboard.
  * Supabase values without an explicit timezone are treated as UTC.
@@ -697,6 +704,36 @@ try {
     $user_pets = [];
 }
 
+// Only active, in-date promotions with a real discount can be selected during booking.
+$booking_promotions = [];
+try {
+    $booking_promos_stmt = $pdo->query("
+        SELECT id, tag, title, discount_percent, applicable_category, starts_on, expiry_date
+        FROM public.promos
+        WHERE status = 'active'
+          AND discount_percent > 0
+          AND starts_on <= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Manila')::date
+          AND (expiry_date IS NULL OR expiry_date >= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Manila')::date)
+        ORDER BY discount_percent DESC, id DESC
+    ");
+    $booking_promotions = $booking_promos_stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+} catch (PDOException $e) {
+    // A missing migration should not take the booking form offline; no promo is offered until it is installed.
+    error_log('Active booking promotion lookup failed. Apply promotion_discount_migration.sql before enabling promo booking: ' . $e->getMessage());
+    $booking_promotions = [];
+}
+
+$requestedFormPromo = ($_SERVER['REQUEST_METHOD'] === 'POST')
+    ? ($_POST['promo_id'] ?? '')
+    : ($_GET['promo_id'] ?? ($_SESSION['pending_booking_promo_id'] ?? ''));
+$requestedFormPromoId = is_scalar($requestedFormPromo) ? filter_var((string)$requestedFormPromo, FILTER_VALIDATE_INT) : false;
+$default_booking_promo_id = ($requestedFormPromoId !== false && $requestedFormPromoId > 0) ? (int)$requestedFormPromoId : 0;
+$valid_booking_promo_ids = array_map(static function ($promo) { return (int)($promo['id'] ?? 0); }, $booking_promotions);
+if (!in_array($default_booking_promo_id, $valid_booking_promo_ids, true)) {
+    $default_booking_promo_id = 0;
+}
+unset($_SESSION['pending_booking_promo_id']);
+
 // Protect Backend
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $receipt_filename = '';
@@ -778,6 +815,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     $service_category = bookingRequestString($_POST, 'service_category');
+    $promo_id_raw = bookingRequestString($_POST, 'promo_id');
+    $promo_id_value = ($promo_id_raw === '') ? 0 : filter_var($promo_id_raw, FILTER_VALIDATE_INT);
+    $selected_promo_id = ($promo_id_value !== false && $promo_id_value > 0) ? (int)$promo_id_value : 0;
+    if ($promo_id_raw !== '' && $selected_promo_id <= 0 && empty($error_msg)) {
+        $error_msg = 'Please choose a valid promotion or select No Promotion.';
+    }
     $specific_service = bookingRequestString($_POST, 'specific_service');
     $haircut_style = bookingRequestString($_POST, 'haircut_style');
     $custom_cut_description = bookingRequestString($_POST, 'custom_cut_description');
@@ -1042,6 +1085,48 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 // Existing overnight prices are treated as per-night rates.
                 $service_fee *= $stay_nights;
             }
+        }
+    }
+
+    // Validate the selected promotion against the live database and calculate the final amount server-side.
+    // service_fee remains the regular price; total_price stores the discounted amount due.
+    $discount_percent = 0.0;
+    $discount_amount = 0.0;
+    $final_total_price = round((float)$service_fee, 2);
+    $promo_title_snapshot = null;
+    if (empty($error_msg) && $selected_promo_id > 0) {
+        try {
+            $promo_validate_stmt = $pdo->prepare("
+                SELECT id, title, discount_percent, applicable_category
+                FROM public.promos
+                WHERE id = :promo_id
+                  AND status = 'active'
+                  AND discount_percent > 0
+                  AND starts_on <= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Manila')::date
+                  AND (expiry_date IS NULL OR expiry_date >= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Manila')::date)
+                  AND (applicable_category = 'All Services' OR applicable_category = :service_category)
+                LIMIT 1
+            ");
+            $promo_validate_stmt->execute([
+                ':promo_id' => $selected_promo_id,
+                ':service_category' => $service_category
+            ]);
+            $selected_promo = $promo_validate_stmt->fetch(PDO::FETCH_ASSOC);
+            if (!$selected_promo) {
+                $error_msg = 'The selected promotion is no longer available for this service. Please choose another promotion or continue without one.';
+            } else {
+                $discount_percent = (float)($selected_promo['discount_percent'] ?? 0);
+                if ($discount_percent <= 0 || $discount_percent > 99.99) {
+                    $error_msg = 'The selected promotion has an invalid discount. Please contact the clinic.';
+                } else {
+                    $discount_amount = round(((float)$service_fee) * ($discount_percent / 100), 2);
+                    $final_total_price = max(0, round((float)$service_fee - $discount_amount, 2));
+                    $promo_title_snapshot = (string)($selected_promo['title'] ?? 'Promotion');
+                }
+            }
+        } catch (PDOException $promoError) {
+            error_log('Selected promotion validation failed: ' . $promoError->getMessage());
+            $error_msg = 'Unable to verify the selected promotion. Please try again or continue without a promotion.';
         }
     }
 
@@ -1411,7 +1496,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             if ($checkout_date_to_save !== null) {
                 // Boarding stores its check-out date so the entire stay can be checked later.
-                $insert_appt = $pdo->prepare("INSERT INTO appointments (user_id, pet_id, service, appointment_date, appointment_time, checkout_date, service_fee, total_price, gcash_ref, gcash_receipt, payment_method, payment_status, booking_status, remarks) VALUES (:user_id, :pet_id, :service, :appointment_date, :appointment_time, :checkout_date, :service_fee, :total_price, :gcash_ref, :gcash_receipt, :payment_method, :payment_status, :booking_status, :remarks) RETURNING id");
+                $insert_appt = $pdo->prepare("INSERT INTO appointments (user_id, pet_id, service, appointment_date, appointment_time, checkout_date, service_fee, total_price, discount_percent, discount_amount, promo_id, promo_title, gcash_ref, gcash_receipt, payment_method, payment_status, booking_status, remarks) VALUES (:user_id, :pet_id, :service, :appointment_date, :appointment_time, :checkout_date, :service_fee, :total_price, :discount_percent, :discount_amount, :promo_id, :promo_title, :gcash_ref, :gcash_receipt, :payment_method, :payment_status, :booking_status, :remarks) RETURNING id");
                 $insert_appt->execute([
                     ':user_id' => $user_id,
                     ':pet_id' => $pet_id,
@@ -1420,7 +1505,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ':appointment_time' => $appointment_time,
                     ':checkout_date' => $checkout_date_to_save,
                     ':service_fee' => $service_fee,
-                    ':total_price' => $service_fee,
+                    ':total_price' => $final_total_price,
+                    ':discount_percent' => $discount_percent,
+                    ':discount_amount' => $discount_amount,
+                    ':promo_id' => $selected_promo_id > 0 ? $selected_promo_id : null,
+                    ':promo_title' => $promo_title_snapshot,
                     ':gcash_ref' => $gcash_ref,
                     ':gcash_receipt' => $receipt_filename,
                     ':payment_method' => $payment_method,
@@ -1430,7 +1519,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ]);
             } elseif ($is_daycare) {
                 // Store the expected pickup time so staff can see the full reserved interval.
-                $insert_appt = $pdo->prepare("INSERT INTO appointments (user_id, pet_id, service, appointment_date, appointment_time, pickup_time, service_fee, total_price, gcash_ref, gcash_receipt, payment_method, payment_status, booking_status, remarks) VALUES (:user_id, :pet_id, :service, :appointment_date, :appointment_time, :pickup_time, :service_fee, :total_price, :gcash_ref, :gcash_receipt, :payment_method, :payment_status, :booking_status, :remarks) RETURNING id");
+                $insert_appt = $pdo->prepare("INSERT INTO appointments (user_id, pet_id, service, appointment_date, appointment_time, pickup_time, service_fee, total_price, discount_percent, discount_amount, promo_id, promo_title, gcash_ref, gcash_receipt, payment_method, payment_status, booking_status, remarks) VALUES (:user_id, :pet_id, :service, :appointment_date, :appointment_time, :pickup_time, :service_fee, :total_price, :discount_percent, :discount_amount, :promo_id, :promo_title, :gcash_ref, :gcash_receipt, :payment_method, :payment_status, :booking_status, :remarks) RETURNING id");
                 $insert_appt->execute([
                     ':user_id' => $user_id,
                     ':pet_id' => $pet_id,
@@ -1439,7 +1528,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ':appointment_time' => $appointment_time,
                     ':pickup_time' => $pickup_time,
                     ':service_fee' => $service_fee,
-                    ':total_price' => $service_fee,
+                    ':total_price' => $final_total_price,
+                    ':discount_percent' => $discount_percent,
+                    ':discount_amount' => $discount_amount,
+                    ':promo_id' => $selected_promo_id > 0 ? $selected_promo_id : null,
+                    ':promo_title' => $promo_title_snapshot,
                     ':gcash_ref' => $gcash_ref,
                     ':gcash_receipt' => $receipt_filename,
                     ':payment_method' => $payment_method,
@@ -1449,7 +1542,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ]);
             } else {
                 // Preserve the existing insert path for Grooming and Vet bookings.
-                $insert_appt = $pdo->prepare("INSERT INTO appointments (user_id, pet_id, service, appointment_date, appointment_time, service_fee, total_price, gcash_ref, gcash_receipt, payment_method, payment_status, booking_status, remarks) VALUES (:user_id, :pet_id, :service, :appointment_date, :appointment_time, :service_fee, :total_price, :gcash_ref, :gcash_receipt, :payment_method, :payment_status, :booking_status, :remarks) RETURNING id");
+                $insert_appt = $pdo->prepare("INSERT INTO appointments (user_id, pet_id, service, appointment_date, appointment_time, service_fee, total_price, discount_percent, discount_amount, promo_id, promo_title, gcash_ref, gcash_receipt, payment_method, payment_status, booking_status, remarks) VALUES (:user_id, :pet_id, :service, :appointment_date, :appointment_time, :service_fee, :total_price, :discount_percent, :discount_amount, :promo_id, :promo_title, :gcash_ref, :gcash_receipt, :payment_method, :payment_status, :booking_status, :remarks) RETURNING id");
                 $insert_appt->execute([
                     ':user_id' => $user_id,
                     ':pet_id' => $pet_id,
@@ -1457,7 +1550,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ':appointment_date' => $appointment_date,
                     ':appointment_time' => $appointment_time,
                     ':service_fee' => $service_fee,
-                    ':total_price' => $service_fee,
+                    ':total_price' => $final_total_price,
+                    ':discount_percent' => $discount_percent,
+                    ':discount_amount' => $discount_amount,
+                    ':promo_id' => $selected_promo_id > 0 ? $selected_promo_id : null,
+                    ':promo_title' => $promo_title_snapshot,
                     ':gcash_ref' => $gcash_ref,
                     ':gcash_receipt' => $receipt_filename,
                     ':payment_method' => $payment_method,
@@ -1520,6 +1617,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             error_log('Appointment booking failed for user #' . $user_id . ': ' . $e->getMessage());
             $error_msg = 'Unable to complete your booking right now. Please verify the details and try again.';
         }
+    }
+}
+
+// Resolve the customer-facing GCash QR image from a dedicated public Storage bucket.
+// Keep the existing local image as a fallback until the Admin QR uploader is configured.
+$gcashQrImageSrc = '/images/qr.png';
+$gcashQrSupabaseUrl = trim((string)(getenv('SUPABASE_URL') ?: ''));
+$gcashQrBucket = trim((string)(getenv('SUPABASE_GCASH_QR_BUCKET') ?: ''));
+if ($gcashQrSupabaseUrl !== '' && $gcashQrBucket !== '') {
+    $gcashQrSupabaseUrl = rtrim($gcashQrSupabaseUrl, '/');
+    $gcashQrParsedUrl = parse_url($gcashQrSupabaseUrl);
+    if (
+        filter_var($gcashQrSupabaseUrl, FILTER_VALIDATE_URL) &&
+        is_array($gcashQrParsedUrl) &&
+        strtolower((string)($gcashQrParsedUrl['scheme'] ?? '')) === 'https' &&
+        !empty($gcashQrParsedUrl['host']) &&
+        !isset($gcashQrParsedUrl['user']) &&
+        !isset($gcashQrParsedUrl['pass']) &&
+        preg_match('/^[a-z0-9][a-z0-9_-]{1,61}[a-z0-9]$/i', $gcashQrBucket)
+    ) {
+        // A version query avoids showing a stale QR after Admin replaces the fixed object.
+        $gcashQrImageSrc = $gcashQrSupabaseUrl
+            . '/storage/v1/object/public/' . rawurlencode($gcashQrBucket)
+            . '/gcash/qr.png?v=' . rawurlencode((string)time());
     }
 }
 
@@ -3642,6 +3763,24 @@ if ($error_msg !== '') {
                     <textarea name="remarks" placeholder="Any other allergies, behaviors, or specific requests?"></textarea>
                 </div>
 
+                <div class="form-group" id="bookingPromotionGroup">
+                    <label for="booking_promo_id">Available Promotion (Optional)</label>
+                    <select name="promo_id" id="booking_promo_id">
+                        <option value="">No Promotion</option>
+                        <?php foreach ($booking_promotions as $bookingPromo): ?>
+                            <option
+                                value="<?php echo (int)$bookingPromo['id']; ?>"
+                                <?php echo ($default_booking_promo_id === (int)$bookingPromo['id']) ? 'selected' : ''; ?>
+                                data-discount="<?php echo htmlspecialchars((string)$bookingPromo['discount_percent'], ENT_QUOTES, 'UTF-8'); ?>"
+                                data-category="<?php echo htmlspecialchars((string)($bookingPromo['applicable_category'] ?? 'All Services'), ENT_QUOTES, 'UTF-8'); ?>"
+                            >
+                                <?php echo htmlspecialchars((string)($bookingPromo['title'] ?? $bookingPromo['tag'] ?? 'Promotion'), ENT_QUOTES, 'UTF-8'); ?> — <?php echo number_format((float)$bookingPromo['discount_percent'], 2); ?>% OFF
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                    <p style="margin-top:7px;color:#6b7c8f;font-size:10px;line-height:1.5;">Choose an active promotion that applies to your selected service. The discount is verified and computed by the system.</p>
+                </div>
+
                 <div class="price-display" id="priceDisplay">
                     <p>Total Amount Due (GCash Full Payment)</p>
                     <h2 id="priceText">₱0.00</h2>
@@ -3659,7 +3798,7 @@ if ($error_msg !== '') {
                             </div>
 
                             <img
-                                src="/images/qr.png"
+                                src="<?php echo htmlspecialchars($gcashQrImageSrc, ENT_QUOTES, 'UTF-8'); ?>"
                                 alt="Boogie's Pet Care GCash QR Code"
                                 class="gcash-qr-image"
                                 loading="eager"
@@ -4605,6 +4744,9 @@ if ($error_msg !== '') {
                 });
         }
 
+        const bookingPromoSelect = document.getElementById('booking_promo_id');
+        if (bookingPromoSelect) bookingPromoSelect.addEventListener('change', calculatePrice);
+
         function calculatePrice() {
             const petType = document.getElementById('pet_type').value;
             const size = document.getElementById('pet_size').value;
@@ -4616,6 +4758,18 @@ if ($error_msg !== '') {
             const gcashSection = document.getElementById('gcashSection');
             const gcashRefInput = document.getElementById('gcash_ref_input');
             const gcashReceiptInput = document.getElementById('gcash_receipt_input');
+            const promoSelect = document.getElementById('booking_promo_id');
+
+            if (promoSelect) {
+                Array.from(promoSelect.options).forEach(function(option) {
+                    if (!option.value) return;
+                    const scope = option.dataset.category || 'All Services';
+                    const applicable = !category || scope === 'All Services' || scope === category;
+                    option.hidden = !applicable;
+                    option.disabled = !applicable;
+                    if (!applicable && promoSelect.value === option.value) promoSelect.value = '';
+                });
+            }
 
             if (petType && size && category && specific && pricingData[petType] && pricingData[petType][category]) {
                 let basePrice = 0;
@@ -4628,17 +4782,21 @@ if ($error_msg !== '') {
 
                 if (basePrice > 0) {
                     let totalPrice = basePrice;
+                    let priceReadyForDiscount = true;
+                    let incompletePriceMessage = '';
                     if (isOvernightBoardingSelected()) {
                         const checkin = document.getElementById('appointment_date').value;
                         const checkout = document.getElementById('checkout_date').value;
                         if (!checkin || !checkout || checkout <= checkin) {
-                            priceText.innerText = `₱${basePrice.toFixed(2)} per night — choose check-out date`;
+                            incompletePriceMessage = `₱${basePrice.toFixed(2)} per night — choose check-out date`;
+                            priceReadyForDiscount = false;
                         } else {
                             const checkinDate = new Date(checkin + 'T12:00:00');
                             const checkoutDate = new Date(checkout + 'T12:00:00');
                             const nights = Math.round((checkoutDate - checkinDate) / 86400000);
                             if (nights < 1) {
-                                priceText.innerText = `₱${basePrice.toFixed(2)} per night — choose a valid stay`;
+                                incompletePriceMessage = `₱${basePrice.toFixed(2)} per night — choose a valid stay`;
+                                priceReadyForDiscount = false;
                             } else {
                                 totalPrice = basePrice * nights;
                                 priceText.innerText = `₱${totalPrice.toFixed(2)} (${nights} night${nights === 1 ? '' : 's'} × ₱${basePrice.toFixed(2)})`;
@@ -4648,7 +4806,8 @@ if ($error_msg !== '') {
                         const dropoff = jsTimeToMinutes(document.getElementById('appointment_time').value);
                         const pickup = jsTimeToMinutes(document.getElementById('pickup_time').value);
                         if (dropoff === null || pickup === null || pickup <= dropoff) {
-                            priceText.innerText = `₱${basePrice.toFixed(2)} first hour — choose drop-off and pickup times`;
+                            incompletePriceMessage = `₱${basePrice.toFixed(2)} first hour — choose drop-off and pickup times`;
+                            priceReadyForDiscount = false;
                         } else {
                             const durationMinutes = pickup - dropoff;
                             const extraMinutes = Math.max(0, durationMinutes - 60);
@@ -4659,8 +4818,26 @@ if ($error_msg !== '') {
                             const minutes = durationMinutes % 60;
                             priceText.innerText = `₱${totalPrice.toFixed(2)} (${hours ? `${hours}h ` : ''}${minutes ? `${minutes}m` : ''}; first hour ₱${basePrice.toFixed(2)} + ₱${extraFee.toFixed(2)} extra)`;
                         }
+                    }
+
+                    if (priceReadyForDiscount) {
+                        let discountPercent = 0;
+                        let promoLabel = '';
+                        if (promoSelect && promoSelect.value) {
+                            const selectedOption = promoSelect.options[promoSelect.selectedIndex];
+                            const optionCategory = selectedOption ? (selectedOption.dataset.category || 'All Services') : 'All Services';
+                            if (optionCategory === 'All Services' || optionCategory === category) {
+                                discountPercent = Math.max(0, Math.min(99.99, Number(selectedOption.dataset.discount || 0)));
+                                promoLabel = selectedOption.textContent.trim();
+                            }
+                        }
+                        const discountAmount = Math.round((totalPrice * discountPercent / 100) * 100) / 100;
+                        const amountDue = Math.max(0, totalPrice - discountAmount);
+                        priceText.innerText = discountPercent > 0
+                            ? `Regular Price: ₱${totalPrice.toFixed(2)} | ${discountPercent}% discount: -₱${discountAmount.toFixed(2)} | Amount Due: ₱${amountDue.toFixed(2)}`
+                            : '₱' + totalPrice.toFixed(2);
                     } else {
-                        priceText.innerText = '₱' + totalPrice.toFixed(2);
+                        priceText.innerText = incompletePriceMessage;
                     }
                     displayBox.style.display = 'block';
                     gcashSection.style.display = 'block';

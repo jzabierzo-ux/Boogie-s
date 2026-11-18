@@ -1,21 +1,63 @@
 <?php
 require_once __DIR__ . '/../shared_session_bootstrap.php';
 
-/* -------------------------------------------------------------------------
-   AUTHENTICATION — only Admin and Veterinarians may view this page.
-   Admin and Staff portal session flags must be mutually exclusive.
-   ------------------------------------------------------------------------- */
-$roleRaw = strtolower(trim((string)($_SESSION['role'] ?? '')));
-$roleRaw = preg_replace('/[\s_-]+/', ' ', $roleRaw) ?? $roleRaw;
-$roleAliases = [
-    'administrator' => 'admin',
-    'admin' => 'admin',
-    'vet' => 'veterinarian',
-    'veterinary' => 'veterinarian',
-    'veterinarian' => 'veterinarian'
-];
-$currentRole = $roleAliases[$roleRaw] ?? $roleRaw;
+date_default_timezone_set('Asia/Manila');
+ini_set('display_errors', '0');
 
+/* Prevent sensitive patient information from being cached by browsers/proxies. */
+header('Cache-Control: private, no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
+header('Expires: 0');
+header('X-Content-Type-Options: nosniff');
+header('X-Frame-Options: SAMEORIGIN');
+header('Referrer-Policy: strict-origin-when-cross-origin');
+header('Permissions-Policy: camera=(), microphone=(), geolocation=()');
+
+/**
+ * Map legacy database role names to the three current system roles.
+ * This does not change the value stored in the users table.
+ */
+function normalizeViewRecordSystemRole($role): string
+{
+    $role = strtolower(trim((string)$role));
+    $role = preg_replace('/[\\s_-]+/', ' ', $role) ?? $role;
+
+    $aliases = [
+        // Administrator
+        'admin' => 'admin',
+        'administrator' => 'admin',
+
+        // Combined Staff / Manager role (not authorized for medical records)
+        'staff' => 'staff',
+        'manager' => 'staff',
+        'shop manager' => 'staff',
+        'receptionist' => 'staff',
+        'front desk' => 'staff',
+        'front desk receptionist' => 'staff',
+        'groomer' => 'staff',
+        'grooming staff' => 'staff',
+        'pet hotel staff' => 'staff',
+        'pet hotel attendant' => 'staff',
+
+        // Veterinarian, including legacy veterinary sub-roles
+        'vet' => 'veterinarian',
+        'veterinary' => 'veterinarian',
+        'veterinarian' => 'veterinarian',
+        'vet assistant' => 'veterinarian',
+        'veterinary assistant' => 'veterinarian',
+        'vet nurse' => 'veterinarian',
+        'veterinary nurse' => 'veterinarian',
+    ];
+
+    return $aliases[$role] ?? str_replace(' ', '_', $role);
+}
+
+/* -------------------------------------------------------------------------
+   AUTHENTICATION — Admin may view records; Veterinarian may view and add
+   consultation notes. General Staff and mixed portal sessions are denied.
+   ------------------------------------------------------------------------- */
+$roleRaw = $_SESSION['role'] ?? '';
+$currentRole = normalizeViewRecordSystemRole($roleRaw);
 $loggedIn = ($_SESSION['logged_in'] ?? false) === true;
 $adminLoggedIn = ($_SESSION['admin_logged_in'] ?? false) === true;
 $staffLoggedIn = ($_SESSION['staff_logged_in'] ?? false) === true;
@@ -25,23 +67,40 @@ $userId = filter_var(
     ['options' => ['min_range' => 1]]
 );
 
+// A declared system role, when present, must agree with the legacy/database role.
+$declaredSystemRoleRaw = $_SESSION['system_role'] ?? '';
+$declaredSystemRole = is_string($declaredSystemRoleRaw) && trim($declaredSystemRoleRaw) !== ''
+    ? normalizeViewRecordSystemRole($declaredSystemRoleRaw)
+    : '';
+$systemRoleConsistent = $declaredSystemRole === '' || $declaredSystemRole === $currentRole;
+
 $isAdmin = $currentRole === 'admin'
     && $loggedIn
     && $adminLoggedIn
-    && !$staffLoggedIn;
+    && !$staffLoggedIn
+    && $systemRoleConsistent;
 $isVeterinarian = $currentRole === 'veterinarian'
     && $loggedIn
     && $staffLoggedIn
-    && !$adminLoggedIn;
+    && !$adminLoggedIn
+    && $systemRoleConsistent;
 
 if ($userId === false || $userId === null || (!$isAdmin && !$isVeterinarian)) {
+    // Send unauthenticated users to the correct login page without allowing
+    // an Admin account to be redirected into the Personnel login flow.
     if (!$loggedIn || $userId === false || $userId === null) {
-        header('Location: stafflogin.php');
+        if ($currentRole === 'admin' || ($adminLoggedIn && !$staffLoggedIn)) {
+            header('Location: ../admin/admin_login.php');
+        } else {
+            header('Location: stafflogin.php');
+        }
         exit;
     }
+
     http_response_code(403);
     exit('Access denied. This page is for Admin and Veterinarian accounts only.');
 }
+
 $userId = (int)$userId;
 // Keep the established variable names used by the page helpers and HTML.
 $user_id = $userId;
@@ -62,6 +121,7 @@ if ($petId === false || $petId === null) {
 }
 $pet_id = (int)$petId;
 
+// Only connect after the portal session and requested record ID are validated.
 require_once __DIR__ . '/../db_supabase.php';
 if (!isset($pdo) || !($pdo instanceof PDO)) {
     error_log('View patient record: database connection is unavailable.');
@@ -69,33 +129,28 @@ if (!isset($pdo) || !($pdo instanceof PDO)) {
     exit('Patient records are temporarily unavailable. Please try again.');
 }
 
-date_default_timezone_set('Asia/Manila');
-header('Cache-Control: private, no-store, no-cache, must-revalidate, max-age=0');
-header('Pragma: no-cache');
-header('Expires: 0');
-header('X-Content-Type-Options: nosniff');
-header('X-Frame-Options: SAMEORIGIN');
-header('Referrer-Policy: strict-origin-when-cross-origin');
-header('Permissions-Policy: camera=(), microphone=(), geolocation=()');
-
-// Confirm that the database account role agrees with the active portal session.
+// Re-check the account's database role on every request; session values alone
+// must not preserve access after an account role has been changed or disabled.
 try {
-    $accountStmt = $pdo->prepare("SELECT role, full_name, profile_image FROM users WHERE id = :user_id LIMIT 1");
+    $accountStmt = $pdo->prepare(
+        'SELECT role, full_name, profile_image FROM public.users WHERE id = :user_id LIMIT 1'
+    );
     $accountStmt->execute([':user_id' => $userId]);
     $accountData = $accountStmt->fetch(PDO::FETCH_ASSOC);
+
     if (!$accountData) {
         http_response_code(403);
         exit('Access denied. The account could not be verified.');
     }
 
-    $databaseRoleRaw = strtolower(trim((string)($accountData['role'] ?? '')));
-    $databaseRoleRaw = preg_replace('/[\s_-]+/', ' ', $databaseRoleRaw) ?? $databaseRoleRaw;
-    $databaseRole = $roleAliases[$databaseRoleRaw] ?? $databaseRoleRaw;
-    if (($isAdmin && $databaseRole !== 'admin') || ($isVeterinarian && $databaseRole !== 'veterinarian')) {
+    $databaseSystemRole = normalizeViewRecordSystemRole($accountData['role'] ?? '');
+    $expectedSystemRole = $isAdmin ? 'admin' : 'veterinarian';
+
+    if ($databaseSystemRole !== $expectedSystemRole || $databaseSystemRole !== $currentRole) {
         http_response_code(403);
         exit('Access denied. Your account role does not match this portal.');
     }
-} catch (PDOException $e) {
+} catch (Throwable $e) {
     error_log('View patient record account verification failed: ' . $e->getMessage());
     http_response_code(503);
     exit('Unable to verify your account right now. Please try again.');
@@ -254,11 +309,83 @@ $med_history = (string)($row['medical_history'] ?? '');
 $special_needs = (string)($row['special_needs'] ?? '');
 
 /* -------------------------------------------------------------------------
+   OPTIONAL FAMILY / LITTER CONTEXT.
+   Each puppy remains an independent pet record; this section only displays
+   related mother/sibling records when the Pet Group migration is installed.
+   ------------------------------------------------------------------------- */
+$petFamilySchemaAvailable = true;
+$petFamilyBirthGroup = null;
+$petFamilyBirthSiblings = [];
+$petFamilyMotherLitters = [];
+try {
+    $birthGroupStmt = $pdo->prepare("
+        SELECT g.id AS group_id, g.group_name, g.created_at,
+               m.id AS mother_pet_id, m.name AS mother_name, m.breed AS mother_breed
+        FROM pet_group_members gm
+        INNER JOIN pet_groups g ON g.id = gm.group_id
+        INNER JOIN pets m ON m.id = g.mother_pet_id
+        WHERE gm.pet_id = :pet_id AND g.owner_id = :owner_id
+        ORDER BY g.created_at DESC, g.id DESC
+        LIMIT 1
+    ");
+    $birthGroupStmt->execute([':pet_id' => $pet_id, ':owner_id' => $owner_id]);
+    $petFamilyBirthGroup = $birthGroupStmt->fetch(PDO::FETCH_ASSOC) ?: null;
+
+    if ($petFamilyBirthGroup) {
+        $birthSiblingsStmt = $pdo->prepare("
+            SELECT p.id, p.name, p.breed, p.gender
+            FROM pet_group_members gm
+            INNER JOIN pet_groups g ON g.id = gm.group_id
+            INNER JOIN pets p ON p.id = gm.pet_id
+            WHERE gm.group_id = :group_id AND g.owner_id = :owner_id
+            ORDER BY p.id ASC
+        ");
+        $birthSiblingsStmt->execute([
+            ':group_id' => (int)$petFamilyBirthGroup['group_id'],
+            ':owner_id' => $owner_id,
+        ]);
+        $petFamilyBirthSiblings = $birthSiblingsStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    }
+
+    $motherLittersStmt = $pdo->prepare("
+        SELECT id AS group_id, group_name, created_at
+        FROM pet_groups
+        WHERE mother_pet_id = :pet_id AND owner_id = :owner_id
+        ORDER BY created_at DESC, id DESC
+    ");
+    $motherLittersStmt->execute([':pet_id' => $pet_id, ':owner_id' => $owner_id]);
+    $petFamilyMotherLitters = $motherLittersStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+    $litterPuppiesStmt = $pdo->prepare("
+        SELECT p.id, p.name, p.breed, p.gender
+        FROM pet_group_members gm
+        INNER JOIN pet_groups g ON g.id = gm.group_id
+        INNER JOIN pets p ON p.id = gm.pet_id
+        WHERE gm.group_id = :group_id AND g.owner_id = :owner_id
+        ORDER BY p.id ASC
+    ");
+    foreach ($petFamilyMotherLitters as $litterIndex => $litterRow) {
+        $litterPuppiesStmt->execute([
+            ':group_id' => (int)$litterRow['group_id'],
+            ':owner_id' => $owner_id,
+        ]);
+        $petFamilyMotherLitters[$litterIndex]['puppies'] = $litterPuppiesStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    }
+} catch (Throwable $e) {
+    $petFamilySchemaAvailable = false;
+    $petFamilyBirthGroup = null;
+    $petFamilyBirthSiblings = [];
+    $petFamilyMotherLitters = [];
+    error_log('Patient family group lookup failed: ' . $e->getMessage());
+}
+
+
+/* -------------------------------------------------------------------------
    HANDLE POST ACTIONS WITH CSRF PROTECTION.
    Consultation notes remain owner notifications; they are not appended to
    medical_history, matching the existing page behavior.
    ------------------------------------------------------------------------- */
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+if ($method === 'POST') {
     $action = is_string($_POST['action'] ?? null) ? $_POST['action'] : '';
     $submittedCsrf = is_string($_POST['csrf_token'] ?? null) ? $_POST['csrf_token'] : '';
 
@@ -287,6 +414,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if ($action === 'add_note') {
+        if (!$is_veterinarian) {
+            http_response_code(403);
+            exit('Only an authorized Veterinarian may add consultation notes.');
+        }
+
         $new_note_text = is_string($_POST['new_note'] ?? null) ? trim($_POST['new_note']) : '';
         $noteLength = function_exists('mb_strlen') ? mb_strlen($new_note_text, 'UTF-8') : strlen($new_note_text);
 
@@ -2127,6 +2259,20 @@ input, select, textarea, button, img { max-width:100%; }
 @media (max-width:400px) {
     .main-content > header .mobile-profile-first-name { max-width:62px !important; font-size:10px !important; }
 }
+
+
+/* FAMILY / LITTER CONTEXT */
+.family-context-card{background:#f8fbff;border:1px solid #dce8f3;border-left:4px solid var(--brand-yellow);border-radius:14px;padding:18px 20px;margin:0 0 28px}
+.family-context-card h3{font-size:16px;font-weight:800;color:var(--sidebar-navy);display:flex;align-items:center;gap:9px;margin-bottom:12px}
+.family-context-block{background:#fff;border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-top:10px}
+.family-context-block strong{color:var(--sidebar-navy);font-size:12px}
+.family-context-block p{color:var(--text-muted);font-size:11px;line-height:1.55;margin:4px 0}
+.family-context-block a{color:#1d63ff;font-weight:700;text-decoration:none}
+.family-context-list{display:flex;flex-wrap:wrap;gap:7px;margin-top:8px}
+.family-context-list a,.family-context-list span{display:inline-flex;align-items:center;gap:6px;background:#f3f7fb;border:1px solid #e3ebf2;border-radius:8px;padding:7px 9px;color:var(--sidebar-navy);font-size:10px;font-weight:700;text-decoration:none}
+.family-context-list .current-pet{background:#fff8df;border-color:#f0dfa2}
+@media(max-width:680px){.family-context-card{padding:14px}.family-context-card h3{font-size:14px}}
+
 </style>
 <style>
 
@@ -2236,7 +2382,7 @@ input, select, textarea, button, img { max-width:100%; }
         <header>
             <div class="breadcrumb">
                 <i class="fas fa-paw" style="color: var(--brand-blue);"></i> 
-                <span class="breadcrumb-text">Veterinarian Portal / Patient Record</span></div>
+                <span class="breadcrumb-text"><?php echo $isAdmin ? 'Admin Portal / Patient Record' : 'Veterinarian Portal / Patient Record'; ?></span></div>
             
             <div class="top-right-actions">
                 <div class="notif-wrapper" onclick="toggleNotif(event)">
@@ -2276,7 +2422,7 @@ input, select, textarea, button, img { max-width:100%; }
 
                 <div class="profile-wrapper" onclick="toggleProfile(event)">
                     <div class="role-label">
-                        <i class="fas <?php echo $isAdmin ? 'fa-user-shield' : 'fa-user-md'; ?>"></i> <?php echo $isAdmin ? 'ADMIN' : 'VET'; ?>
+                        <i class="fas <?php echo $isAdmin ? 'fa-user-shield' : 'fa-user-md'; ?>"></i> <?php echo $isAdmin ? 'ADMIN' : 'VETERINARIAN'; ?>
                     </div>
                     
                     <?php if ($profile_img_src !== ''): ?>
@@ -2355,6 +2501,43 @@ input, select, textarea, button, img { max-width:100%; }
                     </div>
                 </div>
 
+                <?php if ($petFamilySchemaAvailable && ($petFamilyBirthGroup || !empty($petFamilyMotherLitters))): ?>
+                    <section class="family-context-card" aria-labelledby="familyContextTitle">
+                        <h3 id="familyContextTitle"><i class="fas fa-people-roof" aria-hidden="true"></i> Family / Litter Group</h3>
+
+                        <?php if ($petFamilyBirthGroup): ?>
+                            <div class="family-context-block">
+                                <strong>Part of: <?php echo htmlspecialchars((string)$petFamilyBirthGroup['group_name'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></strong>
+                                <p>Mother Dog: <a href="view_records.php?id=<?php echo (int)$petFamilyBirthGroup['mother_pet_id']; ?>"><?php echo htmlspecialchars((string)$petFamilyBirthGroup['mother_name'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></a>
+                                    <?php if (!empty($petFamilyBirthGroup['mother_breed'])): ?> · <?php echo htmlspecialchars((string)$petFamilyBirthGroup['mother_breed'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?><?php endif; ?>
+                                </p>
+                                <p>Other puppies in this litter:</p>
+                                <div class="family-context-list">
+                                    <?php foreach ($petFamilyBirthSiblings as $sibling): ?>
+                                        <?php if ((int)$sibling['id'] === $pet_id): ?>
+                                            <span class="current-pet"><i class="fas fa-paw"></i> <?php echo htmlspecialchars((string)$sibling['name'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?> (Current Pet)</span>
+                                        <?php else: ?>
+                                            <a href="view_records.php?id=<?php echo (int)$sibling['id']; ?>"><i class="fas fa-dog"></i> <?php echo htmlspecialchars((string)$sibling['name'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></a>
+                                        <?php endif; ?>
+                                    <?php endforeach; ?>
+                                </div>
+                            </div>
+                        <?php endif; ?>
+
+                        <?php foreach ($petFamilyMotherLitters as $litter): ?>
+                            <div class="family-context-block">
+                                <strong><?php echo htmlspecialchars((string)$litter['group_name'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></strong>
+                                <p>This patient is the mother dog for this group. <?php echo count($litter['puppies'] ?? []); ?> puppy profile(s) are linked to this litter.</p>
+                                <div class="family-context-list">
+                                    <?php foreach (($litter['puppies'] ?? []) as $puppy): ?>
+                                        <a href="view_records.php?id=<?php echo (int)$puppy['id']; ?>"><i class="fas fa-dog"></i> <?php echo htmlspecialchars((string)$puppy['name'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></a>
+                                    <?php endforeach; ?>
+                                </div>
+                            </div>
+                        <?php endforeach; ?>
+                    </section>
+                <?php endif; ?>
+
                 <div class="pet-owner-info-note" role="note">
                     <i class="fas fa-shield-dog" aria-hidden="true"></i>
                     <div>
@@ -2400,13 +2583,15 @@ input, select, textarea, button, img { max-width:100%; }
                         }
                     ?>
                 </div>
-                <h3 class="section-title"><i class="fas fa-stethoscope" style="color: var(--sidebar-navy);"></i> Add Consultation Note</h3>
-                <form method="POST" action="" class="note-form">
-                    <input type="hidden" name="action" value="add_note">
-                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token, ENT_QUOTES, 'UTF-8'); ?>">
-                    <textarea name="new_note" maxlength="5000" placeholder="Type diagnosis, prescriptions, or clinical notes here to notify the owner..." required></textarea>
-                    <button type="submit" name="add_note" class="btn-submit"><i class="fas fa-paper-plane"></i> Send Note to Owner</button>
-                </form>
+                <?php if ($isVeterinarian): ?>
+                    <h3 class="section-title"><i class="fas fa-stethoscope" style="color: var(--sidebar-navy);"></i> Add Consultation Note</h3>
+                    <form method="POST" action="" class="note-form">
+                        <input type="hidden" name="action" value="add_note">
+                        <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token, ENT_QUOTES, 'UTF-8'); ?>">
+                        <textarea name="new_note" maxlength="5000" placeholder="Type diagnosis, prescriptions, or clinical notes here to notify the owner..." required></textarea>
+                        <button type="submit" name="add_note" class="btn-submit"><i class="fas fa-paper-plane"></i> Send Note to Owner</button>
+                    </form>
+                <?php endif; ?>
 
             </div>
         </div>

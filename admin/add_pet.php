@@ -221,6 +221,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if ($p_name === '' || $p_type === '' || $p_gender === '' || !in_array($p_gender, ['Male', 'Female'], true) || $owner_id === false || $owner_id === null || $owner_id <= 0) {
         $error_msg = 'Please complete all required pet and owner fields using valid values.';
+    } elseif (!in_array($p_type, ['Dog', 'Cat'], true)) {
+        $error_msg = 'Only dogs and cats can be registered.';
     } else {
         try {
             $pdo->beginTransaction();
@@ -1112,7 +1114,11 @@ try {
                         </div>
                         <div class="form-group">
                             <label for="pet_type">Pet Type</label>
-                            <input type="text" id="pet_type" name="pet_type" placeholder="e.g. Dog, Cat" autocomplete="off" value="<?php echo addPetEscape($form_values['pet_type'] ?? ''); ?>" required>
+                            <select id="pet_type" name="pet_type" required>
+                                <option value="" disabled <?php echo empty($form_values['pet_type']) ? 'selected' : ''; ?>>-- Select Pet Type --</option>
+                                <option value="Dog" <?php echo ($form_values['pet_type'] ?? '') === 'Dog' ? 'selected' : ''; ?>>Dog</option>
+                                <option value="Cat" <?php echo ($form_values['pet_type'] ?? '') === 'Cat' ? 'selected' : ''; ?>>Cat</option>
+                            </select>
                         </div>
                         <div class="form-group">
                             <label for="breed">Breed</label>

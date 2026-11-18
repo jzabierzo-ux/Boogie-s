@@ -45,6 +45,8 @@ $start_date_is_string = is_string($start_date_raw);
 $end_date_is_string = is_string($end_date_raw);
 $start_date = $start_date_is_string ? trim($start_date_raw) : '';
 $end_date = $end_date_is_string ? trim($end_date_raw) : '';
+$print_mode_raw = $_GET['print'] ?? '0';
+$print_mode = is_scalar($print_mode_raw) && in_array(strtolower((string)$print_mode_raw), ['1', 'true', 'yes'], true);
 $filter_error = (!$start_date_is_string || !$end_date_is_string)
     ? 'Please choose valid dates for the sales report.'
     : '';
@@ -142,42 +144,121 @@ if ($filter_error === '') {
     // Never show an unfiltered all-time report when an invalid filter was submitted.
     $date_filter_query = ' AND 1 = 0';
 }
-// Check the actual Supabase/PostgreSQL schema before using service_fee.
+// Read the actual appointments schema so the report uses only columns that exist.
+$appointment_columns = [];
 $has_service_fee = false;
+$has_total_price = false;
+$has_appointment_type = false;
+$has_payment_method = false;
+$has_payment_status = false;
+$has_discount_amount = false;
+$has_discount_percent = false;
+$has_promo_title = false;
+$has_tax_amount = false;
+$history_rows = [];
+$amount_expression = '0';
+$service_fee_expression = '0';
+$discount_expression = null;
+$tax_expression = null;
+$paid_predicate = "LOWER(BTRIM(COALESCE(a.payment_status, ''))) = 'paid'";
+
 try {
-    $revenue_check = $pdo->prepare("SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'appointments' AND column_name = 'service_fee' LIMIT 1");
-    $revenue_check->execute();
-    $has_service_fee = (bool)$revenue_check->fetchColumn();
-    $revenue_expression = $has_service_fee ? 'COALESCE(SUM(a.service_fee), 0)' : '0';
-    $rev_query = $pdo->prepare("SELECT {$revenue_expression} AS total_rev, COUNT(*) AS total_trans FROM appointments a WHERE LOWER(a.booking_status) = 'completed' {$date_filter_query}");
+    $columns_stmt = $pdo->prepare("SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'appointments'");
+    $columns_stmt->execute();
+    $appointment_columns = array_fill_keys($columns_stmt->fetchAll(PDO::FETCH_COLUMN), true);
+
+    $has_service_fee = isset($appointment_columns['service_fee']);
+    $has_total_price = isset($appointment_columns['total_price']);
+    $has_appointment_type = isset($appointment_columns['appointment_type']);
+    $has_payment_method = isset($appointment_columns['payment_method']);
+    $has_payment_status = isset($appointment_columns['payment_status']);
+    $has_discount_amount = isset($appointment_columns['discount_amount']) || isset($appointment_columns['promo_discount_amount']);
+    $has_discount_percent = isset($appointment_columns['discount_percent']);
+    $has_promo_title = isset($appointment_columns['promo_title']);
+    $has_tax_amount = isset($appointment_columns['tax_amount']) || isset($appointment_columns['vat_amount']);
+
+    if ($has_service_fee && $has_total_price) {
+        $service_fee_expression = 'COALESCE(a.service_fee, 0)';
+        $amount_expression = 'COALESCE(a.total_price, a.service_fee, 0)';
+    } elseif ($has_total_price) {
+        $amount_expression = 'COALESCE(a.total_price, 0)';
+        $service_fee_expression = $amount_expression;
+    } elseif ($has_service_fee) {
+        $service_fee_expression = 'COALESCE(a.service_fee, 0)';
+        $amount_expression = $service_fee_expression;
+    }
+
+    if (isset($appointment_columns['discount_amount'])) {
+        $discount_expression = 'COALESCE(a.discount_amount, 0)';
+    } elseif (isset($appointment_columns['promo_discount_amount'])) {
+        $discount_expression = 'COALESCE(a.promo_discount_amount, 0)';
+    }
+    if (isset($appointment_columns['tax_amount'])) {
+        $tax_expression = 'a.tax_amount';
+    } elseif (isset($appointment_columns['vat_amount'])) {
+        $tax_expression = 'a.vat_amount';
+    }
+
+    if (!$has_payment_status) {
+        throw new RuntimeException('The appointments.payment_status column is not available; the paid-sales report cannot be calculated safely.');
+    }
+
+    // Sales are recognized only after the payment status is Paid. This includes
+    // paid online bookings and paid walk-ins, even if service completion is separate.
+    $rev_query = $pdo->prepare("SELECT COALESCE(SUM({$amount_expression}), 0) AS total_rev, COUNT(*) AS total_trans FROM appointments a WHERE {$paid_predicate} {$date_filter_query}");
     $rev_query->execute($date_params);
     $rev_data = $rev_query->fetch(PDO::FETCH_ASSOC);
     if ($rev_data) {
         $total_revenue = (float)($rev_data['total_rev'] ?? 0);
         $total_transactions = (int)($rev_data['total_trans'] ?? 0);
     }
-} catch (PDOException $e) {
-    error_log('Sales report summary query error: ' . $e->getMessage());
-}
-// Paginate the completed transaction history; summary totals above still cover the full filtered period.
-$total_pages = max(1, (int)ceil($total_transactions / $history_per_page));
-$current_page = min($current_page, $total_pages);
-$history_offset = ($current_page - 1) * $history_per_page;
 
-try {
+    // Print mode deliberately loads every filtered paid transaction; the normal
+    // screen remains paginated for performance.
+    $total_pages = $print_mode ? 1 : max(1, (int)ceil($total_transactions / $history_per_page));
+    $current_page = $print_mode ? 1 : min($current_page, $total_pages);
+    $history_offset = $print_mode ? 0 : (($current_page - 1) * $history_per_page);
+
     $service_fee_select = $has_service_fee ? 'a.service_fee' : 'NULL AS service_fee';
-    $history_sql = "SELECT a.id, a.appointment_date, a.appointment_time, a.service, {$service_fee_select}, p.name AS pet_name, p.owner_name AS walkin_owner, u.full_name AS registered_name FROM appointments a LEFT JOIN pets p ON a.pet_id = p.id LEFT JOIN users u ON a.user_id = u.id WHERE LOWER(a.booking_status) = 'completed' {$date_filter_query} ORDER BY a.appointment_date DESC, a.appointment_time DESC, a.id DESC LIMIT :limit OFFSET :offset";
+    $total_price_select = $has_total_price ? 'a.total_price' : 'NULL AS total_price';
+    $appointment_type_select = $has_appointment_type ? 'a.appointment_type' : "NULL AS appointment_type";
+    $payment_method_select = $has_payment_method ? 'a.payment_method' : "NULL AS payment_method";
+    $discount_select = $discount_expression !== null ? $discount_expression . ' AS discount_amount' : 'NULL AS discount_amount';
+    $discount_percent_select = $has_discount_percent ? 'COALESCE(a.discount_percent, 0) AS discount_percent' : '0::numeric AS discount_percent';
+    $promo_title_select = $has_promo_title ? 'a.promo_title' : 'NULL::text AS promo_title';
+    $tax_select = $tax_expression !== null ? $tax_expression . ' AS tax_amount' : 'NULL AS tax_amount';
+
+    $history_sql = "SELECT a.id, a.appointment_date, a.appointment_time, a.service,
+        {$service_fee_select}, {$total_price_select}, {$amount_expression} AS amount_paid,
+        {$appointment_type_select}, {$payment_method_select}, {$discount_select}, {$discount_percent_select}, {$promo_title_select}, {$tax_select},
+        p.name AS pet_name, p.owner_name AS walkin_owner, u.full_name AS registered_name
+        FROM appointments a
+        LEFT JOIN pets p ON a.pet_id = p.id
+        LEFT JOIN users u ON a.user_id = u.id
+        WHERE {$paid_predicate} {$date_filter_query}
+        ORDER BY a.appointment_date DESC, a.appointment_time DESC, a.id DESC";
+    if (!$print_mode) {
+        $history_sql .= ' LIMIT :limit OFFSET :offset';
+    }
+
     $history_query = $pdo->prepare($history_sql);
     foreach ($date_params as $param_name => $param_value) {
         $history_query->bindValue($param_name, $param_value, PDO::PARAM_STR);
     }
-    $history_query->bindValue(':limit', $history_per_page, PDO::PARAM_INT);
-    $history_query->bindValue(':offset', $history_offset, PDO::PARAM_INT);
+    if (!$print_mode) {
+        $history_query->bindValue(':limit', $history_per_page, PDO::PARAM_INT);
+        $history_query->bindValue(':offset', $history_offset, PDO::PARAM_INT);
+    }
     $history_query->execute();
     $history_rows = $history_query->fetchAll(PDO::FETCH_ASSOC);
-} catch (PDOException $e) {
-    error_log('Sales report history query error: ' . $e->getMessage());
+} catch (Throwable $e) {
+    error_log('Sales report query error: ' . $e->getMessage());
+    $total_revenue = 0.0;
+    $total_transactions = 0;
     $history_rows = [];
+    if ($filter_error === '') {
+        $filter_error = 'Sales data could not be loaded. Please check the database configuration and try again.';
+    }
 }
 
 $history_start = !empty($history_rows) ? $history_offset + 1 : 0;
@@ -318,6 +399,7 @@ try {
         .table-container { background: var(--white); border-radius: 16px; padding: 30px; box-shadow: 0 4px 6px rgba(0,0,0,0.03); border: 1px solid #f1f5f9; position: relative;}
         .table-container h2 { font-size: 20px; color: var(--navy-dark); margin-bottom: 20px; border-bottom: 2px solid #f8fafc; padding-bottom: 15px; font-weight: 800;}
         .print-btn { background: var(--brand-yellow); color: var(--navy-dark); border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 700; position: absolute; right: 30px; top: 25px; transition: 0.2s; font-family: 'Poppins', sans-serif; display: inline-flex; align-items: center; gap: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);}
+        .print-btn { text-decoration: none; }
         .print-btn:hover { transform: translateY(-2px); box-shadow: 0 6px 12px rgba(0,0,0,0.1); background: #e6b800;}
         .table-wrapper { overflow-x: auto; }
         table { width: 100%; border-collapse: collapse; min-width: 700px;}
@@ -334,16 +416,24 @@ try {
         .pagination-link.disabled { opacity:.45; pointer-events:none; }
         .pagination-current { color:var(--text-muted); font-size:12px; font-weight:700; padding:0 4px; }
         footer { text-align: center; padding: 40px; color: var(--text-muted); font-size: 12px; border-top: 1px solid rgba(0,0,0,0.05); margin-top: 20px;}
+        .no-print { }
+        .print-report-heading { display: none; }
         @media print {
-            aside, .top-bar, .filter-section, .print-btn, .pagination-footer { display: none !important; }
-            main { margin-left: 0; padding: 0; }
-            .container { padding: 0; }
+            aside, .top-bar, .filter-section, .print-btn, .pagination-footer, .no-print, footer { display: none !important; }
+            main { margin-left: 0; padding: 0; width: 100%; }
+            .container { padding: 0; max-width: none; }
             body { background: white; }
-            .table-container { box-shadow: none; border: none;}
-            .summary-card { color: black !important; background: none !important; border: 1px solid #ccc; box-shadow: none;}
+            .table-container { box-shadow: none; border: none; padding: 0; }
+            .table-container h2 { margin-bottom: 6px; }
+            .print-report-heading { display: block; margin-bottom: 14px; color: #334155; font-size: 11px; }
+            .summary-grid { gap: 10px; margin-bottom: 18px; }
+            .summary-card { color: black !important; background: none !important; border: 1px solid #ccc; box-shadow: none; padding: 14px; break-inside: avoid; }
             .summary-card h3 { color: #666; }
-            .summary-card h1 { color: #000; }
+            .summary-card h1 { color: #000; font-size: 24px; }
             .summary-card i { display: none; }
+            table { min-width: 0; width: 100%; }
+            th, td { padding: 7px 8px; font-size: 9px; }
+            tr { break-inside: avoid; }
         }
         /* ===== RESPONSIVE ADMIN LAYOUT (same pattern as managepet.php) ===== */
         .topbar-left {
@@ -588,7 +678,7 @@ try {
             <div class="filter-section">
                 <div>
                     <h3 style="color: var(--navy-dark); font-size: 18px; margin-bottom: 5px; font-weight: 800;">Filter Sales Data</h3>
-                    <p style="color: var(--text-muted); font-size: 13px; font-weight: 500;">Generate an income report based on specific dates.</p>
+                    <p style="color: var(--text-muted); font-size: 13px; font-weight: 500;">Generate a report of payments marked as Paid, filtered by appointment date.</p>
                 </div>
                 <form class="filter-form" method="GET" action="sales_report.php">
                     <div class="input-group">
@@ -612,34 +702,43 @@ try {
                     <i class="fas fa-wallet"></i>
                 </div>
                 <div class="summary-card green">
-                    <h3>Completed Transactions</h3>
+                    <h3>Paid Transactions</h3>
                     <h1><?php echo $total_transactions; ?></h1>
                     <i class="fas fa-check-circle"></i>
                 </div>
             </div>
             <div class="table-container">
-                <h2>Transaction History</h2>
-                <button class="print-btn" onclick="window.print()"><i class="fas fa-print"></i> Print Report</button>
+                <h2>Paid Transaction History</h2>
+                <div class="print-report-heading">Appointment date range: <?php echo $start_date !== '' ? htmlspecialchars(date('M d, Y', strtotime($start_date)), ENT_QUOTES, 'UTF-8') : 'All dates'; ?> to <?php echo $end_date !== '' ? htmlspecialchars(date('M d, Y', strtotime($end_date)), ENT_QUOTES, 'UTF-8') : 'Present'; ?> | Generated: <?php echo date('M d, Y g:i A'); ?> | Includes payments marked Paid only.</div>
+                <?php $print_params = []; if ($start_date !== '') { $print_params['start_date'] = $start_date; } if ($end_date !== '') { $print_params['end_date'] = $end_date; } $print_params['print'] = '1'; $full_print_url = 'sales_report.php?' . http_build_query($print_params); ?>
+                <a class="print-btn" href="<?php echo htmlspecialchars($full_print_url, ENT_QUOTES, 'UTF-8'); ?>" target="_blank" rel="noopener"><i class="fas fa-print"></i> Print All Filtered</a>
                 <div class="table-wrapper">
                     <?php if(count($history_rows) > 0): ?>
                         <table>
                             <thead>
                                 <tr>
-                                    <th>Date & Time</th>
+                                    <th>Appointment Date &amp; Time</th>
                                     <th>Customer Name</th>
                                     <th>Pet</th>
                                     <th>Service Availed</th>
+                                    <th>Booking Type</th>
+                                    <th>Payment Method</th>
+                                    <th>Regular Price</th>
+                                    <th>Discount</th>
+                                    <th>Tax / VAT</th>
                                     <th>Amount Paid</th>
+                                    <th class="no-print">Receipt</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 <?php foreach($history_rows as $row):
-                                    // SMART CUSTOMER NAME LOGIC:
-                                    // Kung may registered_name, yun ang gagamitin.
-                                    // Kung wala (ibig sabihin Walk-In sa lumang data), kukunin natin sa pets table ang pangalan nila.
-                                    // Kung wala pa rin, 'Walk-in Guest' ang lalabas.
-                                    $is_walkin = empty($row['registered_name']);
-                                    $final_customer_name = !$is_walkin ? $row['registered_name'] : (!empty($row['walkin_owner']) ? $row['walkin_owner'] : 'Walk-in Guest');
+                                    $booking_type = trim((string)($row['appointment_type'] ?? ''));
+                                    $is_walkin = strtolower($booking_type) === 'walk-in'
+                                        || (empty($booking_type) && stripos((string)($row['walkin_owner'] ?? ''), '(Walk-in)') !== false);
+                                    $final_customer_name = !empty($row['registered_name'])
+                                        ? (string)$row['registered_name']
+                                        : (!empty($row['walkin_owner']) ? (string)$row['walkin_owner'] : 'Walk-in Guest');
+                                    $payment_method_label = trim((string)($row['payment_method'] ?? '')) ?: 'Not specified';
                                 ?>
                                 <tr>
                                     <td>
@@ -648,13 +747,24 @@ try {
                                     </td>
                                     <td>
                                         <span style="font-weight: 600;"><?php echo htmlspecialchars($final_customer_name, ENT_QUOTES, 'UTF-8'); ?></span>
-                                        <?php if($is_walkin): ?>
-                                            <span class="guest-badge">GUEST</span>
-                                        <?php endif; ?>
+                                        <?php if($is_walkin): ?><span class="guest-badge">WALK-IN</span><?php endif; ?>
                                     </td>
                                     <td><?php echo htmlspecialchars((string)($row['pet_name'] ?? 'N/A'), ENT_QUOTES, 'UTF-8'); ?></td>
                                     <td><?php echo htmlspecialchars((string)($row['service'] ?? 'N/A'), ENT_QUOTES, 'UTF-8'); ?></td>
-                                    <td class="price-col">₱<?php echo number_format((float)($row['service_fee'] ?? 0), 2); ?></td>
+                                    <td><?php echo htmlspecialchars($booking_type !== '' ? $booking_type : ($is_walkin ? 'Walk-in' : 'Online'), ENT_QUOTES, 'UTF-8'); ?></td>
+                                    <td><?php echo htmlspecialchars($payment_method_label, ENT_QUOTES, 'UTF-8'); ?></td>
+                                    <td>₱<?php echo number_format((float)($row['service_fee'] ?? $row['amount_paid'] ?? 0), 2); ?></td>
+                                    <td>
+                                        <?php if ((float)($row['discount_amount'] ?? 0) > 0): ?>
+                                            <strong style="color:#0f766e;">-<?php echo number_format((float)$row['discount_percent'], 2); ?>% (₱<?php echo number_format((float)$row['discount_amount'], 2); ?>)</strong>
+                                            <?php if (!empty($row['promo_title'])): ?><br><small><?php echo htmlspecialchars((string)$row['promo_title'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></small><?php endif; ?>
+                                        <?php else: ?>
+                                            <span style="color:#64748b;">No discount</span>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td><?php echo (isset($row['tax_amount']) && $row['tax_amount'] !== null && $row['tax_amount'] !== '' && is_numeric($row['tax_amount'])) ? '₱' . number_format((float)$row['tax_amount'], 2) : '<span style="color:#64748b;">Not itemized</span>'; ?></td>
+                                    <td class="price-col">₱<?php echo number_format((float)($row['amount_paid'] ?? 0), 2); ?></td>
+                                    <td class="no-print"><a href="print_receipt.php?id=<?php echo (int)$row['id']; ?>" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:6px;padding:7px 10px;background:#e0f2fe;color:#075985;border-radius:7px;text-decoration:none;font-size:12px;font-weight:700;"><i class="fas fa-receipt"></i> View / Print</a></td>
                                 </tr>
                                 <?php endforeach; ?>
                             </tbody>
@@ -662,13 +772,13 @@ try {
                     <?php else: ?>
                         <div style="text-align: center; padding: 60px 0; color: #94a3b8;">
                             <i class="fas fa-box-open" style="font-size: 50px; margin-bottom: 15px; opacity: 0.3;"></i>
-                            <p style="font-weight: 500;">No completed sales found for the selected dates.</p>
+                            <p style="font-weight: 500;">No paid transactions found for the selected dates.</p>
                         </div>
                     <?php endif; ?>
                 </div>
                 <div class="pagination-footer">
                     <div class="pagination-info">
-                        Showing <?php echo number_format($history_start); ?>–<?php echo number_format($history_end); ?> of <?php echo number_format($total_transactions); ?> completed transactions
+                        Showing <?php echo number_format($history_start); ?>–<?php echo number_format($history_end); ?> of <?php echo number_format($total_transactions); ?> paid transactions
                     </div>
                     <?php if ($total_pages > 1): ?>
                         <?php
@@ -694,6 +804,11 @@ try {
             © <?php echo date("Y"); ?> BOOGIE'S PET CARE & SERVICES - DASMARIÑAS BRANCH
         </footer>
     </main>
+    <?php if ($print_mode): ?>
+    <script>
+    window.addEventListener('load', function () { window.setTimeout(function () { window.print(); }, 250); });
+    </script>
+    <?php endif; ?>
     <script>
     function toggleNotif(event) {
         event.stopPropagation();

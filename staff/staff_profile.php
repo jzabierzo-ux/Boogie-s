@@ -19,23 +19,19 @@ function staffProfileFlagEnabled($value): bool
 
 function staffProfileNormalizeRole($value): string
 {
-    $role = strtolower(trim((string)$value));
+    $role = strtolower(trim(is_scalar($value) ? (string)$value : ''));
     $role = preg_replace('/[\s_-]+/', ' ', $role) ?? '';
 
     $aliases = [
         'administrator' => 'admin',
         'admin' => 'admin',
         'shop manager' => 'manager',
-        'manager' => 'manager',
         'front desk' => 'receptionist',
         'front desk receptionist' => 'receptionist',
         'front desk / receptionist' => 'receptionist',
-        'receptionist' => 'receptionist',
         'grooming staff' => 'groomer',
         'grooming staff groomer' => 'groomer',
         'grooming staff / groomer' => 'groomer',
-        'groomer' => 'groomer',
-        'staff' => 'groomer',
         'pet hotel staff' => 'pet_hotel_staff',
         'pet hotel staff attendant' => 'pet_hotel_staff',
         'pet hotel staff / attendant' => 'pet_hotel_staff',
@@ -43,7 +39,6 @@ function staffProfileNormalizeRole($value): string
         'supervisor' => 'receptionist',
         'vet' => 'veterinarian',
         'veterinary' => 'veterinarian',
-        'veterinarian' => 'veterinarian',
         'vet assistant' => 'vet_assistant',
         'veterinary assistant' => 'vet_assistant',
         'vet nurse' => 'vet_nurse',
@@ -51,6 +46,22 @@ function staffProfileNormalizeRole($value): string
     ];
 
     return $aliases[$role] ?? str_replace(' ', '_', $role);
+}
+
+/** Map retained database roles into the three application-wide system roles. */
+function staffProfileSystemRole($value): string
+{
+    $role = staffProfileNormalizeRole($value);
+    if ($role === 'admin') {
+        return 'admin';
+    }
+    if (in_array($role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)) {
+        return 'veterinarian';
+    }
+    if (in_array($role, ['staff', 'manager', 'receptionist', 'groomer', 'pet_hotel_staff'], true)) {
+        return 'staff';
+    }
+    return '';
 }
 
 function staffProfilePostString(string $key, bool $trim = true): string
@@ -68,54 +79,91 @@ function staffProfileTextLength(string $value): int
     return function_exists('mb_strlen') ? mb_strlen($value, 'UTF-8') : strlen($value);
 }
 
-/** Read type-aware unread/update SQL for the admin notification flag. */
-function staffProfileNotificationReadSql(PDO $pdo): array
+/** Return safe unread and mark-read SQL for the supported notification tables. */
+function staffProfileNotificationReadSql(PDO $pdo, string $tableName): array
 {
+    if (!in_array($tableName, ['notifications', 'admin_notifications'], true)) {
+        throw new InvalidArgumentException('Unsupported notification table.');
+    }
+
     $typeStmt = $pdo->prepare(
         "SELECT data_type
          FROM information_schema.columns
          WHERE table_schema = 'public'
-           AND table_name = 'admin_notifications'
+           AND table_name = :table_name
            AND column_name = 'is_read'
          LIMIT 1"
     );
-    $typeStmt->execute();
-    $dataType = strtolower((string)$typeStmt->fetchColumn());
+    $typeStmt->execute([':table_name' => $tableName]);
+    $dataType = strtolower(trim((string)$typeStmt->fetchColumn()));
 
     if ($dataType === 'boolean') {
-        return ['is_read IS FALSE', 'is_read = TRUE'];
+        return ['COALESCE(is_read, FALSE) = FALSE', 'TRUE'];
     }
-
     if (in_array($dataType, ['smallint', 'integer', 'bigint', 'numeric', 'decimal', 'real', 'double precision'], true)) {
-        return ['COALESCE(is_read, 0) = 0', 'is_read = 1'];
+        return ['(is_read = 0 OR is_read IS NULL)', '1'];
     }
-
-    if (in_array($dataType, ['text', 'character varying', 'character', 'USER-DEFINED'], true)) {
+    if (in_array($dataType, ['text', 'character varying', 'character'], true)) {
         return [
-            "LOWER(BTRIM(COALESCE(is_read::text, ''))) IN ('0', 'false', 'f', '')",
-            "is_read = '1'"
+            "(is_read IS NULL OR LOWER(BTRIM(CAST(is_read AS TEXT))) IN ('0', 'false', 'f', 'no', 'unread', ''))",
+            "'1'"
         ];
     }
 
-    throw new RuntimeException('Unsupported admin notification read-flag column type.');
+    throw new RuntimeException('Unsupported or unknown notification is_read column type.');
 }
 
-function staffProfileLoadNotifications(PDO $pdo): array
+/** Load Admin alerts for Admin, or only the signed-in user's alerts for Staff/Veterinarian. */
+function staffProfileLoadNotifications(PDO $pdo, bool $isAdmin, int $userId): array
 {
-    [$unreadSql] = staffProfileNotificationReadSql($pdo);
+    $tableName = $isAdmin ? 'admin_notifications' : 'notifications';
+    [$unreadSql] = staffProfileNotificationReadSql($pdo, $tableName);
 
-    $countStmt = $pdo->query("SELECT COUNT(*) FROM admin_notifications WHERE {$unreadSql}");
-    $unread = (int)$countStmt->fetchColumn();
-
-    $listStmt = $pdo->query(
-        "SELECT message, created_at
-         FROM admin_notifications
-         WHERE {$unreadSql}
-         ORDER BY created_at DESC
-         LIMIT 10"
-    );
+    if ($isAdmin) {
+        $countStmt = $pdo->query("SELECT COUNT(*) FROM admin_notifications WHERE {$unreadSql}");
+        $unread = (int)$countStmt->fetchColumn();
+        $listStmt = $pdo->query(
+            "SELECT message, created_at
+             FROM admin_notifications
+             WHERE {$unreadSql}
+             ORDER BY created_at DESC NULLS LAST
+             LIMIT 10"
+        );
+    } else {
+        $countStmt = $pdo->prepare("SELECT COUNT(*) FROM notifications WHERE user_id = :user_id AND {$unreadSql}");
+        $countStmt->execute([':user_id' => $userId]);
+        $unread = (int)$countStmt->fetchColumn();
+        $listStmt = $pdo->prepare(
+            "SELECT message, created_at
+             FROM notifications
+             WHERE user_id = :user_id AND {$unreadSql}
+             ORDER BY created_at DESC NULLS LAST, id DESC
+             LIMIT 10"
+        );
+        $listStmt->execute([':user_id' => $userId]);
+    }
 
     return [$unread, $listStmt->fetchAll(PDO::FETCH_ASSOC) ?: []];
+}
+
+/** Mark only the active account's notifications as read. */
+function staffProfileMarkNotificationsRead(PDO $pdo, bool $isAdmin, int $userId): void
+{
+    $tableName = $isAdmin ? 'admin_notifications' : 'notifications';
+    [$unreadSql, $markReadValue] = staffProfileNotificationReadSql($pdo, $tableName);
+
+    if ($isAdmin) {
+        $stmt = $pdo->prepare("UPDATE admin_notifications SET is_read = {$markReadValue} WHERE {$unreadSql}");
+        $stmt->execute();
+        return;
+    }
+
+    $stmt = $pdo->prepare(
+        "UPDATE notifications
+         SET is_read = {$markReadValue}
+         WHERE user_id = :user_id AND {$unreadSql}"
+    );
+    $stmt->execute([':user_id' => $userId]);
 }
 
 function staffProfileRenderNotifications(array $notifications): string
@@ -345,41 +393,42 @@ function staffProfileRedirect(): void
     exit;
 }
 
-// Normalize the session role and enforce mutually exclusive portal sessions.
-$current_role = staffProfileNormalizeRole($_SESSION['role'] ?? '');
-$allowed_staff_roles = [
-    'manager', 'receptionist', 'groomer', 'pet_hotel_staff',
-    'veterinarian', 'vet_assistant', 'vet_nurse'
-];
-$is_admin = $current_role === 'admin';
-$is_staff_role = in_array($current_role, $allowed_staff_roles, true);
+// Resolve the new three-role setup without changing the original database role.
+$session_role = staffProfileNormalizeRole($_SESSION['role'] ?? '');
+$session_system_role = staffProfileSystemRole($_SESSION['system_role'] ?? $session_role);
 $logged_in = staffProfileFlagEnabled($_SESSION['logged_in'] ?? false);
 $admin_logged_in = staffProfileFlagEnabled($_SESSION['admin_logged_in'] ?? false);
 $staff_logged_in = staffProfileFlagEnabled($_SESSION['staff_logged_in'] ?? false);
 
 if (!$logged_in) {
-    header('Location: ' . ($is_admin ? '../admin/admin_login.php' : 'stafflogin.php'));
+    $loginTarget = $admin_logged_in || $session_system_role === 'admin'
+        ? '../admin/admin_login.php'
+        : 'stafflogin.php';
+    header('Location: ' . $loginTarget, true, 303);
     exit;
 }
 
-if (
-    ($is_admin && (!$admin_logged_in || $staff_logged_in))
-    || ($is_staff_role && (!$staff_logged_in || $admin_logged_in))
-    || (!$is_admin && !$is_staff_role)
-    || ($admin_logged_in && $staff_logged_in)
-) {
+if ($admin_logged_in === $staff_logged_in) {
     http_response_code(403);
     exit('Access denied. Please sign in through the correct portal.');
+}
+
+$is_admin = $admin_logged_in && !$staff_logged_in && $session_system_role === 'admin';
+$is_staff_role = $staff_logged_in && !$admin_logged_in
+    && in_array($session_system_role, ['staff', 'veterinarian'], true);
+
+if (!$is_admin && !$is_staff_role) {
+    http_response_code(403);
+    exit('Access denied. Your account is not authorized for this portal.');
 }
 
 $userIdRaw = $_SESSION['user_id'] ?? $_SESSION['staff_id'] ?? $_SESSION['id'] ?? null;
 $user_id = filter_var($userIdRaw, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
 if ($user_id === false || $user_id === null) {
-    header('Location: ' . ($is_admin ? '../admin/admin_login.php' : 'stafflogin.php'));
+    header('Location: ' . ($is_admin ? '../admin/admin_login.php' : 'stafflogin.php'), true, 303);
     exit;
 }
 $user_id = (int)$user_id;
-$_SESSION['role'] = $current_role;
 
 if (!isset($pdo) || !($pdo instanceof PDO)) {
     error_log('Staff profile page: Supabase database connection unavailable.');
@@ -404,17 +453,28 @@ try {
     );
     $accountStmt->execute([':user_id' => $user_id]);
     $staff_data = $accountStmt->fetch(PDO::FETCH_ASSOC) ?: null;
-} catch (PDOException $e) {
+} catch (Throwable $e) {
     error_log('Staff profile account verification failed: ' . $e->getMessage());
     http_response_code(503);
     exit('Unable to verify this account right now. Please try again.');
 }
 
-if (!$staff_data || staffProfileNormalizeRole($staff_data['role'] ?? '') !== $current_role) {
+if (!$staff_data) {
     http_response_code(403);
-    exit('Access denied. The account role does not match this portal session.');
+    exit('Access denied. The account could not be verified.');
 }
 
+$current_role = staffProfileNormalizeRole($staff_data['role'] ?? '');
+$system_role = staffProfileSystemRole($current_role);
+if ($system_role === '' || $system_role !== $session_system_role
+    || ($is_admin && $system_role !== 'admin')
+    || ($is_staff_role && !in_array($system_role, ['staff', 'veterinarian'], true))) {
+    http_response_code(403);
+    exit('Access denied. The database account role does not match this portal session.');
+}
+
+// Keep a dedicated system role for authorization; preserve the database role in $_SESSION['role'].
+$_SESSION['system_role'] = $system_role;
 if (
     !isset($_SESSION['csrf_token'])
     || !is_string($_SESSION['csrf_token'])
@@ -426,7 +486,8 @@ $csrf_token = $_SESSION['csrf_token'];
 
 $success_msg = '';
 $error_msg = '';
-$can_view_admin_notifications = $is_admin || $current_role === 'manager';
+$can_manage_notifications = true;
+$can_view_admin_notifications = true; // Each portal sees only its own notification store.
 $method = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'));
 
 if (!in_array($method, ['GET', 'POST'], true)) {
@@ -442,15 +503,8 @@ if ($method === 'POST') {
     if ($submitted_csrf === '' || !hash_equals($csrf_token, $submitted_csrf)) {
         $error_msg = 'Invalid request. Please refresh the page and try again.';
     } elseif ($action === 'mark_notifications_read') {
-        if (!$can_view_admin_notifications) {
-            http_response_code(403);
-            exit('You are not allowed to manage these notifications.');
-        }
-
         try {
-            [, $markReadSql] = staffProfileNotificationReadSql($pdo);
-            $markReadStmt = $pdo->prepare("UPDATE admin_notifications SET {$markReadSql}");
-            $markReadStmt->execute();
+            staffProfileMarkNotificationsRead($pdo, $is_admin, $user_id);
             staffProfileRedirect();
         } catch (Throwable $e) {
             error_log('Staff profile mark-notifications-read failed: ' . $e->getMessage());
@@ -733,7 +787,7 @@ if ($first_letter === '') {
     $first_letter = 'P';
 }
 
-if ($current_role === 'veterinarian') {
+if ($system_role === 'veterinarian') {
     $display_with_title = preg_match('/^\s*(?:Dr\.?|Dra\.?|Doc\.?)\s+/i', $full_display_name)
         ? $full_display_name
         : 'Dr. ' . $full_display_name;
@@ -741,34 +795,24 @@ if ($current_role === 'veterinarian') {
     $display_with_title = $full_display_name;
 }
 
-// Admin and Manager retain the original admin-alert workflow. Other Staff roles
-// do not receive global Admin notifications from this shared profile page.
+// Admin gets Admin alerts. Staff and Veterinarian receive only notifications addressed to their own account.
 $unread_count = 0;
 $admin_notifications = [];
 
-if ($can_view_admin_notifications) {
-    try {
-        [$unread_count, $admin_notifications] = staffProfileLoadNotifications($pdo);
-    } catch (Throwable $e) {
-        error_log('Staff profile notifications query failed: ' . $e->getMessage());
-    }
+try {
+    [$unread_count, $admin_notifications] = staffProfileLoadNotifications($pdo, $is_admin, $user_id);
+} catch (Throwable $e) {
+    error_log('Staff profile notifications query failed: ' . $e->getMessage());
 }
 
-// Refresh notifications through this authenticated page instead of calling an
-// Admin-only endpoint from the Staff portal.
+// Refresh notifications through this authenticated page; never expose another role's notification table.
 if (($_GET['ajax'] ?? '') === 'notifications') {
     header('Content-Type: application/json; charset=utf-8');
     header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
     header('Pragma: no-cache');
 
-    if (!$can_view_admin_notifications) {
-        http_response_code(403);
-        echo json_encode(['success' => false, 'unread' => 0, 'html' => '<div class="notif-empty">Notifications unavailable.</div>']);
-        exit;
-    }
-
     try {
-        [$ajaxUnread, $ajaxNotifications] = staffProfileLoadNotifications($pdo);
+        [$ajaxUnread, $ajaxNotifications] = staffProfileLoadNotifications($pdo, $is_admin, $user_id);
         echo json_encode([
             'success' => true,
             'unread' => $ajaxUnread,
@@ -781,6 +825,7 @@ if (($_GET['ajax'] ?? '') === 'notifications') {
     }
     exit;
 }
+
 ?>
 
 <!DOCTYPE html>
@@ -2658,17 +2703,17 @@ input, select, textarea, button, img { max-width:100%; }
     <aside class="sidebar">
         <div class="sidebar-header">
             <img src="../admin/bg.png" alt="Boogie's Logo" class="sidebar-logo-img">
-            <h2><?php echo in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true) ? "Boogie's Clinic" : "Boogie's Pet Care"; ?></h2>
+            <h2><?php echo $system_role === 'veterinarian' ? "Boogie's Clinic" : "Boogie's Pet Care"; ?></h2>
         </div>
         <nav class="nav-links">
-            <?php if (in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)): ?>
-                <!-- Veterinary staff use the veterinary dashboard and clinical modules. -->
+            <?php if ($system_role === 'veterinarian'): ?>
+                <!-- Veterinarian system role uses the veterinary dashboard and clinical modules. -->
                 <a href="staffdashboard.php" class="nav-item"><i class="fas fa-th-large"></i> Dashboard</a>
                 <a href="appointments.php" class="nav-item"><i class="fas fa-calendar-alt"></i> Appointments</a>
                 <a href="pets.php" class="nav-item"><i class="fas fa-paw"></i> Patients</a>
                 <a href="tasks.php" class="nav-item"><i class="fas fa-tasks"></i> My Tasks</a>
             <?php else: ?>
-                <!-- Operational service staff use the grooming / pet-care portal, not veterinary pages. -->
+                <!-- Staff system role uses operational modules; Admin retains the Admin navigation. -->
                 <a href="<?php echo $is_admin ? '../admin/admindashboard.php' : '../admin/admindashboard.php?portal=staff'; ?>" class="nav-item"><i class="fas fa-chart-line"></i> Dashboard</a>
                 <a href="../admin/managebooking.php" class="nav-item"><i class="fas fa-calendar-alt"></i> Bookings</a>
                 <a href="../admin/manageusers.php" class="nav-item"><i class="fas fa-users"></i> Users</a>
@@ -2694,21 +2739,9 @@ input, select, textarea, button, img { max-width:100%; }
             <div class="breadcrumb">
                 <i class="fas fa-user-circle" style="color: var(--brand-blue);"></i>
                 <?php
-                    if (in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)) {
-                        $profile_portal_label = 'Veterinary Portal';
-                    } elseif ($current_role === 'pet_hotel_staff') {
-                        $profile_portal_label = 'Pet Hotel Portal';
-                    } elseif ($current_role === 'groomer') {
-                        $profile_portal_label = 'Grooming Portal';
-                    } elseif ($current_role === 'receptionist') {
-                        $profile_portal_label = 'Reception Portal';
-                    } elseif ($current_role === 'admin') {
-                        $profile_portal_label = 'Admin Portal';
-                    } elseif ($current_role === 'manager') {
-                        $profile_portal_label = 'Manager Portal';
-                    } else {
-                        $profile_portal_label = 'Staff Portal';
-                    }
+                    $profile_portal_label = $system_role === 'admin'
+                        ? 'Admin Portal'
+                        : ($system_role === 'veterinarian' ? 'Veterinary Portal' : 'Staff Portal');
                     echo htmlspecialchars($profile_portal_label, ENT_QUOTES, 'UTF-8');
                 ?> / My Profile
             </div>
@@ -2721,7 +2754,7 @@ input, select, textarea, button, img { max-width:100%; }
                     <div class="notif-dropdown" id="notifBox" onclick="event.stopPropagation()">
                         <div class="notif-header">
                             Alerts
-                            <form action="staff_profile.php" method="POST" id="mark-read-form" style="display: <?php echo ($unread_count > 0 && $can_view_admin_notifications) ? 'inline-block' : 'none'; ?>; margin:0;">
+                            <form action="staff_profile.php" method="POST" id="mark-read-form" style="display: <?php echo ($unread_count > 0 && $can_manage_notifications) ? 'inline-block' : 'none'; ?>; margin:0;">
                                 <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token, ENT_QUOTES, 'UTF-8'); ?>">
                                 <input type="hidden" name="action" value="mark_notifications_read">
                                 <button type="submit" id="mark-read-link" class="mark-read-btn" style="border:0;background:transparent;color:#1d63ff;font:inherit;font-size:12px;font-weight:700;cursor:pointer;padding:0;">Mark all read</button>
@@ -2745,19 +2778,14 @@ input, select, textarea, button, img { max-width:100%; }
 
                 <div class="profile-wrapper" onclick="toggleProfile(event)">
                     <div class="role-label">
-                        <i class="<?php echo in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true) ? 'fas fa-user-md' : 'fas fa-user-tie'; ?>"></i>
+                        <i class="<?php echo $system_role === 'veterinarian' ? 'fas fa-user-md' : 'fas fa-user-tie'; ?>"></i>
                         <?php
                             $role_display_labels = [
                                 'admin' => 'Admin',
-                                'manager' => 'Manager',
-                                'receptionist' => 'Receptionist',
-                                'groomer' => 'Grooming Staff',
-                                'pet_hotel_staff' => 'Pet Hotel Staff',
-                                'veterinarian' => 'Veterinarian',
-                                'vet_assistant' => 'Vet Assistant',
-                                'vet_nurse' => 'Vet Nurse'
+                                'staff' => 'Staff',
+                                'veterinarian' => 'Veterinarian'
                             ];
-                            echo htmlspecialchars(strtoupper($role_display_labels[$current_role] ?? $current_role), ENT_QUOTES, 'UTF-8');
+                            echo htmlspecialchars(strtoupper($role_display_labels[$system_role] ?? 'STAFF'), ENT_QUOTES, 'UTF-8');
                         ?>
                     </div>
 
@@ -2968,7 +2996,7 @@ input, select, textarea, button, img { max-width:100%; }
 
         let notificationRequestInProgress = false;
 
-        function fetchAdminNotifs() {
+        function fetchProfileNotifs() {
             if (document.hidden || notificationRequestInProgress) return;
 
             const badge = document.getElementById('staff-notif-badge');
@@ -3012,8 +3040,8 @@ input, select, textarea, button, img { max-width:100%; }
                 });
         }
 
-        if (<?php echo $can_view_admin_notifications ? 'true' : 'false'; ?>) {
-            window.setInterval(fetchAdminNotifs, 10000);
+        if (<?php echo $can_manage_notifications ? 'true' : 'false'; ?>) {
+            window.setInterval(fetchProfileNotifs, 10000);
         }
     </script>
 </body>

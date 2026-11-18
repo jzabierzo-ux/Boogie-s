@@ -346,6 +346,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $validation_error = '';
         if ($p_name === '' || $p_type === '' || $p_gender === '') {
             $validation_error = 'Please complete the required pet fields.';
+        } elseif (!in_array($p_type, ['Dog', 'Cat'], true) && $p_type !== trim((string)($row['pet_type'] ?? ''))) {
+            $validation_error = 'Only dogs and cats can be selected for new or changed pet types.';
         } elseif (strlen($p_name) > 150 || strlen($p_type) > 60 || strlen($p_breed) > 120) {
             $validation_error = 'Pet name, type, or breed is too long.';
         } elseif (!in_array($p_gender, ['Male', 'Female'], true)) {
@@ -731,7 +733,16 @@ if ($is_admin) {
 
                         <div class="form-group">
                             <label>Pet Type</label>
-                            <input type="text" name="pet_type" value="<?php echo htmlspecialchars($row['pet_type'] ?? '', ENT_QUOTES, 'UTF-8'); ?>" placeholder="e.g. Dog, Cat" required>
+                            <?php if (in_array((string)($row['pet_type'] ?? ''), ['Dog', 'Cat'], true)): ?>
+                                <select name="pet_type" required>
+                                    <option value="Dog" <?php echo ($row['pet_type'] ?? '') === 'Dog' ? 'selected' : ''; ?>>Dog</option>
+                                    <option value="Cat" <?php echo ($row['pet_type'] ?? '') === 'Cat' ? 'selected' : ''; ?>>Cat</option>
+                                </select>
+                            <?php else: ?>
+                                <input type="text" value="<?php echo htmlspecialchars((string)$row['pet_type'], ENT_QUOTES, 'UTF-8'); ?> (existing record)" readonly>
+                                <input type="hidden" name="pet_type" value="<?php echo htmlspecialchars((string)$row['pet_type'], ENT_QUOTES, 'UTF-8'); ?>">
+                                <small>This older pet type is kept for this existing record. New pet profiles accept dogs and cats only.</small>
+                            <?php endif; ?>
                         </div>
 
                         <div class="form-group">

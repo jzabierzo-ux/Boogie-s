@@ -11,26 +11,59 @@ header('Referrer-Policy: no-referrer');
 header('X-Frame-Options: SAMEORIGIN');
 header('Cross-Origin-Resource-Policy: same-origin');
 
-/** Normalize supported legacy role names to the canonical application roles. */
-function petsNormalizeRole($role): string
+/** Normalize legacy database role labels without changing the stored role. */
+function petsNormalizeDatabaseRole($role): string
 {
     if (!is_string($role) && !is_numeric($role)) {
         return '';
     }
 
     $normalized = strtolower(trim((string)$role));
-    $normalized = preg_replace('/[\\s-]+/', '_', $normalized) ?? '';
+    $normalized = preg_replace('/[\s_-]+/', ' ', $normalized) ?? '';
 
     $aliases = [
         'administrator' => 'admin',
-        'shop_manager' => 'manager',
+        'shop manager' => 'manager',
+        'front desk' => 'receptionist',
+        'front desk / receptionist' => 'receptionist',
+        'front desk receptionist' => 'receptionist',
+        'grooming staff' => 'groomer',
+        'grooming staff / groomer' => 'groomer',
+        'grooming staff groomer' => 'groomer',
+        'pet hotel staff' => 'pet_hotel_staff',
+        'pet hotel staff / attendant' => 'pet_hotel_staff',
+        'pet hotel staff attendant' => 'pet_hotel_staff',
+        'pet hotel attendant' => 'pet_hotel_staff',
         'vet' => 'veterinarian',
         'veterinary' => 'veterinarian',
-        'veterinary_assistant' => 'vet_assistant',
-        'veterinary_nurse' => 'vet_nurse',
+        'veterinary assistant' => 'vet_assistant',
+        'vet assistant' => 'vet_assistant',
+        'veterinary nurse' => 'vet_nurse',
+        'vet nurse' => 'vet_nurse',
+        // Match the aliases used by the revised Personnel login.
+        'staff' => 'groomer',
+        'supervisor' => 'receptionist',
     ];
 
-    return $aliases[$normalized] ?? $normalized;
+    return $aliases[$normalized] ?? str_replace(' ', '_', $normalized);
+}
+
+/** Map retained database roles to the three official system roles. */
+function petsSystemRoleFromDatabaseRole(string $databaseRole): string
+{
+    if ($databaseRole === 'admin') {
+        return 'admin';
+    }
+
+    if (in_array($databaseRole, ['manager', 'receptionist', 'groomer', 'pet_hotel_staff'], true)) {
+        return 'staff';
+    }
+
+    if (in_array($databaseRole, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)) {
+        return 'veterinarian';
+    }
+
+    return '';
 }
 
 /** Resolve only HTTP(S) URLs or files inside the known project upload folders. */
@@ -100,8 +133,8 @@ function petsResolveProfileImageUrl($storedPath): string
     return '';
 }
 
-/** Build a trusted unread predicate for the existing PostgreSQL is_read type. */
-function petsUnreadPredicate(PDO $pdo, string $tableName): string
+/** Build trusted SQL fragments from the actual PostgreSQL is_read type. */
+function petsNotificationReadConfig(PDO $pdo, string $tableName): array
 {
     if (!in_array($tableName, ['notifications', 'admin_notifications'], true)) {
         throw new InvalidArgumentException('Unsupported notification table.');
@@ -109,7 +142,7 @@ function petsUnreadPredicate(PDO $pdo, string $tableName): string
 
     $typeStmt = $pdo->prepare("SELECT data_type
         FROM information_schema.columns
-        WHERE table_schema = current_schema()
+        WHERE table_schema = 'public'
           AND table_name = :table_name
           AND column_name = 'is_read'
         LIMIT 1");
@@ -117,57 +150,147 @@ function petsUnreadPredicate(PDO $pdo, string $tableName): string
     $dataType = strtolower(trim((string)$typeStmt->fetchColumn()));
 
     if ($dataType === 'boolean') {
-        return 'COALESCE(is_read, FALSE) = FALSE';
+        return [
+            'unread_predicate' => 'COALESCE(is_read, FALSE) = FALSE',
+            'read_value' => 'TRUE',
+        ];
     }
     if (in_array($dataType, ['smallint', 'integer', 'bigint', 'numeric', 'decimal', 'real', 'double precision'], true)) {
-        return '(is_read = 0 OR is_read IS NULL)';
+        return [
+            'unread_predicate' => '(is_read = 0 OR is_read IS NULL)',
+            'read_value' => '1',
+        ];
     }
     if (in_array($dataType, ['text', 'character varying', 'character'], true)) {
-        return "(is_read IS NULL OR LOWER(BTRIM(CAST(is_read AS TEXT))) IN ('0', 'false', 'f', 'no', 'unread', ''))";
+        return [
+            'unread_predicate' => "(is_read IS NULL OR LOWER(BTRIM(CAST(is_read AS TEXT))) IN ('0', 'false', 'f', 'no', 'unread', ''))",
+            'read_value' => "'true'",
+        ];
     }
 
-    throw new RuntimeException('Unsupported or unknown notifications.is_read column type.');
+    throw new RuntimeException('Unsupported or unknown public.' . $tableName . '.is_read column type.');
 }
 
-$rawRole = $_SESSION['role'] ?? '';
-$current_role = petsNormalizeRole($rawRole);
-$loggedIn = ($_SESSION['logged_in'] ?? false) === true;
-$adminFlag = ($_SESSION['admin_logged_in'] ?? false) === true;
-$staffFlag = ($_SESSION['staff_logged_in'] ?? false) === true;
-$userId = filter_var($_SESSION['user_id'] ?? $_SESSION['staff_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+/** Render notification items safely for the first page load and AJAX refresh. */
+function petsRenderNotifications(array $notifications, bool $showTitles): string
+{
+    if (!$notifications) {
+        return '<div class="notif-empty">No new clinic alerts.</div>';
+    }
+
+    $iconMap = [
+        'success' => 'fa-circle-check',
+        'completed' => 'fa-circle-check',
+        'booking' => 'fa-calendar-check',
+        'appointment' => 'fa-calendar-check',
+        'warning' => 'fa-triangle-exclamation',
+        'error' => 'fa-circle-exclamation',
+        'alert' => 'fa-circle-exclamation',
+        'system' => 'fa-bell',
+        'announcement' => 'fa-bullhorn',
+    ];
+
+    $html = '';
+    foreach ($notifications as $notification) {
+        $title = trim((string)($notification['title'] ?? ''));
+        $message = trim((string)($notification['message'] ?? ''));
+        $type = strtolower(trim((string)($notification['type'] ?? '')));
+        $icon = $iconMap[$type] ?? 'fa-circle-exclamation';
+
+        $html .= '<div class="notif-item">';
+        $html .= '<i class="fa-solid ' . $icon . '" style="color:#ef4444;margin-right:5px;" aria-hidden="true"></i>';
+        if ($showTitles && $title !== '') {
+            $html .= '<strong style="display:block;margin-bottom:3px;">'
+                . htmlspecialchars($title, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')
+                . '</strong>';
+        }
+        $bodyText = $message !== '' ? $message : ($title !== '' ? $title : 'New notification');
+        $html .= htmlspecialchars($bodyText, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+
+        $createdAt = trim((string)($notification['created_at'] ?? ''));
+        $timestamp = $createdAt !== '' ? strtotime($createdAt) : false;
+        if ($timestamp !== false) {
+            $html .= '<br><small style="color:#94a3b8;font-size:11px;">'
+                . htmlspecialchars(date('M d, g:i A', $timestamp), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')
+                . '</small>';
+        }
+        $html .= '</div>';
+    }
+
+    return $html;
+}
+
+$current_database_role = petsNormalizeDatabaseRole($_SESSION['role'] ?? '');
+$current_system_role = strtolower(trim((string)($_SESSION['system_role'] ?? '')));
+$loggedIn = in_array($_SESSION['logged_in'] ?? null, [true, 1, '1'], true);
+$adminFlag = in_array($_SESSION['admin_logged_in'] ?? null, [true, 1, '1'], true);
+$staffFlag = in_array($_SESSION['staff_logged_in'] ?? null, [true, 1, '1'], true);
+$userId = filter_var(
+    $_SESSION['user_id'] ?? $_SESSION['staff_id'] ?? null,
+    FILTER_VALIDATE_INT,
+    ['options' => ['min_range' => 1]]
+);
 $validUserId = $userId !== false && $userId !== null;
-$allowedRoles = ['admin', 'manager', 'veterinarian', 'vet_assistant', 'vet_nurse'];
-$is_admin = $loggedIn && $adminFlag && !$staffFlag && $current_role === 'admin' && $validUserId;
-$is_staff = $loggedIn && $staffFlag && !$adminFlag
-    && in_array($current_role, ['manager', 'veterinarian', 'vet_assistant', 'vet_nurse'], true)
+$session_role_from_database = petsSystemRoleFromDatabaseRole($current_database_role);
+
+// Admin and Personnel portal flags must remain exclusive. The Admin portal may
+// predate system_role, so an absent Admin system_role is accepted; personnel
+// sessions must carry the explicit role written by the revised login.
+$is_admin = $loggedIn
+    && $adminFlag
+    && !$staffFlag
+    && $current_database_role === 'admin'
+    && in_array($current_system_role, ['', 'admin'], true)
+    && $validUserId;
+
+$is_personnel_portal = $loggedIn
+    && $staffFlag
+    && !$adminFlag
+    && in_array($session_role_from_database, ['staff', 'veterinarian'], true)
+    && $current_system_role === $session_role_from_database
     && $validUserId;
 
 if (!$loggedIn) {
-    $loginTarget = $current_role === 'admin' ? '../admin/admin_login.php' : 'stafflogin.php';
+    $loginTarget = ($adminFlag || $current_database_role === 'admin')
+        ? '../admin/admin_login.php'
+        : 'stafflogin.php';
     header('Location: ' . $loginTarget);
     exit();
 }
 
-if (!$is_admin && !$is_staff) {
+if (!$is_admin && !$is_personnel_portal) {
     http_response_code(403);
-    exit('Access denied. A valid, exclusive Admin or authorized Staff session is required.');
+    exit('Access denied. A valid, exclusive Admin or Personnel session is required. Please sign in again.');
 }
 
-// Open the database only after portal authentication and role checks.
+$userId = (int)$userId;
+$is_staff = $is_personnel_portal && $current_system_role === 'staff';
+$is_veterinary_role = $is_personnel_portal && $current_system_role === 'veterinarian';
+
+// The revised portal role is checked before opening the page-specific queries.
 require_once __DIR__ . '/../db_supabase.php';
 if (!isset($pdo) || !($pdo instanceof PDO)) {
     http_response_code(503);
     exit('Database connection is temporarily unavailable.');
 }
 
-// Verify that the live account role still matches the active session role.
+// Re-check the current database identity on every request. A stale session role
+// cannot retain access after the account's underlying role has changed.
 try {
-    $accountRoleStmt = $pdo->prepare('SELECT role FROM users WHERE id = :id LIMIT 1');
-    $accountRoleStmt->execute([':id' => (int)$userId]);
-    $databaseRole = petsNormalizeRole($accountRoleStmt->fetchColumn());
-    if ($databaseRole === '' || $databaseRole !== $current_role || !in_array($databaseRole, $allowedRoles, true)) {
+    $accountRoleStmt = $pdo->prepare('SELECT role FROM public.users WHERE id = :id LIMIT 1');
+    $accountRoleStmt->execute([':id' => $userId]);
+    $databaseRole = petsNormalizeDatabaseRole($accountRoleStmt->fetchColumn());
+    $databaseSystemRole = petsSystemRoleFromDatabaseRole($databaseRole);
+
+    $expectedSystemRole = $is_admin ? 'admin' : $current_system_role;
+    if (
+        $databaseRole === '' ||
+        $databaseRole !== $current_database_role ||
+        $databaseSystemRole === '' ||
+        $databaseSystemRole !== $expectedSystemRole
+    ) {
         http_response_code(403);
-        exit('Access denied. The account role does not match the active session.');
+        exit('Access denied. The account role does not match the active portal. Please sign in again.');
     }
 } catch (Throwable $e) {
     error_log('Patients Directory account-role verification failed: ' . $e->getMessage());
@@ -175,15 +298,13 @@ try {
     exit('Unable to verify the account at this time.');
 }
 
-$can_delete_pet_profiles = $is_admin || ($is_staff && $current_role === 'manager');
-$is_veterinary_role = in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true);
-$role_label = [
-    'admin' => 'ADMIN',
-    'manager' => 'MANAGER',
-    'veterinarian' => 'VETERINARIAN',
-    'vet_assistant' => 'VET ASSISTANT',
-    'vet_nurse' => 'VET NURSE',
-][$current_role] ?? 'STAFF';
+// Preserve the established rule: Admin and the Manager database account may
+// delete pet profiles; all Staff accounts share the same system role, but only
+// a retained Manager account receives this existing management permission.
+$can_delete_pet_profiles = $is_admin || ($is_staff && $current_database_role === 'manager');
+$can_view_medical_records = $is_admin || $is_veterinary_role;
+$delete_pet_handler_available = is_file(__DIR__ . '/delete_pet.php');
+$role_label = $is_admin ? 'ADMIN' : ($is_veterinary_role ? 'VETERINARIAN' : 'STAFF');
 
 $staff_name = trim((string)($_SESSION['staff_name'] ?? $_SESSION['user_name'] ?? 'Staff'));
 if ($staff_name === '') {
@@ -218,29 +339,31 @@ $display_with_title = $is_veterinary_role
 $mobile_name_source = trim((string)(preg_replace('/^\\s*(?:Dr\\.?|Dra\\.?|Doc\\.?)\\s+/i', '', $display_with_title) ?? $display_with_title));
 $first_name_only = trim((string)(preg_split('/\\s+/', $mobile_name_source)[0] ?? ''));
 
-// Keep Admin alerts in the Admin table; Staff sees only notifications addressed to their own account.
+// Admin receives Admin alerts; Staff and Veterinarian receive only rows addressed to their user ID.
 $admin_notifications = [];
 $unread_count = 0;
+$notification_table = $is_admin ? 'admin_notifications' : 'notifications';
+$notification_read_config = null;
 try {
-    $notificationTable = $is_admin ? 'admin_notifications' : 'notifications';
-    $unreadPredicate = petsUnreadPredicate($pdo, $notificationTable);
+    $notification_read_config = petsNotificationReadConfig($pdo, $notification_table);
+    $unreadPredicate = $notification_read_config['unread_predicate'];
 
     if ($is_admin) {
         $notificationStmt = $pdo->query("SELECT message, created_at,
                 COUNT(*) OVER() AS total_unread
-            FROM admin_notifications
+            FROM public.admin_notifications
             WHERE {$unreadPredicate}
-            ORDER BY created_at DESC NULLS LAST
+            ORDER BY created_at DESC NULLS LAST, id DESC
             LIMIT 10");
     } else {
-        $notificationStmt = $pdo->prepare("SELECT title, message, created_at,
+        $notificationStmt = $pdo->prepare("SELECT title, message, type, created_at,
                 COUNT(*) OVER() AS total_unread
-            FROM notifications
+            FROM public.notifications
             WHERE user_id = :user_id
               AND {$unreadPredicate}
             ORDER BY created_at DESC NULLS LAST, id DESC
             LIMIT 10");
-        $notificationStmt->execute([':user_id' => (int)$userId]);
+        $notificationStmt->execute([':user_id' => $userId]);
     }
 
     $admin_notifications = $notificationStmt ? ($notificationStmt->fetchAll(PDO::FETCH_ASSOC) ?: []) : [];
@@ -253,17 +376,115 @@ try {
     $unread_count = 0;
 }
 
-// A POST token is used by the separate mark_notifications_read.php handler.
-if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
+// The same session token protects notification updates on this page.
+if (
+    empty($_SESSION['csrf_token']) ||
+    !is_string($_SESSION['csrf_token']) ||
+    !preg_match('/^[a-f0-9]{64}$/i', $_SESSION['csrf_token'])
+) {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
 }
 $notification_csrf_token = (string)$_SESSION['csrf_token'];
-$notification_read_action = $is_admin ? '../admin/mark_notifications_read.php' : 'mark_notifications_read.php';
+$notification_read_action = 'pets.php';
+
+// Notification updates are POST-only and are scoped to the active account.
+if (strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET')) === 'POST') {
+    $postedAction = $_POST['action'] ?? '';
+    if (!is_string($postedAction) || $postedAction !== 'mark_notifications_read') {
+        http_response_code(405);
+        header('Allow: GET, POST');
+        exit('Method not allowed.');
+    }
+
+    $submittedToken = $_POST['csrf_token'] ?? '';
+    if (
+        !is_string($submittedToken) ||
+        $submittedToken === '' ||
+        !hash_equals($notification_csrf_token, $submittedToken)
+    ) {
+        http_response_code(403);
+        exit('Invalid security token. Refresh the page and try again.');
+    }
+
+    try {
+        $readConfig = petsNotificationReadConfig($pdo, $notification_table);
+        if ($is_admin) {
+            $markReadStmt = $pdo->prepare("UPDATE public.admin_notifications
+                SET is_read = {$readConfig['read_value']}
+                WHERE {$readConfig['unread_predicate']}");
+            $markReadStmt->execute();
+        } else {
+            $markReadStmt = $pdo->prepare("UPDATE public.notifications
+                SET is_read = {$readConfig['read_value']}
+                WHERE user_id = :user_id
+                  AND {$readConfig['unread_predicate']}");
+            $markReadStmt->execute([':user_id' => $userId]);
+        }
+    } catch (Throwable $e) {
+        error_log('Patients Directory mark-notifications-read failed: ' . $e->getMessage());
+        http_response_code(500);
+        exit('Unable to update notifications right now. Please try again.');
+    }
+
+    $filterTypeForRedirect = $_POST['type'] ?? $_GET['type'] ?? '';
+    $redirectUrl = 'pets.php';
+    if (is_string($filterTypeForRedirect) && in_array($filterTypeForRedirect, ['Dog', 'Cat'], true)) {
+        $redirectUrl .= '?type=' . rawurlencode($filterTypeForRedirect);
+    }
+    header('Location: ' . $redirectUrl, true, 303);
+    exit();
+}
+
+// Read-only AJAX refresh uses the same role-aware notification source as the page.
+if (isset($_GET['ajax']) && is_string($_GET['ajax']) && $_GET['ajax'] === 'notifications') {
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+    header('Pragma: no-cache');
+
+    try {
+        $readConfig = petsNotificationReadConfig($pdo, $notification_table);
+        if ($is_admin) {
+            $ajaxStmt = $pdo->query("SELECT message, created_at,
+                    COUNT(*) OVER() AS total_unread
+                FROM public.admin_notifications
+                WHERE {$readConfig['unread_predicate']}
+                ORDER BY created_at DESC NULLS LAST, id DESC
+                LIMIT 10");
+        } else {
+            $ajaxStmt = $pdo->prepare("SELECT title, message, type, created_at,
+                    COUNT(*) OVER() AS total_unread
+                FROM public.notifications
+                WHERE user_id = :user_id
+                  AND {$readConfig['unread_predicate']}
+                ORDER BY created_at DESC NULLS LAST, id DESC
+                LIMIT 10");
+            $ajaxStmt->execute([':user_id' => $userId]);
+        }
+
+        $ajaxNotifications = $ajaxStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        $ajaxUnread = $ajaxNotifications
+            ? (int)($ajaxNotifications[0]['total_unread'] ?? count($ajaxNotifications))
+            : 0;
+        echo json_encode([
+            'success' => true,
+            'unread' => $ajaxUnread,
+            'html' => petsRenderNotifications($ajaxNotifications, !$is_admin),
+        ], JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE | JSON_UNESCAPED_SLASHES);
+    } catch (Throwable $e) {
+        error_log('Patients Directory notification refresh failed: ' . $e->getMessage());
+        http_response_code(500);
+        echo json_encode([
+            'success' => false,
+            'unread' => 0,
+            'html' => '<div class="notif-empty">Unable to load notifications.</div>',
+        ], JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+    }
+    exit();
+}
 
 $total_pets = 0;
 $dogs = 0;
 $cats = 0;
-$others = 0;
 try {
     $statsStmt = $pdo->query("SELECT COUNT(*) AS total,
             COALESCE(SUM(CASE WHEN pet_type = 'Dog' THEN 1 ELSE 0 END), 0) AS dogs,
@@ -273,14 +494,13 @@ try {
     $total_pets = (int)($stats['total'] ?? 0);
     $dogs = (int)($stats['dogs'] ?? 0);
     $cats = (int)($stats['cats'] ?? 0);
-    $others = max(0, $total_pets - $dogs - $cats);
 } catch (Throwable $e) {
     error_log('Patients Directory statistics lookup failed: ' . $e->getMessage());
 }
 
 $rawFilterType = $_GET['type'] ?? '';
 $filter_type = is_string($rawFilterType) ? trim($rawFilterType) : '';
-if (!in_array($filter_type, ['Dog', 'Cat', 'Other'], true)) {
+if (!in_array($filter_type, ['Dog', 'Cat'], true)) {
     $filter_type = '';
 }
 ?>
@@ -402,8 +622,6 @@ if (!in_array($filter_type, ['Dog', 'Cat', 'Other'], true)) {
         
         .c-cat { border-left: 4px solid #f43f5e; }
         .c-cat i { color: #f43f5e; }
-        .c-other { border-left: 4px solid #8b5cf6; }
-        .c-other i { color: #8b5cf6; }
 
         .patient-name-cell { min-width: 150px; }
         .owner-cell { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; }
@@ -2278,10 +2496,15 @@ input, select, textarea, button, img { max-width:100%; }
             <h2>Boogie's Clinic</h2>
         </div>
         <nav class="nav-links">
-            <a href="staffdashboard.php" class="nav-item"><i class="fas fa-th-large"></i> Dashboard</a>
-            <a href="appointments.php" class="nav-item"><i class="fas fa-calendar-alt"></i> Appointments</a>
-            <a href="pets.php" class="nav-item active"><i class="fas fa-paw"></i> Patients</a>
-            <a href="tasks.php" class="nav-item"><i class="fas fa-tasks"></i> My Tasks</a>
+            <?php if ($is_veterinary_role): ?>
+                <a href="staffdashboard.php" class="nav-item"><i class="fas fa-th-large"></i> Dashboard</a>
+                <a href="appointments.php" class="nav-item"><i class="fas fa-calendar-alt"></i> Appointments</a>
+                <a href="pets.php" class="nav-item active"><i class="fas fa-paw"></i> Patients</a>
+                <a href="tasks.php" class="nav-item"><i class="fas fa-tasks"></i> My Tasks</a>
+            <?php else: ?>
+                <a href="../admin/admindashboard.php<?php echo $is_staff ? '?portal=staff' : ''; ?>" class="nav-item"><i class="fas fa-th-large"></i> Dashboard</a>
+                <a href="pets.php" class="nav-item active"><i class="fas fa-paw"></i> Patients</a>
+            <?php endif; ?>
         </nav>
     </aside>
 
@@ -2294,7 +2517,7 @@ input, select, textarea, button, img { max-width:100%; }
             </button>
             <div class="breadcrumb">
                 <i class="fas fa-paw" style="color: var(--brand-blue);"></i> 
-                <span class="breadcrumb-text">Veterinarian Portal / Patients Directory</span></div>
+                <span class="breadcrumb-text"><?php echo $is_admin ? 'Admin Portal' : ($is_veterinary_role ? 'Veterinarian Portal' : 'Staff Portal'); ?> / Patients Directory</span></div>
             
             <div class="top-right-actions">
                 <div class="notif-wrapper" onclick="toggleNotif(event)">
@@ -2310,6 +2533,7 @@ input, select, textarea, button, img { max-width:100%; }
                             <form action="<?php echo htmlspecialchars($notification_read_action, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>" method="POST" style="margin:0;">
                                 <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($notification_csrf_token, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
                                 <input type="hidden" name="action" value="mark_notifications_read">
+                                <input type="hidden" name="type" value="<?php echo htmlspecialchars($filter_type, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
                                 <button type="submit" id="mark-read-link" class="mark-read-btn" style="display: <?php echo ($unread_count > 0) ? 'inline-block' : 'none'; ?>;">Mark all read</button>
                             </form>
                         </div>
@@ -2392,11 +2616,6 @@ input, select, textarea, button, img { max-width:100%; }
                     <h3>Cats</h3>
                     <p><?php echo $cats; ?></p>
                 </div>
-                <div class="stat-card c-other" onclick="window.location.href='pets.php?type=Other'">
-                    <i class="fas fa-paw"></i>
-                    <h3>Other Pets</h3>
-                    <p><?php echo $others; ?></p>
-                </div>
             </div>
 
             <div class="card">
@@ -2442,10 +2661,6 @@ input, select, textarea, button, img { max-width:100%; }
                                         "SELECT {$pet_columns}{$pet_from} WHERE p.pet_type = :pet_type ORDER BY p.id DESC"
                                     );
                                     $stmt_pets->execute([':pet_type' => $filter_type]);
-                                } elseif ($filter_type === 'Other') {
-                                    $stmt_pets = $pdo->query(
-                                        "SELECT {$pet_columns}{$pet_from} WHERE COALESCE(p.pet_type, '') NOT IN ('Dog', 'Cat') ORDER BY p.id DESC"
-                                    );
                                 } else {
                                     $stmt_pets = $pdo->query("SELECT {$pet_columns}{$pet_from} ORDER BY p.id DESC");
                                 }
@@ -2485,14 +2700,21 @@ input, select, textarea, button, img { max-width:100%; }
 
                                     $safePetId = rawurlencode((string)$pet_id);
                                     $safePetName = htmlspecialchars($p_name, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-                                    $actionHtml = "<a href='view_records.php?id={$safePetId}' class='btn-icon btn-view' title='View Medical Records' aria-label='View medical records for {$safePetName}'>
-                                        <i class='fas fa-notes-medical'></i>
-                                    </a>";
-                                    if ($can_delete_pet_profiles) {
-                                        // The delete handler must independently enforce Admin/Manager authorization and POST/CSRF.
+                                    $actionHtml = '';
+                                    if ($can_view_medical_records) {
+                                        $actionHtml .= "<a href='view_records.php?id={$safePetId}' class='btn-icon btn-view' title='View Medical Records' aria-label='View medical records for {$safePetName}'>
+                                            <i class='fas fa-notes-medical'></i>
+                                        </a>";
+                                    }
+                                    // The current project ZIP does not contain staff/delete_pet.php.
+                                    // Do not render a dead GET link; add deletion only when its handler exists.
+                                    if ($can_delete_pet_profiles && $delete_pet_handler_available) {
                                         $actionHtml .= "<a href='delete_pet.php?id={$safePetId}' class='btn-icon btn-delete' title='Delete Patient' aria-label='Delete {$safePetName}' onclick='return confirm(\"Are you sure you want to permanently delete this patient?\");'>
                                             <i class='fas fa-trash-alt'></i>
                                         </a>";
+                                    }
+                                    if ($actionHtml === '') {
+                                        $actionHtml = "<span class='pet-value-muted' aria-label='No available actions'>—</span>";
                                     }
                                     echo "<td><div class='action-links'>{$actionHtml}</div></td>";
                                     echo "</tr>";
@@ -2610,7 +2832,7 @@ input, select, textarea, button, img { max-width:100%; }
 
         // --- REAL-TIME NOTIFICATION FETCHER ---
         function fetchAdminNotifs() {
-            fetch('../admin/get_admin_notifs.php', {
+            fetch('pets.php?ajax=notifications', {
                 method: 'GET',
                 headers: { 'Accept': 'application/json' },
                 credentials: 'same-origin'
@@ -2641,7 +2863,7 @@ input, select, textarea, button, img { max-width:100%; }
                             : '<div class="notif-empty">No new notifications.</div>';
                     }
                 })
-                .catch(error => console.error('Error fetching notifications:', error));
+                .catch(error => console.error('Error fetching patient-directory notifications:', error));
         }
 
         // Reduce unnecessary requests while keeping the notification badge updated.

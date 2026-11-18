@@ -125,9 +125,13 @@ try {
             description,
             image_url,
             theme_color,
-            expiry_date
+            starts_on,
+            expiry_date,
+            discount_percent,
+            applicable_category
         FROM promos
         WHERE status = 'active'
+          AND starts_on <= ((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Manila')::date)
           AND (expiry_date >= ((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Manila')::date) OR expiry_date IS NULL)
         ORDER BY id DESC
         LIMIT 3
@@ -701,6 +705,36 @@ try {
             line-height: 1.65;
             opacity: .92;
         }
+        .promo-discount-badge {
+            display: inline-flex;
+            align-items: center;
+            margin-top: 11px;
+            padding: 5px 9px;
+            border-radius: 999px;
+            background: rgba(255,255,255,.18);
+            border: 1px solid rgba(255,255,255,.36);
+            color: #fff;
+            font-size: 11px;
+            font-weight: 800;
+            letter-spacing: .35px;
+        }
+        .promo-cta {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            margin-top: 12px;
+            padding: 9px 13px;
+            border-radius: 9px;
+            background: #ffcc00;
+            color: #001f3f;
+            text-decoration: none;
+            font-size: 11px;
+            font-weight: 800;
+            transition: transform .18s ease, background .18s ease;
+        }
+        .promo-cta:hover { background: #ffe16b; transform: translateY(-1px); }
+
         .promo-meta {
             position: relative;
             z-index: 2;
@@ -2139,6 +2173,12 @@ try {
                                 <span class="tag"><?php echo escapeHomeHtml($promo['tag'] ?? 'PROMO'); ?></span>
                                 <h3><?php echo escapeHomeHtml($promo['title'] ?? 'Special Offer'); ?></h3>
                                 <p><?php echo escapeHomeHtml($promo['description'] ?? ''); ?></p>
+                                <?php if ((float)($promo['discount_percent'] ?? 0) > 0): ?>
+                                    <div class="promo-discount-badge"><?php echo number_format((float)$promo['discount_percent'], 2); ?>% OFF</div>
+                                <?php endif; ?>
+                                <?php if ((float)($promo['discount_percent'] ?? 0) > 0): ?>
+                                    <a class="promo-cta" href="book_appointment.php?promo_id=<?php echo (int)$promo['id']; ?>">Avail Offer <i class="fa-solid fa-arrow-right"></i></a>
+                                <?php endif; ?>
 
                                 <?php if ($expiry_label !== ''): ?>
                                     <div class="promo-meta">

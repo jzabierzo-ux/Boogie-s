@@ -11,24 +11,70 @@ header('Referrer-Policy: no-referrer');
 
 /* -------------------------------------------------------------------------
    AUTHENTICATION AND VETERINARY ROLE ACCESS
-   This endpoint requires an exclusive Staff session. An Admin session,
-   or a session with both portal flags active, is never accepted here.
+   This dashboard is available only to the Veterinarian system role.
+   Admin and Staff system roles are not authorized here.
    ------------------------------------------------------------------------- */
+$normalize_veterinary_database_role = static function ($role): string {
+    $role = strtolower(trim((string)$role));
+    static $aliases = [
+        'administrator' => 'admin',
+        'shop manager' => 'manager',
+        'shop_manager' => 'manager',
+        'vet' => 'veterinarian',
+        'veterinary' => 'veterinarian',
+        'front desk' => 'receptionist',
+        'front desk / receptionist' => 'receptionist',
+        'front_desk' => 'receptionist',
+        'front_desk_receptionist' => 'receptionist',
+        'veterinary assistant' => 'vet_assistant',
+        'vet assistant' => 'vet_assistant',
+        'veterinary_assistant' => 'vet_assistant',
+        'veterinary nurse' => 'vet_nurse',
+        'vet nurse' => 'vet_nurse',
+        'veterinary_nurse' => 'vet_nurse',
+        'grooming staff' => 'groomer',
+        'grooming staff / groomer' => 'groomer',
+        'grooming_staff' => 'groomer',
+        'grooming_staff_groomer' => 'groomer',
+        'pet hotel staff' => 'pet_hotel_staff',
+        'pet hotel staff / attendant' => 'pet_hotel_staff',
+        'pet_hotel_attendant' => 'pet_hotel_staff',
+        'pet_hotel_staff_attendant' => 'pet_hotel_staff',
+        'staff' => 'groomer',
+        'supervisor' => 'receptionist',
+    ];
+
+    return $aliases[$role] ?? $role;
+};
+
+$map_veterinary_system_role = static function (string $databaseRole): string {
+    if ($databaseRole === 'admin') {
+        return 'admin';
+    }
+
+    if (in_array($databaseRole, [
+        'manager',
+        'receptionist',
+        'groomer',
+        'pet_hotel_staff',
+    ], true)) {
+        return 'staff';
+    }
+
+    if (in_array($databaseRole, [
+        'veterinarian',
+        'vet_assistant',
+        'vet_nurse',
+    ], true)) {
+        return 'veterinarian';
+    }
+
+    return '';
+};
+
 $current_role_raw = strtolower(trim((string)($_SESSION['role'] ?? '')));
-$role_aliases = [
-    'vet' => 'veterinarian',
-    'veterinary' => 'veterinarian',
-    'veterinarian' => 'veterinarian',
-    'vet assistant' => 'vet_assistant',
-    'veterinary assistant' => 'vet_assistant',
-    'veterinary_assistant' => 'vet_assistant',
-    'vet_assistant' => 'vet_assistant',
-    'vet nurse' => 'vet_nurse',
-    'veterinary nurse' => 'vet_nurse',
-    'veterinary_nurse' => 'vet_nurse',
-    'vet_nurse' => 'vet_nurse'
-];
-$current_role = $role_aliases[$current_role_raw] ?? $current_role_raw;
+$current_role = $normalize_veterinary_database_role($current_role_raw);
+$current_system_role = strtolower(trim((string)($_SESSION['system_role'] ?? '')));
 
 // Accept only explicit true/1 session flag representations for compatibility
 // with existing PHP sessions; do not use loose truthiness.
@@ -36,9 +82,10 @@ $is_logged_in = in_array($_SESSION['logged_in'] ?? null, [true, 1, '1'], true);
 $is_staff_portal = in_array($_SESSION['staff_logged_in'] ?? null, [true, 1, '1'], true);
 $is_admin_portal = in_array($_SESSION['admin_logged_in'] ?? null, [true, 1, '1'], true);
 
+// An Admin flag always blocks this endpoint, including sessions with both flags.
 if ($is_admin_portal) {
     http_response_code(403);
-    exit('Access denied. An Admin session cannot access the veterinary Staff dashboard.');
+    exit('Access denied. Admin accounts cannot access the Veterinarian dashboard.');
 }
 
 if (!$is_logged_in || !$is_staff_portal) {
@@ -46,9 +93,14 @@ if (!$is_logged_in || !$is_staff_portal) {
     exit();
 }
 
-if (!in_array($current_role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)) {
+// Require the explicit system role established by the revised personnel login.
+// The legacy database role remains in $_SESSION['role'] for older page checks.
+if (
+    $current_system_role !== 'veterinarian'
+    || $map_veterinary_system_role($current_role) !== 'veterinarian'
+) {
     http_response_code(403);
-    exit('Access denied. This dashboard is for veterinary personnel only.');
+    exit('Access denied. This dashboard is for Veterinarian accounts only.');
 }
 
 $validated_user_id = filter_var(
@@ -58,36 +110,39 @@ $validated_user_id = filter_var(
 );
 if ($validated_user_id === false || $validated_user_id === null) {
     http_response_code(403);
-    exit('Access denied. The Staff account session is invalid. Please sign in again.');
+    exit('Access denied. The Veterinarian account session is invalid. Please sign in again.');
 }
 $user_id = (int)$validated_user_id;
 
-// Connect only after the exclusive Staff session, role, and account ID are validated.
+// Connect only after the exclusive personnel session, system role, and account ID are validated.
 require_once __DIR__ . '/../db_supabase.php';
 
-// Re-check the account role against the database so a stale or mismatched
-// session cannot keep veterinary access after the account role is changed.
+// Re-check the database role so a stale session cannot retain veterinary access
+// after the account role is changed, disabled, or deleted.
 try {
     $accountRoleStmt = $pdo->prepare('SELECT role FROM users WHERE id = :user_id LIMIT 1');
     $accountRoleStmt->execute([':user_id' => $user_id]);
-    $databaseRoleRaw = strtolower(trim((string)$accountRoleStmt->fetchColumn()));
-    $databaseRole = $role_aliases[$databaseRoleRaw] ?? $databaseRoleRaw;
-    if ($databaseRole === '' || $databaseRole !== $current_role) {
+    $databaseRoleValue = $accountRoleStmt->fetchColumn();
+    $databaseRoleRaw = is_string($databaseRoleValue) ? strtolower(trim($databaseRoleValue)) : '';
+    $databaseRole = $normalize_veterinary_database_role($databaseRoleRaw);
+    $databaseSystemRole = $map_veterinary_system_role($databaseRole);
+
+    if (
+        $databaseRole === ''
+        || $databaseRole !== $current_role
+        || $databaseSystemRole !== 'veterinarian'
+    ) {
         http_response_code(403);
-        exit('Access denied. The Staff account role no longer matches this session. Please sign in again.');
+        exit('Access denied. The account role no longer matches this Veterinarian session. Please sign in again.');
     }
 } catch (Throwable $e) {
     error_log('Veterinary dashboard account-role verification failed: ' . $e->getMessage());
     http_response_code(503);
-    exit('Unable to verify the Staff account right now. Please try again.');
+    exit('Unable to verify the Veterinarian account right now. Please try again.');
 }
 
-$role_labels = [
-    'veterinarian' => 'Veterinarian',
-    'vet_assistant' => 'Vet Assistant',
-    'vet_nurse' => 'Vet Nurse'
-];
-$role_label = $role_labels[$current_role] ?? 'Veterinary Staff';
+// The revised system has one combined Veterinarian role for this portal.
+$role_label = 'Veterinarian';
 
 if (
     !isset($_SESSION['staff_dashboard_csrf'])

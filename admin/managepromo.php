@@ -273,7 +273,8 @@ try {
         SELECT
             COUNT(*) AS total,
             COUNT(*) FILTER (
-                WHERE (expiry_date IS NULL OR expiry_date >= {$manila_today_sql})
+                WHERE (starts_on IS NULL OR starts_on <= {$manila_today_sql})
+                  AND (expiry_date IS NULL OR expiry_date >= {$manila_today_sql})
                   AND status = 'active'
             ) AS active,
             COUNT(*) FILTER (
@@ -300,13 +301,15 @@ try {
 
     // Fetch only the fields rendered in the table and only one page at a time.
     $query = "
-        SELECT id, tag, title, theme_color, button_text, target_url, expiry_date, status
+        SELECT id, tag, title, theme_color, button_text, target_url, starts_on, expiry_date,
+               discount_percent, applicable_category, status
         FROM promos
     ";
 
     if ($filter === 'active') {
         $query .= "
-            WHERE (expiry_date IS NULL OR expiry_date >= {$manila_today_sql})
+            WHERE (starts_on IS NULL OR starts_on <= {$manila_today_sql})
+              AND (expiry_date IS NULL OR expiry_date >= {$manila_today_sql})
               AND status = 'active'
         ";
     } elseif ($filter === 'expired') {
@@ -2360,6 +2363,10 @@ try {
 
 
 
+                                    <th>Discount</th>
+
+
+
                                     <th>Action Link</th>
 
 
@@ -2412,7 +2419,19 @@ try {
 
 
 
-                                        if (isset($promo['expiry_date']) && $promo['expiry_date'] < $current_date) {
+                                        if (($promo['status'] ?? '') !== 'active') {
+
+
+
+                                            $status_class = 'inactive';
+
+
+
+                                            $display_status = 'Inactive';
+
+
+
+                                        } elseif (isset($promo['expiry_date']) && $promo['expiry_date'] < $current_date) {
 
 
 
@@ -2421,6 +2440,18 @@ try {
 
 
                                             $display_status = 'Expired';
+
+
+
+                                        } elseif (!empty($promo['starts_on']) && $promo['starts_on'] > $current_date) {
+
+
+
+                                            $status_class = 'inactive';
+
+
+
+                                            $display_status = 'Scheduled';
 
 
 
@@ -2528,6 +2559,21 @@ try {
 
 
 
+                                        </td>
+
+
+
+
+
+
+
+                                        <td>
+                                            <div style="font-weight: 800; font-size: 13px; color: var(--navy-dark);">
+                                                <?php echo number_format((float)($promo['discount_percent'] ?? 0), 2); ?>% OFF
+                                            </div>
+                                            <div style="font-size: 11px; color: var(--text-muted); margin-top: 3px;">
+                                                <?php echo htmlspecialchars((string)($promo['applicable_category'] ?? 'All Services'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
+                                            </div>
                                         </td>
 
 

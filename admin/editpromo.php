@@ -379,7 +379,7 @@ $presets = [
 // Fetch the selected promo.
 try {
     $fetch_stmt = $pdo->prepare(
-        'SELECT id, tag, title, description, theme_color, expiry_date, status, image_url FROM promos WHERE id = :id LIMIT 1'
+        'SELECT id, tag, title, description, theme_color, starts_on, expiry_date, discount_percent, applicable_category, status, image_url FROM promos WHERE id = :id LIMIT 1'
     );
     $fetch_stmt->execute([':id' => $promo_id]);
     $promo = $fetch_stmt->fetch(PDO::FETCH_ASSOC);
@@ -399,7 +399,10 @@ $form = [
     'title' => (string)($promo['title'] ?? ''),
     'description' => (string)($promo['description'] ?? ''),
     'theme_color' => (string)($promo['theme_color'] ?? 'purple'),
+    'starts_on' => (string)($promo['starts_on'] ?? date('Y-m-d')),
     'expiry_date' => (string)($promo['expiry_date'] ?? ''),
+    'discount_percent' => (string)($promo['discount_percent'] ?? '0'),
+    'applicable_category' => (string)($promo['applicable_category'] ?? 'All Services'),
     'status' => (string)($promo['status'] ?? 'active'),
     'image_url' => $promo['image_url'] ?? null,
 ];
@@ -421,8 +424,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $form['title'] = $read_post_string('title');
         $form['description'] = $read_post_string('description');
         $form['theme_color'] = $read_post_string('theme_color');
+        $form['starts_on'] = $read_post_string('starts_on');
         $form['expiry_date'] = $read_post_string('expiry_date');
+        $form['discount_percent'] = $read_post_string('discount_percent');
+        $form['applicable_category'] = $read_post_string('applicable_category');
         $form['status'] = $read_post_string('status');
+        $discount_percent_value = is_numeric($form['discount_percent']) ? (float)$form['discount_percent'] : -1;
 
         $remove_image = isset($_POST['remove_image']) && $_POST['remove_image'] === '1';
         $new_image_url = $form['image_url'];
@@ -439,7 +446,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $form['title'] === '' ||
             $form['description'] === '' ||
             $form['theme_color'] === '' ||
+            $form['starts_on'] === '' ||
             $form['expiry_date'] === '' ||
+            $form['discount_percent'] === '' ||
             $form['status'] === ''
         ) {
             $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Please complete all required fields.</div>";
@@ -451,12 +460,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Some promo details exceed the allowed length.</div>";
         } elseif (!in_array($form['theme_color'], ['purple', 'teal', 'red', 'orange'], true)) {
             $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Invalid color theme selected.</div>";
+        } elseif ($discount_percent_value < 0 || $discount_percent_value > 99.99 || !in_array($form['applicable_category'], ['All Services', 'Grooming', 'Vet Services', 'Pet Hotel'], true)) {
+            $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Enter a discount from 0 to 99.99 and choose a valid service category.</div>";
         } elseif (!in_array($form['status'], ['active', 'inactive'], true)) {
             $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Invalid promo status selected.</div>";
         } else {
+            $start_check = DateTimeImmutable::createFromFormat('!Y-m-d', $form['starts_on']);
             $date_check = DateTimeImmutable::createFromFormat('!Y-m-d', $form['expiry_date']);
-            if (!$date_check || $date_check->format('Y-m-d') !== $form['expiry_date']) {
-                $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Please enter a valid expiry date.</div>";
+            if (!$start_check || $start_check->format('Y-m-d') !== $form['starts_on'] || !$date_check || $date_check->format('Y-m-d') !== $form['expiry_date']) {
+                $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Please enter valid promotion dates.</div>";
+            } elseif ($form['expiry_date'] < $form['starts_on']) {
+                $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> The expiry date must be the same as or later than the start date.</div>";
             }
         }
 
@@ -535,7 +549,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                          title = :title,
                          description = :description,
                          theme_color = :theme_color,
+                         starts_on = :starts_on,
                          expiry_date = :expiry_date,
+                         discount_percent = :discount_percent,
+                         applicable_category = :applicable_category,
                          status = :status,
                          image_url = :image_url
                      WHERE id = :id'
@@ -545,7 +562,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ':title' => $form['title'],
                     ':description' => $form['description'],
                     ':theme_color' => $form['theme_color'],
+                    ':starts_on' => $form['starts_on'],
                     ':expiry_date' => $form['expiry_date'],
+                    ':discount_percent' => $discount_percent_value,
+                    ':applicable_category' => $form['applicable_category'],
                     ':status' => $form['status'],
                     ':image_url' => $new_image_url,
                     ':id' => $promo_id
@@ -2088,9 +2108,30 @@ $profile_img_src = editPromoResolveProfileImageUrl($profile_img_path);
 
                 <div class="row">
                     <div>
+                        <label class="section-label" for="discount_percent">Discount Percentage (%)</label>
+                        <input class="input" type="number" id="discount_percent" name="discount_percent" min="0" max="99.99" step="0.01" value="<?php echo htmlspecialchars($form['discount_percent']); ?>" required>
+                        <small style="display:block;margin-top:6px;color:#64748b;">Use 0 for a banner-only promotion. Customers select this offer during online booking.</small>
+                    </div>
+                    <div>
+                        <label class="section-label" for="applicable_category">Applicable Service</label>
+                        <select class="input" id="applicable_category" name="applicable_category" required>
+                            <?php foreach (['All Services', 'Grooming', 'Vet Services', 'Pet Hotel'] as $categoryOption): ?>
+                                <option value="<?php echo htmlspecialchars($categoryOption, ENT_QUOTES, 'UTF-8'); ?>" <?php echo $form['applicable_category'] === $categoryOption ? 'selected' : ''; ?>><?php echo htmlspecialchars($categoryOption); ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                </div>
+                <div class="row">
+                    <div>
+                        <label class="section-label" for="starts_on">Start Date</label>
+                        <input class="input" type="date" id="starts_on" name="starts_on" value="<?php echo htmlspecialchars($form['starts_on']); ?>" required>
+                    </div>
+                    <div>
                         <label class="section-label" for="expiry_date">Expiry Date</label>
                         <input class="input" type="date" id="expiry_date" name="expiry_date" value="<?php echo htmlspecialchars($form['expiry_date']); ?>" required>
                     </div>
+                </div>
+                <div class="row">
                     <div>
                         <label class="section-label" for="status">Website Visibility</label>
                         <select id="status" name="status" required>
@@ -2134,6 +2175,17 @@ const tagInput = document.getElementById('tag');
 const titleInput = document.getElementById('title');
 const descriptionInput = document.getElementById('description');
 const expiryInput = document.getElementById('expiry_date');
+const startInput = document.getElementById('starts_on');
+if (startInput && expiryInput) {
+    const syncPromotionDateRange = function () {
+        if (startInput.value) {
+            expiryInput.min = startInput.value;
+            if (expiryInput.value && expiryInput.value < startInput.value) expiryInput.value = startInput.value;
+        }
+    };
+    startInput.addEventListener('change', syncPromotionDateRange);
+    syncPromotionDateRange();
+}
 const statusInput = document.getElementById('status');
 const imageInput = document.getElementById('promo_image');
 const removeImage = document.getElementById('remove_image');

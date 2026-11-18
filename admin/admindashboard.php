@@ -4,151 +4,128 @@ require_once __DIR__ . '/../shared_session_bootstrap.php';
 
 require_once __DIR__ . '/../db_supabase.php';
 
-// --- ROLE-BASED ACCESS CHECK ---
-
-// This dashboard is for Admin and approved operational roles.
-
-// Veterinary roles must use the dedicated veterinary dashboard.
-
-$current_role = strtolower(trim((string)($_SESSION['role'] ?? '')));
-
-// Normalize common role labels and legacy account values before permissions.
-
-// Existing legacy 'staff' accounts follow Groomer permissions, and 'supervisor'
-
-// accounts follow Receptionist permissions until the accounts are reclassified.
-
-$role_aliases = [
-
-    'administrator' => 'admin',
-
-    'shop manager' => 'manager',
-
-    'shop_manager' => 'manager',
-
-    'front desk' => 'receptionist',
-
-    'front desk / receptionist' => 'receptionist',
-
-    'front_desk' => 'receptionist',
-
-    'front_desk_receptionist' => 'receptionist',
-
-    'grooming staff' => 'groomer',
-
-    'grooming staff / groomer' => 'groomer',
-
-    'grooming_staff' => 'groomer',
-
-    'grooming_staff_groomer' => 'groomer',
-
-    'pet hotel staff' => 'pet_hotel_staff',
-
-    'pet hotel staff / attendant' => 'pet_hotel_staff',
-
-    'pet_hotel_attendant' => 'pet_hotel_staff',
-
-    'pet_hotel_staff_attendant' => 'pet_hotel_staff',
-
-    'vet' => 'veterinarian',
-
-    'veterinary' => 'veterinarian',
-
-    'veterinary assistant' => 'vet_assistant',
-
-    'vet assistant' => 'vet_assistant',
-
-    'veterinary_assistant' => 'vet_assistant',
-
-    'veterinary nurse' => 'vet_nurse',
-
-    'vet nurse' => 'vet_nurse',
-
-    'veterinary_nurse' => 'vet_nurse',
-
-    'staff' => 'groomer',
-
-    'supervisor' => 'receptionist'
-
-];
-
-if (isset($role_aliases[$current_role])) {
-
-    $current_role = $role_aliases[$current_role];
-
-    $_SESSION['role'] = $current_role;
-
+// --- THREE-ROLE SYSTEM ACCESS CHECK ---
+// The application has three system roles: Admin, Staff, and Veterinarian.
+// Keep the original database role for existing job-specific permissions, but
+// use system_role for portal authorization. Never overwrite $_SESSION['role'].
+function adminDashboardFlagEnabled($value): bool
+{
+    return $value === true || $value === 1 || $value === '1'
+        || (is_string($value) && strtolower(trim($value)) === 'true');
 }
 
-$personnel_dashboard_roles = [
-    'manager',
-    'receptionist',
-    'groomer',
-    'pet_hotel_staff'
-];
+function adminDashboardNormalizeLegacyRole($value): string
+{
+    $role = strtolower(trim(is_scalar($value) ? (string)$value : ''));
+    $role = preg_replace('/[\s_-]+/', ' ', $role) ?? '';
 
-$allowed_dashboard_roles = array_merge(['admin'], $personnel_dashboard_roles);
+    $aliases = [
+        'administrator' => 'admin',
+        'admin' => 'admin',
+        'shop manager' => 'manager',
+        'front desk' => 'receptionist',
+        'front desk receptionist' => 'receptionist',
+        'front desk / receptionist' => 'receptionist',
+        'grooming staff' => 'groomer',
+        'grooming staff groomer' => 'groomer',
+        'grooming staff / groomer' => 'groomer',
+        'pet hotel staff' => 'pet_hotel_staff',
+        'pet hotel staff attendant' => 'pet_hotel_staff',
+        'pet hotel staff / attendant' => 'pet_hotel_staff',
+        'pet hotel attendant' => 'pet_hotel_staff',
+        'supervisor' => 'receptionist',
+        'vet' => 'veterinarian',
+        'veterinary' => 'veterinarian',
+        'vet assistant' => 'vet_assistant',
+        'veterinary assistant' => 'vet_assistant',
+        'vet nurse' => 'vet_nurse',
+        'veterinary nurse' => 'vet_nurse',
+    ];
 
-// Unauthenticated visitors are sent to the login page for their known portal.
-if (($_SESSION['logged_in'] ?? false) !== true) {
-    $login_target = in_array($current_role, $personnel_dashboard_roles, true)
-        ? '../staff/stafflogin.php'
-        : 'admin_login.php';
-    header('Location: ' . $login_target);
+    return $aliases[$role] ?? str_replace(' ', '_', $role);
+}
+
+/** Map retained database role names to the three application-wide system roles. */
+function adminDashboardSystemRole($value): string
+{
+    $role = adminDashboardNormalizeLegacyRole($value);
+
+    if ($role === 'admin') {
+        return 'admin';
+    }
+    if (in_array($role, ['veterinarian', 'vet_assistant', 'vet_nurse'], true)) {
+        return 'veterinarian';
+    }
+    if (in_array($role, ['staff', 'manager', 'receptionist', 'groomer', 'pet_hotel_staff'], true)) {
+        return 'staff';
+    }
+
+    return '';
+}
+
+$session_legacy_role = adminDashboardNormalizeLegacyRole($_SESSION['role'] ?? '');
+$mapped_session_system_role = adminDashboardSystemRole($session_legacy_role);
+$stored_system_role = adminDashboardSystemRole($_SESSION['system_role'] ?? $session_legacy_role);
+$logged_in = adminDashboardFlagEnabled($_SESSION['logged_in'] ?? false);
+$admin_logged_in = adminDashboardFlagEnabled($_SESSION['admin_logged_in'] ?? false);
+$staff_logged_in = adminDashboardFlagEnabled($_SESSION['staff_logged_in'] ?? false);
+
+// A saved system role must agree with the retained legacy database role.
+if ($mapped_session_system_role === '' || $stored_system_role !== $mapped_session_system_role) {
+    http_response_code(403);
+    exit('Access denied. Your account role is not recognized for this portal.');
+}
+
+if (!$logged_in) {
+    $login_target = ($mapped_session_system_role === 'admin' || $admin_logged_in)
+        ? 'admin_login.php'
+        : '../staff/stafflogin.php';
+    header('Location: ' . $login_target, true, 303);
     exit();
 }
 
-// A valid portal session must contain a positive user ID.
+// Portal flags must be exclusive. Staff and Veterinarian use the Staff login portal.
+if ($admin_logged_in === $staff_logged_in) {
+    http_response_code(403);
+    exit('Access denied. Please sign in through the correct portal.');
+}
+
+$is_admin = $admin_logged_in && !$staff_logged_in && $mapped_session_system_role === 'admin';
+$is_staff = $staff_logged_in && !$admin_logged_in && $mapped_session_system_role === 'staff';
+$is_veterinarian = $staff_logged_in && !$admin_logged_in && $mapped_session_system_role === 'veterinarian';
+
+// Veterinarians use the dedicated dashboard, not the shared Admin/Staff dashboard.
+if ($is_veterinarian) {
+    header('Location: ../staff/staffdashboard.php', true, 303);
+    exit();
+}
+
+if (!$is_admin && !$is_staff) {
+    http_response_code(403);
+    exit('Access denied. Only Admin and Staff can access this dashboard.');
+}
+
 $user_id = filter_var(
-    $_SESSION['user_id'] ?? null,
+    $_SESSION['user_id'] ?? $_SESSION['staff_id'] ?? $_SESSION['id'] ?? null,
     FILTER_VALIDATE_INT,
     ['options' => ['min_range' => 1]]
 );
-
 if ($user_id === false || $user_id === null) {
     http_response_code(403);
     exit('Access denied: invalid session.');
 }
+$user_id = (int)$user_id;
 
-// Only Admin and approved operational personnel can use this dashboard.
-if (!in_array($current_role, $allowed_dashboard_roles, true)) {
-    http_response_code(403);
-    exit('Access denied. Please use the dashboard assigned to your role.');
-}
+// Authorization uses the three system roles; this legacy role is retained only
+// for existing operational scoping (for example, Grooming or Pet Hotel bookings).
+$current_role = $session_legacy_role;
+$system_role = $mapped_session_system_role;
+$_SESSION['system_role'] = $system_role;
 
-// Enforce the session flag belonging to the authenticated portal.
-// A session cannot be both Admin and Staff, even if its role value is altered.
-$has_admin_session = ($_SESSION['admin_logged_in'] ?? false) === true;
-$has_staff_session = ($_SESSION['staff_logged_in'] ?? false) === true;
-
-$has_valid_portal_session = (
-    ($current_role === 'admin' && $has_admin_session && !$has_staff_session)
-    ||
-    (in_array($current_role, $personnel_dashboard_roles, true)
-        && $has_staff_session
-        && !$has_admin_session)
-);
-
-if (!$has_valid_portal_session) {
-    // Clear the invalid/mismatched session and rotate its identifier before redirecting.
-    $_SESSION = [];
-    session_regenerate_id(true);
-
-    $login_target = ($current_role === 'admin')
-        ? 'admin_login.php'
-        : '../staff/stafflogin.php';
-
-    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
-    header('Location: ' . $login_target);
-    exit();
-}
-
-$is_admin = ($current_role === 'admin');
-$is_service_staff = in_array($current_role, ['groomer', 'pet_hotel_staff'], true);
+$is_service_staff = $is_staff && in_array($current_role, ['groomer', 'pet_hotel_staff'], true);
 $show_notifications = ($is_admin || $is_service_staff);
 
-// Create/reuse a session CSRF token for the notification action for all roles
-// that can see the notification bell (Admin, Grooming Staff, Pet Hotel Staff).
+// Create/reuse the session CSRF token for the existing notification action.
 $admin_notif_csrf_token = '';
 if ($show_notifications) {
     if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
@@ -157,49 +134,22 @@ if ($show_notifications) {
     $admin_notif_csrf_token = $_SESSION['csrf_token'];
 }
 
-// Grooming Staff and Pet Hotel Staff can use Dashboard, Bookings, Users and Pets.
-
-$can_view_users_pets = in_array(
-
-    $current_role,
-
-    ['admin', 'manager', 'receptionist', 'groomer', 'pet_hotel_staff'],
-
-    true
-
-);
-
-// Limit service-specific dashboard data to the staff member's service.
-
-// Receptionist and Manager retain the shared operational view.
+// Dashboard navigation access is based on the Staff system role, not each
+// legacy job title. Existing service-specific booking filters remain below.
+$can_view_users_pets = ($is_admin || $is_staff);
 
 $booking_scope_sql = '';
-
-if ($current_role === 'groomer') {
-
+if ($is_staff && $current_role === 'groomer') {
     $booking_scope_sql = " AND LOWER(COALESCE(a.service, '')) LIKE '%grooming%'";
-
-} elseif ($current_role === 'pet_hotel_staff') {
-
+} elseif ($is_staff && $current_role === 'pet_hotel_staff') {
     $booking_scope_sql = " AND (
-
         LOWER(COALESCE(a.service, '')) LIKE '%pet hotel%'
-
         OR LOWER(COALESCE(a.service, '')) LIKE '%boarding%'
-
     )";
-
 }
 
-$can_view_vet_schedule = in_array(
-
-    $current_role,
-
-    ['admin', 'manager', 'receptionist'],
-
-    true
-
-);
+// Admin, Manager, and Receptionist legacy Staff accounts can see vet schedules.
+$can_view_vet_schedule = ($is_admin || ($is_staff && in_array($current_role, ['manager', 'receptionist'], true)));
 
 // --- PROFILE LOGIC ---
 
@@ -218,33 +168,42 @@ $unread_count = 0;
 
 try {
 
-    $stmt = $pdo->prepare("
-
-        SELECT full_name, profile_image
-
-        FROM users
-
-        WHERE id = :user_id
-
-    ");
-
-    $stmt->execute([':user_id' => $user_id]);
-
-    $user_data = $stmt->fetch(PDO::FETCH_ASSOC);
-
-    if ($user_data) {
-
-        $full_name = $user_data['full_name'];
-
-        $profile_img_path = $user_data['profile_image'] ?? '';
-
-        $_SESSION['user_name'] = $full_name;
-
-    } else {
-
-        $full_name = $_SESSION['user_name'] ?? 'User';
-
+    try {
+        $stmt = $pdo->prepare("
+            SELECT role, full_name, profile_image
+            FROM users
+            WHERE id = :user_id
+            LIMIT 1
+        ");
+        $stmt->execute([':user_id' => $user_id]);
+        $user_data = $stmt->fetch(PDO::FETCH_ASSOC);
+    } catch (Throwable $roleVerificationError) {
+        error_log('Admin dashboard account-role verification failed: ' . $roleVerificationError->getMessage());
+        http_response_code(503);
+        exit('Unable to verify your account right now. Please try again.');
     }
+
+    if (!$user_data) {
+        http_response_code(403);
+        exit('Access denied. The account could not be verified.');
+    }
+
+    $database_legacy_role = adminDashboardNormalizeLegacyRole($user_data['role'] ?? '');
+    $database_system_role = adminDashboardSystemRole($database_legacy_role);
+    if (
+        $database_legacy_role === ''
+        || $database_legacy_role !== $session_legacy_role
+        || $database_system_role !== $system_role
+    ) {
+        http_response_code(403);
+        exit('Access denied. The database account role does not match this portal session.');
+    }
+
+    // Preserve the original role in $_SESSION['role']; authorize with system_role.
+    $_SESSION['system_role'] = $database_system_role;
+    $full_name = (string)($user_data['full_name'] ?? ($_SESSION['user_name'] ?? 'User'));
+    $profile_img_path = (string)($user_data['profile_image'] ?? '');
+    $_SESSION['user_name'] = $full_name;
 
     // Kumuha ng unang letra para sa avatar fallback
 
@@ -655,6 +614,214 @@ if ($raw_profile_img !== '') {
     }
 }
 
+
+// --- ADMIN-ONLY GCASH QR MANAGEMENT (EMBEDDED ON DASHBOARD) ---
+$gcash_qr_success_message = '';
+$gcash_qr_error_message = '';
+$gcash_qr_storage_config = null;
+$gcash_qr_bucket_configured = false;
+$gcash_qr_image_url = '/images/qr.png';
+
+/** Read the dedicated public QR bucket configuration without exposing its secret key. */
+function adminDashboardGcashQrStorageConfig(): ?array
+{
+    $supabaseUrl = trim((string)(getenv('SUPABASE_URL') ?: ''));
+    $secretKey = trim((string)(getenv('SUPABASE_SECRET_KEY') ?: ''));
+    $serviceRoleKey = trim((string)(getenv('SUPABASE_SERVICE_ROLE_KEY') ?: ''));
+    $apiKey = $secretKey !== '' ? $secretKey : $serviceRoleKey;
+    $usesLegacyJwt = ($secretKey === '' && $serviceRoleKey !== '');
+    $bucket = trim((string)(getenv('SUPABASE_GCASH_QR_BUCKET') ?: ''));
+
+    if ($supabaseUrl === '' || $apiKey === '' || $bucket === '') {
+        return null;
+    }
+
+    $supabaseUrl = rtrim($supabaseUrl, '/');
+    $parsed = parse_url($supabaseUrl);
+    if (
+        !filter_var($supabaseUrl, FILTER_VALIDATE_URL)
+        || !is_array($parsed)
+        || strtolower((string)($parsed['scheme'] ?? '')) !== 'https'
+        || empty($parsed['host'])
+        || isset($parsed['user'])
+        || isset($parsed['pass'])
+        || !preg_match('/^[a-z0-9][a-z0-9_-]{1,61}[a-z0-9]$/i', $bucket)
+    ) {
+        return null;
+    }
+
+    return [
+        'url' => $supabaseUrl,
+        'key' => $apiKey,
+        'uses_legacy_jwt' => $usesLegacyJwt,
+        'bucket' => $bucket,
+    ];
+}
+
+/** Replace the single customer-facing QR object in the separate public Storage bucket. */
+function adminDashboardUploadGcashQr(string $temporaryPath): array
+{
+    $config = adminDashboardGcashQrStorageConfig();
+    if ($config === null) {
+        return ['ok' => false, 'message' => 'Supabase QR Storage is not configured. Set SUPABASE_GCASH_QR_BUCKET and the Supabase server credentials first.'];
+    }
+    if (!function_exists('curl_init')) {
+        return ['ok' => false, 'message' => 'The PHP cURL extension is not available on this server.'];
+    }
+    if (!is_file($temporaryPath) || !is_readable($temporaryPath)) {
+        return ['ok' => false, 'message' => 'The uploaded QR image could not be read.'];
+    }
+
+    $imageBytes = file_get_contents($temporaryPath);
+    if (!is_string($imageBytes)) {
+        return ['ok' => false, 'message' => 'The uploaded QR image could not be read.'];
+    }
+
+    $objectPath = 'gcash/qr.png';
+    $encodedObjectPath = implode('/', array_map('rawurlencode', explode('/', $objectPath)));
+    $endpoint = $config['url'] . '/storage/v1/object/' . rawurlencode($config['bucket']) . '/' . $encodedObjectPath;
+    $headers = [
+        'apikey: ' . $config['key'],
+        'Content-Type: image/png',
+        'x-upsert: true',
+        'Cache-Control: max-age=60',
+    ];
+    if (!empty($config['uses_legacy_jwt'])) {
+        $headers[] = 'Authorization: Bearer ' . $config['key'];
+    }
+
+    $curl = curl_init();
+    if ($curl === false) {
+        return ['ok' => false, 'message' => 'Unable to initialize the Supabase Storage request.'];
+    }
+
+    curl_setopt_array($curl, [
+        CURLOPT_URL => $endpoint,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => $imageBytes,
+        CURLOPT_HTTPHEADER => $headers,
+        CURLOPT_CONNECTTIMEOUT => 10,
+        CURLOPT_TIMEOUT => 45,
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_SSL_VERIFYHOST => 2,
+        CURLOPT_FOLLOWLOCATION => false,
+    ]);
+
+    $responseBody = curl_exec($curl);
+    $curlError = curl_error($curl);
+    $statusCode = (int)curl_getinfo($curl, CURLINFO_HTTP_CODE);
+    curl_close($curl);
+
+    if ($responseBody === false) {
+        error_log('Dashboard GCash QR Storage connection failed: ' . $curlError);
+        return ['ok' => false, 'message' => 'Could not connect to Supabase Storage. Please try again.'];
+    }
+    if (!in_array($statusCode, [200, 201], true)) {
+        error_log('Dashboard GCash QR Storage upload rejected with HTTP ' . $statusCode . ': ' . substr((string)$responseBody, 0, 400));
+        return ['ok' => false, 'message' => 'Supabase Storage rejected the QR upload (HTTP ' . $statusCode . '). Check the bucket and server credentials.'];
+    }
+
+    return ['ok' => true, 'message' => 'GCash QR Code has been updated successfully.'];
+}
+
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && ($_POST['dashboard_action'] ?? '') === 'update_gcash_qr') {
+    // This POST action is valid only for an already verified Admin session.
+    if (!$is_admin || $is_staff || $is_veterinarian) {
+        http_response_code(403);
+        exit('Access denied. Admin access is required to update the GCash QR.');
+    }
+
+    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+    header('Pragma: no-cache');
+    header('X-Content-Type-Options: nosniff');
+
+    $postedToken = $_POST['csrf_token'] ?? '';
+    $sessionToken = $_SESSION['csrf_token'] ?? '';
+    if (
+        !is_string($postedToken)
+        || $postedToken === ''
+        || !is_string($sessionToken)
+        || $sessionToken === ''
+        || !hash_equals($sessionToken, $postedToken)
+    ) {
+        http_response_code(403);
+        exit('Invalid security token. Refresh the dashboard and try again.');
+    }
+
+    $qrFile = $_FILES['gcash_qr_image'] ?? null;
+    if (!is_array($qrFile) || (int)($qrFile['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
+        $gcash_qr_error_message = 'Please select a PNG image of your GCash QR Code.';
+    } elseif ((int)($qrFile['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+        $gcash_qr_error_message = 'The image upload failed. Please try again.';
+    } else {
+        $temporaryPath = (string)($qrFile['tmp_name'] ?? '');
+        $fileSize = (int)($qrFile['size'] ?? 0);
+        $extension = strtolower(pathinfo((string)($qrFile['name'] ?? ''), PATHINFO_EXTENSION));
+        $detectedMime = '';
+        if ($temporaryPath !== '' && is_uploaded_file($temporaryPath) && class_exists('finfo')) {
+            $fileInfo = new finfo(FILEINFO_MIME_TYPE);
+            $detectedMime = (string)$fileInfo->file($temporaryPath);
+        }
+        $imageInfo = ($temporaryPath !== '' && is_uploaded_file($temporaryPath)) ? @getimagesize($temporaryPath) : false;
+
+        if ($fileSize <= 0 || $fileSize > 5 * 1024 * 1024) {
+            $gcash_qr_error_message = 'The QR image must be no larger than 5 MB.';
+        } elseif (
+            $extension !== 'png'
+            || $detectedMime !== 'image/png'
+            || !is_array($imageInfo)
+            || ($imageInfo['mime'] ?? '') !== 'image/png'
+        ) {
+            $gcash_qr_error_message = 'Invalid image. Please upload a genuine PNG file only.';
+        } else {
+            $uploadResult = adminDashboardUploadGcashQr($temporaryPath);
+            if (!empty($uploadResult['ok'])) {
+                $gcash_qr_success_message = (string)$uploadResult['message'];
+            } else {
+                $gcash_qr_error_message = (string)$uploadResult['message'];
+            }
+        }
+    }
+
+    // POST/Redirect/GET prevents the browser from submitting the same QR twice on refresh.
+    $_SESSION['dashboard_gcash_qr_flash'] = [
+        'type' => ($gcash_qr_success_message !== '') ? 'success' : 'error',
+        'message' => ($gcash_qr_success_message !== '') ? $gcash_qr_success_message : $gcash_qr_error_message,
+    ];
+    header('Location: admindashboard.php#gcash-qr-management', true, 303);
+    exit;
+}
+
+if ($is_admin) {
+    if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
+        $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+    }
+    $dashboard_gcash_qr_csrf = $_SESSION['csrf_token'];
+
+    $gcash_qr_flash = $_SESSION['dashboard_gcash_qr_flash'] ?? null;
+    unset($_SESSION['dashboard_gcash_qr_flash']);
+    if (is_array($gcash_qr_flash)) {
+        $flashType = (string)($gcash_qr_flash['type'] ?? '');
+        $flashMessage = (string)($gcash_qr_flash['message'] ?? '');
+        if ($flashMessage !== '' && in_array($flashType, ['success', 'error'], true)) {
+            if ($flashType === 'success') {
+                $gcash_qr_success_message = $flashMessage;
+            } else {
+                $gcash_qr_error_message = $flashMessage;
+            }
+        }
+    }
+
+    $gcash_qr_storage_config = adminDashboardGcashQrStorageConfig();
+    $gcash_qr_bucket_configured = ($gcash_qr_storage_config !== null);
+    if ($gcash_qr_bucket_configured) {
+        $gcash_qr_image_url = $gcash_qr_storage_config['url']
+            . '/storage/v1/object/public/' . rawurlencode($gcash_qr_storage_config['bucket'])
+            . '/gcash/qr.png?v=' . rawurlencode((string)time());
+    }
+}
+
 ?>
 
 <!DOCTYPE html>
@@ -701,7 +868,22 @@ if ($raw_profile_img !== '') {
 
         /* --- MODERNIZED SIDEBAR NAVIGATION --- */
 
-        .nav-links { flex-grow: 1; padding: 20px 15px; display: flex; flex-direction: column; gap: 5px; }
+        .nav-links {
+            flex: 1 1 auto;
+            min-height: 0;
+            padding: 20px 15px;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            overflow-y: auto;
+            overscroll-behavior: contain;
+            scrollbar-width: thin;
+            scrollbar-color: rgba(148, 163, 184, 0.35) transparent;
+        }
+        .nav-links::-webkit-scrollbar { width: 5px; }
+        .nav-links::-webkit-scrollbar-track { background: transparent; }
+        .nav-links::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.35); border-radius: 10px; }
+        .nav-item { white-space: nowrap; }
 
         .nav-item {
 
@@ -1065,6 +1247,117 @@ if ($raw_profile_img !== '') {
 
         }
 
+
+        /* --- ADMIN DASHBOARD GCASH QR QUICK MANAGER --- */
+        .gcash-qr-management {
+            background: var(--white);
+            border-radius: 16px;
+            padding: 22px 24px;
+            margin: 0 0 28px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.035);
+            border: 1px solid #edf1f5;
+        }
+        .gcash-qr-management-header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+        .gcash-qr-management-header h2 {
+            color: var(--navy-dark);
+            font-size: 16px;
+            font-weight: 800;
+            display: flex;
+            align-items: center;
+            gap: 9px;
+        }
+        .gcash-qr-management-header h2 i { color: #d5a900; }
+        .gcash-qr-management-header p {
+            color: var(--text-muted);
+            font-size: 11px;
+            line-height: 1.55;
+            margin-top: 4px;
+        }
+        .gcash-qr-management-body {
+            display: grid;
+            grid-template-columns: 150px minmax(0, 1fr);
+            gap: 22px;
+            align-items: center;
+        }
+        .gcash-qr-dashboard-preview {
+            background: #fff9df;
+            border: 1px dashed #e6c64b;
+            border-radius: 12px;
+            min-height: 150px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 10px;
+        }
+        .gcash-qr-dashboard-preview img {
+            display: block;
+            width: 128px;
+            height: 128px;
+            object-fit: contain;
+            background: #fff;
+            border-radius: 8px;
+            padding: 5px;
+            box-shadow: 0 3px 10px rgba(0,0,0,.06);
+        }
+        .gcash-qr-dashboard-form { min-width: 0; }
+        .gcash-qr-dashboard-form label {
+            display: block;
+            color: #334155;
+            font-size: 11px;
+            font-weight: 700;
+            margin-bottom: 7px;
+        }
+        .gcash-qr-dashboard-form input[type="file"] {
+            display: block;
+            width: 100%;
+            max-width: 520px;
+            padding: 9px;
+            border: 1px solid #dbe2e8;
+            border-radius: 8px;
+            background: #fff;
+            color: #475569;
+            font-size: 11px;
+        }
+        .gcash-qr-dashboard-help {
+            color: #64748b;
+            font-size: 10px;
+            line-height: 1.55;
+            margin-top: 7px;
+        }
+        .gcash-qr-dashboard-submit {
+            margin-top: 12px;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 15px;
+            border: 0;
+            border-radius: 8px;
+            background: var(--navy-dark);
+            color: var(--brand-yellow);
+            font-size: 11px;
+            font-weight: 800;
+            cursor: pointer;
+        }
+        .gcash-qr-dashboard-submit:hover { background: #07345d; }
+        .gcash-qr-dashboard-submit:disabled { opacity: .6; cursor: not-allowed; }
+        .gcash-qr-notice {
+            padding: 10px 13px;
+            border-radius: 9px;
+            font-size: 11px;
+            line-height: 1.55;
+            margin: 0 0 14px;
+        }
+        .gcash-qr-notice.success { background: #ecfdf5; border: 1px solid #a7f3d0; color: #065f46; }
+        .gcash-qr-notice.error { background: #fff1f2; border: 1px solid #fecdd3; color: #9f1239; }
+        .gcash-qr-notice.warning { background: #fffbeb; border: 1px solid #fde68a; color: #92400e; }
+        .gcash-qr-notice code { font-family: monospace; background: rgba(15,23,42,.06); padding: 1px 4px; border-radius: 3px; }
+
     </style>
 
 <link rel="stylesheet" href="../boogies_notification_mobile.css">
@@ -1209,7 +1502,7 @@ if ($raw_profile_img !== '') {
 
                 <div class="profile-wrapper" onclick="toggleProfile(event)">
 
-                    <span class="admin-tag"><?php echo strtoupper($_SESSION['role'] ?? 'ADMIN'); ?></span>
+                    <span class="admin-tag"><?php echo $is_admin ? 'ADMIN' : 'STAFF'; ?></span>
 
                     <?php if ($profile_img_src !== ''): ?>
 
@@ -1375,6 +1668,43 @@ if ($raw_profile_img !== '') {
                 <?php endif; ?>
 
             </div>
+
+
+            <?php if ($is_admin): ?>
+                <section class="gcash-qr-management" id="gcash-qr-management" aria-labelledby="gcashQrDashboardTitle">
+                    <div class="gcash-qr-management-header">
+                        <div>
+                            <h2 id="gcashQrDashboardTitle"><i class="fas fa-qrcode"></i> GCash QR Payment</h2>
+                            <p>Preview or replace the QR code customers see on the Book Appointment page.</p>
+                        </div>
+                    </div>
+
+                    <?php if ($gcash_qr_success_message !== ''): ?>
+                        <div class="gcash-qr-notice success" role="status"><i class="fas fa-check-circle"></i> <?php echo htmlspecialchars($gcash_qr_success_message, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></div>
+                    <?php endif; ?>
+                    <?php if ($gcash_qr_error_message !== ''): ?>
+                        <div class="gcash-qr-notice error" role="alert"><i class="fas fa-exclamation-circle"></i> <?php echo htmlspecialchars($gcash_qr_error_message, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></div>
+                    <?php endif; ?>
+                    <?php if (!$gcash_qr_bucket_configured): ?>
+                        <div class="gcash-qr-notice warning"><strong><i class="fas fa-triangle-exclamation"></i> Storage setup required.</strong> The current QR remains visible. To enable replacement, create a separate <strong>public</strong> Supabase Storage bucket and set <code>SUPABASE_GCASH_QR_BUCKET</code>, <code>SUPABASE_URL</code>, and a server-side <code>SUPABASE_SECRET_KEY</code> (or legacy Service Role key) in your local environment and Vercel.</div>
+                    <?php endif; ?>
+
+                    <div class="gcash-qr-management-body">
+                        <div class="gcash-qr-dashboard-preview">
+                            <img src="<?php echo htmlspecialchars($gcash_qr_image_url, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>" alt="Current GCash QR Code" onerror="this.onerror=null;this.src='/images/qr.png';">
+                        </div>
+                        <form class="gcash-qr-dashboard-form" method="POST" enctype="multipart/form-data" id="dashboardGcashQrForm">
+                            <input type="hidden" name="dashboard_action" value="update_gcash_qr">
+                            <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($dashboard_gcash_qr_csrf ?? '', ENT_QUOTES, 'UTF-8'); ?>">
+                            <label for="dashboard_gcash_qr_image">Upload new GCash QR (PNG only)</label>
+                            <input type="file" name="gcash_qr_image" id="dashboard_gcash_qr_image" accept="image/png,.png" required <?php echo !$gcash_qr_bucket_configured ? 'disabled' : ''; ?>>
+                            <p class="gcash-qr-dashboard-help">Maximum 5 MB. Replacing this image updates the same QR location shown to customers.</p>
+                            <button class="gcash-qr-dashboard-submit" type="submit" <?php echo !$gcash_qr_bucket_configured ? 'disabled' : ''; ?>><i class="fas fa-save"></i> Save New QR</button>
+                            <p class="gcash-qr-dashboard-help"><i class="fas fa-shield-halved"></i> Admin only. Supabase secret credentials stay on the server.</p>
+                        </form>
+                    </div>
+                </section>
+            <?php endif; ?>
 
             <div class="table-row">
 
@@ -1769,6 +2099,18 @@ if ($raw_profile_img !== '') {
         });
 
         <?php endif; ?>
+
+
+        const dashboardGcashQrForm = document.getElementById('dashboardGcashQrForm');
+        if (dashboardGcashQrForm) {
+            dashboardGcashQrForm.addEventListener('submit', function () {
+                const submitButton = this.querySelector('button[type="submit"]');
+                if (submitButton) {
+                    submitButton.disabled = true;
+                    submitButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Uploading...';
+                }
+            });
+        }
 
     </script>
 

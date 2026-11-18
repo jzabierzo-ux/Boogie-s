@@ -327,7 +327,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $title = trim((string)($_POST['title'] ?? ''));
         $description = trim((string)($_POST['description'] ?? ''));
         $theme_color = trim((string)($_POST['theme_color'] ?? ''));
+        $starts_on = trim((string)($_POST['starts_on'] ?? ''));
         $expiry_date = trim((string)($_POST['expiry_date'] ?? ''));
+        $discount_percent_raw = trim((string)($_POST['discount_percent'] ?? '0'));
+        $discount_percent = is_numeric($discount_percent_raw) ? (float)$discount_percent_raw : -1;
+        $applicable_category = trim((string)($_POST['applicable_category'] ?? 'All Services'));
         $status = trim((string)($_POST['status'] ?? ''));
         $image_url = null;
         $uploaded_object_path = null;
@@ -337,8 +341,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $tag_length = function_exists('mb_strlen') ? mb_strlen($tag, 'UTF-8') : strlen($tag);
         $title_length = function_exists('mb_strlen') ? mb_strlen($title, 'UTF-8') : strlen($title);
         $description_length = function_exists('mb_strlen') ? mb_strlen($description, 'UTF-8') : strlen($description);
-        if ($tag === '' || $title === '' || $description === '' || $theme_color === '' || $expiry_date === '' || $status === '') {
+        if ($tag === '' || $title === '' || $description === '' || $theme_color === '' || $starts_on === '' || $expiry_date === '' || $status === '') {
             $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Please complete all required fields.</div>";
+        } elseif ($discount_percent < 0 || $discount_percent > 99.99 || !in_array($applicable_category, ['All Services', 'Grooming', 'Vet Services', 'Pet Hotel'], true)) {
+            $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Enter a discount from 0 to 99.99 and choose a valid service category.</div>";
         } elseif ($tag_length > 80 || $title_length > 120 || $description_length > 500) {
             $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Please keep the tag to 80 characters, headline to 120 characters, and description to 500 characters or fewer.</div>";
         } elseif (!in_array($theme_color, ['purple', 'teal', 'red', 'orange'], true)) {
@@ -346,9 +352,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } elseif (!in_array($status, ['active', 'inactive'], true)) {
             $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Invalid promo status selected.</div>";
         } else {
+            $start_object = DateTimeImmutable::createFromFormat('!Y-m-d', $starts_on);
             $expiry_object = DateTimeImmutable::createFromFormat('!Y-m-d', $expiry_date);
-            if (!$expiry_object || $expiry_object->format('Y-m-d') !== $expiry_date) {
-                $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Please enter a valid expiry date.</div>";
+            if (!$start_object || $start_object->format('Y-m-d') !== $starts_on || !$expiry_object || $expiry_object->format('Y-m-d') !== $expiry_date) {
+                $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> Please enter valid promotion dates.</div>";
+            } elseif ($expiry_date < $starts_on) {
+                $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> The expiry date must be the same as or later than the start date.</div>";
             } elseif ($expiry_date < $today) {
                 $message = "<div class='alert error'><i class='fa-solid fa-circle-exclamation'></i> The expiry date cannot be earlier than today.</div>";
             }
@@ -413,9 +422,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             try {
                 $insert_query = "
                     INSERT INTO promos
-                        (tag, title, description, theme_color, expiry_date, status, image_url)
+                        (tag, title, description, theme_color, starts_on, expiry_date, discount_percent, applicable_category, status, image_url)
                     VALUES
-                        (:tag, :title, :description, :theme_color, :expiry_date, :status, :image_url)
+                        (:tag, :title, :description, :theme_color, :starts_on, :expiry_date, :discount_percent, :applicable_category, :status, :image_url)
                 ";
                 $stmt = $pdo->prepare($insert_query);
                 $stmt->execute([
@@ -423,7 +432,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ':title' => $title,
                     ':description' => $description,
                     ':theme_color' => $theme_color,
+                    ':starts_on' => $starts_on,
                     ':expiry_date' => $expiry_date,
+                    ':discount_percent' => $discount_percent,
+                    ':applicable_category' => $applicable_category,
                     ':status' => $status,
                     ':image_url' => $image_url,
                 ]);
@@ -1506,6 +1518,25 @@ $today = date('Y-m-d');
                 </div>
                 <div class="row">
                     <div>
+                        <label class="section-label" for="discount_percent">Discount Percentage (%)</label>
+                        <input class="input" type="number" id="discount_percent" name="discount_percent" min="0" max="99.99" step="0.01" value="<?php echo addPromoEscape($_POST['discount_percent'] ?? '0'); ?>" required>
+                        <small style="display:block;margin-top:6px;color:#64748b;">Use 0 for a banner-only promotion. The discount is applied only when a customer selects this offer.</small>
+                    </div>
+                    <div>
+                        <label class="section-label" for="applicable_category">Applicable Service</label>
+                        <select class="input" id="applicable_category" name="applicable_category" required>
+                            <?php foreach (['All Services', 'Grooming', 'Vet Services', 'Pet Hotel'] as $categoryOption): ?>
+                                <option value="<?php echo addPromoEscape($categoryOption); ?>" <?php echo (($_POST['applicable_category'] ?? 'All Services') === $categoryOption) ? 'selected' : ''; ?>><?php echo addPromoEscape($categoryOption); ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                </div>
+                <div class="row">
+                    <div>
+                        <label class="section-label" for="starts_on">Start Date</label>
+                        <input class="input" type="date" id="starts_on" name="starts_on" value="<?php echo addPromoEscape($_POST['starts_on'] ?? $today); ?>" min="<?php echo addPromoEscape($today); ?>" required>
+                    </div>
+                    <div>
                         <label class="section-label" for="expiry_date">Expiry Date</label>
                         <input
                             class="input"
@@ -1517,6 +1548,8 @@ $today = date('Y-m-d');
                             required
                         >
                     </div>
+                </div>
+                <div class="row">
                     <div>
                         <label class="section-label" for="status">Website Visibility</label>
                         <select id="status" name="status" required>
@@ -1565,6 +1598,17 @@ const tagInput = document.getElementById('tag');
 const titleInput = document.getElementById('title');
 const descriptionInput = document.getElementById('description');
 const expiryInput = document.getElementById('expiry_date');
+const startInput = document.getElementById('starts_on');
+if (startInput && expiryInput) {
+    const syncPromotionDateRange = function () {
+        if (startInput.value) {
+            expiryInput.min = startInput.value;
+            if (expiryInput.value && expiryInput.value < startInput.value) expiryInput.value = startInput.value;
+        }
+    };
+    startInput.addEventListener('change', syncPromotionDateRange);
+    syncPromotionDateRange();
+}
 const imageInput = document.getElementById('promo_image');
 const previewTag = document.getElementById('previewTag');
 const previewTitle = document.getElementById('previewTitle');
