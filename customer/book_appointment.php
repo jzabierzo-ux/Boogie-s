@@ -2556,6 +2556,99 @@ if ($error_msg !== '') {
             margin-right: 5px;
         }
 
+        /* Pricing explanation shown beside the payment amount. */
+        .pricing-info-panel {
+            margin: 14px 0 18px;
+            padding: 16px;
+            border: 1px solid #dce8f1;
+            border-left: 4px solid var(--brand-yellow);
+            border-radius: 14px;
+            background: #fbfdff;
+        }
+
+        .pricing-info-heading {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            margin-bottom: 7px;
+            color: var(--brand-blue);
+        }
+
+        .pricing-info-heading i {
+            width: 30px;
+            height: 30px;
+            flex: 0 0 30px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 9px;
+            background: var(--brand-yellow-soft);
+            font-size: 13px;
+        }
+
+        .pricing-info-heading strong {
+            display: block;
+            font-size: 12px;
+            font-weight: 800;
+            line-height: 1.35;
+        }
+
+        .pricing-info-heading span {
+            display: block;
+            margin-top: 2px;
+            color: var(--muted);
+            font-size: 9px;
+            line-height: 1.5;
+            font-weight: 500;
+        }
+
+        .pricing-weight-grid {
+            display: grid;
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+            gap: 7px;
+            margin: 11px 0;
+        }
+
+        .pricing-weight-item {
+            min-width: 0;
+            padding: 8px 5px;
+            border: 1px solid #e6edf3;
+            border-radius: 9px;
+            background: #fff;
+            text-align: center;
+        }
+
+        .pricing-weight-item strong {
+            display: block;
+            color: var(--brand-blue);
+            font-size: 9px;
+            font-weight: 800;
+        }
+
+        .pricing-weight-item span {
+            display: block;
+            margin-top: 2px;
+            color: #64748b;
+            font-size: 8px;
+            line-height: 1.4;
+        }
+
+        .pricing-info-note {
+            margin: 8px 0 0;
+            color: #64748b;
+            font-size: 9px;
+            line-height: 1.6;
+        }
+
+        .pricing-info-note strong {
+            color: var(--brand-blue);
+        }
+
+        @media (max-width: 680px) {
+            .pricing-info-panel { padding: 13px; }
+            .pricing-weight-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        }
+
         /* Footer */
         footer {
             background: var(--brand-blue);
@@ -3785,6 +3878,28 @@ if ($error_msg !== '') {
                     <p>Total Amount Due (GCash Full Payment)</p>
                     <h2 id="priceText">₱0.00</h2>
                 </div>
+
+                <section class="pricing-info-panel" aria-labelledby="pricingInfoTitle">
+                    <div class="pricing-info-heading">
+                        <i class="fa-solid fa-scale-balanced" aria-hidden="true"></i>
+                        <div>
+                            <strong id="pricingInfoTitle">Pricing Information</strong>
+                            <span>Your service rate depends on your pet type, weight/size, and the service you select.</span>
+                        </div>
+                    </div>
+
+                    <div class="pricing-weight-grid" aria-label="Weight brackets for weight-based services">
+                        <div class="pricing-weight-item"><strong>Small</strong><span>1–5 kg</span></div>
+                        <div class="pricing-weight-item"><strong>Medium</strong><span>6–10 kg</span></div>
+                        <div class="pricing-weight-item"><strong>Large</strong><span>11–15 kg</span></div>
+                        <div class="pricing-weight-item"><strong>Extra Large</strong><span>16–20 kg</span></div>
+                        <div class="pricing-weight-item"><strong>XXL Large</strong><span>21–25 kg</span></div>
+                    </div>
+
+                    <p class="pricing-info-note">These weight brackets apply to services with weight-based rates. <strong>Some services, such as vaccinations, have fixed rates</strong> depending on the selected service.</p>
+                    <p class="pricing-info-note"><strong>Pet Daycare has a separate rate guide:</strong> dogs are grouped by 1–10 kg, 11–20 kg, and 21–50 kg; cats use an all-sizes rate. The first hour uses the base rate, then each additional started 30-minute block adds ₱15.</p>
+                    <p class="pricing-info-note">Overnight boarding is charged per night. Any valid promotion is deducted from the regular price. Please check the <strong>Total Amount Due</strong> above for the exact amount before paying.</p>
+                </section>
 
                 <div class="gcash-section" id="gcashSection">
                     <h4><i class="fa-solid fa-mobile-screen-button"></i> GCash Payment Detail</h4>

@@ -998,7 +998,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['booking_action'])) {
     $requested_status = is_string($actionValue) ? trim($actionValue) : '';
 
     // Allow only the actions used by this page.
-    $allowed_actions = ['pay', 'verify_gcash', 'notify_gcash', 'Completed', 'Confirmed', 'Cancelled', 'No-Show', 'For-Rescheduling'];
+    $allowed_actions = ['pay', 'verify_gcash', 'verify_gcash_cancelled', 'reject_gcash_cancelled', 'notify_gcash', 'Completed', 'Confirmed', 'Cancelled', 'No-Show', 'For-Rescheduling'];
 
     if ($validatedBookingId === false || $validatedBookingId === null || !in_array($requested_status, $allowed_actions, true)) {
         $_SESSION['alert_msg'] = "Invalid booking action.";
@@ -1049,6 +1049,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['booking_action'])) {
                 || trim((string)($bookingForAccess['gcash_receipt'] ?? '')) !== '';
             if ($paymentMethodNow !== 'gcash' || $paymentStatusNow !== 'pending verification' || $bookingStatusNow !== 'pending' || !$hasPaymentEvidence) {
                 $_SESSION['alert_msg'] = 'This booking is not awaiting GCash verification or has no reference/receipt to review.';
+                header('Location: managebooking.php');
+                exit();
+            }
+        }
+
+        // A booking auto-cancelled after its appointment date can still have a
+        // real GCash transfer waiting for review. Verify/reject the payment only;
+        // never change the cancelled booking back to Confirmed.
+        if (in_array($new_status, ['verify_gcash_cancelled', 'reject_gcash_cancelled'], true)) {
+            if (!$can_verify_gcash) {
+                http_response_code(403);
+                exit('Only an authorized Admin or Manager may review cancelled GCash payments.');
+            }
+
+            $hasPaymentEvidence = trim((string)($bookingForAccess['gcash_ref'] ?? '')) !== ''
+                || trim((string)($bookingForAccess['gcash_receipt'] ?? '')) !== '';
+            $appointmentTypeNow = strtolower(trim((string)($bookingForAccess['appointment_type'] ?? 'online')));
+            $isCancelledBooking = in_array($bookingStatusNow, ['cancelled', 'canceled'], true);
+            $isOnlineGcashAwaitingReview = (
+                $paymentMethodNow === 'gcash'
+                && $paymentStatusNow === 'pending verification'
+                && $isCancelledBooking
+                && $appointmentTypeNow !== 'walk-in'
+                && $hasPaymentEvidence
+            );
+
+            if (!$isOnlineGcashAwaitingReview) {
+                $_SESSION['alert_msg'] = 'This cancelled booking is not awaiting GCash payment review or has no saved payment reference/receipt.';
                 header('Location: managebooking.php');
                 exit();
             }
@@ -1107,6 +1135,94 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['booking_action'])) {
             $notifyStmt->execute([':message' => $message]);
             $_SESSION['alert_msg'] = 'Admin notified. Payment remains unverified until the actual GCash transaction is checked.';
             header('Location: managebooking.php');
+            exit();
+        }
+
+        // --- REVIEW PAYMENT FOR A BOOKING THAT HAS ALREADY BEEN CANCELLED ---
+        // This action changes only payment_status. It deliberately leaves
+        // booking_status as Cancelled and preserves the GCash reference/receipt.
+        if (in_array($new_status, ['verify_gcash_cancelled', 'reject_gcash_cancelled'], true)) {
+            $isVerifiedAfterCancellation = ($new_status === 'verify_gcash_cancelled');
+            $newPaymentStatus = $isVerifiedAfterCancellation ? 'Paid' : 'Rejected';
+
+            $reviewStmt = $pdo->prepare("
+                UPDATE appointments
+                SET payment_status = :payment_status
+                WHERE id = :id
+                  AND LOWER(BTRIM(COALESCE(payment_method, ''))) = 'gcash'
+                  AND LOWER(BTRIM(COALESCE(payment_status, ''))) = 'pending verification'
+                  AND LOWER(BTRIM(COALESCE(booking_status, ''))) IN ('cancelled', 'canceled')
+                  AND LOWER(BTRIM(COALESCE(appointment_type, 'online'))) <> 'walk-in'
+                  AND (
+                      NULLIF(BTRIM(COALESCE(gcash_ref, '')), '') IS NOT NULL
+                      OR NULLIF(BTRIM(COALESCE(gcash_receipt, '')), '') IS NOT NULL
+                  )
+            ");
+            $reviewStmt->execute([
+                ':payment_status' => $newPaymentStatus,
+                ':id' => $id
+            ]);
+
+            if ($reviewStmt->rowCount() !== 1) {
+                $_SESSION['alert_msg'] = 'Payment review was not saved. Refresh the page and check the current booking/payment status.';
+                header('Location: managebooking.php');
+                exit();
+            }
+
+            $customerIdForReview = (int)($bookingForAccess['user_id'] ?? 0);
+            $petNameForReview = trim((string)($bookingForAccess['pet_real_name'] ?? 'your pet'));
+            $serviceForReview = trim((string)($bookingForAccess['service'] ?? 'service'));
+
+            if ($isVerifiedAfterCancellation) {
+                $customerReviewTitle = 'GCash Payment Verified';
+                $customerReviewMessage = 'Your GCash payment for cancelled booking #' . $id
+                    . ' (' . $petNameForReview . ' - ' . $serviceForReview . ') has been verified. '
+                    . 'The booking remains Cancelled and has not been automatically rebooked. '
+                    . 'Please contact Boogie\'s Pet Care & Services to discuss the next arrangement.';
+                $smsReviewMessage = 'Your GCash payment for cancelled booking #' . $id
+                    . ' has been verified. The booking remains cancelled. Please contact Boogie\'s Pet Care to discuss rescheduling or refund arrangements.';
+                $_SESSION['alert_msg'] = 'GCash payment verified. The booking remains Cancelled; contact the customer to arrange the next step.';
+            } else {
+                $customerReviewTitle = 'GCash Payment Not Verified';
+                $customerReviewMessage = 'The GCash payment submitted for cancelled booking #' . $id
+                    . ' (' . $petNameForReview . ' - ' . $serviceForReview . ') could not be verified against the actual GCash transaction. '
+                    . 'The booking remains Cancelled. Please contact Boogie\'s Pet Care & Services if you have additional payment proof.';
+                $smsReviewMessage = 'The GCash payment for cancelled booking #' . $id
+                    . ' could not be verified. The booking remains cancelled. Please contact Boogie\'s Pet Care if you have additional payment proof.';
+                $_SESSION['alert_msg'] = 'GCash payment marked Rejected after review. The booking remains Cancelled.';
+            }
+
+            if ($customerIdForReview > 0) {
+                try {
+                    $customerReviewNotif = $pdo->prepare("
+                        INSERT INTO notifications
+                            (user_id, title, message, type, is_read, created_at)
+                        VALUES
+                            (:user_id, :title, :message, 'booking', 0, NOW())
+                    ");
+                    $customerReviewNotif->execute([
+                        ':user_id' => $customerIdForReview,
+                        ':title' => $customerReviewTitle,
+                        ':message' => $customerReviewMessage
+                    ]);
+                } catch (Throwable $notificationError) {
+                    error_log('Cancelled GCash review notification failed for appointment #' . $id . ': ' . $notificationError->getMessage());
+                }
+
+                $reviewPhone = trim((string)($bookingForAccess['contact_number'] ?? ''));
+                if ($reviewPhone !== '' && strtoupper($reviewPhone) !== 'N/A') {
+                    try {
+                        $reviewSmsResult = sendIPROGSMS($reviewPhone, $smsReviewMessage);
+                        if (empty($reviewSmsResult['success'])) {
+                            error_log('Cancelled GCash review SMS failed for appointment #' . $id . ': ' . ($reviewSmsResult['response'] ?? 'Unknown IPROG error'));
+                        }
+                    } catch (Throwable $smsError) {
+                        error_log('Cancelled GCash review SMS exception for appointment #' . $id . ': ' . $smsError->getMessage());
+                    }
+                }
+            }
+
+            header('Location: managebooking.php?status=Cancelled');
             exit();
         }
 
@@ -2635,10 +2751,12 @@ if ($is_admin) {
                                                     </span>
                                                 </div>
                                                 
-                                                <?php if (strtolower(trim((string)$pay_method)) === 'gcash' && !empty($row['gcash_ref'])): ?>
-                                                    <span style="font-size: 11px; color: #0284c7; font-weight: 700; margin-top: 2px;">
-                                                        Ref: <?php echo htmlspecialchars($row['gcash_ref']); ?>
-                                                    </span>
+                                                <?php if (strtolower(trim((string)$pay_method)) === 'gcash' && (!empty($row['gcash_ref']) || !empty($row['gcash_receipt']))): ?>
+                                                    <?php if (!empty($row['gcash_ref'])): ?>
+                                                        <span style="font-size: 11px; color: #0284c7; font-weight: 700; margin-top: 2px;">
+                                                            Ref: <?php echo htmlspecialchars((string)$row['gcash_ref'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
+                                                        </span>
+                                                    <?php endif; ?>
                                                     <?php if (!empty($row['gcash_receipt']) && $can_verify_gcash): ?>
                                                         <button type="button"
                                                             class="gcash-receipt-open"
@@ -2661,9 +2779,19 @@ if ($is_admin) {
                                             <div class="action-group">
                                                 <?php
                                                     $bookingId = (int)$row['id'];
-                                                    $isGcashPending = strtolower(trim((string)$pay_method)) === 'gcash'
-                                                        && strtolower(trim((string)$pay_status)) === 'pending verification'
-                                                        && strtolower(trim((string)$display_status)) === 'pending';
+                                                    $normalizedPaymentMethod = strtolower(trim((string)$pay_method));
+                                                    $normalizedPaymentStatus = strtolower(trim((string)$pay_status));
+                                                    $normalizedBookingStatus = strtolower(trim((string)$display_status));
+                                                    $hasSavedGcashEvidence = trim((string)($row['gcash_ref'] ?? '')) !== ''
+                                                        || trim((string)($row['gcash_receipt'] ?? '')) !== '';
+                                                    $isGcashPending = $normalizedPaymentMethod === 'gcash'
+                                                        && $normalizedPaymentStatus === 'pending verification'
+                                                        && $normalizedBookingStatus === 'pending';
+                                                    $isCancelledGcashAwaitingReview = $normalizedPaymentMethod === 'gcash'
+                                                        && $normalizedPaymentStatus === 'pending verification'
+                                                        && in_array($normalizedBookingStatus, ['cancelled', 'canceled'], true)
+                                                        && strtolower(trim((string)($row['appointment_type'] ?? 'online'))) !== 'walk-in'
+                                                        && $hasSavedGcashEvidence;
                                                     $isCashMethod = strpos(strtolower((string)$pay_method), 'cash') !== false;
                                                 ?>
                                                 <?php if ($isGcashPending): ?>
@@ -2673,6 +2801,13 @@ if ($is_admin) {
                                                     <?php else: ?>
                                                         <?php renderBookingActionForm('notify_gcash', $bookingId, 'btn-verify-gcash', '<i class="fa-solid fa-bell"></i> Notify Admin', 'Notify Admin to verify GCash', 'Notify the Admin to verify this payment? The payment will remain unverified.', $csrf_token); ?>
                                                         <?php renderBookingActionForm('Cancelled', $bookingId, 'btn-icon btn-icon-cancel', '<i class="fas fa-times"></i>', 'Cancel booking', 'Cancel this booking?', $csrf_token); ?>
+                                                    <?php endif; ?>
+                                                <?php elseif ($isCancelledGcashAwaitingReview): ?>
+                                                    <?php if ($can_verify_gcash): ?>
+                                                        <?php renderBookingActionForm('verify_gcash_cancelled', $bookingId, 'btn-verify-gcash', '<i class="fa-solid fa-money-bill-wave"></i> Verify Payment', 'Verify payment for cancelled booking', 'Check the actual GCash transaction first. This marks only the payment as Paid. The booking will remain Cancelled. Continue?', $csrf_token); ?>
+                                                        <?php renderBookingActionForm('reject_gcash_cancelled', $bookingId, 'btn-icon btn-icon-cancel', '<i class="fas fa-ban"></i>', 'Reject unverified payment', 'Only continue if you checked the actual GCash transaction and confirmed no matching payment was received. The booking will remain Cancelled. Continue?', $csrf_token); ?>
+                                                    <?php else: ?>
+                                                        <span style="font-size:12px;font-weight:700;color:#b77900;">Awaiting Admin payment review</span>
                                                     <?php endif; ?>
                                                 <?php else: ?>
                                                     <?php if ($isCashMethod && strtoupper((string)$pay_status) !== 'PAID' && !in_array(strtolower((string)$display_status), ['cancelled', 'no-show'], true)): ?>
