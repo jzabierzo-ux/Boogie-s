@@ -829,6 +829,117 @@ if (isset($_POST['add_pet'])) {
 
 
 
+// --- ADD AN EXISTING REGISTERED PET TO AN EXISTING GROUP ---
+// This lets customers add one newly registered adult pet/puppy/kitten to a group
+// they already created, without forcing them to create a second group.
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && isset($_POST['add_pet_to_group'])) {
+    $submitted_csrf = (string)($_POST['csrf_token'] ?? '');
+    if (!hash_equals($petprofile_csrf, $submitted_csrf)) {
+        http_response_code(403);
+        exit('Invalid request. Refresh the page and try again.');
+    }
+
+    $group_id = filter_var($_POST['group_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+    $pet_id = filter_var($_POST['pet_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+    if ($group_id === false || $group_id === null || $pet_id === false || $pet_id === null) {
+        $_SESSION['pet_group_flash_error'] = 'Please choose a valid group and registered pet.';
+        header('Location: petprofile.php?group_error=1');
+        exit();
+    }
+
+    try {
+        $pdo->beginTransaction();
+
+        // Lock the group row so two simultaneous additions cannot exceed the limit.
+        $group_lock_stmt = $pdo->prepare("
+            SELECT g.id, g.group_name, g.mother_pet_id, primary_pet.pet_type
+            FROM pet_groups g
+            INNER JOIN pets primary_pet ON primary_pet.id = g.mother_pet_id
+            WHERE g.id = :group_id AND g.owner_id = :owner_id
+            FOR UPDATE OF g
+        ");
+        $group_lock_stmt->execute([':group_id' => (int)$group_id, ':owner_id' => $user_id]);
+        $target_group = $group_lock_stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$target_group) {
+            throw new DomainException('The selected Pet Group was not found in your account.');
+        }
+
+        // Lock and verify the selected pet belongs to this customer.
+        $pet_lock_stmt = $pdo->prepare("
+            SELECT id, name, pet_type
+            FROM pets
+            WHERE id = :pet_id AND owner_id = :owner_id
+            FOR UPDATE
+        ");
+        $pet_lock_stmt->execute([':pet_id' => (int)$pet_id, ':owner_id' => $user_id]);
+        $selected_pet = $pet_lock_stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$selected_pet) {
+            throw new DomainException('The selected pet is not registered under your account.');
+        }
+
+        $group_type = strtolower(trim((string)($target_group['pet_type'] ?? '')));
+        $pet_type = strtolower(trim((string)($selected_pet['pet_type'] ?? '')));
+        if (!in_array($group_type, ['dog', 'cat'], true) || $pet_type !== $group_type) {
+            throw new DomainException('Dogs can only be added to a dog group, and cats can only be added to a cat group.');
+        }
+
+        // The pet must not already be a primary pet or member of any group.
+        $already_grouped_stmt = $pdo->prepare("
+            SELECT COUNT(*)
+            FROM (
+                SELECT pg.id
+                FROM pet_groups pg
+                WHERE pg.owner_id = :owner_id_primary AND pg.mother_pet_id = :pet_id_primary
+                UNION ALL
+                SELECT gm.group_id
+                FROM pet_group_members gm
+                INNER JOIN pet_groups pgm ON pgm.id = gm.group_id
+                WHERE pgm.owner_id = :owner_id_member AND gm.pet_id = :pet_id_member
+            ) grouped_pet
+        ");
+        $already_grouped_stmt->execute([
+            ':owner_id_primary' => $user_id,
+            ':pet_id_primary' => (int)$pet_id,
+            ':owner_id_member' => $user_id,
+            ':pet_id_member' => (int)$pet_id,
+        ]);
+        if ((int)$already_grouped_stmt->fetchColumn() > 0) {
+            throw new DomainException('This pet already belongs to a Pet Group. Each pet can belong to only one group at a time.');
+        }
+
+        $group_size_stmt = $pdo->prepare('SELECT 1 + COUNT(*) FROM pet_group_members WHERE group_id = :group_id');
+        $group_size_stmt->execute([':group_id' => (int)$group_id]);
+        $group_size = (int)$group_size_stmt->fetchColumn();
+        if ($group_size >= 20) {
+            throw new DomainException('A Pet Group can contain up to 20 pets.');
+        }
+
+        $insert_group_member_stmt = $pdo->prepare("
+            INSERT INTO pet_group_members (group_id, pet_id, relationship, created_at)
+            VALUES (:group_id, :pet_id, 'member', CURRENT_TIMESTAMP)
+        ");
+        $insert_group_member_stmt->execute([
+            ':group_id' => (int)$group_id,
+            ':pet_id' => (int)$pet_id,
+        ]);
+
+        $pdo->commit();
+        $_SESSION['pet_group_flash_success'] = (string)$selected_pet['name'] . ' was added to ' . (string)$target_group['group_name'] . '. The pet keeps its own health information and records.';
+        header('Location: petprofile.php?success=group_member_added');
+        exit();
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        error_log('Add pet to group failed: ' . $e->getMessage());
+        $_SESSION['pet_group_flash_error'] = $e instanceof DomainException
+            ? $e->getMessage()
+            : 'Unable to add this pet to the group right now. Please try again.';
+        header('Location: petprofile.php?group_error=1');
+        exit();
+    }
+}
+
 // --- CREATE A GROUP FROM EXISTING REGISTERED PETS ---
 // The legacy pet_groups.mother_pet_id column is retained as the group's primary pet
 // so existing database records and related pages remain compatible. No new pet rows
@@ -6756,6 +6867,14 @@ main{
 .group-pet-option:has(input:checked) .group-pet-check{display:block}
 .group-pet-help{color:var(--muted);font-size:9px;line-height:1.5;margin-top:9px}
 .pet-group-entry-help{color:var(--muted);font-size:9px;line-height:1.5;margin-top:6px}
+.pet-group-add-form{margin-top:12px;padding:11px;background:#f0f6fb;border:1px solid #dce8f2;border-radius:10px}
+.pet-group-add-form label{display:block;color:var(--brand-blue);font-size:10px;font-weight:800;margin-bottom:7px}
+.pet-group-add-controls{display:flex;align-items:center;gap:8px}
+.pet-group-add-controls .form-control{min-width:0;flex:1;min-height:38px;padding:7px 9px;font-size:10px}
+.pet-group-add-button{min-height:38px;padding:0 12px;border:0;border-radius:9px;background:var(--brand-blue);color:var(--brand-yellow);font-size:9px;font-weight:800;cursor:pointer;white-space:nowrap}
+.pet-group-add-button:hover{background:var(--brand-blue-2)}
+@media(max-width:560px){.pet-group-add-controls{align-items:stretch;flex-direction:column}.pet-group-add-controls .form-control,.pet-group-add-button{width:100%;min-height:42px}}
+
 .pet-group-form-actions{display:flex;justify-content:flex-end;gap:9px;margin-top:17px}
 @media(max-width:680px){
  .pet-groups-section{padding:15px;border-radius:15px}
@@ -7410,7 +7529,7 @@ main{
                         <?php if (empty($pet_groups)): ?>
                             You can register and manage just one pet—creating a group is optional. To create a group, select at least <strong>2 registered pets</strong> that are not already in another group.
                         <?php else: ?>
-                            You can continue managing each pet separately. To create another group, you need at least 2 additional registered pets that are not already assigned to a group.
+                            You can add an ungrouped pet to a compatible existing group using <strong>Add Pet to Group</strong> below. To create a separate new group, you need at least 2 registered pets that are not already assigned to a group.
                         <?php endif; ?>
                     </div>
                 <?php endif; ?>
@@ -7459,6 +7578,34 @@ main{
                                         <?php endforeach; ?>
                                     </div>
                                 </details>
+                                <?php
+                                    $matching_available_pets = array_values(array_filter($eligible_group_pets, static function ($available_pet) use ($primary_type) {
+                                        return strtolower(trim((string)($available_pet['pet_type'] ?? ''))) === $primary_type;
+                                    }));
+                                ?>
+                                <?php if ($group_pet_total < 20 && !empty($matching_available_pets)): ?>
+                                    <form method="POST" action="petprofile.php" class="pet-group-add-form">
+                                        <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($petprofile_csrf, ENT_QUOTES, 'UTF-8'); ?>">
+                                        <input type="hidden" name="group_id" value="<?php echo $group_id; ?>">
+                                        <label for="add_pet_group_<?php echo $group_id; ?>">Add another <?php echo htmlspecialchars(ucfirst($primary_type), ENT_QUOTES, 'UTF-8'); ?> to this group</label>
+                                        <div class="pet-group-add-controls">
+                                            <select id="add_pet_group_<?php echo $group_id; ?>" name="pet_id" class="form-control" required>
+                                                <option value="">Choose registered pet</option>
+                                                <?php foreach ($matching_available_pets as $available_pet): ?>
+                                                    <?php
+                                                        $available_label = (string)$available_pet['name'];
+                                                        if (!empty($available_pet['breed'])) $available_label .= ' · ' . (string)$available_pet['breed'];
+                                                        if (!empty($available_pet['age'])) $available_label .= ' · Age ' . (string)$available_pet['age'];
+                                                    ?>
+                                                    <option value="<?php echo (int)$available_pet['id']; ?>"><?php echo htmlspecialchars($available_label, ENT_QUOTES, 'UTF-8'); ?></option>
+                                                <?php endforeach; ?>
+                                            </select>
+                                            <button type="submit" name="add_pet_to_group" value="1" class="pet-group-add-button"><i class="fa-solid fa-plus"></i> Add Pet to Group</button>
+                                        </div>
+                                    </form>
+                                <?php elseif ($group_pet_total >= 20): ?>
+                                    <p class="pet-group-entry-help">This group has reached its 20-pet limit.</p>
+                                <?php endif; ?>
                                 <p class="puppy-entry-help" style="margin-top:9px;">Created <?php echo htmlspecialchars(date('M d, Y', strtotime((string)$group['group_created_at'])), ENT_QUOTES, 'UTF-8'); ?></p>
                             </article>
                         <?php endforeach; ?>
