@@ -306,14 +306,6 @@ $presets = [
         'title' => 'Stay More, Save More',
         'description' => 'Planning a trip? Give your pet a comfortable stay while you are away.',
         'theme' => 'orange'
-    ],
-    [
-        'name' => 'Birthday Promo',
-        'icon' => 'fa-cake-candles',
-        'tag' => 'BIRTHDAY PAW-TY',
-        'title' => 'Birthday Treat for Your Pet',
-        'description' => 'Celebrate your pet\'s special month with an exclusive Boogie\'s birthday offer.',
-        'theme' => 'red'
     ]
 ];
 
@@ -1337,6 +1329,324 @@ $today = date('Y-m-d');
                 display: block !important;
             }
         }
+
+/* ===== Refined Add Promotion workspace (visual-only refresh) ===== */
+.page {
+    max-width: 1360px;
+    margin: 28px auto;
+    padding: 0 26px 52px;
+}
+.page-heading {
+    margin-bottom: 24px;
+    padding: 24px 26px;
+    border: 1px solid #e3eaf1;
+    border-radius: 20px;
+    background: #fff;
+    box-shadow: 0 8px 24px rgba(0,31,63,.045);
+}
+.page-heading .eyebrow {
+    background: #fff8d9;
+    border-color: #f3df91;
+    color: #715600;
+    box-shadow: none;
+}
+.page-heading h1 {
+    margin: 12px 0 6px;
+    font-size: clamp(25px, 2.2vw, 32px);
+    letter-spacing: -.65px;
+}
+.page-heading .subtitle {
+    max-width: 760px;
+    line-height: 1.65;
+    font-size: 13px;
+}
+.layout {
+    grid-template-columns: minmax(0, 1.55fr) minmax(330px, .85fr);
+    gap: 24px;
+    align-items: start;
+}
+.card {
+    border: 1px solid #dfe7ef;
+    border-radius: 21px;
+    box-shadow: 0 12px 34px rgba(0,31,63,.055);
+}
+.form-card {
+    padding: 27px 29px 29px;
+    overflow: hidden;
+}
+.card-title {
+    margin: -27px -29px 22px;
+    padding: 19px 29px;
+    border-bottom: 1px solid #e8edf2;
+    background: #fbfcfe;
+}
+.card-title h2 {
+    font-size: 17px;
+    letter-spacing: -.2px;
+}
+.mini-note {
+    padding: 6px 10px;
+    border: 1px solid #e7edf3;
+    border-radius: 999px;
+    background: #fff;
+    font-size: 10px;
+    font-weight: 700;
+}
+.section-label {
+    margin: 23px 0 10px;
+    color: #17324d;
+    font-size: 10px;
+    font-weight: 850;
+    letter-spacing: .75px;
+}
+.section-label:first-of-type {
+    margin-top: 0;
+}
+.preset-grid {
+    gap: 12px;
+}
+.preset {
+    min-height: 148px;
+    padding: 17px;
+    border-color: #e0e7ef;
+    border-radius: 16px;
+    background: linear-gradient(180deg, #fff 0%, #fcfdff 100%);
+}
+.preset::before {
+    height: 4px;
+}
+.preset.active {
+    border-color: #173c60;
+    box-shadow: 0 0 0 2px rgba(0,31,63,.08), 0 12px 24px rgba(0,31,63,.075);
+}
+.preset-top {
+    margin-bottom: 13px;
+}
+.preset-icon {
+    width: 38px;
+    height: 38px;
+    border-radius: 11px;
+}
+.preset strong {
+    font-size: 13px;
+}
+.preset small {
+    max-width: 100%;
+    min-height: 32px;
+    font-size: 10px;
+    line-height: 1.5;
+}
+.preset-use {
+    margin-top: 10px;
+    color: #173c60;
+    font-size: 9px;
+}
+.upload-box {
+    padding: 17px;
+    border: 1.5px dashed #bac9d8;
+    border-radius: 16px;
+    background: #f8fafc;
+}
+.upload-label {
+    min-height: 58px;
+    border-color: #dce5ed;
+    border-radius: 12px;
+    box-shadow: 0 2px 6px rgba(0,31,63,.025);
+    font-size: 13px;
+    transition: border-color .18s ease, background .18s ease, transform .18s ease;
+}
+.upload-label:hover {
+    border-color: #9db2c6;
+    background: #fbfdff;
+    transform: translateY(-1px);
+}
+.upload-label i {
+    color: #9a7600;
+    font-size: 17px;
+}
+.upload-help {
+    margin: 10px 2px 0;
+    font-size: 10px;
+    line-height: 1.6;
+}
+.upload-file-name {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin: 10px 2px 0;
+    color: #173c60;
+    font-size: 10px;
+    font-weight: 700;
+    overflow-wrap: anywhere;
+}
+.upload-file-name i {
+    color: #168553;
+}
+.image-preview {
+    max-width: 320px;
+    margin: 14px auto 0;
+    border: 1px solid #dfe7ef;
+    background: #fff;
+    box-shadow: 0 5px 15px rgba(0,31,63,.05);
+}
+.image-preview img {
+    max-height: 340px;
+    object-fit: contain;
+}
+.input, select, textarea {
+    border-color: #dce5ed;
+    border-radius: 11px;
+    background: #fff;
+    color: #1e293b;
+    font-size: 13px;
+}
+.input, select {
+    min-height: 46px;
+}
+textarea {
+    min-height: 112px;
+}
+.input:hover, select:hover, textarea:hover {
+    border-color: #bdcbd8;
+}
+.input:focus, select:focus, textarea:focus {
+    border-color: #315b7f;
+    box-shadow: 0 0 0 3px rgba(11,59,102,.09);
+}
+.row {
+    gap: 15px;
+}
+.row > div {
+    min-width: 0;
+}
+.theme-options {
+    gap: 10px;
+}
+.theme-pill {
+    min-height: 46px;
+    border-radius: 11px;
+    font-size: 11px;
+    transition: border-color .18s ease, background .18s ease, box-shadow .18s ease;
+}
+.theme-option input:checked + .theme-pill {
+    border-color: #315b7f;
+    background: #f6f9fc;
+    box-shadow: 0 0 0 2px rgba(11,59,102,.08);
+}
+.action-row {
+    position: sticky;
+    bottom: 0;
+    z-index: 5;
+    margin: 25px -29px -29px;
+    padding: 17px 29px 20px;
+    border-top: 1px solid #e8edf2;
+    background: rgba(255,255,255,.96);
+    backdrop-filter: blur(8px);
+}
+.btn {
+    min-height: 47px;
+    border-radius: 11px;
+    font-size: 12px;
+}
+.btn-primary {
+    background: #001f3f;
+    color: #ffcc00;
+    box-shadow: 0 5px 12px rgba(0,31,63,.12);
+}
+.btn-primary:hover {
+    background: #0b3b66;
+    filter: none;
+}
+.btn-secondary {
+    min-width: 112px;
+    border-color: #d9e2eb;
+}
+.alert {
+    margin-bottom: 18px;
+    padding: 12px 14px;
+    border-radius: 12px;
+    font-size: 12px;
+}
+.preview-card {
+    top: 88px;
+    padding: 20px;
+}
+.preview-card .card-title {
+    margin: -20px -20px 18px;
+    padding: 17px 20px;
+}
+.preview-card .card-title h2 {
+    font-size: 15px;
+}
+.preview-card .mini-note {
+    color: #168553;
+    border-color: #ccebd9;
+    background: #f0fbf5;
+}
+.promo-preview {
+    border-color: #e3eaf1;
+    border-radius: 17px;
+    box-shadow: 0 8px 22px rgba(0,31,63,.06);
+}
+.preview-image {
+    max-height: 420px;
+    object-fit: contain;
+}
+.preview-body {
+    padding: 21px;
+}
+.preview-title {
+    font-size: 21px;
+    letter-spacing: -.3px;
+}
+.preview-description {
+    font-size: 12px;
+}
+.preview-meta {
+    align-items: flex-start;
+    flex-wrap: wrap;
+}
+.preview-status {
+    font-size: 10px;
+}
+.preview-expiry {
+    font-size: 10px;
+    text-align: right;
+}
+.promo-preview[data-theme="teal"] .preview-tag { background: #e8fbf8; color: #0f766e; }
+.promo-preview[data-theme="orange"] .preview-tag { background: #fff3e7; color: #b45309; }
+.promo-preview[data-theme="red"] .preview-tag { background: #fff0f1; color: #b91c1c; }
+.promo-preview[data-theme="purple"] .preview-tag { background: #eef4f9; color: #0b3b66; }
+.promo-preview[data-status="inactive"] .preview-status { color: #b45309; }
+.promo-preview[data-status="inactive"] .live-dot { background: #f59e0b; }
+.preview-caption {
+    font-size: 10px;
+    line-height: 1.65;
+}
+@media (max-width: 1100px) {
+    .layout { grid-template-columns: minmax(0, 1.35fr) minmax(290px, .8fr); }
+}
+@media (max-width: 900px) {
+    .page { max-width: 760px; padding: 0 18px 38px; }
+    .layout { grid-template-columns: 1fr; }
+    .preview-card { position: static; }
+}
+@media (max-width: 640px) {
+    .page { margin: 16px auto; padding: 0 12px 28px; }
+    .page-heading { padding: 18px; border-radius: 16px; }
+    .page-heading h1 { font-size: 24px; }
+    .page-heading .subtitle { font-size: 11px; }
+    .form-card { padding: 19px 16px 20px; border-radius: 16px; }
+    .card-title { margin: -19px -16px 20px; padding: 16px; }
+    .preset-grid { grid-template-columns: 1fr; }
+    .preset { min-height: 130px; }
+    .row { grid-template-columns: 1fr; }
+    .theme-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .action-row { margin: 22px -16px -20px; padding: 14px 16px 16px; }
+    .preview-card { padding: 16px; }
+    .preview-card .card-title { margin: -16px -16px 16px; padding: 15px 16px; }
+}
+
 </style>
 <link rel="stylesheet" href="../boogies_notification_mobile.css">
 </head>
@@ -1467,6 +1777,7 @@ $today = date('Y-m-d');
                     </label>
                     <input type="file" id="promo_image" name="promo_image" accept=".jpg,.jpeg,.png,.webp" required>
                     <div class="upload-help"><strong>Recommended:</strong> 4:5 poster (e.g. 1080×1350). JPG, PNG, or WEBP only. Maximum 5 MB. Other image sizes are supported.</div>
+                    <div class="upload-file-name" id="uploadFileName"><i class="fa-regular fa-image"></i><span>No image selected yet</span></div>
                     <div class="image-preview" id="imagePreview">
                         <img id="imagePreviewImg" src="" alt="Selected promotion">
                     </div>
@@ -1571,15 +1882,15 @@ $today = date('Y-m-d');
                 <h2>Customer Preview</h2>
                 <span class="mini-note">Live</span>
             </div>
-            <div class="promo-preview">
+            <div class="promo-preview" id="promoPreview" data-theme="purple" data-status="active">
                 <img class="preview-image" id="previewImage" src="" alt="Promotion preview">
                 <div class="preview-body" id="previewBody">
                     <span class="preview-tag" id="previewTag">GROOMING DEAL</span>
                     <h3 class="preview-title" id="previewTitle">Fresh Look, Happy Pup</h3>
                     <p class="preview-description" id="previewDescription">Enjoy a special grooming offer for your furry friend. Book a grooming session today.</p>
                     <div class="preview-meta">
-                        <span class="preview-status">
-                            <span class="live-dot"></span> Visible to customers
+                        <span class="preview-status" id="previewStatus">
+                            <span class="live-dot"></span><span id="previewStatusText">Visible to customers</span>
                         </span>
                         <span class="preview-expiry" id="previewExpiry">Set an expiry date</span>
                     </div>
@@ -1610,6 +1921,11 @@ if (startInput && expiryInput) {
     syncPromotionDateRange();
 }
 const imageInput = document.getElementById('promo_image');
+const uploadFileName = document.getElementById('uploadFileName');
+const statusInput = document.getElementById('status');
+const themeInputs = document.querySelectorAll('input[name="theme_color"]');
+const promoPreview = document.getElementById('promoPreview');
+const previewStatusText = document.getElementById('previewStatusText');
 const previewTag = document.getElementById('previewTag');
 const previewTitle = document.getElementById('previewTitle');
 const previewDescription = document.getElementById('previewDescription');
@@ -1621,15 +1937,27 @@ function updatePreview() {
     previewTag.textContent = tagInput.value || 'PROMO';
     previewTitle.textContent = titleInput.value || 'Promotion Headline';
     previewDescription.textContent = descriptionInput.value || 'Your promotion description will appear here.';
-    if (expiryInput.value) {
-        const date = new Date(expiryInput.value + 'T00:00:00');
-        previewExpiry.textContent = 'Until ' + date.toLocaleDateString(undefined, {
-            year: 'numeric',
-            month: 'short',
-            day: 'numeric'
-        });
+    const formatPreviewDate = function (value) {
+        if (!value) return '';
+        const date = new Date(value + 'T00:00:00');
+        return date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+    };
+    if (startInput.value && expiryInput.value) {
+        previewExpiry.textContent = formatPreviewDate(startInput.value) + ' – ' + formatPreviewDate(expiryInput.value);
+    } else if (expiryInput.value) {
+        previewExpiry.textContent = 'Until ' + formatPreviewDate(expiryInput.value);
     } else {
-        previewExpiry.textContent = 'Set an expiry date';
+        previewExpiry.textContent = 'Set the promotion schedule';
+    }
+    const selectedTheme = document.querySelector('input[name="theme_color"]:checked');
+    if (promoPreview) {
+        promoPreview.dataset.theme = selectedTheme ? selectedTheme.value : 'purple';
+        promoPreview.dataset.status = statusInput && statusInput.value === 'inactive' ? 'inactive' : 'active';
+    }
+    if (previewStatusText) {
+        previewStatusText.textContent = statusInput && statusInput.value === 'inactive'
+            ? 'Hidden from customers'
+            : 'Visible to customers';
     }
 }
 document.querySelectorAll('.preset').forEach((button) => {
@@ -1646,7 +1974,7 @@ document.querySelectorAll('.preset').forEach((button) => {
         updatePreview();
     });
 });
-[tagInput, titleInput, descriptionInput, expiryInput].forEach((el) => {
+[tagInput, titleInput, descriptionInput, expiryInput, startInput, statusInput, ...themeInputs].filter(Boolean).forEach((el) => {
     el.addEventListener('input', updatePreview);
     el.addEventListener('change', updatePreview);
 });
@@ -1658,6 +1986,10 @@ imageInput.addEventListener('change', () => {
     }
 
     const file = imageInput.files && imageInput.files[0];
+    if (uploadFileName) {
+        const nameNode = uploadFileName.querySelector('span');
+        if (nameNode) nameNode.textContent = file ? file.name : 'No image selected yet';
+    }
     if (!file) {
         imagePreview.style.display = 'none';
         previewImage.style.display = 'none';
