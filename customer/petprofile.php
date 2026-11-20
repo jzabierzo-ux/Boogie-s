@@ -942,8 +942,22 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && isset($_POST['create_pet
             $group_name = substr($group_name, 0, 120);
         }
 
+        // A group may contain a mother dog and puppies, a mother cat and kittens,
+        // siblings, or other adult pets, but all pets must be the same species.
+        $selected_species = [];
+        foreach ($owned_pets as $owned_pet) {
+            $species = strtolower(trim((string)($owned_pet['pet_type'] ?? '')));
+            if (!in_array($species, ['dog', 'cat'], true)) {
+                throw new DomainException('Each selected pet must have a valid type: Dog or Cat.');
+            }
+            $selected_species[$species] = true;
+        }
+        if (count($selected_species) !== 1) {
+            throw new DomainException('A Pet Group can contain dogs only or cats only. Please select pets of the same type.');
+        }
+
         // Keep the first selected pet in mother_pet_id for compatibility with
-        // the existing schema; the UI now calls it the Primary Pet, not a mother.
+        // the existing schema; it is only the group's Primary Pet, not necessarily the mother.
         $create_group_stmt = $pdo->prepare("
             INSERT INTO pet_groups (owner_id, mother_pet_id, group_name, created_at)
             VALUES (:owner_id, :primary_pet_id, :group_name, CURRENT_TIMESTAMP)
@@ -1162,7 +1176,7 @@ try {
     // Only pets that do not already act as a group's primary pet or member
     // may be selected for another group.
     $available_group_pets_stmt = $pdo->prepare("
-        SELECT p.id, p.name, p.pet_type, p.breed, p.weight, p.gender
+        SELECT p.id, p.name, p.pet_type, p.breed, p.age, p.weight, p.gender
         FROM pets p
         WHERE p.owner_id = :owner_id
           AND NOT EXISTS (
@@ -7381,7 +7395,7 @@ main{
             <div class="pet-groups-heading">
                 <div>
                     <h2 id="petGroupsTitle"><i class="fa-solid fa-people-roof"></i> Pet Groups</h2>
-                    <p>Put your registered pets in one group for easier management. Each pet keeps its own profile and medical records.</p>
+                    <p>Organize your registered pets into optional groups. You can register and manage each pet individually; grouping does not combine their profiles or medical records.</p>
                 </div>
                 <?php if ($pet_group_schema_ready && count($eligible_group_pets) >= 2): ?>
                     <button type="button" class="btn-primary" data-open-pet-group-modal><i class="fa-solid fa-plus"></i> Create a Group</button>
@@ -7394,15 +7408,15 @@ main{
                 <?php if (count($eligible_group_pets) < 2): ?>
                     <div class="pet-group-note" style="margin-bottom:13px;">
                         <?php if (empty($pet_groups)): ?>
-                            You need at least <strong>2 registered pets</strong> that are not in another group before you can create a group. Add another pet profile first.
+                            You can register and manage just one pet—creating a group is optional. To create a group, select at least <strong>2 registered pets</strong> that are not already in another group.
                         <?php else: ?>
-                            To create another group, add at least 2 more registered pet profiles that are not already assigned to a group.
+                            You can continue managing each pet separately. To create another group, you need at least 2 additional registered pets that are not already assigned to a group.
                         <?php endif; ?>
                     </div>
                 <?php endif; ?>
 
                 <?php if (empty($pet_groups)): ?>
-                    <div class="pet-group-note">No groups yet. Once you have at least 2 registered pets, select <strong>Create a Group</strong> and choose which pets belong together.</div>
+                    <div class="pet-group-note">No groups yet. Register pets one at a time using <strong>Add New Pet</strong>. When you have at least 2 pets of the same type, you may optionally select <strong>Create a Group</strong> to organize them together.</div>
                 <?php else: ?>
                     <div class="pet-groups-grid">
                         <?php foreach ($pet_groups as $group): ?>
@@ -7909,7 +7923,7 @@ main{
                 <button type="button" class="modal-close" data-close-pet-group-modal aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
             </div>
             <div class="modal-body">
-                <div class="pet-group-intro"><strong>How this works:</strong> Select 2 to 20 existing pet profiles and give the group a name. This will not create duplicate pet profiles or combine medical records. Each pet keeps its own information.</div>
+                <div class="pet-group-intro"><strong>How this works:</strong> Select 2 to 20 existing pets of the same type (all dogs or all cats). You may group a mother dog with her puppies, a mother cat with her kittens, siblings, or other adult pets you choose. This only organizes existing profiles—each pet keeps its own health information, care details, and records.</div>
                 <form method="POST" action="petprofile.php" id="createPetGroupForm">
                     <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($petprofile_csrf, ENT_QUOTES, 'UTF-8'); ?>">
                     <div class="form-group">
@@ -7920,7 +7934,7 @@ main{
                     <div class="group-pet-picker-heading">
                         <div>
                             <h3>Choose Registered Pets</h3>
-                            <p>Select at least 2 pets. You can group dogs, cats, or both together.</p>
+                            <p>Select 2 to 20 pets of the same type. You can include puppies and adult dogs in one dog group, or kittens and adult cats in one cat group.</p>
                         </div>
                         <span id="groupPetSelectedCount" class="group-pet-count" aria-live="polite">0 selected</span>
                     </div>
@@ -7931,10 +7945,11 @@ main{
                                 $option_icon = $option_type === 'cat' ? 'fa-cat' : 'fa-dog';
                                 $option_details = ucfirst($option_type);
                                 if (!empty($group_pet_option['breed'])) $option_details .= ' · ' . (string)$group_pet_option['breed'];
+                                if (!empty($group_pet_option['age'])) $option_details .= ' · Age ' . (string)$group_pet_option['age'];
                                 if (isset($group_pet_option['weight']) && $group_pet_option['weight'] !== '') $option_details .= ' · ' . (string)$group_pet_option['weight'] . ' kg';
                             ?>
                             <label class="group-pet-option">
-                                <input type="checkbox" name="group_pet_ids[]" value="<?php echo (int)$group_pet_option['id']; ?>">
+                                <input type="checkbox" name="group_pet_ids[]" value="<?php echo (int)$group_pet_option['id']; ?>" data-pet-type="<?php echo htmlspecialchars($option_type, ENT_QUOTES, 'UTF-8'); ?>">
                                 <span class="group-pet-option-icon"><i class="fa-solid <?php echo $option_icon; ?>"></i></span>
                                 <span class="group-pet-option-copy">
                                     <strong><?php echo htmlspecialchars($group_pet_option['name'], ENT_QUOTES, 'UTF-8'); ?></strong>
@@ -7944,7 +7959,7 @@ main{
                             </label>
                         <?php endforeach; ?>
                     </div>
-                    <p class="group-pet-help">A pet can only belong to one group at a time. To move a pet to another group, it must first be removed from its current group.</p>
+                    <p class="group-pet-help">Grouping is optional. Each pet remains registered separately and keeps its own health information. A pet can belong to only one group at a time.</p>
 
                     <div class="pet-group-form-actions">
                         <button type="button" class="modal-cancel" data-close-pet-group-modal>Cancel</button>
@@ -9125,9 +9140,12 @@ main{
             if (!picker) return;
             const checkboxes = Array.from(picker.querySelectorAll('input[name="group_pet_ids[]"]'));
             const selected = selectedPetCheckboxes();
+            const selectedTypes = Array.from(new Set(selected.map(input => input.dataset.petType || '')));
+            const activeType = selectedTypes.length === 1 ? selectedTypes[0] : '';
             if (selectedCount) selectedCount.textContent = selected.length + ' selected';
             checkboxes.forEach(input => {
-                input.disabled = !input.checked && selected.length >= maxGroupPets;
+                const isDifferentType = activeType !== '' && input.dataset.petType !== activeType;
+                input.disabled = !input.checked && (selected.length >= maxGroupPets || isDifferentType);
                 const label = input.closest('.group-pet-option');
                 if (label) label.classList.toggle('is-disabled', input.disabled);
             });
@@ -9156,13 +9174,26 @@ main{
                 if (event.target === groupModal) closeGroupModal();
             });
         }
-        if (picker) picker.addEventListener('change', updateGroupSelection);
+        if (picker) picker.addEventListener('change', function (event) {
+            const selected = selectedPetCheckboxes();
+            const selectedTypes = Array.from(new Set(selected.map(input => input.dataset.petType || '')));
+            if (selectedTypes.length > 1 && event.target && event.target.matches('input[name="group_pet_ids[]"]')) {
+                event.target.checked = false;
+                alert('A Pet Group can contain dogs only or cats only. Please select pets of the same type.');
+            }
+            updateGroupSelection();
+        });
         if (groupForm) {
             groupForm.addEventListener('submit', event => {
-                const count = selectedPetCheckboxes().length;
+                const selected = selectedPetCheckboxes();
+                const count = selected.length;
+                const selectedTypes = Array.from(new Set(selected.map(input => input.dataset.petType || '')));
                 if (count < 2 || count > maxGroupPets) {
                     event.preventDefault();
                     alert('Please select between 2 and 20 registered pets for the group.');
+                } else if (selectedTypes.length !== 1) {
+                    event.preventDefault();
+                    alert('A Pet Group can contain dogs only or cats only. Please select pets of the same type.');
                 }
             });
         }

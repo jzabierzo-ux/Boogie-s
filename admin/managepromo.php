@@ -265,20 +265,26 @@ $current_page = 1;
 $offset = 0;
 
 // Use Manila's calendar date consistently for promo counts and filtering.
+// Cast date fields before comparing so DATE and TIMESTAMP columns behave consistently.
+// Normalize status text because older rows may contain different letter casing or extra spaces.
 $manila_today_sql = "((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Manila')::date)";
+$active_status_sql = "LOWER(BTRIM(COALESCE(status::text, ''))) = 'active'";
+$promo_start_valid_sql = "(starts_on IS NULL OR starts_on::date <= {$manila_today_sql})";
+$promo_expiry_valid_sql = "(expiry_date IS NULL OR expiry_date::date >= {$manila_today_sql})";
+$promo_expired_sql = "(expiry_date IS NOT NULL AND expiry_date::date < {$manila_today_sql})";
 
 try {
-    // One aggregate query replaces the three separate promo COUNT queries.
+    // Use the same active/date rules for the summary card and the active list.
     $stats_stmt = $pdo->query("
         SELECT
             COUNT(*) AS total,
             COUNT(*) FILTER (
-                WHERE (starts_on IS NULL OR starts_on <= {$manila_today_sql})
-                  AND (expiry_date IS NULL OR expiry_date >= {$manila_today_sql})
-                  AND status = 'active'
+                WHERE {$promo_start_valid_sql}
+                  AND {$promo_expiry_valid_sql}
+                  AND {$active_status_sql}
             ) AS active,
             COUNT(*) FILTER (
-                WHERE expiry_date < {$manila_today_sql}
+                WHERE {$promo_expired_sql}
             ) AS expired
         FROM promos
     ");
@@ -308,13 +314,13 @@ try {
 
     if ($filter === 'active') {
         $query .= "
-            WHERE (starts_on IS NULL OR starts_on <= {$manila_today_sql})
-              AND (expiry_date IS NULL OR expiry_date >= {$manila_today_sql})
-              AND status = 'active'
+            WHERE {$promo_start_valid_sql}
+              AND {$promo_expiry_valid_sql}
+              AND {$active_status_sql}
         ";
     } elseif ($filter === 'expired') {
         $query .= "
-            WHERE expiry_date < {$manila_today_sql}
+            WHERE {$promo_expired_sql}
         ";
     }
 
@@ -2399,83 +2405,30 @@ try {
 
 
 
-                                    <?php 
-
-
-
-                                        // Determine the status dynamically
-
-
+                                    <?php
+                                        // Determine the displayed status using normalized status text
+                                        // and date-only values (works with DATE or TIMESTAMP query results).
+                                        $promo_status_value = strtolower(trim((string)($promo['status'] ?? '')));
+                                        $promo_start_value = !empty($promo['starts_on']) ? substr(trim((string)$promo['starts_on']), 0, 10) : '';
+                                        $promo_expiry_value = !empty($promo['expiry_date']) ? substr(trim((string)$promo['expiry_date']), 0, 10) : '';
 
                                         $status_class = 'inactive';
-
-
-
                                         $display_status = 'Inactive';
 
-
-
-
-
-
-
-                                        if (($promo['status'] ?? '') !== 'active') {
-
-
-
+                                        if ($promo_status_value !== 'active') {
                                             $status_class = 'inactive';
-
-
-
                                             $display_status = 'Inactive';
-
-
-
-                                        } elseif (isset($promo['expiry_date']) && $promo['expiry_date'] < $current_date) {
-
-
-
+                                        } elseif ($promo_expiry_value !== '' && $promo_expiry_value < $current_date) {
                                             $status_class = 'expired';
-
-
-
                                             $display_status = 'Expired';
-
-
-
-                                        } elseif (!empty($promo['starts_on']) && $promo['starts_on'] > $current_date) {
-
-
-
+                                        } elseif ($promo_start_value !== '' && $promo_start_value > $current_date) {
                                             $status_class = 'inactive';
-
-
-
                                             $display_status = 'Scheduled';
-
-
-
-                                        } elseif (isset($promo['status']) && $promo['status'] === 'active') {
-
-
-
+                                        } else {
                                             $status_class = 'active';
-
-
-
                                             $display_status = 'Active';
-
-
-
                                         }
-
-
-
-
-
-
-
-                                        // Determine hex color for the theme dot
+// Determine hex color for the theme dot
 
 
 
@@ -2703,6 +2656,7 @@ try {
 
 
                             </tbody>
+                        </table>
 
                         <div class="pagination">
                             <span class="pagination-info">
@@ -2728,13 +2682,6 @@ try {
                                 </div>
                             <?php endif; ?>
                         </div>
-
-
-
-
-                        </table>
-
-
 
                     <?php else: ?>
 
