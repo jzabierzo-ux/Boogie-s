@@ -841,6 +841,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && isset($_POST['add_pet_to
 
     $group_id = filter_var($_POST['group_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
     $pet_id = filter_var($_POST['pet_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+    $requested_relationship = strtolower(trim((string)($_POST['relationship'] ?? 'member')));
     if ($group_id === false || $group_id === null || $pet_id === false || $pet_id === null) {
         $_SESSION['pet_group_flash_error'] = 'Please choose a valid group and registered pet.';
         header('Location: petprofile.php?group_error=1');
@@ -883,6 +884,13 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && isset($_POST['add_pet_to
             throw new DomainException('Dogs can only be added to a dog group, and cats can only be added to a cat group.');
         }
 
+        $offspring_relationship = $group_type === 'dog' ? 'puppy' : 'kitten';
+        if (!in_array($requested_relationship, ['member', $offspring_relationship], true)) {
+            throw new DomainException($group_type === 'dog'
+                ? 'Choose Adult Dog or Puppy for this dog group.'
+                : 'Choose Adult Cat or Kitten for this cat group.');
+        }
+
         // The pet must not already be a primary pet or member of any group.
         $already_grouped_stmt = $pdo->prepare("
             SELECT COUNT(*)
@@ -916,15 +924,17 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && isset($_POST['add_pet_to
 
         $insert_group_member_stmt = $pdo->prepare("
             INSERT INTO pet_group_members (group_id, pet_id, relationship, created_at)
-            VALUES (:group_id, :pet_id, 'member', CURRENT_TIMESTAMP)
+            VALUES (:group_id, :pet_id, :relationship, CURRENT_TIMESTAMP)
         ");
         $insert_group_member_stmt->execute([
             ':group_id' => (int)$group_id,
             ':pet_id' => (int)$pet_id,
+            ':relationship' => $requested_relationship,
         ]);
 
         $pdo->commit();
-        $_SESSION['pet_group_flash_success'] = (string)$selected_pet['name'] . ' was added to ' . (string)$target_group['group_name'] . '. The pet keeps its own health information and records.';
+        $relationship_label = $requested_relationship === 'puppy' ? ' as a puppy' : ($requested_relationship === 'kitten' ? ' as a kitten' : ' as an adult group member');
+        $_SESSION['pet_group_flash_success'] = (string)$selected_pet['name'] . ' was added to ' . (string)$target_group['group_name'] . $relationship_label . '. The pet keeps its own health information and records.';
         header('Location: petprofile.php?success=group_member_added');
         exit();
     } catch (Throwable $e) {
@@ -935,6 +945,139 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && isset($_POST['add_pet_to
         $_SESSION['pet_group_flash_error'] = $e instanceof DomainException
             ? $e->getMessage()
             : 'Unable to add this pet to the group right now. Please try again.';
+        header('Location: petprofile.php?group_error=1');
+        exit();
+    }
+}
+
+// --- ADD NEW PUPPIES OR KITTENS TO A MOMMY DOG/CAT GROUP ---
+// Each offspring is saved as its own pet profile and linked with the species-specific
+// relationship value, so medical information and booking history remain separate.
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && isset($_POST['add_offspring_to_group'])) {
+    $submitted_csrf = (string)($_POST['csrf_token'] ?? '');
+    if (!hash_equals($petprofile_csrf, $submitted_csrf)) {
+        http_response_code(403);
+        exit('Invalid request. Refresh the page and try again.');
+    }
+
+    $group_id = filter_var($_POST['group_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+    $raw_offspring = $_POST['offspring'] ?? [];
+    if ($group_id === false || $group_id === null || !is_array($raw_offspring) || count($raw_offspring) < 1 || count($raw_offspring) > 20) {
+        $_SESSION['pet_group_flash_error'] = 'Please add between 1 and 20 puppy or kitten profiles.';
+        header('Location: petprofile.php?group_error=1');
+        exit();
+    }
+
+    $validated_offspring = [];
+    foreach ($raw_offspring as $child) {
+        if (!is_array($child)) {
+            $_SESSION['pet_group_flash_error'] = 'Invalid puppy or kitten details were submitted. Please try again.';
+            header('Location: petprofile.php?group_error=1');
+            exit();
+        }
+        foreach (['name', 'breed', 'age', 'weight', 'gender', 'medical_history', 'special_needs'] as $field) {
+            if (isset($child[$field]) && !is_scalar($child[$field])) {
+                $_SESSION['pet_group_flash_error'] = 'Please check the puppy or kitten details and try again.';
+                header('Location: petprofile.php?group_error=1');
+                exit();
+            }
+        }
+        $name = trim((string)($child['name'] ?? ''));
+        $breed = trim((string)($child['breed'] ?? ''));
+        $age = trim((string)($child['age'] ?? ''));
+        $weight = trim((string)($child['weight'] ?? ''));
+        $gender = trim((string)($child['gender'] ?? ''));
+        $medical_history = trim((string)($child['medical_history'] ?? ''));
+        $special_needs = trim((string)($child['special_needs'] ?? ''));
+
+        if ($name === '' || $breed === '' || $age === '' || $weight === '' || $gender === '') {
+            $_SESSION['pet_group_flash_error'] = 'Complete the required name, breed, age, weight, and gender for every puppy or kitten.';
+            header('Location: petprofile.php?group_error=1');
+            exit();
+        }
+        if (
+            strlen($name) > 120 || strlen($breed) > 120 || strlen($age) > 40 ||
+            !is_numeric($age) || (float)$age < 0 || (float)$age > 100 ||
+            !is_numeric($weight) || (float)$weight <= 0 || (float)$weight > 1000 ||
+            !in_array($gender, ['Male', 'Female', 'Unknown'], true) ||
+            strlen($medical_history) > 4000 || strlen($special_needs) > 4000
+        ) {
+            $_SESSION['pet_group_flash_error'] = 'Please check the puppy or kitten details. Age, weight, gender, or text lengths are invalid.';
+            header('Location: petprofile.php?group_error=1');
+            exit();
+        }
+        $validated_offspring[] = [
+            'name' => $name,
+            'breed' => $breed,
+            'age' => $age,
+            'weight' => (float)$weight,
+            'gender' => $gender,
+            'medical_history' => $medical_history,
+            'special_needs' => $special_needs,
+        ];
+    }
+
+    try {
+        $pdo->beginTransaction();
+        $group_stmt = $pdo->prepare("\n            SELECT g.id, g.group_name, g.mother_pet_id, p.name AS mother_name, p.pet_type\n            FROM pet_groups g\n            INNER JOIN pets p ON p.id = g.mother_pet_id\n            WHERE g.id = :group_id AND g.owner_id = :owner_id\n            FOR UPDATE OF g\n        ");
+        $group_stmt->execute([':group_id' => (int)$group_id, ':owner_id' => $user_id]);
+        $group = $group_stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$group) {
+            throw new DomainException('The selected Mommy Dog/Cat group could not be found.');
+        }
+        $mother_type = strtolower(trim((string)$group['pet_type']));
+        if (!in_array($mother_type, ['dog', 'cat'], true)) {
+            throw new DomainException('Only a Dog or Cat profile can be the mother of a family group.');
+        }
+
+        $group_size_stmt = $pdo->prepare('SELECT 1 + COUNT(*) FROM pet_group_members WHERE group_id = :group_id');
+        $group_size_stmt->execute([':group_id' => (int)$group_id]);
+        $current_group_size = (int)$group_size_stmt->fetchColumn();
+        if ($current_group_size + count($validated_offspring) > 20) {
+            throw new DomainException('A group can contain up to 20 pets, including the mother. Remove some members or add fewer offspring.');
+        }
+
+        $child_type = ucfirst($mother_type);
+        $child_relationship = $mother_type === 'dog' ? 'puppy' : 'kitten';
+        $child_label = $mother_type === 'dog' ? 'puppy' : 'kitten';
+        $insert_pet_stmt = $pdo->prepare("\n            INSERT INTO pets (owner_id, name, pet_type, breed, age, weight, gender, medical_history, special_needs, created_at)\n            VALUES (:owner_id, :name, :pet_type, :breed, :age, :weight, :gender, :medical_history, :special_needs, CURRENT_TIMESTAMP)\n            RETURNING id\n        ");
+        $insert_member_stmt = $pdo->prepare("\n            INSERT INTO pet_group_members (group_id, pet_id, relationship, created_at)\n            VALUES (:group_id, :pet_id, :relationship, CURRENT_TIMESTAMP)\n        ");
+
+        foreach ($validated_offspring as $child) {
+            $insert_pet_stmt->execute([
+                ':owner_id' => $user_id,
+                ':name' => $child['name'],
+                ':pet_type' => $child_type,
+                ':breed' => $child['breed'],
+                ':age' => $child['age'],
+                ':weight' => $child['weight'],
+                ':gender' => $child['gender'],
+                ':medical_history' => $child['medical_history'],
+                ':special_needs' => $child['special_needs'],
+            ]);
+            $new_pet_id = (int)$insert_pet_stmt->fetchColumn();
+            if ($new_pet_id <= 0) {
+                throw new RuntimeException('A puppy or kitten profile could not be saved.');
+            }
+            $insert_member_stmt->execute([
+                ':group_id' => (int)$group_id,
+                ':pet_id' => $new_pet_id,
+                ':relationship' => $child_relationship,
+            ]);
+        }
+
+        $pdo->commit();
+        $_SESSION['pet_group_flash_success'] = count($validated_offspring) . ' ' . $child_label . ' profile(s) were added to ' . (string)$group['mother_name'] . "'s group. Each has a separate pet profile and health record.";
+        header('Location: petprofile.php?success=offspring_added');
+        exit();
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        error_log('Add offspring to pet group failed: ' . $e->getMessage());
+        $_SESSION['pet_group_flash_error'] = $e instanceof DomainException
+            ? $e->getMessage()
+            : 'Unable to save the puppy or kitten profiles right now. Please try again.';
         header('Location: petprofile.php?group_error=1');
         exit();
     }
@@ -956,13 +1099,13 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && isset($_POST['create_pet
     $raw_group_pet_ids = $_POST['group_pet_ids'] ?? [];
 
     if (!is_array($raw_group_pet_ids)) {
-        $_SESSION['pet_group_flash_error'] = 'Please select at least two registered pets for the group.';
+        $_SESSION['pet_group_flash_error'] = 'Please select at least one registered dog or cat for the group.';
         header('Location: petprofile.php?group_error=1');
         exit();
     }
 
-    if (strlen($group_name) > 120 || count($raw_group_pet_ids) < 2 || count($raw_group_pet_ids) > 20) {
-        $_SESSION['pet_group_flash_error'] = 'Enter a group name with up to 120 characters and select 2 to 20 registered pets.';
+    if (strlen($group_name) > 120 || count($raw_group_pet_ids) < 1 || count($raw_group_pet_ids) > 20) {
+        $_SESSION['pet_group_flash_error'] = 'Enter a group name with up to 120 characters and select 1 to 20 registered pets.';
         header('Location: petprofile.php?group_error=1');
         exit();
     }
@@ -6873,7 +7016,22 @@ main{
 .pet-group-add-controls .form-control{min-width:0;flex:1;min-height:38px;padding:7px 9px;font-size:10px}
 .pet-group-add-button{min-height:38px;padding:0 12px;border:0;border-radius:9px;background:var(--brand-blue);color:var(--brand-yellow);font-size:9px;font-weight:800;cursor:pointer;white-space:nowrap}
 .pet-group-add-button:hover{background:var(--brand-blue-2)}
-@media(max-width:560px){.pet-group-add-controls{align-items:stretch;flex-direction:column}.pet-group-add-controls .form-control,.pet-group-add-button{width:100%;min-height:42px}}
+.pet-group-offspring-details{margin-top:10px;padding:10px 11px;background:#fffaf0;border:1px solid #f2e4bd;border-radius:10px}
+.pet-group-offspring-details summary{cursor:pointer;color:var(--brand-blue);font-size:10px;font-weight:800;list-style:none}
+.pet-group-offspring-details summary::-webkit-details-marker{display:none}
+.pet-group-offspring-details summary:after{content:'+';float:right;font-size:15px;line-height:10px}
+.pet-group-offspring-details[open] summary:after{content:'−'}
+.pet-group-offspring-help{font-size:9px;color:var(--muted);line-height:1.5;margin:9px 0}
+.pet-group-offspring-rows{display:grid;gap:9px}
+.pet-group-offspring-row{padding:10px;background:#fff;border:1px solid #eadfbf;border-radius:9px}
+.pet-group-offspring-row-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;color:var(--brand-blue);font-size:10px}
+.pet-group-offspring-row-head button{border:0;background:#fff0f1;color:#bd3340;border-radius:7px;width:27px;height:27px;cursor:pointer}
+.pet-group-offspring-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.pet-group-offspring-fields label{display:block;font-size:9px;font-weight:800;color:var(--brand-blue)}
+.pet-group-offspring-fields .form-control{margin-top:4px;width:100%;min-width:0;font-size:10px}
+.pet-group-offspring-fields .offspring-full{grid-column:1/-1}
+.pet-group-offspring-actions{display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px;margin-top:10px}
+@media(max-width:560px){.pet-group-add-controls{align-items:stretch;flex-direction:column}.pet-group-add-controls .form-control,.pet-group-add-button{width:100%;min-height:42px}.pet-group-offspring-fields{grid-template-columns:1fr}.pet-group-offspring-fields .offspring-full{grid-column:auto}.pet-group-offspring-actions{display:grid;grid-template-columns:1fr}}
 
 .pet-group-form-actions{display:flex;justify-content:flex-end;gap:9px;margin-top:17px}
 @media(max-width:680px){
@@ -7402,7 +7560,7 @@ main{
 
                     </button>
 
-                    <?php if ($pet_group_schema_ready && count($eligible_group_pets) >= 2): ?>
+                    <?php if ($pet_group_schema_ready && count($eligible_group_pets) >= 1): ?>
                         <button type="button" class="btn-primary" data-open-pet-group-modal>
                             <i class="fa-solid fa-people-roof"></i>
                             Create a Group
@@ -7516,7 +7674,7 @@ main{
                     <h2 id="petGroupsTitle"><i class="fa-solid fa-people-roof"></i> Pet Groups</h2>
                     <p>Organize your registered pets into optional groups. You can register and manage each pet individually; grouping does not combine their profiles or medical records.</p>
                 </div>
-                <?php if ($pet_group_schema_ready && count($eligible_group_pets) >= 2): ?>
+                <?php if ($pet_group_schema_ready && count($eligible_group_pets) >= 1): ?>
                     <button type="button" class="btn-primary" data-open-pet-group-modal><i class="fa-solid fa-plus"></i> Create a Group</button>
                 <?php endif; ?>
             </div>
@@ -7527,15 +7685,15 @@ main{
                 <?php if (count($eligible_group_pets) < 2): ?>
                     <div class="pet-group-note" style="margin-bottom:13px;">
                         <?php if (empty($pet_groups)): ?>
-                            You can register and manage just one pet—creating a group is optional. To create a group, select at least <strong>2 registered pets</strong> that are not already in another group.
+                            You can register and manage just one pet—creating a group is optional. You can create a family group with one registered mother dog or cat, then add puppies or kittens. You may also group 2 or more existing adult pets.
                         <?php else: ?>
-                            You can add an ungrouped pet to a compatible existing group using <strong>Add Pet to Group</strong> below. To create a separate new group, you need at least 2 registered pets that are not already assigned to a group.
+                            You can add an ungrouped pet to a compatible existing group using <strong>Add Pet to Group</strong> below. You can create a family group with one ungrouped mother pet, or a general group with multiple existing pets.
                         <?php endif; ?>
                     </div>
                 <?php endif; ?>
 
                 <?php if (empty($pet_groups)): ?>
-                    <div class="pet-group-note">No groups yet. Register pets one at a time using <strong>Add New Pet</strong>. When you have at least 2 pets of the same type, you may optionally select <strong>Create a Group</strong> to organize them together.</div>
+                    <div class="pet-group-note">No groups yet. Register pets one at a time using <strong>Add New Pet</strong>. When you have at least 1 registered dog or cat, you may select <strong>Create a Group</strong>. Choose a mother pet first, then add puppies or kittens, or select multiple existing pets to make a general group.</div>
                 <?php else: ?>
                     <div class="pet-groups-grid">
                         <?php foreach ($pet_groups as $group): ?>
@@ -7545,13 +7703,22 @@ main{
                                 $group_pet_total = 1 + count($group_members);
                                 $primary_type = strtolower(trim((string)($group['primary_pet_type'] ?? '')));
                                 $primary_icon = $primary_type === 'cat' ? 'fa-cat' : 'fa-dog';
+                                $offspring_relationship = $primary_type === 'cat' ? 'kitten' : 'puppy';
+                                $has_offspring = false;
+                                foreach ($group_members as $existing_member) {
+                                    if (strtolower(trim((string)($existing_member['relationship'] ?? ''))) === $offspring_relationship) {
+                                        $has_offspring = true;
+                                        break;
+                                    }
+                                }
+                                $primary_role_label = $has_offspring ? ($primary_type === 'cat' ? 'Mommy Cat' : 'Mommy Dog') : 'Primary Pet';
                             ?>
                             <article class="pet-group-card">
                                 <h3><?php echo htmlspecialchars($group['group_name'], ENT_QUOTES, 'UTF-8'); ?></h3>
                                 <div class="pet-group-mother">
                                     <i class="fa-solid <?php echo $primary_icon; ?>"></i>
                                     <div>
-                                        <strong><?php echo htmlspecialchars($group['primary_pet_name'], ENT_QUOTES, 'UTF-8'); ?> <span style="font-weight:500;color:#8a6a00;">(Primary Pet)</span></strong>
+                                        <strong><?php echo htmlspecialchars($group['primary_pet_name'], ENT_QUOTES, 'UTF-8'); ?> <span style="font-weight:500;color:#8a6a00;">(<?php echo htmlspecialchars($primary_role_label, ENT_QUOTES, 'UTF-8'); ?>)</span></strong>
                                         <small><?php echo htmlspecialchars(ucfirst((string)$group['primary_pet_type']), ENT_QUOTES, 'UTF-8'); ?><?php echo !empty($group['primary_pet_breed']) ? ' · ' . htmlspecialchars((string)$group['primary_pet_breed'], ENT_QUOTES, 'UTF-8') : ''; ?></small>
                                         <small><a href="pet_records.php?id=<?php echo (int)$group['primary_pet_id']; ?>" style="color:var(--brand-blue);font-weight:800;text-decoration:none;">View Pet Records</a></small>
                                     </div>
@@ -7567,10 +7734,14 @@ main{
                                             <a href="pet_records.php?id=<?php echo (int)$group['primary_pet_id']; ?>">View Records</a>
                                         </div>
                                         <?php foreach ($group_members as $group_member): ?>
-                                            <?php $member_type = strtolower(trim((string)($group_member['pet_type'] ?? ''))); ?>
+                                            <?php
+                                                $member_type = strtolower(trim((string)($group_member['pet_type'] ?? '')));
+                                                $member_relationship = strtolower(trim((string)($group_member['relationship'] ?? 'member')));
+                                                $member_role_label = $member_relationship === 'puppy' ? 'Puppy' : ($member_relationship === 'kitten' ? 'Kitten' : 'Adult / Group Member');
+                                            ?>
                                             <div class="pet-group-puppy">
                                                 <div>
-                                                    <strong><?php echo htmlspecialchars($group_member['name'], ENT_QUOTES, 'UTF-8'); ?></strong>
+                                                    <strong><?php echo htmlspecialchars($group_member['name'], ENT_QUOTES, 'UTF-8'); ?> <span style="font-weight:500;color:#8a6a00;">(<?php echo htmlspecialchars($member_role_label, ENT_QUOTES, 'UTF-8'); ?>)</span></strong>
                                                     <small><?php echo htmlspecialchars(ucfirst((string)$group_member['pet_type']), ENT_QUOTES, 'UTF-8'); ?> · <?php echo htmlspecialchars($group_member['breed'] ?? 'Breed not set', ENT_QUOTES, 'UTF-8'); ?> · <?php echo htmlspecialchars($group_member['gender'] ?? 'Gender not set', ENT_QUOTES, 'UTF-8'); ?></small>
                                                 </div>
                                                 <a href="pet_records.php?id=<?php echo (int)$group_member['id']; ?>">View Records</a>
@@ -7583,27 +7754,60 @@ main{
                                         return strtolower(trim((string)($available_pet['pet_type'] ?? ''))) === $primary_type;
                                     }));
                                 ?>
-                                <?php if ($group_pet_total < 20 && !empty($matching_available_pets)): ?>
-                                    <form method="POST" action="petprofile.php" class="pet-group-add-form">
-                                        <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($petprofile_csrf, ENT_QUOTES, 'UTF-8'); ?>">
-                                        <input type="hidden" name="group_id" value="<?php echo $group_id; ?>">
-                                        <label for="add_pet_group_<?php echo $group_id; ?>">Add another <?php echo htmlspecialchars(ucfirst($primary_type), ENT_QUOTES, 'UTF-8'); ?> to this group</label>
-                                        <div class="pet-group-add-controls">
-                                            <select id="add_pet_group_<?php echo $group_id; ?>" name="pet_id" class="form-control" required>
-                                                <option value="">Choose registered pet</option>
-                                                <?php foreach ($matching_available_pets as $available_pet): ?>
-                                                    <?php
-                                                        $available_label = (string)$available_pet['name'];
-                                                        if (!empty($available_pet['breed'])) $available_label .= ' · ' . (string)$available_pet['breed'];
-                                                        if (!empty($available_pet['age'])) $available_label .= ' · Age ' . (string)$available_pet['age'];
-                                                    ?>
-                                                    <option value="<?php echo (int)$available_pet['id']; ?>"><?php echo htmlspecialchars($available_label, ENT_QUOTES, 'UTF-8'); ?></option>
-                                                <?php endforeach; ?>
-                                            </select>
-                                            <button type="submit" name="add_pet_to_group" value="1" class="pet-group-add-button"><i class="fa-solid fa-plus"></i> Add Pet to Group</button>
-                                        </div>
-                                    </form>
-                                <?php elseif ($group_pet_total >= 20): ?>
+                                <?php if ($group_pet_total < 20): ?>
+                                    <?php if (!empty($matching_available_pets)): ?>
+                                        <form method="POST" action="petprofile.php" class="pet-group-add-form">
+                                            <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($petprofile_csrf, ENT_QUOTES, 'UTF-8'); ?>">
+                                            <input type="hidden" name="group_id" value="<?php echo $group_id; ?>">
+                                            <label for="add_pet_group_<?php echo $group_id; ?>">Add an existing registered <?php echo htmlspecialchars(ucfirst($primary_type), ENT_QUOTES, 'UTF-8'); ?></label>
+                                            <div class="pet-group-add-controls">
+                                                <select id="add_pet_group_<?php echo $group_id; ?>" name="pet_id" class="form-control" required>
+                                                    <option value="">Choose registered pet</option>
+                                                    <?php foreach ($matching_available_pets as $available_pet): ?>
+                                                        <?php
+                                                            $available_label = (string)$available_pet['name'];
+                                                            if (!empty($available_pet['breed'])) $available_label .= ' · ' . (string)$available_pet['breed'];
+                                                            if (!empty($available_pet['age'])) $available_label .= ' · Age ' . (string)$available_pet['age'];
+                                                        ?>
+                                                        <option value="<?php echo (int)$available_pet['id']; ?>"><?php echo htmlspecialchars($available_label, ENT_QUOTES, 'UTF-8'); ?></option>
+                                                    <?php endforeach; ?>
+                                                </select>
+                                                <select name="relationship" class="form-control" aria-label="Pet relationship in group" required>
+                                                    <option value="member">Adult <?php echo htmlspecialchars(ucfirst($primary_type), ENT_QUOTES, 'UTF-8'); ?></option>
+                                                    <option value="<?php echo $primary_type === 'cat' ? 'kitten' : 'puppy'; ?>"><?php echo $primary_type === 'cat' ? 'Kitten' : 'Puppy'; ?></option>
+                                                </select>
+                                                <button type="submit" name="add_pet_to_group" value="1" class="pet-group-add-button"><i class="fa-solid fa-plus"></i> Add to Group</button>
+                                            </div>
+                                        </form>
+                                    <?php endif; ?>
+                                    <?php $offspring_label = $primary_type === 'cat' ? 'Kittens' : 'Puppies'; ?>
+                                    <details class="pet-group-offspring-details">
+                                        <summary><i class="fa-solid <?php echo $primary_type === 'cat' ? 'fa-cat' : 'fa-dog'; ?>"></i> Add <?php echo $offspring_label; ?> for this Mommy <?php echo ucfirst($primary_type); ?></summary>
+                                        <form method="POST" action="petprofile.php" class="pet-group-offspring-form" data-offspring-form data-max-rows="<?php echo max(0, 20 - $group_pet_total); ?>">
+                                            <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($petprofile_csrf, ENT_QUOTES, 'UTF-8'); ?>">
+                                            <input type="hidden" name="group_id" value="<?php echo $group_id; ?>">
+                                            <p class="pet-group-offspring-help">Add new <?php echo strtolower($offspring_label); ?> directly to this family group. Each one will receive its own Pet Profile and separate health information.</p>
+                                            <div class="pet-group-offspring-rows" data-offspring-rows>
+                                                <div class="pet-group-offspring-row" data-offspring-row>
+                                                    <div class="pet-group-offspring-row-head"><strong><?php echo $primary_type === 'cat' ? 'Kitten' : 'Puppy'; ?> 1</strong><button type="button" data-remove-offspring-row aria-label="Remove row" disabled><i class="fa-solid fa-xmark"></i></button></div>
+                                                    <div class="pet-group-offspring-fields">
+                                                        <label>Name<input class="form-control" type="text" name="offspring[0][name]" maxlength="120" required></label>
+                                                        <label>Breed<input class="form-control" type="text" name="offspring[0][breed]" maxlength="120" required></label>
+                                                        <label>Age (years)<input class="form-control" type="number" name="offspring[0][age]" min="0" max="100" step="0.1" required></label>
+                                                        <label>Weight (kg)<input class="form-control" type="number" name="offspring[0][weight]" min="0.1" max="1000" step="0.1" required></label>
+                                                        <label>Gender<select class="form-control" name="offspring[0][gender]" required><option value="">Select gender</option><option value="Male">Male</option><option value="Female">Female</option><option value="Unknown">Unknown</option></select></label>
+                                                        <label>Medical History (optional)<textarea class="form-control" name="offspring[0][medical_history]" maxlength="4000" rows="2"></textarea></label>
+                                                        <label class="offspring-full">Special Needs / Care Notes (optional)<textarea class="form-control" name="offspring[0][special_needs]" maxlength="4000" rows="2"></textarea></label>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="pet-group-offspring-actions">
+                                                <button type="button" class="pet-group-add-button" data-add-offspring-row><i class="fa-solid fa-plus"></i> Add another <?php echo strtolower(rtrim($offspring_label, 's')); ?></button>
+                                                <button type="submit" name="add_offspring_to_group" value="1" class="pet-group-add-button"><i class="fa-solid fa-floppy-disk"></i> Save <?php echo $offspring_label; ?></button>
+                                            </div>
+                                        </form>
+                                    </details>
+                                <?php else: ?>
                                     <p class="pet-group-entry-help">This group has reached its 20-pet limit.</p>
                                 <?php endif; ?>
                                 <p class="puppy-entry-help" style="margin-top:9px;">Created <?php echo htmlspecialchars(date('M d, Y', strtotime((string)$group['group_created_at'])), ENT_QUOTES, 'UTF-8'); ?></p>
@@ -8058,7 +8262,7 @@ main{
 
 
 
-    <?php if ($pet_group_schema_ready && count($eligible_group_pets) >= 2): ?>
+    <?php if ($pet_group_schema_ready && count($eligible_group_pets) >= 1): ?>
     <div id="petGroupModal" class="modal" aria-hidden="true">
         <div class="modal-content pet-group-modal-content" role="dialog" aria-modal="true" aria-labelledby="petGroupTitle">
             <div class="modal-head">
@@ -8070,7 +8274,7 @@ main{
                 <button type="button" class="modal-close" data-close-pet-group-modal aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
             </div>
             <div class="modal-body">
-                <div class="pet-group-intro"><strong>How this works:</strong> Select 2 to 20 existing pets of the same type (all dogs or all cats). You may group a mother dog with her puppies, a mother cat with her kittens, siblings, or other adult pets you choose. This only organizes existing profiles—each pet keeps its own health information, care details, and records.</div>
+                <div class="pet-group-intro"><strong>How this works:</strong> Select 1 to 20 existing pets of the same type (all dogs or all cats). You can select one mother pet first and add puppies or kittens afterward, or select multiple existing pets for a general group. This only organizes existing profiles—each pet keeps its own health information, care details, and records.</div>
                 <form method="POST" action="petprofile.php" id="createPetGroupForm">
                     <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($petprofile_csrf, ENT_QUOTES, 'UTF-8'); ?>">
                     <div class="form-group">
@@ -8081,7 +8285,7 @@ main{
                     <div class="group-pet-picker-heading">
                         <div>
                             <h3>Choose Registered Pets</h3>
-                            <p>Select 2 to 20 pets of the same type. You can include puppies and adult dogs in one dog group, or kittens and adult cats in one cat group.</p>
+                            <p>Select at least one pet. For a family group, select the mother dog or cat first, then add puppies or kittens after creating the group. You can also select multiple existing pets to form a general group.</p>
                         </div>
                         <span id="groupPetSelectedCount" class="group-pet-count" aria-live="polite">0 selected</span>
                     </div>
@@ -9335,15 +9539,66 @@ main{
                 const selected = selectedPetCheckboxes();
                 const count = selected.length;
                 const selectedTypes = Array.from(new Set(selected.map(input => input.dataset.petType || '')));
-                if (count < 2 || count > maxGroupPets) {
+                if (count < 1 || count > maxGroupPets) {
                     event.preventDefault();
-                    alert('Please select between 2 and 20 registered pets for the group.');
+                    alert('Please select between 1 and 20 registered pets for the group.');
                 } else if (selectedTypes.length !== 1) {
                     event.preventDefault();
                     alert('A Pet Group can contain dogs only or cats only. Please select pets of the same type.');
                 }
             });
         }
+
+        // Add or remove multiple puppy/kitten profile rows inside each family group.
+        document.querySelectorAll('[data-offspring-form]').forEach(function (form) {
+            const rowsContainer = form.querySelector('[data-offspring-rows]');
+            const addButton = form.querySelector('[data-add-offspring-row]');
+            if (!rowsContainer || !addButton) return;
+            const maxRows = Math.max(1, parseInt(form.dataset.maxRows || '1', 10));
+            const childLabel = (form.querySelector('[data-offspring-row] strong')?.textContent || 'Puppy').replace(/\s+1$/, '');
+
+            function refreshRows() {
+                const rows = Array.from(rowsContainer.querySelectorAll('[data-offspring-row]'));
+                rows.forEach(function (row, index) {
+                    const heading = row.querySelector('.pet-group-offspring-row-head strong');
+                    if (heading) heading.textContent = childLabel + ' ' + (index + 1);
+                    const remove = row.querySelector('[data-remove-offspring-row]');
+                    if (remove) remove.disabled = rows.length <= 1;
+                });
+                addButton.disabled = rows.length >= maxRows;
+                addButton.style.opacity = addButton.disabled ? '.5' : '1';
+                addButton.title = addButton.disabled ? 'The group has reached its 20-pet limit.' : '';
+            }
+
+            addButton.addEventListener('click', function () {
+                const rows = Array.from(rowsContainer.querySelectorAll('[data-offspring-row]'));
+                if (rows.length >= maxRows) return;
+                const clone = rows[0].cloneNode(true);
+                const nextIndex = rows.length;
+                clone.querySelectorAll('input, select, textarea').forEach(function (field) {
+                    field.name = field.name.replace(/offspring\[0\]/, 'offspring[' + nextIndex + ']');
+                    field.value = '';
+                });
+                rowsContainer.appendChild(clone);
+                refreshRows();
+            });
+
+            rowsContainer.addEventListener('click', function (event) {
+                const removeButton = event.target.closest('[data-remove-offspring-row]');
+                if (!removeButton) return;
+                const rows = rowsContainer.querySelectorAll('[data-offspring-row]');
+                if (rows.length <= 1) return;
+                removeButton.closest('[data-offspring-row]').remove();
+                // Re-index fields so PHP receives a compact array.
+                Array.from(rowsContainer.querySelectorAll('[data-offspring-row]')).forEach(function (row, index) {
+                    row.querySelectorAll('input, select, textarea').forEach(function (field) {
+                        field.name = field.name.replace(/offspring\[\d+\]/, 'offspring[' + index + ']');
+                    });
+                });
+                refreshRows();
+            });
+            refreshRows();
+        });
 
         updateGroupSelection();
         document.addEventListener('keydown', event => {
