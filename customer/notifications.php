@@ -41,6 +41,18 @@ function formatCustomerNotificationTimestamp($value, string $format): string
 }
 
 
+/** Identify Pet Group notices from their saved title/message text. */
+function isCustomerGroupBookingNotification(array $notification): bool
+{
+    $content = trim(
+        (string)($notification['title'] ?? '') . ' ' .
+        (string)($notification['message'] ?? '')
+    );
+
+    return preg_match('/\b(?:pet\s+group|group\s+booking|booking\s+group|group\s+of\s+pets)\b/i', $content) === 1;
+}
+
+
 
 $user_id = (int)($_SESSION['user_id'] ?? 0);
 if ($user_id <= 0) {
@@ -75,6 +87,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET' && (($_GET['ajax_notificatio
                 'id' => (string)($row['id'] ?? ''),
                 'message' => (string)($row['message'] ?? ''),
                 'is_read' => in_array($raw_is_read, ['1', 'true', 't', 'yes'], true),
+                'is_group_booking' => isCustomerGroupBookingNotification($row),
                 'created_at' => formatCustomerNotificationTimestamp($row['created_at'] ?? null, 'M d, Y h:i A'),
             ];
         }
@@ -196,7 +209,7 @@ $notif_list_stmt = $pdo->prepare("
 
     WHERE user_id = :user_id
 
-    ORDER BY created_at DESC
+    ORDER BY created_at DESC, id DESC
 
     LIMIT 5
 
@@ -220,7 +233,7 @@ $notifs_stmt = $pdo->prepare("
 
     WHERE user_id = :user_id
 
-    ORDER BY created_at DESC
+    ORDER BY created_at DESC, id DESC
 
 ");
 
@@ -987,6 +1000,41 @@ $notification_total = count($notifs_list);
             background: #9b51e0;
 
         }
+
+        .notification-card.group-notification::before {
+            background: #168553;
+        }
+
+        .notification-card.group-notification .notif-icon {
+            background: #e8f7ef;
+            color: #168553;
+        }
+
+        .group-notification-tag {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            margin-left: 7px;
+            padding: 3px 7px;
+            border-radius: 999px;
+            background: #e8f7ef;
+            color: #168553;
+            font-size: 8px;
+            font-weight: 800;
+            letter-spacing: .35px;
+            vertical-align: middle;
+            white-space: nowrap;
+        }
+
+        .dropdown-group-tag {
+            display: inline-block;
+            margin-right: 5px;
+            color: #168553;
+            font-size: 9px;
+            font-weight: 800;
+            letter-spacing: .25px;
+        }
+
 
 
 
@@ -2548,10 +2596,27 @@ $notification_total = count($notifs_list);
                         <?php if(count($notifications) > 0): ?>
 
                             <?php foreach($notifications as $notif): ?>
-                                <?php $dropdown_is_read = in_array(strtolower(trim((string)($notif['is_read'] ?? '0'))), ['1', 'true', 't', 'yes'], true); ?>
+
+
+                                <?php
+
+
+                                    $dropdown_is_read = in_array(strtolower(trim((string)($notif['is_read'] ?? '0'))), ['1', 'true', 't', 'yes'], true);
+
+
+                                    $dropdown_is_group = isCustomerGroupBookingNotification($notif);
+
+
+                                ?>
+
+
                                 <a href="notifications.php" class="dropdown-item <?php echo $dropdown_is_read ? '' : 'unread'; ?>">
 
-                                    <?php echo htmlspecialchars($notif['message']); ?>
+
+                                    <?php if ($dropdown_is_group): ?><span class="dropdown-group-tag">PET GROUP</span><?php endif; ?>
+
+
+                                    <?php echo htmlspecialchars((string)($notif['message'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>
 
                                     <br>
 
@@ -2730,7 +2795,7 @@ $notification_total = count($notifs_list);
                         $icon = 'fa-solid fa-stethoscope';
 
                         $card_class = 'notification-card';
-
+                        $is_group_notification = isCustomerGroupBookingNotification($notif);
 
 
                         if (isset($notif['type'])) {
@@ -2753,6 +2818,11 @@ $notification_total = count($notifs_list);
 
                             }
 
+                        }
+
+                        if ($is_group_notification) {
+                            $card_class .= ' group-notification';
+                            $icon = 'fa-solid fa-users';
                         }
 
                     ?>
@@ -2794,8 +2864,14 @@ $notification_total = count($notifs_list);
 
 
                             <div class="notif-meta">
-                                <i class="fa-regular fa-circle-check"></i>
-                                System Notification
+                                <?php if ($is_group_notification): ?>
+                                    <i class="fa-solid fa-users"></i>
+                                    Pet Group Booking
+                                    <span class="group-notification-tag">GROUP UPDATE</span>
+                                <?php else: ?>
+                                    <i class="fa-regular fa-circle-check"></i>
+                                    System Notification
+                                <?php endif; ?>
                             </div>
 
                             <?php if (!$is_notification_read): ?>
@@ -3124,6 +3200,12 @@ $notification_total = count($notifs_list);
                 const link = document.createElement('a');
                 link.href = 'notifications.php';
                 link.className = 'dropdown-item' + (notification.is_read === true ? '' : ' unread');
+                if (notification.is_group_booking === true) {
+                    const groupTag = document.createElement('span');
+                    groupTag.className = 'dropdown-group-tag';
+                    groupTag.textContent = 'PET GROUP';
+                    link.appendChild(groupTag);
+                }
                 link.appendChild(document.createTextNode(String(notification.message || '')));
                 link.appendChild(document.createElement('br'));
 

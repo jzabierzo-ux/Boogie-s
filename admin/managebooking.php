@@ -1145,28 +1145,87 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['booking_action'])) {
             $isVerifiedAfterCancellation = ($new_status === 'verify_gcash_cancelled');
             $newPaymentStatus = $isVerifiedAfterCancellation ? 'Paid' : 'Rejected';
 
-            $reviewStmt = $pdo->prepare("
-                UPDATE appointments
-                SET payment_status = :payment_status
-                WHERE id = :id
-                  AND LOWER(BTRIM(COALESCE(payment_method, ''))) = 'gcash'
-                  AND LOWER(BTRIM(COALESCE(payment_status, ''))) = 'pending verification'
-                  AND LOWER(BTRIM(COALESCE(booking_status, ''))) IN ('cancelled', 'canceled')
-                  AND LOWER(BTRIM(COALESCE(appointment_type, 'online'))) <> 'walk-in'
-                  AND (
-                      NULLIF(BTRIM(COALESCE(gcash_ref, '')), '') IS NOT NULL
-                      OR NULLIF(BTRIM(COALESCE(gcash_receipt, '')), '') IS NOT NULL
-                  )
-            ");
-            $reviewStmt->execute([
-                ':payment_status' => $newPaymentStatus,
-                ':id' => $id
-            ]);
+            $cancelledGroupId = trim((string)($bookingForAccess['booking_group_id'] ?? ''));
+            if ($cancelledGroupId !== '') {
+                if (!preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i', $cancelledGroupId)) {
+                    throw new RuntimeException('The cancelled Pet Group reference is invalid.');
+                }
+                $pdo->beginTransaction();
+                try {
+                    $lockCancelledGroup = $pdo->prepare("
+                        SELECT id FROM appointments
+                        WHERE booking_group_id = CAST(:group_id AS uuid)
+                        ORDER BY id FOR UPDATE
+                    ");
+                    $lockCancelledGroup->execute([':group_id' => $cancelledGroupId]);
+                    $lockedCancelledRows = $lockCancelledGroup->fetchAll(PDO::FETCH_COLUMN);
+                    $cancelledGroupCount = count($lockedCancelledRows);
 
-            if ($reviewStmt->rowCount() !== 1) {
-                $_SESSION['alert_msg'] = 'Payment review was not saved. Refresh the page and check the current booking/payment status.';
-                header('Location: managebooking.php');
-                exit();
+                    $cancelledEligibility = $pdo->prepare("
+                        SELECT COUNT(*) AS group_count,
+                               COUNT(*) FILTER (WHERE
+                                   LOWER(BTRIM(COALESCE(payment_method, ''))) = 'gcash'
+                                   AND LOWER(BTRIM(COALESCE(payment_status, ''))) = 'pending verification'
+                                   AND LOWER(BTRIM(COALESCE(booking_status, ''))) IN ('cancelled', 'canceled')
+                                   AND LOWER(BTRIM(COALESCE(appointment_type, 'online'))) <> 'walk-in'
+                                   AND (NULLIF(BTRIM(COALESCE(gcash_ref, '')), '') IS NOT NULL
+                                        OR NULLIF(BTRIM(COALESCE(gcash_receipt, '')), '') IS NOT NULL)
+                               ) AS eligible_count,
+                               COUNT(DISTINCT user_id) AS customer_count,
+                               COUNT(DISTINCT COALESCE(gcash_ref, '')) AS reference_count,
+                               COUNT(DISTINCT COALESCE(gcash_receipt, '')) AS receipt_count
+                        FROM appointments
+                        WHERE booking_group_id = CAST(:group_id AS uuid)
+                    ");
+                    $cancelledEligibility->execute([':group_id' => $cancelledGroupId]);
+                    $cancelledData = $cancelledEligibility->fetch(PDO::FETCH_ASSOC) ?: [];
+                    $cancelledCount = (int)($cancelledData['group_count'] ?? 0);
+                    if ($cancelledCount < 2 || $cancelledGroupCount !== $cancelledCount
+                        || (int)($cancelledData['eligible_count'] ?? 0) !== $cancelledCount
+                        || (int)($cancelledData['customer_count'] ?? 0) !== 1
+                        || (int)($cancelledData['reference_count'] ?? 0) !== 1
+                        || (int)($cancelledData['receipt_count'] ?? 0) !== 1) {
+                        throw new RuntimeException('The cancelled group payment cannot be reviewed because its pet records do not share one consistent pending GCash transaction.');
+                    }
+
+                    $reviewStmt = $pdo->prepare("
+                        UPDATE appointments
+                        SET payment_status = :payment_status
+                        WHERE booking_group_id = CAST(:group_id AS uuid)
+                          AND LOWER(BTRIM(COALESCE(payment_method, ''))) = 'gcash'
+                          AND LOWER(BTRIM(COALESCE(payment_status, ''))) = 'pending verification'
+                          AND LOWER(BTRIM(COALESCE(booking_status, ''))) IN ('cancelled', 'canceled')
+                          AND LOWER(BTRIM(COALESCE(appointment_type, 'online'))) <> 'walk-in'
+                    ");
+                    $reviewStmt->execute([':payment_status' => $newPaymentStatus, ':group_id' => $cancelledGroupId]);
+                    if ($reviewStmt->rowCount() !== $cancelledCount) {
+                        throw new RuntimeException('Not all cancelled Pet Group payment rows were updated.');
+                    }
+                    $pdo->commit();
+                } catch (Throwable $cancelledGroupError) {
+                    if ($pdo->inTransaction()) $pdo->rollBack();
+                    throw $cancelledGroupError;
+                }
+            } else {
+                $reviewStmt = $pdo->prepare("
+                    UPDATE appointments
+                    SET payment_status = :payment_status
+                    WHERE id = :id
+                      AND LOWER(BTRIM(COALESCE(payment_method, ''))) = 'gcash'
+                      AND LOWER(BTRIM(COALESCE(payment_status, ''))) = 'pending verification'
+                      AND LOWER(BTRIM(COALESCE(booking_status, ''))) IN ('cancelled', 'canceled')
+                      AND LOWER(BTRIM(COALESCE(appointment_type, 'online'))) <> 'walk-in'
+                      AND (
+                          NULLIF(BTRIM(COALESCE(gcash_ref, '')), '') IS NOT NULL
+                          OR NULLIF(BTRIM(COALESCE(gcash_receipt, '')), '') IS NOT NULL
+                      )
+                ");
+                $reviewStmt->execute([':payment_status' => $newPaymentStatus, ':id' => $id]);
+                if ($reviewStmt->rowCount() !== 1) {
+                    $_SESSION['alert_msg'] = 'Payment review was not saved. Refresh the page and check the current booking/payment status.';
+                    header('Location: managebooking.php');
+                    exit();
+                }
             }
 
             $customerIdForReview = (int)($bookingForAccess['user_id'] ?? 0);
@@ -1428,27 +1487,106 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['booking_action'])) {
 
         // --- DB UPDATE LOGIC ---
         if ($new_status === 'verify_gcash') {
-            // GCash verification applies to online GCash bookings.
-            // A walk-in does not use this action.
-            $stmt = $pdo->prepare("
-                UPDATE appointments
-                SET payment_status = 'Paid',
-                    booking_status = 'Confirmed'
-                WHERE id = :id
-                  AND LOWER(COALESCE(payment_method, '')) = 'gcash'
-                  AND LOWER(COALESCE(payment_status, '')) = 'pending verification'
-                  AND COALESCE(appointment_type, 'Online') <> 'Walk-in'
-            ");
-            $stmt->execute([':id' => $id]);
+            // A Pet Group has one GCash transaction shared by its individual pet
+            // appointment rows. Verify all rows together; legacy bookings remain single-row.
+            $bookingGroupId = trim((string)($bookingForAccess['booking_group_id'] ?? ''));
+            if ($bookingGroupId !== '') {
+                if (!preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i', $bookingGroupId)) {
+                    throw new RuntimeException('The Pet Group booking reference is invalid.');
+                }
 
-            if ($stmt->rowCount() !== 1) {
-                $_SESSION['alert_msg'] = "GCash verification is only available for online bookings.";
-                header("Location: managebooking.php");
-                exit();
+                $pdo->beginTransaction();
+                try {
+                    $lockGroupStmt = $pdo->prepare("
+                        SELECT id
+                        FROM appointments
+                        WHERE booking_group_id = CAST(:group_id AS uuid)
+                        ORDER BY id
+                        FOR UPDATE
+                    ");
+                    $lockGroupStmt->execute([':group_id' => $bookingGroupId]);
+                    $lockedGroupRows = $lockGroupStmt->fetchAll(PDO::FETCH_COLUMN);
+                    $groupRowCount = count($lockedGroupRows);
+
+                    $groupEligibilityStmt = $pdo->prepare("
+                        SELECT
+                            COUNT(*) AS group_count,
+                            COUNT(*) FILTER (
+                                WHERE LOWER(BTRIM(COALESCE(payment_method, ''))) = 'gcash'
+                                  AND LOWER(BTRIM(COALESCE(payment_status, ''))) = 'pending verification'
+                                  AND LOWER(BTRIM(COALESCE(booking_status, ''))) = 'pending'
+                                  AND LOWER(BTRIM(COALESCE(appointment_type, 'online'))) <> 'walk-in'
+                                  AND (
+                                      NULLIF(BTRIM(COALESCE(gcash_ref, '')), '') IS NOT NULL
+                                      OR NULLIF(BTRIM(COALESCE(gcash_receipt, '')), '') IS NOT NULL
+                                  )
+                            ) AS eligible_count,
+                            COUNT(DISTINCT user_id) AS customer_count,
+                            COUNT(DISTINCT COALESCE(service, '')) AS service_count,
+                            COUNT(DISTINCT appointment_date) AS appointment_date_count,
+                            COUNT(DISTINCT COALESCE(gcash_ref, '')) AS reference_count,
+                            COUNT(DISTINCT COALESCE(gcash_receipt, '')) AS receipt_count
+                        FROM appointments
+                        WHERE booking_group_id = CAST(:group_id AS uuid)
+                    ");
+                    $groupEligibilityStmt->execute([':group_id' => $bookingGroupId]);
+                    $groupEligibility = $groupEligibilityStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+
+                    $groupCount = (int)($groupEligibility['group_count'] ?? 0);
+                    $eligibleCount = (int)($groupEligibility['eligible_count'] ?? 0);
+                    $sameCustomer = (int)($groupEligibility['customer_count'] ?? 0) === 1;
+                    $sameReference = (int)($groupEligibility['reference_count'] ?? 0) === 1;
+                    $sameReceipt = (int)($groupEligibility['receipt_count'] ?? 0) === 1;
+
+                    if ($groupCount < 2 || $groupCount > 20 || $groupRowCount !== $groupCount || $eligibleCount !== $groupCount
+                        || !$sameCustomer || !$sameReference || !$sameReceipt
+                        || (int)($groupEligibility['service_count'] ?? 0) !== 1
+                        || (int)($groupEligibility['appointment_date_count'] ?? 0) !== 1) {
+                        throw new RuntimeException('The group payment cannot be verified because one or more pet bookings do not share the same pending GCash payment. Review the group records first.');
+                    }
+
+                    $stmt = $pdo->prepare("
+                        UPDATE appointments
+                        SET payment_status = 'Paid',
+                            booking_status = 'Confirmed'
+                        WHERE booking_group_id = CAST(:group_id AS uuid)
+                          AND LOWER(BTRIM(COALESCE(payment_method, ''))) = 'gcash'
+                          AND LOWER(BTRIM(COALESCE(payment_status, ''))) = 'pending verification'
+                          AND LOWER(BTRIM(COALESCE(booking_status, ''))) = 'pending'
+                          AND LOWER(BTRIM(COALESCE(appointment_type, 'online'))) <> 'walk-in'
+                    ");
+                    $stmt->execute([':group_id' => $bookingGroupId]);
+                    if ($stmt->rowCount() !== $groupCount) {
+                        throw new RuntimeException('Not all Pet Group appointment rows were updated. No group payment changes were saved.');
+                    }
+                    $pdo->commit();
+                    $_SESSION['alert_msg'] = 'Pet Group GCash payment verified. All ' . $groupCount . ' pet bookings are now Paid and Confirmed.';
+                } catch (Throwable $groupPaymentError) {
+                    if ($pdo->inTransaction()) $pdo->rollBack();
+                    throw $groupPaymentError;
+                }
+            } else {
+                // GCash verification applies to online single-pet bookings.
+                // A walk-in does not use this action.
+                $stmt = $pdo->prepare("
+                    UPDATE appointments
+                    SET payment_status = 'Paid',
+                        booking_status = 'Confirmed'
+                    WHERE id = :id
+                      AND LOWER(COALESCE(payment_method, '')) = 'gcash'
+                      AND LOWER(COALESCE(payment_status, '')) = 'pending verification'
+                      AND COALESCE(appointment_type, 'Online') <> 'Walk-in'
+                ");
+                $stmt->execute([':id' => $id]);
+                if ($stmt->rowCount() !== 1) {
+                    $_SESSION['alert_msg'] = "GCash verification is only available for online bookings.";
+                    header("Location: managebooking.php");
+                    exit();
+                }
+                $_SESSION['alert_msg'] = "GCash Payment Verified and Booking Confirmed!";
             }
 
             $new_status = 'Confirmed';
-            $_SESSION['alert_msg'] = "GCash Payment Verified and Booking Confirmed!";
         } else {
             if ($new_status === 'Completed') {
                 // Completing a walk-in must NOT automatically mark it as paid.
@@ -1476,18 +1614,85 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['booking_action'])) {
                     exit();
                 }
             } elseif ($new_status === 'Confirmed') {
-                // Confirmation is not evidence of payment.
+                // Confirmation is not evidence of payment. For Pet Groups, confirm
+                // every pet row together so the customer does not end up with a
+                // partially confirmed group after one Admin action.
                 if ($paymentMethodNow === 'gcash' && $paymentStatusNow !== 'paid') {
                     $_SESSION['alert_msg'] = 'GCash payment must be verified by an authorized Admin or Manager before this booking can be confirmed.';
                     header('Location: managebooking.php');
                     exit();
                 }
-                $stmt = $pdo->prepare("
-                    UPDATE appointments
-                    SET booking_status = 'Confirmed'
-                    WHERE id = :id
-                ");
-                $stmt->execute([':id' => $id]);
+
+                $confirmationGroupId = trim((string)($bookingForAccess['booking_group_id'] ?? ''));
+                if ($confirmationGroupId !== '') {
+                    if (!preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i', $confirmationGroupId)) {
+                        throw new RuntimeException('The Pet Group booking reference is invalid.');
+                    }
+
+                    $pdo->beginTransaction();
+                    try {
+                        $lockConfirmGroup = $pdo->prepare("
+                            SELECT id FROM appointments
+                            WHERE booking_group_id = CAST(:group_id AS uuid)
+                            ORDER BY id FOR UPDATE
+                        ");
+                        $lockConfirmGroup->execute([':group_id' => $confirmationGroupId]);
+                        $lockedConfirmRows = $lockConfirmGroup->fetchAll(PDO::FETCH_COLUMN);
+                        $lockedConfirmCount = count($lockedConfirmRows);
+
+                        $confirmEligibilityStmt = $pdo->prepare("
+                            SELECT COUNT(*) AS group_count,
+                                   COUNT(*) FILTER (WHERE
+                                       LOWER(BTRIM(COALESCE(NULLIF(booking_status, ''), 'pending')))
+                                           NOT IN ('pending', 'confirmed')
+                                   ) AS invalid_status_count,
+                                   COUNT(*) FILTER (WHERE
+                                       LOWER(BTRIM(COALESCE(payment_method, ''))) = 'gcash'
+                                       AND LOWER(BTRIM(COALESCE(payment_status, ''))) <> 'paid'
+                                   ) AS unpaid_gcash_count,
+                                   COUNT(DISTINCT user_id) AS customer_count,
+                                   COUNT(DISTINCT COALESCE(service, '')) AS service_count
+                            FROM appointments
+                            WHERE booking_group_id = CAST(:group_id AS uuid)
+                        ");
+                        $confirmEligibilityStmt->execute([':group_id' => $confirmationGroupId]);
+                        $confirmEligibility = $confirmEligibilityStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+
+                        $confirmGroupCount = (int)($confirmEligibility['group_count'] ?? 0);
+                        if ($confirmGroupCount < 2 || $confirmGroupCount > 20
+                            || $lockedConfirmCount !== $confirmGroupCount
+                            || (int)($confirmEligibility['invalid_status_count'] ?? 0) !== 0
+                            || (int)($confirmEligibility['unpaid_gcash_count'] ?? 0) !== 0
+                            || (int)($confirmEligibility['customer_count'] ?? 0) !== 1
+                            || (int)($confirmEligibility['service_count'] ?? 0) !== 1) {
+                            throw new RuntimeException('The Pet Group cannot be confirmed because its pet bookings do not have matching customer, service, eligible status, or verified GCash payment details.');
+                        }
+
+                        $confirmGroupUpdate = $pdo->prepare("
+                            UPDATE appointments
+                            SET booking_status = 'Confirmed'
+                            WHERE booking_group_id = CAST(:group_id AS uuid)
+                              AND LOWER(BTRIM(COALESCE(NULLIF(booking_status, ''), 'pending')))
+                                  IN ('pending', 'confirmed')
+                        ");
+                        $confirmGroupUpdate->execute([':group_id' => $confirmationGroupId]);
+                        if ($confirmGroupUpdate->rowCount() !== $confirmGroupCount) {
+                            throw new RuntimeException('Not all Pet Group bookings were confirmed. No group status changes were saved.');
+                        }
+                        $pdo->commit();
+                        $_SESSION['alert_msg'] = 'All ' . $confirmGroupCount . ' Pet Group bookings are now Confirmed.';
+                    } catch (Throwable $confirmGroupError) {
+                        if ($pdo->inTransaction()) $pdo->rollBack();
+                        throw $confirmGroupError;
+                    }
+                } else {
+                    $stmt = $pdo->prepare("
+                        UPDATE appointments
+                        SET booking_status = 'Confirmed'
+                        WHERE id = :id
+                    ");
+                    $stmt->execute([':id' => $id]);
+                }
             } else {
                 $stmt = $pdo->prepare("
                     UPDATE appointments
@@ -1529,6 +1734,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['booking_action'])) {
 
             $service = $booking_info['service'] ?? 'Service';
             $pet = $booking_info['pet_real_name'] ?? 'your pet';
+            $notificationGroupId = trim((string)($booking_info['booking_group_id'] ?? ''));
+            $notificationGroupCount = 0;
+
+            if ($notificationGroupId !== '' && preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i', $notificationGroupId)) {
+                $groupNotificationStmt = $pdo->prepare("
+                    SELECT COUNT(*) AS pet_count,
+                           STRING_AGG(COALESCE(p.name, 'Pet'), ', ' ORDER BY a.appointment_time, a.id) AS pet_names
+                    FROM appointments a
+                    LEFT JOIN pets p ON a.pet_id = p.id
+                    WHERE a.booking_group_id = CAST(:group_id AS uuid)
+                ");
+                $groupNotificationStmt->execute([':group_id' => $notificationGroupId]);
+                $groupNotification = $groupNotificationStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+                $notificationGroupCount = (int)($groupNotification['pet_count'] ?? 0);
+                if ($notificationGroupCount > 1) {
+                    $groupPetNames = trim((string)($groupNotification['pet_names'] ?? ''));
+                    $pet = $notificationGroupCount . ' pets (' . $groupPetNames . ')';
+                }
+            }
 
             $appt_date = !empty($booking_info['appointment_date'])
                 ? date('M d, Y', strtotime($booking_info['appointment_date']))
@@ -1539,9 +1763,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['booking_action'])) {
             $sms_msg = "";
 
             if ($new_status === 'Confirmed') {
-                $title = "Booking Confirmed!";
-                $msg = "Your booking for $pet ($service) is now confirmed. See you soon!";
-                $sms_msg = "Hi! Your booking for $pet ($service) on $appt_date at Boogie's Pet Care is CONFIRMED. Thank you!";
+                $title = $notificationGroupCount > 1 ? "Pet Group Booking Confirmed!" : "Booking Confirmed!";
+                $msg = $notificationGroupCount > 1
+                    ? "Your group booking for $pet ($service) is now confirmed. See the individual pet schedules in your booking details. See you soon!"
+                    : "Your booking for $pet ($service) is now confirmed. See you soon!";
+                $sms_msg = $notificationGroupCount > 1
+                    ? "Hi! Your Pet Group booking for $pet ($service) on $appt_date at Boogie's Pet Care is CONFIRMED. Please check your portal for each pet's schedule. Thank you!"
+                    : "Hi! Your booking for $pet ($service) on $appt_date at Boogie's Pet Care is CONFIRMED. Thank you!";
             } elseif ($new_status === 'Cancelled') {
                 $title = "Booking Cancelled";
                 $msg = "Sorry, your booking for $pet ($service) was cancelled by the clinic.";
@@ -1787,9 +2015,21 @@ try {
                a.booking_status, a.service, a.service_fee, a.total_price,
                a.discount_percent, a.discount_amount, a.promo_title,
                a.payment_method, a.payment_status, a.gcash_ref, a.gcash_receipt,
-               a.pickup_time, a.vet_doctor, a.remarks, p.name AS pet_display_name
+               a.pickup_time, a.vet_doctor, a.remarks, a.booking_group_id,
+               COALESCE(group_info.group_pet_count, 0)::int AS group_pet_count,
+               COALESCE(group_info.group_receipt_anchor_id, a.id)::int AS group_receipt_anchor_id,
+               COALESCE(group_info.group_total_price, 0)::numeric AS group_total_price,
+               p.name AS pet_display_name
         FROM appointments a
         LEFT JOIN pets p ON a.pet_id = p.id
+        LEFT JOIN LATERAL (
+            SELECT COUNT(*) AS group_pet_count,
+                   (ARRAY_AGG(ag.id ORDER BY ag.appointment_time ASC NULLS LAST, ag.id ASC))[1] AS group_receipt_anchor_id,
+                   COALESCE(SUM(ag.total_price), 0) AS group_total_price
+            FROM appointments ag
+            WHERE a.booking_group_id IS NOT NULL
+              AND ag.booking_group_id = a.booking_group_id
+        ) group_info ON TRUE
         $where_clause
         ORDER BY
             CASE WHEN a.appointment_date >= CURRENT_DATE THEN 0 ELSE 1 END,
@@ -2708,8 +2948,15 @@ if ($is_admin) {
                                 ?>
                                     <tr class="booking-row" data-status="<?php echo strtolower($display_status); ?>" data-service="<?php echo $service_string; ?>">
                                         <td>
-                                            <strong style="color: var(--navy-dark); font-size: 15px;"><?php echo htmlspecialchars($row['pet_display_name'] ?? 'Unknown Pet'); ?></strong><br>
+                                            <strong style="color: var(--navy-dark); font-size: 15px;"><?php echo htmlspecialchars($row['pet_display_name'] ?? 'Unknown Pet', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></strong><br>
                                             <span style="background: #e0e7ff; color: #3730a3; padding: 3px 6px; border-radius: 4px; font-size: 9px; font-weight: 800; letter-spacing: 0.5px;"><?php echo $booking_type_label; ?></span>
+                                            <?php if (!empty($row['booking_group_id']) && (int)($row['group_pet_count'] ?? 0) > 1): ?>
+                                                <div style="margin-top:6px;">
+                                                    <span style="display:inline-block;background:#fef3c7;color:#92400e;padding:3px 6px;border-radius:4px;font-size:9px;font-weight:800;letter-spacing:.3px;">
+                                                        <i class="fa-solid fa-people-group"></i> GROUP BOOKING · <?php echo (int)$row['group_pet_count']; ?> PETS
+                                                    </span>
+                                                </div>
+                                            <?php endif; ?>
                                         </td>
                                         
                                         <td>
@@ -2751,6 +2998,11 @@ if ($is_admin) {
                                                     </span>
                                                 </div>
                                                 
+                                                <?php if (!empty($row['booking_group_id']) && (int)($row['group_pet_count'] ?? 0) > 1): ?>
+                                                    <small style="font-size:10px;color:#92400e;font-weight:800;">
+                                                        Group total: ₱<?php echo number_format((float)($row['group_total_price'] ?? 0), 2); ?>
+                                                    </small>
+                                                <?php endif; ?>
                                                 <?php if (strtolower(trim((string)$pay_method)) === 'gcash' && (!empty($row['gcash_ref']) || !empty($row['gcash_receipt']))): ?>
                                                     <?php if (!empty($row['gcash_ref'])): ?>
                                                         <span style="font-size: 11px; color: #0284c7; font-weight: 700; margin-top: 2px;">
@@ -2766,6 +3018,19 @@ if ($is_admin) {
                                                             <i class="fa-solid fa-receipt"></i> View Screenshot
                                                         </button>
                                                     <?php endif; ?>
+                                                <?php endif; ?>
+                                                <?php
+                                                    $isReceiptGroupRow = !empty($row['booking_group_id']) && (int)($row['group_pet_count'] ?? 0) > 1;
+                                                    $isReceiptAnchorRow = !$isReceiptGroupRow
+                                                        || (int)($row['id'] ?? 0) === (int)($row['group_receipt_anchor_id'] ?? 0);
+                                                    $isReceiptPaid = strtolower(trim((string)$pay_status)) === 'paid';
+                                                    $receiptAppointmentId = (int)($row['id'] ?? 0);
+                                                ?>
+                                                <?php if ($is_admin && $isReceiptPaid && $isReceiptAnchorRow && $receiptAppointmentId > 0): ?>
+                                                    <a href="print_receipt.php?id=<?php echo $receiptAppointmentId; ?>" target="_blank" rel="noopener noreferrer"
+                                                       style="display:inline-flex;align-items:center;gap:5px;width:max-content;margin-top:3px;color:var(--brand-blue);font-size:11px;font-weight:700;text-decoration:underline;">
+                                                        <i class="fa-solid fa-print"></i> Print Receipt
+                                                    </a>
                                                 <?php endif; ?>
                                             </div>
                                         </td>
@@ -2796,7 +3061,22 @@ if ($is_admin) {
                                                 ?>
                                                 <?php if ($isGcashPending): ?>
                                                     <?php if ($can_verify_gcash): ?>
-                                                        <?php renderBookingActionForm('verify_gcash', $bookingId, 'btn-verify-gcash', '<i class="fa-solid fa-money-bill-wave"></i> Verify', 'Verify GCash payment', 'Only verify after checking the actual GCash transaction and receipt/reference. Continue?', $csrf_token); ?>
+                                                        <?php
+                                                            $isGroupPaymentRow = !empty($row['booking_group_id']) && (int)($row['group_pet_count'] ?? 0) > 1;
+                                                            $verifyButtonText = $isGroupPaymentRow
+                                                                ? '<i class="fa-solid fa-money-bill-wave"></i> Verify Group'
+                                                                : '<i class="fa-solid fa-money-bill-wave"></i> Verify';
+                                                            $verifyConfirmText = $isGroupPaymentRow
+                                                                ? 'Only verify after checking the actual GCash transaction and shared receipt/reference. This will mark all ' . (int)$row['group_pet_count'] . ' pet bookings in this group as Paid and Confirmed. Continue?'
+                                                                : 'Only verify after checking the actual GCash transaction and receipt/reference. Continue?';
+                                                            $isGroupVerifyAnchor = !$isGroupPaymentRow
+                                                                || $bookingId === (int)($row['group_receipt_anchor_id'] ?? 0);
+                                                            if ($isGroupVerifyAnchor) {
+                                                                renderBookingActionForm('verify_gcash', $bookingId, 'btn-verify-gcash', $verifyButtonText, $isGroupPaymentRow ? 'Verify Pet Group GCash payment' : 'Verify GCash payment', $verifyConfirmText, $csrf_token);
+                                                            } else {
+                                                                echo '<span style="font-size:11px;font-weight:700;color:#92400e;">Use Verify Group on the first group row</span>';
+                                                            }
+                                                        ?>
                                                         <?php renderBookingActionForm('Cancelled', $bookingId, 'btn-icon btn-icon-cancel', '<i class="fas fa-times"></i>', 'Reject and cancel booking', 'Reject and cancel this booking?', $csrf_token); ?>
                                                     <?php else: ?>
                                                         <?php renderBookingActionForm('notify_gcash', $bookingId, 'btn-verify-gcash', '<i class="fa-solid fa-bell"></i> Notify Admin', 'Notify Admin to verify GCash', 'Notify the Admin to verify this payment? The payment will remain unverified.', $csrf_token); ?>

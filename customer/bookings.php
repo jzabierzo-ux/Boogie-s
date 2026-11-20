@@ -266,6 +266,426 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['reschedule_booking'])
             $setRescheduleError("Booking not found or you do not have permission to reschedule it.");
         }
 
+        $bookingGroupId = trim((string)($appointment['booking_group_id'] ?? ''));
+
+        // Pet Group rescheduling moves every linked pet row in one transaction.
+        // The customer selects the group's earliest start; the server assigns
+        // each pet to the earliest available 30-minute start while enforcing
+        // two groomers, one groomer during lunch, existing bookings and daily limits.
+        if ($bookingGroupId !== '') {
+            if (!preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i', $bookingGroupId)) {
+                $setRescheduleError('The Pet Group booking reference is invalid. Please contact the clinic.');
+            }
+
+            try {
+                $pdo->beginTransaction();
+
+                $groupService = trim((string)($appointment['service'] ?? ''));
+                if (stripos($groupService, 'Grooming -') !== 0) {
+                    throw new DomainException('Only Grooming Pet Group bookings can be rescheduled online right now. Please contact the clinic for assistance.');
+                }
+
+                // Use the same category/date advisory lock as the online booking flow.
+                $groupCapacityLock = $pdo->prepare("SELECT pg_advisory_xact_lock(hashtext(:lock_key)::bigint)");
+                $groupCapacityLock->execute([
+                    ':lock_key' => 'boogie-capacity|' . $new_date
+                ]);
+
+                $groupRowsStmt = $pdo->prepare("
+                    SELECT a.*,
+                           p.name AS pet_name,
+                           u.full_name AS customer_name,
+                           u.contact_number
+                    FROM appointments a
+                    LEFT JOIN pets p ON p.id = a.pet_id
+                    LEFT JOIN users u ON u.id = a.user_id
+                    WHERE a.booking_group_id = CAST(:group_id AS uuid)
+                      AND a.user_id = :user_id
+                    ORDER BY a.appointment_time ASC, a.id ASC
+                    FOR UPDATE OF a
+                ");
+                $groupRowsStmt->execute([
+                    ':group_id' => $bookingGroupId,
+                    ':user_id' => $user_id
+                ]);
+                $groupRows = $groupRowsStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+                $groupCount = count($groupRows);
+
+                if ($groupCount < 2 || $groupCount > 20) {
+                    throw new DomainException('The Pet Group records are incomplete or invalid. Please contact the clinic.');
+                }
+
+                $originalDate = substr((string)($groupRows[0]['appointment_date'] ?? ''), 0, 10);
+                $groupService = trim((string)($groupRows[0]['service'] ?? ''));
+                $hasRescheduleFlag = false;
+                $petNames = [];
+                $groupPetIds = [];
+
+                foreach ($groupRows as $groupMember) {
+                    $memberDate = substr((string)($groupMember['appointment_date'] ?? ''), 0, 10);
+                    $memberService = trim((string)($groupMember['service'] ?? ''));
+                    $memberStatus = strtoupper(trim((string)($groupMember['booking_status'] ?? '')));
+                    $memberPaymentStatus = strtoupper(trim((string)($groupMember['payment_status'] ?? '')));
+                    $memberRescheduleCount = (int)($groupMember['reschedule_count'] ?? 0);
+
+                    if ($memberDate !== $originalDate || $memberService !== $groupService) {
+                        throw new DomainException('The Pet Group has inconsistent dates or services. Please contact the clinic before rescheduling.');
+                    }
+                    if (!in_array($memberStatus, ['FOR RESCHEDULING', 'CONFIRMED'], true)) {
+                        throw new DomainException('All pets in the group must still be eligible for rescheduling. A completed, cancelled, or no-show pet prevents a group reschedule.');
+                    }
+                    if ($memberPaymentStatus !== 'PAID') {
+                        throw new DomainException('All pets in the group must have a verified payment before rescheduling.');
+                    }
+                    if ($memberRescheduleCount >= 1) {
+                        throw new DomainException('This Pet Group has already used its one allowed reschedule.');
+                    }
+                    if ($memberStatus === 'FOR RESCHEDULING') {
+                        $hasRescheduleFlag = true;
+                    }
+
+                    $petNames[] = trim((string)($groupMember['pet_name'] ?? 'Pet')) ?: 'Pet';
+                    $groupPetIds[] = (int)($groupMember['id'] ?? 0);
+                }
+
+                if (!$hasRescheduleFlag) {
+                    throw new DomainException('This Pet Group has not been marked For Rescheduling by the clinic yet.');
+                }
+                if ($originalDate === '' || $originalDate === '1970-01-01') {
+                    throw new DomainException('The original Pet Group appointment date is invalid.');
+                }
+
+                $todayManila = new DateTimeImmutable('today', new DateTimeZone('Asia/Manila'));
+                $nowManila = new DateTimeImmutable('now', new DateTimeZone('Asia/Manila'));
+                $todayString = $todayManila->format('Y-m-d');
+                $nowString = $nowManila->format('H:i:s');
+                $latestGroupRescheduleDate = (new DateTimeImmutable($originalDate, new DateTimeZone('Asia/Manila')))
+                    ->modify('+3 days')->format('Y-m-d');
+
+                if ($new_date_object < $todayManila) {
+                    throw new DomainException('You cannot reschedule to a past date.');
+                }
+                if ($new_date > $latestGroupRescheduleDate) {
+                    throw new DomainException('Group rescheduling is only allowed within 3 days after the original appointment date.');
+                }
+                if ($new_date === $todayString && $new_time <= $nowString) {
+                    throw new DomainException('Please select a future start time for the new group schedule.');
+                }
+                if ($new_date === $todayString && $nowManila->format('H:i:s') >= '16:00:00') {
+                    throw new DomainException('Same-day rescheduling is closed after 4:00 PM. Please choose another date.');
+                }
+
+                $durationMinutes = $rescheduleServiceDuration('Grooming', $groupService);
+                $baseStartMinutes = $rescheduleTimeToMinutes($new_time);
+                if ($durationMinutes <= 0 || $baseStartMinutes === null
+                    || !in_array($new_time, $rescheduleAllowedTimes('Grooming', $groupService), true)) {
+                    throw new DomainException('Please choose a valid group start time for this Grooming service.');
+                }
+
+                // Read active appointments on the target date, excluding this group
+                // because all its members will be moved and reinserted into the schedule.
+                $activeBookingSql = "LOWER(BTRIM(COALESCE(booking_status, ''))) NOT IN ('cancelled', 'canceled', 'no-show', 'no show', 'noshow', 'for rescheduling')";
+                $targetRowsStmt = $pdo->prepare("
+                    SELECT appointment_date::text AS appointment_date,
+                           appointment_time::text AS appointment_time,
+                           checkout_date::text AS checkout_date,
+                           service,
+                           booking_status
+                    FROM appointments
+                    WHERE {$activeBookingSql}
+                      AND (
+                          appointment_date = CAST(:target_date AS date)
+                          OR (
+                              service ILIKE 'Pet Hotel%boarding%'
+                              AND appointment_date < CAST(:target_date_before AS date)
+                              AND COALESCE(checkout_date, appointment_date + 1) > CAST(:target_date_active AS date)
+                          )
+                      )
+                      AND (booking_group_id IS NULL OR booking_group_id <> CAST(:group_id AS uuid))
+                    ORDER BY appointment_time ASC
+                ");
+                $targetRowsStmt->execute([
+                    ':target_date' => $new_date,
+                    ':target_date_before' => $new_date,
+                    ':target_date_active' => $new_date,
+                    ':group_id' => $bookingGroupId
+                ]);
+                $targetRows = $targetRowsStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+                $dailyTotal = count($targetRows);
+                $groomingDailyCount = 0;
+                $busyIntervals = [];
+                foreach ($targetRows as $targetRow) {
+                    $targetService = trim((string)($targetRow['service'] ?? ''));
+                    $targetRowDate = substr((string)($targetRow['appointment_date'] ?? ''), 0, 10);
+                    if ($targetRowDate === $new_date && stripos($targetService, 'Grooming -') === 0) {
+                        $groomingDailyCount++;
+                        $existingStart = $rescheduleTimeToMinutes((string)($targetRow['appointment_time'] ?? ''));
+                        if ($existingStart !== null) {
+                            $busyIntervals[] = [
+                                'start' => $existingStart,
+                                'end' => $existingStart + $rescheduleServiceDuration('Grooming', $targetService)
+                            ];
+                        }
+                    }
+                }
+
+                // Include Admin-recorded occupied pets and unavailable grooming staff
+                // so the reschedule cannot bypass manual capacity controls.
+                $manualAdjustments = [];
+                $adjustmentTableExists = (bool)$pdo->query("SELECT to_regclass('public.availability_adjustments')")->fetchColumn();
+                if ($adjustmentTableExists) {
+                    $adjustmentStmt = $pdo->prepare("
+                        SELECT service_category, COALESCE(specific_service, '') AS specific_service,
+                               start_date::text AS start_date, end_date::text AS end_date,
+                               start_time::text AS start_time, end_time::text AS end_time,
+                               LOWER(BTRIM(adjustment_type)) AS adjustment_type, quantity
+                        FROM public.availability_adjustments
+                        WHERE is_active = TRUE
+                          AND start_date < CAST(:range_end AS date)
+                          AND end_date > CAST(:range_start AS date)
+                    ");
+                    $nextDate = (new DateTimeImmutable($new_date, new DateTimeZone('Asia/Manila')))
+                        ->modify('+1 day')->format('Y-m-d');
+                    $adjustmentStmt->execute([
+                        ':range_start' => $new_date,
+                        ':range_end' => $nextDate
+                    ]);
+                    $manualAdjustments = $adjustmentStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+                }
+
+                $manualGlobalOccupied = 0;
+                $manualGroomingOccupied = 0;
+                foreach ($manualAdjustments as $adjustment) {
+                    $adjustmentStartDate = substr((string)($adjustment['start_date'] ?? ''), 0, 10);
+                    $adjustmentEndDate = substr((string)($adjustment['end_date'] ?? ''), 0, 10);
+                    if ($adjustmentStartDate === '' || $adjustmentEndDate === ''
+                        || $adjustmentStartDate > $new_date || $adjustmentEndDate <= $new_date) {
+                        continue;
+                    }
+
+                    $adjustmentType = strtolower(trim((string)($adjustment['adjustment_type'] ?? '')));
+                    $adjustmentCategory = trim((string)($adjustment['service_category'] ?? ''));
+                    $adjustmentService = trim((string)($adjustment['specific_service'] ?? ''));
+                    $quantity = max(1, (int)($adjustment['quantity'] ?? 1));
+
+                    if ($adjustmentType === 'occupied') {
+                        $manualGlobalOccupied += $quantity;
+                        if ($adjustmentCategory === 'Grooming') {
+                            $manualGroomingOccupied += $quantity;
+                        }
+                    }
+
+                    if ($adjustmentCategory !== 'Grooming'
+                        || !in_array($adjustmentType, ['occupied', 'blocked', 'capacity_reduced'], true)) {
+                        continue;
+                    }
+                    if (in_array($adjustmentType, ['blocked', 'capacity_reduced'], true)
+                        && $adjustmentService !== ''
+                        && stripos($groupService, $adjustmentService) === false) {
+                        continue;
+                    }
+
+                    $rawStart = trim((string)($adjustment['start_time'] ?? ''));
+                    $rawEnd = trim((string)($adjustment['end_time'] ?? ''));
+                    $parseAdjustmentMinute = static function (string $value): ?int {
+                        if (!preg_match('/^(\d{1,2}):(\d{2})(?::\d{2})?$/', $value, $matches)) return null;
+                        $hour = (int)$matches[1];
+                        $minute = (int)$matches[2];
+                        if ($hour > 23 || $minute > 59) return null;
+                        return ($hour * 60) + $minute;
+                    };
+                    $adjustmentStart = $rawStart === '' ? 0 : $parseAdjustmentMinute($rawStart);
+                    $adjustmentEnd = $rawEnd === '' ? 1440 : $parseAdjustmentMinute($rawEnd);
+                    if ($adjustmentStart === null || $adjustmentEnd === null || $adjustmentEnd <= $adjustmentStart) {
+                        continue;
+                    }
+                    $units = $adjustmentType === 'blocked' ? 2 : $quantity;
+                    for ($unit = 0; $unit < $units; $unit++) {
+                        $busyIntervals[] = ['start' => $adjustmentStart, 'end' => $adjustmentEnd];
+                    }
+                }
+
+                $dailyTotal += $manualGlobalOccupied;
+                $groomingDailyCount += $manualGroomingOccupied;
+                if (($dailyTotal + $groupCount) > 20) {
+                    throw new DomainException('The overall daily capacity of 20 pets would be exceeded by this group. Please choose another date.');
+                }
+                if (($groomingDailyCount + $groupCount) > 10) {
+                    throw new DomainException('Grooming daily capacity would be exceeded by this group. Please choose another date.');
+                }
+
+                // A candidate interval must fit at every occupancy change. Grooming
+                // capacity drops from two to one between 12:00 PM and 1:00 PM.
+                $canFitInterval = static function (int $candidateStart, int $candidateEnd, array $intervals): bool {
+                    if ($candidateStart < 9 * 60 || $candidateStart > 16 * 60
+                        || $candidateEnd > 17 * 60
+                        || ($candidateStart >= 12 * 60 && $candidateStart < 13 * 60)) {
+                        return false;
+                    }
+
+                    $points = [$candidateStart, 12 * 60, 13 * 60];
+                    foreach ($intervals as $interval) {
+                        $intervalStart = (int)($interval['start'] ?? 0);
+                        $intervalEnd = (int)($interval['end'] ?? 0);
+                        if ($intervalStart < $candidateEnd && $candidateStart < $intervalEnd) {
+                            if ($intervalStart > $candidateStart && $intervalStart < $candidateEnd) $points[] = $intervalStart;
+                            if ($intervalEnd > $candidateStart && $intervalEnd < $candidateEnd) $points[] = $intervalEnd;
+                        }
+                    }
+                    $points = array_values(array_unique(array_filter($points, static function ($point) use ($candidateStart, $candidateEnd) {
+                        return $point >= $candidateStart && $point < $candidateEnd;
+                    })));
+                    sort($points, SORT_NUMERIC);
+
+                    foreach ($points as $point) {
+                        $active = 0;
+                        foreach ($intervals as $interval) {
+                            if ((int)($interval['start'] ?? 0) <= $point && (int)($interval['end'] ?? 0) > $point) {
+                                $active++;
+                            }
+                        }
+                        $capacity = ($point >= 12 * 60 && $point < 13 * 60) ? 1 : 2;
+                        if ($active + 1 > $capacity) return false;
+                    }
+                    return true;
+                };
+
+                $groupSchedule = [];
+                foreach ($groupRows as $memberIndex => $groupMember) {
+                    $selectedStart = null;
+                    $candidateStarts = [];
+                    if ($memberIndex === 0) {
+                        // The first pet must begin at the selected group start time.
+                        $candidateStarts[] = $baseStartMinutes;
+                    } else {
+                        // Later pets are assigned in order to the earliest available
+                        // groomer slot, in 30-minute increments from the chosen start.
+                        for ($candidate = $baseStartMinutes; $candidate <= 16 * 60; $candidate += 30) {
+                            $candidateStarts[] = $candidate;
+                        }
+                    }
+
+                    foreach ($candidateStarts as $candidateStart) {
+                        $candidateEnd = $candidateStart + $durationMinutes;
+                        if (!$canFitInterval($candidateStart, $candidateEnd, $busyIntervals)) continue;
+                        $selectedStart = $candidateStart;
+                        $busyIntervals[] = ['start' => $candidateStart, 'end' => $candidateEnd];
+                        break;
+                    }
+
+                    if ($selectedStart === null) {
+                        throw new DomainException('There is not enough Grooming capacity to reschedule all pets from this start time and finish by 5:00 PM. Please choose an earlier time or another date.');
+                    }
+                    $groupSchedule[] = $selectedStart;
+                }
+
+                // All rows are locked and validated. Update each pet's own row with
+                // its calculated start time, but commit the group as one operation.
+                $groupUpdateStmt = $pdo->prepare("
+                    UPDATE appointments
+                    SET appointment_date = CAST(:appointment_date AS date),
+                        appointment_time = CAST(:appointment_time AS time),
+                        booking_status = 'Rescheduled',
+                        reschedule_count = 1
+                    WHERE id = :appointment_id
+                      AND user_id = :user_id
+                      AND booking_group_id = CAST(:group_id AS uuid)
+                      AND reschedule_count = 0
+                      AND LOWER(BTRIM(COALESCE(booking_status, ''))) IN ('confirmed', 'for rescheduling')
+                      AND LOWER(BTRIM(COALESCE(payment_status, ''))) = 'paid'
+                ");
+
+                foreach ($groupRows as $index => $groupMember) {
+                    $groupUpdateStmt->execute([
+                        ':appointment_date' => $new_date,
+                        ':appointment_time' => sprintf('%02d:%02d:00', intdiv($groupSchedule[$index], 60), $groupSchedule[$index] % 60),
+                        ':appointment_id' => (int)$groupMember['id'],
+                        ':user_id' => $user_id,
+                        ':group_id' => $bookingGroupId
+                    ]);
+                    if ($groupUpdateStmt->rowCount() !== 1) {
+                        throw new RuntimeException('Not all pet appointments in the group could be updated. The group reschedule was rolled back.');
+                    }
+                }
+
+                if ($pdo->inTransaction()) {
+                    $pdo->commit();
+                }
+
+                $formattedGroupDate = date('M d, Y', strtotime($new_date));
+                $formattedGroupStart = date('g:i A', strtotime($new_time));
+                $groupPetNames = implode(', ', array_values(array_filter($petNames)));
+                $groupSummary = $groupCount . ' pets (' . $groupPetNames . ')';
+
+                // One Admin notification and one customer notification for the group.
+                try {
+                    $adminGroupMessage = ($groupRows[0]['customer_name'] ?? $full_name)
+                        . ' rescheduled Pet Group (' . $groupPetNames . ') to '
+                        . $formattedGroupDate . ' starting at ' . $formattedGroupStart . '.';
+                    if (function_exists('mb_substr')) {
+                        $adminGroupMessage = mb_substr($adminGroupMessage, 0, 250, 'UTF-8');
+                    } else {
+                        $adminGroupMessage = substr($adminGroupMessage, 0, 250);
+                    }
+                    $adminGroupNotifStmt = $pdo->prepare('INSERT INTO admin_notifications (message) VALUES (:message)');
+                    $adminGroupNotifStmt->execute([':message' => $adminGroupMessage]);
+                } catch (Throwable $adminGroupNotifError) {
+                    error_log('Admin group reschedule notification failed: ' . $adminGroupNotifError->getMessage());
+                }
+
+                try {
+                    $customerGroupMessage = 'Your Pet Group booking for ' . $groupSummary
+                        . ' (' . $groupService . ') has been rescheduled to ' . $formattedGroupDate
+                        . '. Check My Schedule for each pet\'s updated time.';
+                    $customerGroupNotifStmt = $pdo->prepare("
+                        INSERT INTO notifications (user_id, title, message, type, is_read, created_at)
+                        VALUES (:user_id, 'Pet Group Rescheduled', :message, 'booking', 0, NOW())
+                    ");
+                    $customerGroupNotifStmt->execute([
+                        ':user_id' => $user_id,
+                        ':message' => $customerGroupMessage
+                    ]);
+                } catch (Throwable $customerGroupNotifError) {
+                    error_log('Customer group reschedule notification failed: ' . $customerGroupNotifError->getMessage());
+                }
+
+                $contactNumber = trim((string)($groupRows[0]['contact_number'] ?? ''));
+                if ($contactNumber !== '' && strtoupper($contactNumber) !== 'N/A') {
+                    $groupSmsMessage = 'Hi! Your Pet Group booking for ' . $groupCount . ' pets has been RESCHEDULED to '
+                        . $formattedGroupDate . ' starting at ' . $formattedGroupStart
+                        . '. Check My Schedule for each pet\'s updated time. - Boogie\'s Pet Care';
+                    try {
+                        $groupSmsResult = sendIPROGSMS($contactNumber, $groupSmsMessage);
+                        if (empty($groupSmsResult['success'])) {
+                            error_log('IPROG SMS failed after Pet Group reschedule: ' . ($groupSmsResult['response'] ?? 'Unknown error'));
+                        }
+                    } catch (Throwable $groupSmsError) {
+                        error_log('IPROG SMS exception after Pet Group reschedule: ' . $groupSmsError->getMessage());
+                    }
+                }
+
+                unset($_SESSION['booking_reschedule_error']);
+                $_SESSION['booking_reschedule_success'] = 'Your entire Pet Group (' . $groupCount
+                    . ' pets) was successfully rescheduled to ' . $formattedGroupDate
+                    . '. Each pet now has its own updated Grooming time. Check My Schedule for the full schedule.';
+                header('Location: bookings.php');
+                exit();
+
+            } catch (DomainException $groupValidationError) {
+                if ($pdo->inTransaction()) $pdo->rollBack();
+                $setRescheduleError($groupValidationError->getMessage());
+            } catch (PDOException $groupDatabaseError) {
+                if ($pdo->inTransaction()) $pdo->rollBack();
+                error_log('Pet Group reschedule database error: ' . $groupDatabaseError->getMessage());
+                $setRescheduleError('Unable to reschedule this Pet Group right now. Please try again or contact the clinic.');
+            } catch (Throwable $groupUnexpectedError) {
+                if ($pdo->inTransaction()) $pdo->rollBack();
+                error_log('Pet Group reschedule error: ' . $groupUnexpectedError->getMessage());
+                $setRescheduleError('The Pet Group reschedule could not be completed. No group appointments were changed.');
+            }
+        }
+
         $booking_status = strtoupper(trim((string)($appointment['booking_status'] ?? '')));
         $reschedule_count = (int)($appointment['reschedule_count'] ?? 0);
         $payment_status = strtoupper(trim((string)($appointment['payment_status'] ?? '')));
@@ -710,10 +1130,76 @@ try {
     $stmt = $pdo->prepare($query);
     $stmt->execute($params);
 
-    $bookings = $stmt->fetchAll();
+    $bookings = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+    // When a filtered result contains one pet from a group, load all pets from
+    // that same group so the customer always sees the complete group schedule.
+    $bookingGroupIds = [];
+    foreach ($bookings as $bookingRow) {
+        $groupId = trim((string)($bookingRow['booking_group_id'] ?? ''));
+        if ($groupId !== '' && preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i', $groupId)) {
+            $bookingGroupIds[$groupId] = $groupId;
+        }
+    }
+
+    $bookingGroupRows = [];
+    if (!empty($bookingGroupIds)) {
+        $groupPlaceholders = [];
+        $groupParams = [':user_id' => $user_id];
+        $groupIndex = 0;
+        foreach (array_values($bookingGroupIds) as $groupId) {
+            $placeholder = ':group_id_' . $groupIndex++;
+            $groupPlaceholders[] = 'CAST(' . $placeholder . ' AS uuid)';
+            $groupParams[$placeholder] = $groupId;
+        }
+
+        $groupRowsStmt = $pdo->prepare("
+            SELECT a.*, p.name AS joined_pet_name, r.id AS review_id
+            FROM appointments a
+            LEFT JOIN pets p ON p.id = a.pet_id
+            LEFT JOIN reviews r ON r.appointment_id = a.id
+            WHERE a.user_id = :user_id
+              AND a.booking_group_id IN (" . implode(', ', $groupPlaceholders) . ")
+            ORDER BY a.appointment_date ASC, a.appointment_time ASC, a.id ASC
+        ");
+        $groupRowsStmt->execute($groupParams);
+        foreach ($groupRowsStmt->fetchAll(PDO::FETCH_ASSOC) as $groupRow) {
+            $groupId = trim((string)($groupRow['booking_group_id'] ?? ''));
+            if ($groupId !== '') {
+                $bookingGroupRows[$groupId][] = $groupRow;
+            }
+        }
+    }
 
 } catch (PDOException $e) {
+    error_log('Customer booking list query failed: ' . $e->getMessage());
     $bookings = [];
+    $bookingGroupRows = [];
+}
+
+/** Estimate the end time for a member's Grooming schedule using the same service durations as booking. */
+function customerBookingDurationMinutes(string $service): int
+{
+    $name = strtolower(trim($service));
+    if (strpos($name, 'full grooming package') !== false || preg_match('/\bfg\b/', $name)) return 120;
+    if (strpos($name, 'bath & blow dry') !== false || strpos($name, 'bath and blow dry') !== false || strpos($name, 'cat bath') !== false) return 90;
+    if (strpos($name, 'basic pet grooming') !== false || strpos($name, 'cat grooming (basic)') !== false) return 60;
+    if (strpos($name, 'vet services') === 0) return 30;
+    if (strpos($name, 'pet hotel') === 0 && strpos($name, 'daycare') !== false) return 180;
+    return 120;
+}
+
+/** Read the customer-created group name saved in each appointment's remarks. */
+function customerBookingGroupName(array $rows): string
+{
+    foreach ($rows as $row) {
+        $remarks = (string)($row['remarks'] ?? '');
+        if (preg_match('/GROUP BOOKING:\s*(.+?)\s+\(\d+\s+of\s+\d+\s+pets\)/i', $remarks, $matches)) {
+            $name = trim($matches[1]);
+            if ($name !== '') return $name;
+        }
+    }
+    return 'Pet Group Booking';
 }
 ?>
 <!DOCTYPE html>
@@ -1221,6 +1707,44 @@ try {
             gap: 11px;
         }
 
+        .group-schedule-card {
+            grid-template-columns: 88px minmax(0,1fr) minmax(150px,auto);
+            align-items: start;
+            border-color: #e7d9a8;
+            background: #fffdf6;
+        }
+        .group-booking-label {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 6px;
+            color: #8c6800;
+            font-size: 8px;
+            font-weight: 800;
+            letter-spacing: .55px;
+        }
+        .group-pet-list {
+            display: grid;
+            gap: 7px;
+            margin-top: 12px;
+        }
+        .group-pet-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 9px 11px;
+            border: 1px solid #eee5c8;
+            border-radius: 10px;
+            background: #fff;
+        }
+        .group-pet-info { min-width: 0; display: grid; gap: 2px; }
+        .group-pet-info strong { color: var(--brand-blue); font-size: 10px; overflow-wrap: anywhere; }
+        .group-pet-info strong i { color: #9b7a12; margin-right: 5px; }
+        .group-pet-info small { color: var(--muted); font-size: 8px; }
+        .group-pet-actions { display: inline-flex; align-items: center; gap: 7px; flex-wrap: wrap; justify-content: flex-end; }
+        .group-action-note { max-width: 180px; }
+
         .schedule-item {
             display: grid;
             grid-template-columns: 88px minmax(0,1fr) auto;
@@ -1544,6 +2068,12 @@ try {
             .schedule-item {
                 grid-template-columns: 82px 1fr;
             }
+            .group-schedule-card {
+                grid-template-columns: 82px minmax(0,1fr);
+            }
+            .group-schedule-card > .schedule-status {
+                grid-column: 2;
+            }
 
             .schedule-status {
                 grid-column: 2;
@@ -1586,6 +2116,16 @@ try {
             .schedule-item {
                 grid-template-columns: 1fr;
                 gap: 12px;
+            }
+            .group-pet-row {
+                align-items: flex-start;
+                flex-direction: column;
+            }
+            .group-pet-actions {
+                justify-content: flex-start;
+            }
+            .group-schedule-card > .schedule-status {
+                grid-column: auto;
             }
 
             .date-box {
@@ -2871,15 +3411,46 @@ try {
             $today = date('Y-m-d');
             $upcoming = [];
             $past = [];
+            $processedGroupIds = [];
 
             foreach ($bookings as $booking) {
-                $booking_date = date('Y-m-d', strtotime($booking['appointment_date']));
-                $status = strtoupper($booking['booking_status'] ?? 'PENDING');
+                $groupId = trim((string)($booking['booking_group_id'] ?? ''));
+                if ($groupId !== '') {
+                    if (isset($processedGroupIds[$groupId])) continue;
+                    $processedGroupIds[$groupId] = true;
+                    $groupRows = $bookingGroupRows[$groupId] ?? [$booking];
+                    if (empty($groupRows)) $groupRows = [$booking];
+                    usort($groupRows, static function ($a, $b) {
+                        return strcmp(
+                            (string)($a['appointment_date'] ?? '') . ' ' . (string)($a['appointment_time'] ?? ''),
+                            (string)($b['appointment_date'] ?? '') . ' ' . (string)($b['appointment_time'] ?? '')
+                        );
+                    });
 
-                if (
-                    ($booking_date >= $today && !in_array($status, ['CANCELLED', 'COMPLETED', 'NO-SHOW'], true))
-                    || in_array($status, ['FOR RESCHEDULING', 'RESCHEDULED'], true)
-                ) {
+                    $groupHasUpcoming = false;
+                    foreach ($groupRows as $groupMember) {
+                        $memberDate = date('Y-m-d', strtotime((string)($groupMember['appointment_date'] ?? '')));
+                        $memberStatus = strtoupper(trim((string)($groupMember['booking_status'] ?? 'PENDING')));
+                        if (($memberDate >= $today && !in_array($memberStatus, ['CANCELLED', 'COMPLETED', 'NO-SHOW'], true))
+                            || in_array($memberStatus, ['FOR RESCHEDULING', 'RESCHEDULED'], true)) {
+                            $groupHasUpcoming = true;
+                            break;
+                        }
+                    }
+
+                    $groupEntry = $groupRows[0];
+                    $groupEntry['_is_group_booking'] = true;
+                    $groupEntry['_group_rows'] = $groupRows;
+                    $groupEntry['_group_name'] = customerBookingGroupName($groupRows);
+                    if ($groupHasUpcoming) $upcoming[] = $groupEntry;
+                    else $past[] = $groupEntry;
+                    continue;
+                }
+
+                $booking_date = date('Y-m-d', strtotime((string)($booking['appointment_date'] ?? '')));
+                $status = strtoupper($booking['booking_status'] ?? 'PENDING');
+                if (($booking_date >= $today && !in_array($status, ['CANCELLED', 'COMPLETED', 'NO-SHOW'], true))
+                    || in_array($status, ['FOR RESCHEDULING', 'RESCHEDULED'], true)) {
                     $upcoming[] = $booking;
                 } else {
                     $past[] = $booking;
@@ -2915,6 +3486,180 @@ try {
             <?php if (!empty($upcoming)): ?>
                 <div class="schedule-list">
                     <?php foreach ($upcoming as $row): ?>
+                        <?php if (!empty($row['_is_group_booking'])): ?>
+                            <?php
+                                $groupRows = $row['_group_rows'] ?? [];
+                                $groupName = (string)($row['_group_name'] ?? 'Pet Group Booking');
+                                $groupFirst = $groupRows[0] ?? $row;
+                                $groupService = (string)($groupFirst['service'] ?? 'Grooming');
+                                $groupDate = (string)($groupFirst['appointment_date'] ?? '');
+                                $groupTotal = 0.0;
+                                $groupStatuses = [];
+                                $groupPaymentStatuses = [];
+                                $groupPaymentMethods = [];
+                                $groupReference = '';
+                                $groupStartMinute = PHP_INT_MAX;
+                                $groupRescheduleEligible = count($groupRows) >= 2;
+                                $groupHasRescheduleFlag = false;
+                                $groupOriginalDate = substr((string)($groupFirst['appointment_date'] ?? ''), 0, 10);
+                                $groupOriginalService = trim((string)($groupFirst['service'] ?? ''));
+                                $groupEndMinute = 0;
+                                $groupCancellationEligible = count($groupRows) >= 2 && count($groupRows) <= 20;
+                                $groupEarliestAppointmentTimestamp = null;
+                                $cancellationTimezone = new DateTimeZone('Asia/Manila');
+                                $nowForGroupCancellation = new DateTimeImmutable('now', $cancellationTimezone);
+                                foreach ($groupRows as $groupMember) {
+                                    $groupTotal += (float)($groupMember['total_price'] ?? $groupMember['service_fee'] ?? 0);
+                                    $memberStatusValue = trim((string)($groupMember['booking_status'] ?? 'Pending')) ?: 'Pending';
+                                    $groupStatuses[strtoupper($memberStatusValue)] = $memberStatusValue;
+                                    $memberPaymentStatus = trim((string)($groupMember['payment_status'] ?? 'Pending')) ?: 'Pending';
+                                    $groupPaymentStatuses[strtoupper($memberPaymentStatus)] = $memberPaymentStatus;
+                                    $memberPaymentMethod = trim((string)($groupMember['payment_method'] ?? 'N/A')) ?: 'N/A';
+                                    $groupPaymentMethods[strtoupper($memberPaymentMethod)] = $memberPaymentMethod;
+                                    $memberRescheduleStatus = strtoupper(trim((string)($groupMember['booking_status'] ?? '')));
+                                    $memberReschedulePayment = strtoupper(trim((string)($groupMember['payment_status'] ?? '')));
+                                    if ($memberRescheduleStatus === 'FOR RESCHEDULING') $groupHasRescheduleFlag = true;
+                                    if (!in_array($memberRescheduleStatus, ['FOR RESCHEDULING', 'CONFIRMED'], true)
+                                        || $memberReschedulePayment !== 'PAID'
+                                        || (int)($groupMember['reschedule_count'] ?? 0) >= 1
+                                        || substr((string)($groupMember['appointment_date'] ?? ''), 0, 10) !== $groupOriginalDate
+                                        || trim((string)($groupMember['service'] ?? '')) !== $groupOriginalService) {
+                                        $groupRescheduleEligible = false;
+                                    }
+
+                                    // The cancellation endpoint cancels all rows together. Show the
+                                    // group button only when every member is still cancellable and
+                                    // at least 24 hours remain before the earliest member's start.
+                                    $memberCancelStatus = strtoupper(trim((string)($groupMember['booking_status'] ?? '')));
+                                    if (in_array($memberCancelStatus, ['CANCELLED', 'CANCELED', 'COMPLETED', 'NO-SHOW', 'NO SHOW', 'NOSHOW'], true)
+                                        || substr((string)($groupMember['appointment_date'] ?? ''), 0, 10) !== $groupOriginalDate
+                                        || trim((string)($groupMember['service'] ?? '')) !== $groupOriginalService) {
+                                        $groupCancellationEligible = false;
+                                    }
+                                    $memberCancelDate = substr((string)($groupMember['appointment_date'] ?? ''), 0, 10);
+                                    $memberCancelTime = trim((string)($groupMember['appointment_time'] ?? ''));
+                                    if (preg_match('/^\d{2}:\d{2}$/', $memberCancelTime)) {
+                                        $memberCancelTime .= ':00';
+                                    }
+                                    if (!preg_match('/^\d{2}:\d{2}:\d{2}$/', $memberCancelTime)) {
+                                        $groupCancellationEligible = false;
+                                    } else {
+                                        $memberCancelDateTime = DateTimeImmutable::createFromFormat(
+                                            '!Y-m-d H:i:s',
+                                            $memberCancelDate . ' ' . $memberCancelTime,
+                                            $cancellationTimezone
+                                        );
+                                        $memberCancelDateErrors = DateTimeImmutable::getLastErrors();
+                                        if ($memberCancelDateTime === false
+                                            || ($memberCancelDateErrors !== false && ($memberCancelDateErrors['warning_count'] > 0 || $memberCancelDateErrors['error_count'] > 0))
+                                            || $memberCancelDateTime->format('Y-m-d H:i:s') !== $memberCancelDate . ' ' . $memberCancelTime) {
+                                            $groupCancellationEligible = false;
+                                        } else {
+                                            if (($memberCancelDateTime->getTimestamp() - $nowForGroupCancellation->getTimestamp()) < 86400) {
+                                                $groupCancellationEligible = false;
+                                            }
+                                            $memberCancelTimestamp = $memberCancelDateTime->getTimestamp();
+                                            $groupEarliestAppointmentTimestamp = $groupEarliestAppointmentTimestamp === null
+                                                ? $memberCancelTimestamp
+                                                : min($groupEarliestAppointmentTimestamp, $memberCancelTimestamp);
+                                        }
+                                    }
+
+                                    if ($groupReference === '' && trim((string)($groupMember['gcash_ref'] ?? '')) !== '') $groupReference = trim((string)$groupMember['gcash_ref']);
+                                    $memberStart = strtotime((string)($groupMember['appointment_time'] ?? '09:00:00'));
+                                    if ($memberStart !== false) {
+                                        $minute = ((int)date('H', $memberStart) * 60) + (int)date('i', $memberStart);
+                                        $groupStartMinute = min($groupStartMinute, $minute);
+                                        $groupEndMinute = max($groupEndMinute, $minute + customerBookingDurationMinutes($groupService));
+                                    }
+                                }
+                                $groupStatusDisplay = count($groupStatuses) === 1 ? reset($groupStatuses) : 'Multiple statuses';
+                                $groupPaymentStatusDisplay = count($groupPaymentStatuses) === 1 ? reset($groupPaymentStatuses) : 'Mixed payment status';
+                                $groupPaymentMethodDisplay = count($groupPaymentMethods) === 1 ? reset($groupPaymentMethods) : 'Multiple methods';
+                                $groupStartDisplay = $groupStartMinute < PHP_INT_MAX ? date('g:i A', strtotime(sprintf('%02d:%02d:00', intdiv($groupStartMinute, 60), $groupStartMinute % 60))) : 'Time not set';
+                                $groupEndDisplay = $groupEndMinute > 0 ? date('g:i A', strtotime(sprintf('%02d:%02d:00', intdiv($groupEndMinute, 60), $groupEndMinute % 60))) : '';
+                                $groupRescheduleEligible = $groupRescheduleEligible
+                                    && $groupHasRescheduleFlag
+                                    && stripos($groupOriginalService, 'Grooming -') === 0;
+                                $groupPaymentUpper = strtoupper($groupPaymentStatusDisplay);
+                                $groupPaymentClass = (strpos($groupPaymentUpper, 'PAID') !== false || strpos($groupPaymentUpper, 'PENDING VERIFICATION') !== false) ? 'status-APPROVED' : 'status-PENDING';
+                            ?>
+                            <article class="schedule-item group-schedule-card">
+                                <div class="date-box">
+                                    <div class="date-month"><?php echo htmlspecialchars(date('M', strtotime($groupDate)), ENT_QUOTES, 'UTF-8'); ?></div>
+                                    <div class="date-day"><?php echo htmlspecialchars(date('d', strtotime($groupDate)), ENT_QUOTES, 'UTF-8'); ?></div>
+                                    <div class="date-week"><?php echo htmlspecialchars(date('l', strtotime($groupDate)), ENT_QUOTES, 'UTF-8'); ?></div>
+                                </div>
+                                <div class="schedule-main">
+                                    <div class="group-booking-label"><i class="fa-solid fa-people-group"></i> GROUP BOOKING · <?php echo count($groupRows); ?> PETS</div>
+                                    <div class="schedule-service"><?php echo htmlspecialchars($groupName, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></div>
+                                    <div class="schedule-note"><?php echo htmlspecialchars($groupService, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?> · Estimated group schedule: <?php echo htmlspecialchars($groupStartDisplay . ($groupEndDisplay !== '' ? ' – ' . $groupEndDisplay : ''), ENT_QUOTES, 'UTF-8'); ?></div>
+                                    <div class="group-pet-list">
+                                        <?php foreach ($groupRows as $groupMember): ?>
+                                            <?php
+                                                $memberPetName = (string)($groupMember['joined_pet_name'] ?? 'Unknown Pet');
+                                                $memberStartRaw = (string)($groupMember['appointment_time'] ?? '');
+                                                $memberStartTimestamp = $memberStartRaw !== '' ? strtotime($memberStartRaw) : false;
+                                                $memberStartDisplay = $memberStartTimestamp !== false ? date('g:i A', $memberStartTimestamp) : 'Time not set';
+                                                $memberDuration = customerBookingDurationMinutes((string)($groupMember['service'] ?? $groupService));
+                                                $memberEndDisplay = $memberStartTimestamp !== false ? date('g:i A', $memberStartTimestamp + ($memberDuration * 60)) : '';
+                                                $memberStatusDisplay = trim((string)($groupMember['booking_status'] ?? 'Pending')) ?: 'Pending';
+                                                $memberPrice = (float)($groupMember['total_price'] ?? $groupMember['service_fee'] ?? 0);
+                                            ?>
+                                            <div class="group-pet-row">
+                                                <div class="group-pet-info">
+                                                    <strong><i class="fa-solid fa-paw"></i> <?php echo htmlspecialchars($memberPetName, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></strong>
+                                                    <small><?php echo htmlspecialchars($memberStartDisplay . ($memberEndDisplay !== '' ? ' – ' . $memberEndDisplay : ''), ENT_QUOTES, 'UTF-8'); ?> · ₱<?php echo number_format($memberPrice, 2); ?></small>
+                                                </div>
+                                                <span class="status-pill status-<?php echo strtoupper(str_replace(' ', '-', $memberStatusDisplay)); ?>"><?php echo htmlspecialchars($memberStatusDisplay, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></span>
+                                            </div>
+                                        <?php endforeach; ?>
+                                    </div>
+                                    <div class="schedule-note"><strong>Group total:</strong> ₱<?php echo number_format($groupTotal, 2); ?> · Payment: <?php echo htmlspecialchars($groupPaymentMethodDisplay . ' - ' . $groupPaymentStatusDisplay, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></div>
+                                    <?php if ($groupReference !== ''): ?><div class="schedule-note"><i class="fa-solid fa-receipt"></i> GCash Reference No.: <?php echo htmlspecialchars($groupReference, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></div><?php endif; ?>
+                                </div>
+                                <div class="schedule-status">
+                                    <span class="status-pill status-<?php echo strtoupper(str_replace(' ', '-', $groupStatusDisplay)); ?>"><?php echo htmlspecialchars($groupStatusDisplay, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></span>
+                                    <span class="status-pill <?php echo $groupPaymentClass; ?>"><?php echo htmlspecialchars($groupPaymentStatusDisplay, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></span>
+                                    <?php if ($groupRescheduleEligible): ?>
+                                        <button
+                                            type="button"
+                                            class="btn-reschedule-schedule"
+                                            onclick="openRescheduleModal(
+                                                <?php echo (int)($groupFirst['id'] ?? 0); ?>,
+                                                <?php echo htmlspecialchars(json_encode($groupService, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP), ENT_QUOTES, 'UTF-8'); ?>,
+                                                <?php echo htmlspecialchars(json_encode($groupName . ' (' . count($groupRows) . ' pets)', JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP), ENT_QUOTES, 'UTF-8'); ?>,
+                                                <?php echo htmlspecialchars(json_encode($groupOriginalDate, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP), ENT_QUOTES, 'UTF-8'); ?>,
+                                                '',
+                                                true
+                                            )"
+                                        >
+                                            <i class="fa-solid fa-calendar-check"></i> Reschedule Group
+                                        </button>
+                                    <?php else: ?>
+                                        <span class="payment-status group-action-note">Group rescheduling appears here when the clinic marks the group For Rescheduling and all pets have verified payment.</span>
+                                    <?php endif; ?>
+                                    <?php if ($groupCancellationEligible && $groupEarliestAppointmentTimestamp !== null): ?>
+                                        <button
+                                            type="button"
+                                            class="btn-cancel-schedule"
+                                            onclick="openCancelModal(
+                                                <?php echo (int)($groupFirst['id'] ?? 0); ?>,
+                                                <?php echo htmlspecialchars(json_encode($groupService, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP), ENT_QUOTES, 'UTF-8'); ?>,
+                                                <?php echo htmlspecialchars(json_encode($groupName . ' (' . count($groupRows) . ' pets)', JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP), ENT_QUOTES, 'UTF-8'); ?>,
+                                                <?php echo htmlspecialchars(json_encode(date('M d, Y \a\t g:i A', $groupEarliestAppointmentTimestamp), JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP), ENT_QUOTES, 'UTF-8'); ?>,
+                                                true
+                                            )"
+                                        >
+                                            <i class="fa-solid fa-xmark"></i> Cancel Group
+                                        </button>
+                                    <?php else: ?>
+                                        <span class="payment-status group-action-note" role="status">Group cancellation is available only when every pet is eligible and at least 24 hours remain before the first appointment.</span>
+                                    <?php endif; ?>
+                                </div>
+                            </article>
+                            <?php continue; ?>
+                        <?php endif; ?>
                         <?php
                             $apt_id = isset($row['id']) ? (int)$row['id'] : 0;
                             $display_pet = !empty($row['joined_pet_name'])
@@ -3099,6 +3844,112 @@ try {
 
                 <div class="schedule-list">
                     <?php foreach ($past as $row): ?>
+                        <?php if (!empty($row['_is_group_booking'])): ?>
+                            <?php
+                                $groupRows = $row['_group_rows'] ?? [];
+                                $groupName = (string)($row['_group_name'] ?? 'Pet Group Booking');
+                                $groupFirst = $groupRows[0] ?? $row;
+                                $groupService = (string)($groupFirst['service'] ?? 'Grooming');
+                                $groupDate = (string)($groupFirst['appointment_date'] ?? '');
+                                $groupTotal = 0.0;
+                                $groupStatuses = [];
+                                $groupPaymentStatuses = [];
+                                $groupPaymentMethods = [];
+                                $groupReference = '';
+                                $groupStartMinute = PHP_INT_MAX;
+                                $groupRescheduleEligible = count($groupRows) >= 2;
+                                $groupHasRescheduleFlag = false;
+                                $groupOriginalDate = substr((string)($groupFirst['appointment_date'] ?? ''), 0, 10);
+                                $groupOriginalService = trim((string)($groupFirst['service'] ?? ''));
+                                $groupEndMinute = 0;
+                                foreach ($groupRows as $groupMember) {
+                                    $groupTotal += (float)($groupMember['total_price'] ?? $groupMember['service_fee'] ?? 0);
+                                    $memberStatusValue = trim((string)($groupMember['booking_status'] ?? 'Pending')) ?: 'Pending';
+                                    $groupStatuses[strtoupper($memberStatusValue)] = $memberStatusValue;
+                                    $memberPaymentStatus = trim((string)($groupMember['payment_status'] ?? 'Pending')) ?: 'Pending';
+                                    $groupPaymentStatuses[strtoupper($memberPaymentStatus)] = $memberPaymentStatus;
+                                    $memberPaymentMethod = trim((string)($groupMember['payment_method'] ?? 'N/A')) ?: 'N/A';
+                                    $groupPaymentMethods[strtoupper($memberPaymentMethod)] = $memberPaymentMethod;
+                                    $memberRescheduleStatus = strtoupper(trim((string)($groupMember['booking_status'] ?? '')));
+                                    $memberReschedulePayment = strtoupper(trim((string)($groupMember['payment_status'] ?? '')));
+                                    if ($memberRescheduleStatus === 'FOR RESCHEDULING') $groupHasRescheduleFlag = true;
+                                    if (!in_array($memberRescheduleStatus, ['FOR RESCHEDULING', 'CONFIRMED'], true)
+                                        || $memberReschedulePayment !== 'PAID'
+                                        || (int)($groupMember['reschedule_count'] ?? 0) >= 1
+                                        || substr((string)($groupMember['appointment_date'] ?? ''), 0, 10) !== $groupOriginalDate
+                                        || trim((string)($groupMember['service'] ?? '')) !== $groupOriginalService) {
+                                        $groupRescheduleEligible = false;
+                                    }
+                                    if ($groupReference === '' && trim((string)($groupMember['gcash_ref'] ?? '')) !== '') $groupReference = trim((string)$groupMember['gcash_ref']);
+                                    $memberStart = strtotime((string)($groupMember['appointment_time'] ?? '09:00:00'));
+                                    if ($memberStart !== false) {
+                                        $minute = ((int)date('H', $memberStart) * 60) + (int)date('i', $memberStart);
+                                        $groupStartMinute = min($groupStartMinute, $minute);
+                                        $groupEndMinute = max($groupEndMinute, $minute + customerBookingDurationMinutes($groupService));
+                                    }
+                                }
+                                $groupStatusDisplay = count($groupStatuses) === 1 ? reset($groupStatuses) : 'Multiple statuses';
+                                $groupPaymentStatusDisplay = count($groupPaymentStatuses) === 1 ? reset($groupPaymentStatuses) : 'Mixed payment status';
+                                $groupPaymentMethodDisplay = count($groupPaymentMethods) === 1 ? reset($groupPaymentMethods) : 'Multiple methods';
+                                $groupStartDisplay = $groupStartMinute < PHP_INT_MAX ? date('g:i A', strtotime(sprintf('%02d:%02d:00', intdiv($groupStartMinute, 60), $groupStartMinute % 60))) : 'Time not set';
+                                $groupEndDisplay = $groupEndMinute > 0 ? date('g:i A', strtotime(sprintf('%02d:%02d:00', intdiv($groupEndMinute, 60), $groupEndMinute % 60))) : '';
+                                $groupRescheduleEligible = $groupRescheduleEligible
+                                    && $groupHasRescheduleFlag
+                                    && stripos($groupOriginalService, 'Grooming -') === 0;
+                                $groupPaymentUpper = strtoupper($groupPaymentStatusDisplay);
+                                $groupPaymentClass = (strpos($groupPaymentUpper, 'PAID') !== false || strpos($groupPaymentUpper, 'PENDING VERIFICATION') !== false) ? 'status-APPROVED' : 'status-PENDING';
+                            ?>
+                            <article class="schedule-item group-schedule-card">
+                                <div class="date-box">
+                                    <div class="date-month"><?php echo htmlspecialchars(date('M', strtotime($groupDate)), ENT_QUOTES, 'UTF-8'); ?></div>
+                                    <div class="date-day"><?php echo htmlspecialchars(date('d', strtotime($groupDate)), ENT_QUOTES, 'UTF-8'); ?></div>
+                                    <div class="date-week"><?php echo htmlspecialchars(date('l', strtotime($groupDate)), ENT_QUOTES, 'UTF-8'); ?></div>
+                                </div>
+                                <div class="schedule-main">
+                                    <div class="group-booking-label"><i class="fa-solid fa-people-group"></i> GROUP BOOKING · <?php echo count($groupRows); ?> PETS</div>
+                                    <div class="schedule-service"><?php echo htmlspecialchars($groupName, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></div>
+                                    <div class="schedule-note"><?php echo htmlspecialchars($groupService, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?> · Group schedule: <?php echo htmlspecialchars($groupStartDisplay . ($groupEndDisplay !== '' ? ' – ' . $groupEndDisplay : ''), ENT_QUOTES, 'UTF-8'); ?></div>
+                                    <div class="group-pet-list">
+                                        <?php foreach ($groupRows as $groupMember): ?>
+                                            <?php
+                                                $memberPetName = (string)($groupMember['joined_pet_name'] ?? 'Unknown Pet');
+                                                $memberStartRaw = (string)($groupMember['appointment_time'] ?? '');
+                                                $memberStartTimestamp = $memberStartRaw !== '' ? strtotime($memberStartRaw) : false;
+                                                $memberStartDisplay = $memberStartTimestamp !== false ? date('g:i A', $memberStartTimestamp) : 'Time not set';
+                                                $memberDuration = customerBookingDurationMinutes((string)($groupMember['service'] ?? $groupService));
+                                                $memberEndDisplay = $memberStartTimestamp !== false ? date('g:i A', $memberStartTimestamp + ($memberDuration * 60)) : '';
+                                                $memberStatusDisplay = trim((string)($groupMember['booking_status'] ?? 'Pending')) ?: 'Pending';
+                                                $memberPrice = (float)($groupMember['total_price'] ?? $groupMember['service_fee'] ?? 0);
+                                                $memberAppointmentId = (int)($groupMember['id'] ?? 0);
+                                                $memberReviewId = (int)($groupMember['review_id'] ?? 0);
+                                            ?>
+                                            <div class="group-pet-row">
+                                                <div class="group-pet-info">
+                                                    <strong><i class="fa-solid fa-paw"></i> <?php echo htmlspecialchars($memberPetName, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></strong>
+                                                    <small><?php echo htmlspecialchars($memberStartDisplay . ($memberEndDisplay !== '' ? ' – ' . $memberEndDisplay : ''), ENT_QUOTES, 'UTF-8'); ?> · ₱<?php echo number_format($memberPrice, 2); ?></small>
+                                                </div>
+                                                <div class="group-pet-actions">
+                                                    <span class="status-pill status-<?php echo strtoupper(str_replace(' ', '-', $memberStatusDisplay)); ?>"><?php echo htmlspecialchars($memberStatusDisplay, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></span>
+                                                    <?php if (strtoupper($memberStatusDisplay) === 'COMPLETED' && $memberAppointmentId > 0 && $memberReviewId <= 0): ?>
+                                                        <a href="write_review.php?appointment_id=<?php echo $memberAppointmentId; ?>" class="btn-review-schedule"><i class="fa-solid fa-star"></i> Review</a>
+                                                    <?php elseif (strtoupper($memberStatusDisplay) === 'COMPLETED' && $memberReviewId > 0): ?>
+                                                        <span class="feedback-schedule"><i class="fa-solid fa-check-double"></i> Feedback Sent</span>
+                                                    <?php endif; ?>
+                                                </div>
+                                            </div>
+                                        <?php endforeach; ?>
+                                    </div>
+                                    <div class="schedule-note"><strong>Group total:</strong> ₱<?php echo number_format($groupTotal, 2); ?> · Payment: <?php echo htmlspecialchars($groupPaymentMethodDisplay . ' - ' . $groupPaymentStatusDisplay, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></div>
+                                    <?php if ($groupReference !== ''): ?><div class="schedule-note"><i class="fa-solid fa-receipt"></i> GCash Reference No.: <?php echo htmlspecialchars($groupReference, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></div><?php endif; ?>
+                                </div>
+                                <div class="schedule-status">
+                                    <span class="status-pill status-<?php echo strtoupper(str_replace(' ', '-', $groupStatusDisplay)); ?>"><?php echo htmlspecialchars($groupStatusDisplay, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></span>
+                                    <span class="status-pill <?php echo $groupPaymentClass; ?>"><?php echo htmlspecialchars($groupPaymentStatusDisplay, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></span>
+                                    <span class="payment-status">Group booking history</span>
+                                </div>
+                            </article>
+                            <?php continue; ?>
+                        <?php endif; ?>
                         <?php
                             $apt_id = isset($row['id']) ? (int)$row['id'] : 0;
                             $display_pet = !empty($row['joined_pet_name'])
@@ -3235,8 +4086,8 @@ try {
             <div class="modal-header">
                 <div class="reschedule-icon"><i class="fa-solid fa-calendar-days"></i></div>
                 <div>
-                    <h2>Reschedule Appointment</h2>
-                    <p>You may reschedule this booking only once, within 3 days.</p>
+                    <h2 id="rescheduleModalTitle">Reschedule Appointment</h2>
+                    <p id="rescheduleModalSubtitle">You may reschedule this booking only once, within 3 days.</p>
                 </div>
             </div>
 
@@ -3246,11 +4097,17 @@ try {
                 <div class="detail-row">Pet: <span id="reschedulePet" style="color: var(--text-muted);"></span></div>
             </div>
 
-            <div class="reschedule-help">
-                <strong>Important:</strong> Your original GCash payment stays valid and non-refundable.
+            <div class="reschedule-help" id="rescheduleHelp">
+                <strong>Important:</strong> Your original verified payment stays valid and non-refundable.
                 Choose an available schedule within 3 days after the original appointment. Regular services must finish by 5:00 PM;
-                available start times depend on the selected service duration. Pet Daycare pickup must be no later than 5:00 PM.
+                available start times depend on the selected service duration.
                 After this reschedule is used, another missed appointment will be treated as a No-Show and the payment will be forfeited.
+            </div>
+            <div class="reschedule-help" id="groupRescheduleInfo" style="display:none;background:#fff8df;border-color:#f3df9c;color:#765700;">
+                <strong>Group Booking:</strong> All pets in this group will move together. The selected time is the first pet's start time;
+                the system will automatically assign each remaining pet to an available groomer and check the two-groomer limit,
+                lunch capacity, existing bookings, daily limits, and the 5:00 PM service cutoff. Check My Schedule after rescheduling
+                to see each pet's individual updated time.
             </div>
 
             <form method="POST" action="">
@@ -3292,8 +4149,8 @@ try {
             <div class="modal-header">
                 <div class="warning-icon"><i class="fa-solid fa-triangle-exclamation"></i></div>
                 <div>
-                    <h2>Cancel Appointment</h2>
-                    <p>This action cannot be undone</p>
+                    <h2 id="cancelModalTitle">Cancel Appointment</h2>
+                    <p id="cancelModalSubtitle">This action cannot be undone</p>
                 </div>
             </div>
             
@@ -3319,11 +4176,11 @@ try {
                 </div>
                 <div class="important-warning">
                     <i class="fa-solid fa-triangle-exclamation"></i>
-                    <div><strong>Important:</strong> You must cancel at least 24 hours before the scheduled appointment. Customer cancellations are disabled during the final 24 hours. No-Show or forfeited payments are non-refundable under the Terms &amp; Conditions.</div>
+                    <div id="cancelModalWarning"><strong>Important:</strong> You must cancel at least 24 hours before the scheduled appointment. Customer cancellations are disabled during the final 24 hours. No-Show or forfeited payments are non-refundable under the Terms &amp; Conditions.</div>
                 </div>
                 <div class="modal-actions">
                     <button type="button" class="btn-keep" onclick="closeCancelModal()">Keep Booking</button>
-                    <button type="submit" class="btn-confirm-cancel">Cancel Appointment</button>
+                    <button type="submit" class="btn-confirm-cancel" id="cancelSubmitButton">Cancel Appointment</button>
                 </div>
             </form>
         </div>
@@ -3460,11 +4317,27 @@ try {
             select.disabled = options.length === 0;
         }
 
-        function openRescheduleModal(id, service, pet, originalDate, pickupTime = '') {
+        function openRescheduleModal(id, service, pet, originalDate, pickupTime = '', isGroup = false) {
             document.getElementById('rescheduleAppointmentId').value = id;
             document.getElementById('rescheduleService').innerText = service;
             document.getElementById('reschedulePet').innerText = pet;
             document.getElementById('rescheduleDate').value = '';
+
+            const modalTitle = document.getElementById('rescheduleModalTitle');
+            const modalSubtitle = document.getElementById('rescheduleModalSubtitle');
+            const groupInfo = document.getElementById('groupRescheduleInfo');
+            const submitButton = document.querySelector('#rescheduleModal button[type="submit"]');
+            if (isGroup) {
+                modalTitle.innerText = 'Reschedule Group Booking';
+                modalSubtitle.innerText = 'All pets will be rescheduled together. This is allowed only once, within 3 days.';
+                groupInfo.style.display = 'block';
+                if (submitButton) submitButton.innerHTML = '<i class="fa-solid fa-calendar-check"></i> Confirm Group Reschedule';
+            } else {
+                modalTitle.innerText = 'Reschedule Appointment';
+                modalSubtitle.innerText = 'You may reschedule this booking only once, within 3 days.';
+                groupInfo.style.display = 'none';
+                if (submitButton) submitButton.innerHTML = 'Confirm Reschedule';
+            }
             populateRescheduleTimes(service, pickupTime);
 
             const dateInput = document.getElementById('rescheduleDate');
@@ -3487,11 +4360,27 @@ try {
             document.getElementById('rescheduleModal').style.display = 'none';
         }
 
-        function openCancelModal(id, service, pet, dateStr) {
+        function openCancelModal(id, service, pet, dateStr, isGroup = false) {
             document.getElementById('cancelAppointmentId').value = id;
             document.getElementById('modalService').innerText = service;
             document.getElementById('modalPet').innerText = pet;
             document.getElementById('modalDate').innerText = dateStr;
+
+            const modalTitle = document.getElementById('cancelModalTitle');
+            const modalSubtitle = document.getElementById('cancelModalSubtitle');
+            const modalWarning = document.getElementById('cancelModalWarning');
+            const submitButton = document.getElementById('cancelSubmitButton');
+            if (isGroup) {
+                modalTitle.innerText = 'Cancel Pet Group Booking';
+                modalSubtitle.innerText = 'This will cancel every pet appointment in this group.';
+                modalWarning.innerHTML = '<strong>Important:</strong> The entire group will be cancelled together. Cancellation is allowed only at least 24 hours before the earliest pet appointment. If the shared payment is Paid or Pending Verification, its status will become Refund Requested; this does not mean an automatic refund. No-Show or forfeited payments are non-refundable under the Terms &amp; Conditions.';
+                submitButton.innerHTML = '<i class="fa-solid fa-xmark"></i> Cancel Entire Group';
+            } else {
+                modalTitle.innerText = 'Cancel Appointment';
+                modalSubtitle.innerText = 'This action cannot be undone';
+                modalWarning.innerHTML = '<strong>Important:</strong> You must cancel at least 24 hours before the scheduled appointment. Customer cancellations are disabled during the final 24 hours. No-Show or forfeited payments are non-refundable under the Terms &amp; Conditions.';
+                submitButton.innerHTML = 'Cancel Appointment';
+            }
             document.getElementById('cancelModal').style.display = 'flex';
         }
         

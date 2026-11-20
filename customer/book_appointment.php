@@ -428,6 +428,57 @@ function bookingWouldExceedCapacity(int $candidateStart, int $candidateEnd, arra
     return false;
 }
 
+/**
+ * Schedule every pet in one Grooming group. The first pet starts at the selected
+ * group time; remaining pets use the earliest 30-minute start that fits capacity,
+ * existing bookings, staggered lunch coverage, and the 5 PM cutoff.
+ */
+function bookingPlanGroupSchedule(
+    int $groupCount,
+    int $groupStart,
+    int $duration,
+    array $existingIntervals,
+    string $category,
+    int $normalCapacity,
+    int $breakStart,
+    int $breakEnd,
+    int $latestStart,
+    int $serviceCutoff
+): ?array {
+    if ($groupCount < 2 || $duration <= 0 || $category !== 'Grooming') return null;
+
+    $workingIntervals = $existingIntervals;
+    $schedule = [];
+    for ($petIndex = 0; $petIndex < $groupCount; $petIndex++) {
+        $foundStart = null;
+        $lastCandidate = ($petIndex === 0) ? $groupStart : $latestStart;
+        for ($candidate = $groupStart; $candidate <= $lastCandidate; $candidate += 30) {
+            if ($candidate >= $breakStart && $candidate < $breakEnd) continue;
+            $candidateEnd = $candidate + $duration;
+            if ($candidateEnd > $serviceCutoff) continue;
+            if (!bookingWouldExceedCapacity($candidate, $candidateEnd, $workingIntervals, $category, $normalCapacity, $breakStart, $breakEnd)) {
+                $foundStart = $candidate;
+                break;
+            }
+        }
+        if ($foundStart === null) return null;
+        $foundEnd = $foundStart + $duration;
+        $schedule[] = ['start' => $foundStart, 'end' => $foundEnd];
+        $workingIntervals[] = ['start' => $foundStart, 'end' => $foundEnd, 'service' => 'Group booking'];
+    }
+    return $schedule;
+}
+
+/** Create a random RFC 4122 version-4 UUID for linking member appointment rows. */
+function bookingGenerateUuidV4(): string
+{
+    $bytes = random_bytes(16);
+    $bytes[6] = chr((ord($bytes[6]) & 0x0f) | 0x40);
+    $bytes[8] = chr((ord($bytes[8]) & 0x3f) | 0x80);
+    $hex = bin2hex($bytes);
+    return substr($hex, 0, 8) . '-' . substr($hex, 8, 4) . '-' . substr($hex, 12, 4) . '-' . substr($hex, 16, 4) . '-' . substr($hex, 20, 12);
+}
+
 
 /** Parse admin-entered availability-adjustment times (not limited to online start slots). */
 function bookingAdjustmentTimeToMinutes($time): ?int
@@ -705,6 +756,54 @@ try {
 }
 
 // Only active, in-date promotions with a real discount can be selected during booking.
+
+// Fetch Pet Groups created from existing registered pet profiles.
+$user_pet_groups = [];
+try {
+    $groups_stmt = $pdo->prepare("
+        SELECT id, group_name, mother_pet_id AS primary_pet_id
+        FROM public.pet_groups
+        WHERE owner_id = :owner_id
+        ORDER BY id DESC
+    ");
+    $groups_stmt->execute([':owner_id' => $user_id]);
+    $group_rows = $groups_stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+    $group_pets_stmt = $pdo->prepare("
+        SELECT p.id, p.name, p.pet_type, p.gender, p.weight
+        FROM pets p
+        WHERE p.owner_id = :owner_id
+          AND (
+                p.id = :primary_pet_id
+                OR p.id IN (
+                    SELECT gm.pet_id
+                    FROM public.pet_group_members gm
+                    WHERE gm.group_id = :group_id
+                )
+          )
+        ORDER BY CASE WHEN p.id = :primary_pet_order THEN 0 ELSE 1 END, p.id ASC
+    ");
+    foreach ($group_rows as $group_row) {
+        $group_pets_stmt->execute([
+            ':owner_id' => $user_id,
+            ':primary_pet_id' => (int)$group_row['primary_pet_id'],
+            ':primary_pet_order' => (int)$group_row['primary_pet_id'],
+            ':group_id' => (int)$group_row['id'],
+        ]);
+        $members = $group_pets_stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        if (count($members) >= 2) {
+            $user_pet_groups[] = [
+                'id' => (int)$group_row['id'],
+                'group_name' => (string)$group_row['group_name'],
+                'pets' => $members,
+            ];
+        }
+    }
+} catch (PDOException $e) {
+    // Individual booking remains available if Pet Group tables are not installed yet.
+    error_log('Booking Pet Group lookup failed for customer #' . $user_id . ': ' . $e->getMessage());
+    $user_pet_groups = [];
+}
 $booking_promotions = [];
 try {
     $booking_promos_stmt = $pdo->query("
@@ -748,6 +847,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $registered_pet_id = ($registered_pet_id !== false && $registered_pet_id > 0) ? (int)$registered_pet_id : 0;
     $registered_pet_row = null;
 
+    $group_id_input = $_POST['pet_group_id'] ?? 0;
+    $posted_group_id = filter_var(is_scalar($group_id_input) ? (string)$group_id_input : '0', FILTER_VALIDATE_INT);
+    $posted_group_id = ($posted_group_id !== false && $posted_group_id > 0) ? (int)$posted_group_id : 0;
+    $is_group_booking = false;
+    $selected_group_name = '';
+    $group_pets = [];
+    $group_pet_prices = [];
+    $group_schedule = [];
+
     $pet_name = bookingRequestString($_POST, 'pet_name');
     $pet_gender = bookingRequestString($_POST, 'pet_gender');
     $pet_type = bookingRequestString($_POST, 'pet_type');
@@ -758,7 +866,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // For a selected registered pet, trust the record owned by the current customer
     // and derive the price bracket from its saved weight when that weight is available.
-    if (empty($error_msg) && $registered_pet_id > 0) {
+    if (empty($error_msg) && $registered_pet_id > 0 && $posted_group_id <= 0) {
         try {
             $registered_pet_stmt = $pdo->prepare("
                 SELECT id, name, pet_type, gender, weight
@@ -811,6 +919,86 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } catch (PDOException $e) {
             error_log('Registered pet lookup failed for booking user #' . $user_id . ': ' . $e->getMessage());
             $error_msg = 'Unable to load the selected pet details. Please try again.';
+        }
+    }
+
+    // A selected Pet Group is processed from database-owned pet records only.
+    // Group scheduling is currently Grooming-only; each pet receives its own
+    // appointment row under one shared group identifier.
+    if (empty($error_msg) && $posted_group_id > 0) {
+        if ($posted_category_for_size !== 'Grooming') {
+            $error_msg = 'Pet Group booking is currently available for Grooming only. Please choose Grooming or book one pet at a time.';
+        } else {
+            try {
+                $group_stmt = $pdo->prepare("
+                    SELECT id, group_name, mother_pet_id AS primary_pet_id
+                    FROM public.pet_groups
+                    WHERE id = :group_id AND owner_id = :owner_id
+                    LIMIT 1
+                ");
+                $group_stmt->execute([':group_id' => $posted_group_id, ':owner_id' => $user_id]);
+                $selected_group = $group_stmt->fetch(PDO::FETCH_ASSOC);
+                if (!$selected_group) {
+                    $error_msg = 'The selected Pet Group could not be found in your account. Please refresh and choose it again.';
+                } else {
+                    $group_members_stmt = $pdo->prepare("
+                        SELECT p.id, p.name, p.pet_type, p.gender, p.weight
+                        FROM pets p
+                        WHERE p.owner_id = :owner_id
+                          AND (
+                                p.id = :primary_pet_id
+                                OR p.id IN (
+                                    SELECT gm.pet_id
+                                    FROM public.pet_group_members gm
+                                    WHERE gm.group_id = :group_id
+                                )
+                          )
+                        ORDER BY CASE WHEN p.id = :primary_pet_order THEN 0 ELSE 1 END, p.id ASC
+                    ");
+                    $group_members_stmt->execute([
+                        ':owner_id' => $user_id,
+                        ':primary_pet_id' => (int)$selected_group['primary_pet_id'],
+                        ':primary_pet_order' => (int)$selected_group['primary_pet_id'],
+                        ':group_id' => $posted_group_id,
+                    ]);
+                    $group_pets = $group_members_stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+                    if (count($group_pets) < 2 || count($group_pets) > 20) {
+                        $error_msg = 'The selected Pet Group must contain 2 to 20 registered pets before booking.';
+                    } else {
+                        $group_types = array_values(array_unique(array_map(static function ($pet) {
+                            return trim((string)($pet['pet_type'] ?? ''));
+                        }, $group_pets)));
+                        if (count($group_types) !== 1 || !in_array($group_types[0] ?? '', ['Dog', 'Cat'], true)) {
+                            $error_msg = 'For one group Grooming booking, all pets must be the same type (all dogs or all cats). Mixed-type groups must be booked separately.';
+                        } else {
+                            foreach ($group_pets as &$group_pet) {
+                                $group_pet['pet_type'] = trim((string)($group_pet['pet_type'] ?? ''));
+                                $group_pet['gender'] = trim((string)($group_pet['gender'] ?? ''));
+                                $group_pet['name'] = trim((string)($group_pet['name'] ?? ''));
+                                $group_pet['size'] = bookingSizeFromWeight($group_pet['weight'] ?? '');
+                                if ($group_pet['name'] === '' || !in_array($group_pet['gender'], ['Male', 'Female'], true) || $group_pet['size'] === null) {
+                                    $error_msg = 'One or more pets in this group have an incomplete or unsupported weight/profile. Update their Pet Profile before booking the group.';
+                                    break;
+                                }
+                            }
+                            unset($group_pet);
+                            if (empty($error_msg)) {
+                                $is_group_booking = true;
+                                $selected_group_name = trim((string)($selected_group['group_name'] ?? 'Pet Group'));
+                                $registered_pet_row = $group_pets[0];
+                                $registered_pet_id = (int)$registered_pet_row['id'];
+                                $pet_name = (string)$registered_pet_row['name'];
+                                $pet_type = (string)$registered_pet_row['pet_type'];
+                                $pet_gender = (string)$registered_pet_row['gender'];
+                                $pet_size = (string)$registered_pet_row['size'];
+                            }
+                        }
+                    }
+                }
+            } catch (PDOException $group_error) {
+                error_log('Pet Group booking lookup failed for customer #' . $user_id . ': ' . $group_error->getMessage());
+                $error_msg = 'Unable to load the selected Pet Group. Please try again.';
+            }
         }
     }
 
@@ -989,7 +1177,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ]
     ];
 
-    if ($is_daycare) {
+    if ($is_group_booking) {
+        if ($service_category !== 'Grooming') {
+            $error_msg = 'Pet Group booking is currently available for Grooming only.';
+        } else {
+            foreach ($group_pets as $group_pet) {
+                $memberType = (string)$group_pet['pet_type'];
+                $memberSize = (string)$group_pet['size'];
+                $memberServicePrices = $pricing_data[$memberType]['Grooming'][$specific_service] ?? null;
+                $memberFee = 0.0;
+                if (is_array($memberServicePrices)) {
+                    $memberFee = isset($memberServicePrices['default'])
+                        ? (float)$memberServicePrices['default']
+                        : (float)($memberServicePrices[$memberSize] ?? 0);
+                }
+                if ($memberFee <= 0) {
+                    $error_msg = 'The selected Grooming service is not available for every pet in this group. Choose a service that all group members can receive.';
+                    break;
+                }
+                $group_pet_prices[] = [
+                    'pet_id' => (int)$group_pet['id'],
+                    'pet_name' => (string)$group_pet['name'],
+                    'pet_type' => $memberType,
+                    'pet_size' => $memberSize,
+                    'service_fee' => $memberFee,
+                ];
+                $service_fee += $memberFee;
+            }
+        }
+    } elseif ($is_daycare) {
         if ($pet_type === 'Cat') {
             $service_fee = ($pet_size === 'Cat (All Sizes)') ? 150.0 : 0.0;
         } else {
@@ -1128,6 +1344,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             error_log('Selected promotion validation failed: ' . $promoError->getMessage());
             $error_msg = 'Unable to verify the selected promotion. Please try again or continue without a promotion.';
         }
+    }
+
+    if (empty($error_msg) && $is_group_booking && !empty($group_pet_prices)) {
+        $discount_amount = 0.0;
+        $final_total_price = 0.0;
+        foreach ($group_pet_prices as &$group_price_line) {
+            $group_price_line['discount_amount'] = round($group_price_line['service_fee'] * ($discount_percent / 100), 2);
+            $group_price_line['total_price'] = max(0, round($group_price_line['service_fee'] - $group_price_line['discount_amount'], 2));
+            $discount_amount += $group_price_line['discount_amount'];
+            $final_total_price += $group_price_line['total_price'];
+        }
+        unset($group_price_line);
+        $discount_amount = round($discount_amount, 2);
+        $final_total_price = round($final_total_price, 2);
     }
 
     // Upload the receipt before opening the capacity transaction.
@@ -1413,10 +1643,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $existing_intervals[$service_category][] = $manual_interval;
                     }
 
-                    if ($total_daily_bookings >= 20) {
-                        $error_msg = 'The overall daily capacity of 20 pets has been reached. Please select another date.';
-                    } elseif ($category_daily_counts[$service_category] >= $daily_limits[$service_category]) {
-                        $error_msg = $service_category . ' has reached its daily capacity. Please select another date.';
+                    $booking_pet_count = $is_group_booking ? count($group_pets) : 1;
+                    if (($total_daily_bookings + $booking_pet_count) > 20) {
+                        $error_msg = 'The overall daily capacity does not have enough spaces for all pets in this group. Please select another date.';
+                    } elseif (($category_daily_counts[$service_category] + $booking_pet_count) > $daily_limits[$service_category]) {
+                        $error_msg = $service_category . ' does not have enough daily capacity for all pets in this group. Please select another date.';
+                    } elseif ($is_group_booking) {
+                        $group_schedule = bookingPlanGroupSchedule(
+                            $booking_pet_count,
+                            $selected_start_minutes,
+                            $service_duration_minutes,
+                            $existing_intervals[$service_category],
+                            $service_category,
+                            $simultaneous_limits[$service_category],
+                            $break_start_minutes,
+                            $break_end_minutes,
+                            $latest_start_minutes,
+                            $service_cutoff_minutes
+                        ) ?? [];
+                        if (count($group_schedule) !== $booking_pet_count) {
+                            $error_msg = 'There is not enough Grooming capacity to schedule every pet in this group before 5:00 PM. Please choose an earlier time or another date.';
+                        }
                     } elseif (bookingWouldExceedCapacity(
                         $selected_start_minutes,
                         $selected_end_minutes,
@@ -1447,6 +1694,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
+    // A capacity error can be produced without throwing an exception. Release the
+    // date-level transaction/lock before rendering the form again.
+    if (!empty($error_msg) && $pdo->inTransaction()) {
+        $pdo->rollBack();
+    }
 
     if (empty($error_msg)) {
         try {
@@ -1493,8 +1745,68 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $payment_method = 'GCash';
             $payment_status = 'Pending Verification';
             $booking_status = 'Pending';
+            $appointment_id = 0;
 
-            if ($checkout_date_to_save !== null) {
+            if ($is_group_booking) {
+                $booking_group_uuid = bookingGenerateUuidV4();
+                $group_finish_minutes = max(array_column($group_schedule, 'end'));
+                $group_finish_label = date('g:i A', strtotime(sprintf('%02d:%02d:00', intdiv($group_finish_minutes, 60), $group_finish_minutes % 60)));
+                $insert_group_appt = $pdo->prepare("
+                    INSERT INTO appointments (
+                        user_id, pet_id, service, appointment_date, appointment_time,
+                        service_fee, total_price, discount_percent, discount_amount,
+                        promo_id, promo_title, gcash_ref, gcash_receipt, payment_method,
+                        payment_status, booking_status, remarks, booking_group_id
+                    ) VALUES (
+                        :user_id, :pet_id, :service, :appointment_date, :appointment_time,
+                        :service_fee, :total_price, :discount_percent, :discount_amount,
+                        :promo_id, :promo_title, :gcash_ref, :gcash_receipt, :payment_method,
+                        :payment_status, :booking_status, :remarks, CAST(:booking_group_id AS uuid)
+                    ) RETURNING id
+                ");
+
+                foreach ($group_pet_prices as $memberIndex => $priceLine) {
+                    $scheduled = $group_schedule[$memberIndex] ?? null;
+                    if (!is_array($scheduled)) {
+                        throw new RuntimeException('A group member is missing a confirmed Grooming schedule.');
+                    }
+                    $memberStart = (int)$scheduled['start'];
+                    $memberTime = sprintf('%02d:%02d:00', intdiv($memberStart, 60), $memberStart % 60);
+                    $memberStartLabel = date('g:i A', strtotime($memberTime));
+                    $memberEndLabel = date('g:i A', strtotime(sprintf('%02d:%02d:00', intdiv((int)$scheduled['end'], 60), (int)$scheduled['end'] % 60)));
+                    $memberRemarksParts = [];
+                    if ($remarks !== '') $memberRemarksParts[] = $remarks;
+                    $memberRemarksParts[] = 'GROUP BOOKING: ' . $selected_group_name
+                        . ' (' . ($memberIndex + 1) . ' of ' . count($group_pet_prices) . ' pets).'
+                        . ' Scheduled: ' . $memberStartLabel . '–' . $memberEndLabel
+                        . '. Estimated group completion: ' . $group_finish_label . '.';
+
+                    $insert_group_appt->execute([
+                        ':user_id' => $user_id,
+                        ':pet_id' => (int)$priceLine['pet_id'],
+                        ':service' => $final_service_name,
+                        ':appointment_date' => $appointment_date,
+                        ':appointment_time' => $memberTime,
+                        ':service_fee' => (float)$priceLine['service_fee'],
+                        ':total_price' => (float)$priceLine['total_price'],
+                        ':discount_percent' => $discount_percent,
+                        ':discount_amount' => (float)$priceLine['discount_amount'],
+                        ':promo_id' => $selected_promo_id > 0 ? $selected_promo_id : null,
+                        ':promo_title' => $promo_title_snapshot,
+                        ':gcash_ref' => $gcash_ref,
+                        ':gcash_receipt' => $receipt_filename,
+                        ':payment_method' => $payment_method,
+                        ':payment_status' => $payment_status,
+                        ':booking_status' => $booking_status,
+                        ':remarks' => implode("\n\n", $memberRemarksParts),
+                        ':booking_group_id' => $booking_group_uuid,
+                    ]);
+                    $inserted_id = (int)$insert_group_appt->fetchColumn();
+                    if ($inserted_id <= 0) throw new RuntimeException('Unable to save one of the group pet appointments.');
+                    if ($appointment_id === 0) $appointment_id = $inserted_id;
+                }
+                $pet_name = $selected_group_name . ' (' . count($group_pet_prices) . ' pets)';
+            } elseif ($checkout_date_to_save !== null) {
                 // Boarding stores its check-out date so the entire stay can be checked later.
                 $insert_appt = $pdo->prepare("INSERT INTO appointments (user_id, pet_id, service, appointment_date, appointment_time, checkout_date, service_fee, total_price, discount_percent, discount_amount, promo_id, promo_title, gcash_ref, gcash_receipt, payment_method, payment_status, booking_status, remarks) VALUES (:user_id, :pet_id, :service, :appointment_date, :appointment_time, :checkout_date, :service_fee, :total_price, :discount_percent, :discount_amount, :promo_id, :promo_title, :gcash_ref, :gcash_receipt, :payment_method, :payment_status, :booking_status, :remarks) RETURNING id");
                 $insert_appt->execute([
@@ -1563,8 +1875,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ':remarks' => $remarks
                 ]);
             }
-            $appointment_row = $insert_appt->fetch();
-            $appointment_id = $appointment_row ? (int)$appointment_row['id'] : 0;
+            if (!$is_group_booking) {
+                $appointment_row = $insert_appt->fetch();
+                $appointment_id = $appointment_row ? (int)$appointment_row['id'] : 0;
+            }
 
             if ($appointment_id <= 0) {
                 throw new RuntimeException('The appointment could not be created.');
@@ -1592,7 +1906,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             // --- START: ADMIN NOTIFICATION ---
-            // A failed optional alert must not roll back an otherwise valid booking.
+            // One admin alert is created for the whole booking submission. For a Pet
+            // Group, $pet_name already contains the group name and total pet count;
+            // do not create one admin alert for every appointment row.
             $pdo->exec('SAVEPOINT admin_notif_savepoint');
             try {
                 $admin_msg = $full_name . " booked a new appointment for " . $pet_name . " via GCash. Pending Payment Verification.";
@@ -1603,6 +1919,85 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pdo->exec('ROLLBACK TO SAVEPOINT admin_notif_savepoint');
                 $pdo->exec('RELEASE SAVEPOINT admin_notif_savepoint');
                 error_log('Admin notification insert failed after booking for user #' . $user_id . ': ' . $notif_error->getMessage());
+            }
+
+            // --- CUSTOMER BOOKING-REQUEST NOTIFICATION ---
+            // One in-app notification is created per successful submission, not per
+            // pet row. GCash is still Pending Verification here, so do not send a
+            // confirmation SMS from this endpoint; the Admin/Manager confirmation
+            // workflow sends the single group SMS after payment has been verified.
+            $pdo->exec('SAVEPOINT customer_booking_notif_savepoint');
+            try {
+                $notificationTypeStmt = $pdo->prepare("
+                    SELECT data_type, udt_name
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'notifications'
+                      AND column_name = 'is_read'
+                    LIMIT 1
+                ");
+                $notificationTypeStmt->execute();
+                $notificationColumn = $notificationTypeStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+                $notificationDataType = strtolower(trim((string)($notificationColumn['data_type'] ?? '')));
+                $notificationUdtName = strtolower(trim((string)($notificationColumn['udt_name'] ?? '')));
+
+                if ($notificationDataType === 'boolean' || $notificationUdtName === 'bool') {
+                    $unreadValueSql = 'FALSE';
+                } elseif (in_array($notificationDataType, ['smallint', 'integer', 'bigint', 'numeric', 'decimal', 'real', 'double precision'], true)
+                    || in_array($notificationUdtName, ['int2', 'int4', 'int8', 'numeric', 'float4', 'float8'], true)) {
+                    $unreadValueSql = '0';
+                } elseif (in_array($notificationDataType, ['text', 'character varying', 'character'], true)
+                    || in_array($notificationUdtName, ['text', 'varchar', 'bpchar'], true)) {
+                    $unreadValueSql = "'0'";
+                } else {
+                    throw new RuntimeException('Unsupported or missing public.notifications.is_read column type.');
+                }
+
+                $notificationDateLabel = (new DateTimeImmutable($appointment_date, $bookingManilaTimezone))->format('M d, Y');
+                if ($is_group_booking) {
+                    $groupPetNames = array_values(array_filter(array_map(
+                        static function ($line) { return trim((string)($line['pet_name'] ?? '')); },
+                        $group_pet_prices
+                    )));
+                    $groupPetNameList = implode(', ', $groupPetNames);
+                    if (strlen($groupPetNameList) > 320) {
+                        $groupPetNameList = substr($groupPetNameList, 0, 317) . '...';
+                    }
+                    $groupStartMinutes = min(array_column($group_schedule, 'start'));
+                    $groupEndMinutes = max(array_column($group_schedule, 'end'));
+                    $groupStartLabel = date('g:i A', strtotime(sprintf('%02d:%02d:00', intdiv($groupStartMinutes, 60), $groupStartMinutes % 60)));
+                    $groupEndLabel = date('g:i A', strtotime(sprintf('%02d:%02d:00', intdiv($groupEndMinutes, 60), $groupEndMinutes % 60)));
+                    $customerNotificationTitle = 'Pet Group Booking Request Received';
+                    $customerNotificationMessage = 'We received your Pet Group booking request for ' . $selected_group_name
+                        . ' (' . count($group_pet_prices) . ' pets: ' . $groupPetNameList . ') for ' . $final_service_name
+                        . ' on ' . $notificationDateLabel . ', with group schedule from ' . $groupStartLabel . ' to ' . $groupEndLabel
+                        . '. GCash payment of PHP ' . number_format((float)$final_total_price, 2)
+                        . ' is pending verification. Your booking is not confirmed yet. Please check My Bookings for each pet schedule.';
+                } else {
+                    $singleTimeLabel = date('g:i A', strtotime($appointment_time));
+                    $customerNotificationTitle = 'Booking Request Received';
+                    $customerNotificationMessage = 'We received your booking request for ' . $pet_name . ' (' . $final_service_name
+                        . ') on ' . $notificationDateLabel . ' at ' . $singleTimeLabel
+                        . '. GCash payment of PHP ' . number_format((float)$final_total_price, 2)
+                        . ' is pending verification. Your booking is not confirmed yet. We will notify you after payment review.';
+                }
+
+                $customerNotificationStmt = $pdo->prepare("
+                    INSERT INTO public.notifications
+                        (user_id, title, message, type, is_read, created_at)
+                    VALUES
+                        (:user_id, :title, :message, 'booking', {$unreadValueSql}, NOW())
+                ");
+                $customerNotificationStmt->execute([
+                    ':user_id' => $user_id,
+                    ':title' => $customerNotificationTitle,
+                    ':message' => $customerNotificationMessage,
+                ]);
+                $pdo->exec('RELEASE SAVEPOINT customer_booking_notif_savepoint');
+            } catch (Throwable $customerNotifError) {
+                $pdo->exec('ROLLBACK TO SAVEPOINT customer_booking_notif_savepoint');
+                $pdo->exec('RELEASE SAVEPOINT customer_booking_notif_savepoint');
+                error_log('Customer booking notification insert failed for user #' . $user_id . ': ' . $customerNotifError->getMessage());
             }
 
             if ($pdo->inTransaction()) {
@@ -3728,6 +4123,23 @@ if ($error_msg !== '') {
                     </select>
                 </div>
 
+                <?php if (!empty($user_pet_groups)): ?>
+                <div class="form-group" id="petGroupBookingContainer">
+                    <label for="pet_group_selector">Book a Pet Group (Grooming only)</label>
+                    <select id="pet_group_selector" name="pet_group_id" onchange="handlePetGroupChange()">
+                        <option value="">-- Book one pet --</option>
+                        <?php foreach ($user_pet_groups as $petGroup): ?>
+                            <?php $groupType = (string)($petGroup['pets'][0]['pet_type'] ?? 'Pet'); ?>
+                            <option value="<?php echo (int)$petGroup['id']; ?>">
+                                <?php echo htmlspecialchars($petGroup['group_name'] . ' (' . count($petGroup['pets']) . ' pets, ' . $groupType . ')', ENT_QUOTES, 'UTF-8'); ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                    <small>All pets in the group will be booked together. The system assigns each pet a time based on the selected Grooming service duration and the two-groomer limit.</small>
+                    <div id="petGroupPreview" class="availability-message hidden" style="margin-top:10px;"></div>
+                </div>
+                <?php endif; ?>
+
                 <div class="form-group">
                     <label>Pet's Name *</label>
                     <input type="text" name="pet_name" id="pet_name" autocomplete="off" placeholder="e.g., Kyle" required>
@@ -4245,6 +4657,7 @@ if ($error_msg !== '') {
         }
 
         const userPetsArray = <?php echo json_encode($user_pets, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT | JSON_INVALID_UTF8_SUBSTITUTE) ?: '[]'; ?>;
+        const userPetGroupsArray = <?php echo json_encode($user_pet_groups, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT | JSON_INVALID_UTF8_SUBSTITUTE) ?: '[]'; ?>;
 
         window.addEventListener('DOMContentLoaded', () => {
             const dateInput = document.getElementById('appointment_date');
@@ -4348,7 +4761,63 @@ if ($error_msg !== '') {
             sizeSelect.value = options.some(option => option.value === nextValue) ? nextValue : '';
         }
 
+        function getSelectedPetGroup() {
+            const selector = document.getElementById('pet_group_selector');
+            if (!selector || !selector.value) return null;
+            return userPetGroupsArray.find(group => String(group.id) === String(selector.value)) || null;
+        }
+
+        function handlePetGroupChange() {
+            const group = getSelectedPetGroup();
+            const preview = document.getElementById('petGroupPreview');
+            const petSelector = document.getElementById('pet_selector');
+            if (!group) {
+                if (preview) {
+                    preview.classList.add('hidden');
+                    preview.textContent = '';
+                }
+                // Restore the normal single-pet form after a customer leaves group mode.
+                autoFillPet();
+                checkRealTimeAvailability();
+                return;
+            }
+
+            const memberTypes = [...new Set((group.pets || []).map(pet => String(pet.pet_type || '')))];
+            const memberNames = (group.pets || []).map(pet => String(pet.name || '')).filter(Boolean);
+            if (memberTypes.length !== 1 || !['Dog', 'Cat'].includes(memberTypes[0])) {
+                alert('For one Grooming group booking, all pets must be the same type (all dogs or all cats). Mixed-type groups must be booked separately.');
+                document.getElementById('pet_group_selector').value = '';
+                if (preview) preview.classList.add('hidden');
+                return;
+            }
+
+            if (petSelector) petSelector.value = '';
+            const primary = group.pets[0];
+            document.getElementById('pet_name').value = primary.name || '';
+            document.getElementById('pet_name').readOnly = true;
+            document.getElementById('pet_type').value = primary.pet_type || '';
+            document.getElementById('pet_gender').value = primary.gender || 'Male';
+            document.getElementById('service_category').value = 'Grooming';
+            updateOptions();
+            const primarySize = bookingSizeFromPetWeight(primary.weight, primary.pet_type, false);
+            if (primarySize) document.getElementById('pet_size').value = primarySize;
+
+            if (preview) {
+                preview.classList.remove('hidden');
+                preview.textContent = `${group.group_name}: ${memberNames.join(', ')}. ${group.pets.length} pets will be scheduled using the selected Grooming service and available groomers.`;
+            }
+            calculatePrice();
+            checkRealTimeAvailability();
+        }
+
         function autoFillPet() {
+            const groupSelector = document.getElementById('pet_group_selector');
+            if (groupSelector && groupSelector.value) groupSelector.value = '';
+            const preview = document.getElementById('petGroupPreview');
+            if (preview) {
+                preview.classList.add('hidden');
+                preview.textContent = '';
+            }
             const petSelector = document.getElementById('pet_selector').value;
             const nameInput = document.getElementById('pet_name');
             const typeSelect = document.getElementById('pet_type');
@@ -4428,6 +4897,28 @@ if ($error_msg !== '') {
             const petType = document.getElementById('pet_type').value;
             const category = document.getElementById('service_category').value;
             const specificServiceDropdown = document.getElementById('specific_service');
+            const groupSelector = document.getElementById('pet_group_selector');
+            const groupContainer = document.getElementById('petGroupBookingContainer');
+            if (groupContainer) groupContainer.classList.toggle('hidden', category !== 'Grooming');
+            if (category !== 'Grooming' && groupSelector && groupSelector.value) {
+                groupSelector.value = '';
+                const groupPreview = document.getElementById('petGroupPreview');
+                if (groupPreview) {
+                    groupPreview.classList.add('hidden');
+                    groupPreview.textContent = '';
+                }
+                // Group booking is Grooming-only. Clear the group member autofill so
+                // switching category cannot accidentally submit the primary pet alone.
+                const petNameInput = document.getElementById('pet_name');
+                const petTypeInput = document.getElementById('pet_type');
+                const petGenderInput = document.getElementById('pet_gender');
+                if (petNameInput) {
+                    petNameInput.value = '';
+                    petNameInput.readOnly = false;
+                }
+                if (petTypeInput) petTypeInput.value = '';
+                if (petGenderInput) petGenderInput.value = 'Male';
+            }
             const vetNameDisplay = document.getElementById('vetNameDisplay');
             
             const walkInNotice = document.getElementById('walkInNotice');
@@ -4668,7 +5159,11 @@ if ($error_msg !== '') {
                 // Pet Boarding also uses its pre-checked fixed check-in option.
                 // Recalculate only; do not rebuild the selected time dropdown here.
                 calculatePrice();
+                showSelectedGroupSchedule();
             });
+        }
+        if (document.getElementById('appointment_time')) {
+            document.getElementById('appointment_time').addEventListener('change', showSelectedGroupSchedule);
         }
         if (document.getElementById('pickup_time')) {
             document.getElementById('pickup_time').addEventListener('change', () => {
@@ -4679,6 +5174,7 @@ if ($error_msg !== '') {
 
         // --- SERVICE DURATION AND CAPACITY-AWARE SLOT AVAILABILITY ---
         let availabilityRequestId = 0;
+        let latestAvailabilitySlots = [];
 
         function setAvailabilityMessage(message, isError = false) {
             const messageEl = document.getElementById('availabilityMessage');
@@ -4697,6 +5193,23 @@ if ($error_msg !== '') {
             timeSelect.appendChild(placeholder);
         }
 
+        function showSelectedGroupSchedule() {
+            const group = getSelectedPetGroup();
+            const timeSelect = document.getElementById('appointment_time');
+            if (!group || document.getElementById('service_category').value !== 'Grooming' || !timeSelect?.value) return false;
+            const slot = latestAvailabilitySlots.find(item => item.time === timeSelect.value && item.available && Array.isArray(item.group_schedule));
+            if (!slot) return false;
+            const lines = slot.group_schedule.map((item, index) => {
+                const member = group.pets[index];
+                const start = jsMinutesToLabel(Number(item.start) || 0);
+                const end = jsMinutesToLabel(Number(item.end) || 0);
+                return `${member?.name || `Pet ${index + 1}`}: ${start}–${end}`;
+            });
+            const finishLabel = slot.group_finish_label || '';
+            setAvailabilityMessage(`${group.pets.length} pets scheduled with up to 2 groomers. ${lines.join(' | ')}. Estimated group completion: ${finishLabel}.`);
+            return true;
+        }
+
         function checkRealTimeAvailability() {
             const requestId = ++availabilityRequestId;
             const date = document.getElementById('appointment_date').value;
@@ -4705,6 +5218,8 @@ if ($error_msg !== '') {
             const checkoutDate = document.getElementById('checkout_date') ? document.getElementById('checkout_date').value : '';
             const isBoarding = isOvernightBoardingSelected();
             const isDaycare = isDaycareSelected();
+            const selectedGroup = getSelectedPetGroup();
+            const groupCount = (selectedGroup && category === 'Grooming') ? selectedGroup.pets.length : 1;
             const timeSelect = document.getElementById('appointment_time');
 
             if (isDaycare) {
@@ -4767,7 +5282,7 @@ if ($error_msg !== '') {
             resetTimeOptions('Checking available times…');
             setAvailabilityMessage('Checking availability based on service duration and remaining capacity…');
 
-            let url = `check_slots.php?date=${encodeURIComponent(date)}&category=${encodeURIComponent(category)}&specific_service=${encodeURIComponent(specificService)}`;
+            let url = `check_slots.php?date=${encodeURIComponent(date)}&category=${encodeURIComponent(category)}&specific_service=${encodeURIComponent(specificService)}&group_count=${encodeURIComponent(groupCount)}`;
             if (isBoarding) url += `&checkout_date=${encodeURIComponent(checkoutDate)}`;
             fetch(url, { cache: 'no-store', credentials: 'same-origin' })
                 .then(response => {
@@ -4790,6 +5305,7 @@ if ($error_msg !== '') {
                         return;
                     }
 
+                    latestAvailabilitySlots = data.slots;
                     let enabledCount = 0;
                     let visibleCount = 0;
                     data.slots.forEach(slot => {
@@ -4817,8 +5333,12 @@ if ($error_msg !== '') {
 
                         if (slot.available) {
                             enabledCount++;
-                            const remaining = Number(slot.remaining_slots || 0);
-                            option.textContent = `${slot.label} — ${remaining} slot${remaining === 1 ? '' : 's'} available`;
+                            if (groupCount > 1 && slot.group_finish_label) {
+                                option.textContent = `Group arrival: ${slotStartMinutes === null ? slot.label : jsMinutesToLabel(slotStartMinutes)} — ${groupCount} pets, finish by ${slot.group_finish_label}`;
+                            } else {
+                                const remaining = Number(slot.remaining_slots || 0);
+                                option.textContent = `${slot.label} — ${remaining} slot${remaining === 1 ? '' : 's'} available`;
+                            }
                         } else {
                             option.textContent = `${slot.label} — ${reason || 'Fully booked'}`;
                         }
@@ -4836,7 +5356,9 @@ if ($error_msg !== '') {
                         }
                     }
 
-                    if (visibleCount === 0) {
+                    if (showSelectedGroupSchedule()) {
+                        // Each pet's exact start/end and the group's finish time are displayed.
+                    } else if (visibleCount === 0) {
                         resetTimeOptions('No valid start times for this date and service');
                         setAvailabilityMessage(data.full_reason || 'No valid start times remain within business hours for this service.', true);
                     } else if (enabledCount === 0 || data.is_full) {
@@ -4886,16 +5408,32 @@ if ($error_msg !== '') {
                 });
             }
 
-            if (petType && size && category && specific && pricingData[petType] && pricingData[petType][category]) {
+            const selectedGroupForPrice = getSelectedPetGroup();
+            const isGroupPrice = Boolean(selectedGroupForPrice && category === 'Grooming');
+            if (isGroupPrice || (petType && size && category && specific && pricingData[petType] && pricingData[petType][category])) {
                 let basePrice = 0;
-                const serviceData = pricingData[petType][category][specific];
-                if (serviceData && serviceData.default) {
-                    basePrice = Number(serviceData.default);
-                } else if (serviceData && serviceData[size]) {
-                    basePrice = Number(serviceData[size]);
+                let groupPriceBreakdown = [];
+                if (isGroupPrice) {
+                    (selectedGroupForPrice.pets || []).forEach(member => {
+                        const memberType = String(member.pet_type || '');
+                        const memberSize = bookingSizeFromPetWeight(member.weight, memberType, false);
+                        const serviceData = pricingData[memberType]?.Grooming?.[specific];
+                        const memberPrice = serviceData ? Number(serviceData.default || serviceData[memberSize] || 0) : 0;
+                        if (memberPrice > 0) {
+                            basePrice += memberPrice;
+                            groupPriceBreakdown.push(`${member.name}: ₱${memberPrice.toFixed(2)}`);
+                        }
+                    });
+                } else {
+                    const serviceData = pricingData[petType][category][specific];
+                    if (serviceData && serviceData.default) {
+                        basePrice = Number(serviceData.default);
+                    } else if (serviceData && serviceData[size]) {
+                        basePrice = Number(serviceData[size]);
+                    }
                 }
 
-                if (basePrice > 0) {
+                if (basePrice > 0 && (!isGroupPrice || groupPriceBreakdown.length === (selectedGroupForPrice.pets || []).length)) {
                     let totalPrice = basePrice;
                     let priceReadyForDiscount = true;
                     let incompletePriceMessage = '';
@@ -4948,9 +5486,12 @@ if ($error_msg !== '') {
                         }
                         const discountAmount = Math.round((totalPrice * discountPercent / 100) * 100) / 100;
                         const amountDue = Math.max(0, totalPrice - discountAmount);
-                        priceText.innerText = discountPercent > 0
+                        const groupPricePrefix = isGroupPrice
+                            ? `Group total (${selectedGroupForPrice.pets.length} pets): ${groupPriceBreakdown.join(' • ')} | `
+                            : '';
+                        priceText.innerText = groupPricePrefix + (discountPercent > 0
                             ? `Regular Price: ₱${totalPrice.toFixed(2)} | ${discountPercent}% discount: -₱${discountAmount.toFixed(2)} | Amount Due: ₱${amountDue.toFixed(2)}`
-                            : '₱' + totalPrice.toFixed(2);
+                            : 'Total: ₱' + totalPrice.toFixed(2));
                     } else {
                         priceText.innerText = incompletePriceMessage;
                     }

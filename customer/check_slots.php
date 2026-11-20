@@ -3,10 +3,10 @@
  * Boogie's Pet Care & Services - slot availability endpoint.
  *
  * Compatibility:
- * - Requests containing only date + category retain the legacy response/behavior
- *   until book_appointment.php is updated.
- * - Requests that also include specific_service use the capacity/duration-aware
- *   scheduler and return additional `slots`, `available_slots`, and capacity data.
+ * - Requests containing only date + category retain the legacy response shape for
+ *   older callers.
+ * - The current booking form sends specific_service and group_count, so it uses
+ *   the capacity/duration-aware scheduler and receives exact Pet Group schedules.
  *
  * Initial scheduling assumptions based on the client survey/interview and adviser:
  * - Business hours: 09:00-18:00 Asia/Manila.
@@ -67,6 +67,14 @@ $dropoff_time_input = $_GET['dropoff_time'] ?? '';
 $dropoff_time = is_string($dropoff_time_input) ? trim($dropoff_time_input) : '';
 $pickup_time_input = $_GET['pickup_time'] ?? '';
 $pickup_time = is_string($pickup_time_input) ? trim($pickup_time_input) : '';
+$group_count_input = $_GET['group_count'] ?? '1';
+$group_count = is_string($group_count_input) && ctype_digit($group_count_input) ? (int)$group_count_input : 0;
+
+if ($group_count < 1 || $group_count > 20) {
+    http_response_code(400);
+    echo json_encode(['is_full' => false, 'booked_times' => [], 'error' => 'Invalid group size.']);
+    exit;
+}
 
 if ($date === '' || $category === '') {
     http_response_code(400);
@@ -93,9 +101,14 @@ if (!in_array($category, $allowed_categories, true)) {
     exit;
 }
 
-// A request without a specific service is from the existing frontend. Keep its old
-// contract until book_appointment.php is upgraded in the next step.
+// Keep the legacy response contract for older callers that omit specific_service.
+// The current customer booking form uses advanced mode and supplies group_count.
 $advanced_mode = ($specific_service !== '');
+if ($group_count > 1 && $category !== 'Grooming') {
+    http_response_code(400);
+    echo json_encode(['is_full' => false, 'booked_times' => [], 'error' => 'Pet Group booking is currently available for Grooming only.']);
+    exit;
+}
 
 $legacy_times = [
     '10:00:00', '11:00:00', '12:00:00', '13:00:00',
@@ -432,6 +445,50 @@ function slotMinimumRemaining(int $candidateStart, int $candidateEnd, array $app
         $minimum = min($minimum, max(0, $capacity - $activeExisting));
     }
     return $minimum;
+}
+
+/**
+ * Assign each pet in a Grooming group to the earliest 30-minute start that fits
+ * the real capacity, existing appointments, staggered lunch coverage, and 5 PM cutoff.
+ * The first pet must start at the customer's selected group start time.
+ */
+function slotPlanGroupSchedule(
+    int $groupCount,
+    int $groupStart,
+    int $duration,
+    array $existingIntervals,
+    string $category,
+    int $normalCapacity,
+    int $breakStart,
+    int $breakEnd,
+    int $latestStart,
+    int $serviceCutoff
+): ?array {
+    if ($groupCount < 2 || $duration <= 0 || $category !== 'Grooming') return null;
+
+    $workingIntervals = $existingIntervals;
+    $schedule = [];
+    for ($petIndex = 0; $petIndex < $groupCount; $petIndex++) {
+        $foundStart = null;
+        $firstCandidate = $petIndex === 0 ? $groupStart : $groupStart;
+        $lastCandidate = $petIndex === 0 ? $groupStart : $latestStart;
+        for ($candidate = $firstCandidate; $candidate <= $lastCandidate; $candidate += 30) {
+            if ($candidate >= $breakStart && $candidate < $breakEnd) continue;
+            $candidateEnd = $candidate + $duration;
+            if ($candidateEnd > $serviceCutoff) continue;
+            if (!slotWouldExceedCapacity($candidate, $candidateEnd, $workingIntervals, $category, $normalCapacity, $breakStart, $breakEnd)) {
+                $foundStart = $candidate;
+                break;
+            }
+        }
+        if ($foundStart === null) return null;
+
+        $foundEnd = $foundStart + $duration;
+        $schedule[] = ['start' => $foundStart, 'end' => $foundEnd];
+        $workingIntervals[] = ['start' => $foundStart, 'end' => $foundEnd, 'service' => 'Group booking'];
+    }
+
+    return $schedule;
 }
 
 try {
@@ -879,6 +936,7 @@ try {
     $response['date'] = $date;
     $response['category'] = $category;
     $response['specific_service'] = $specific_service;
+    $response['group_count'] = $group_count;
     $response['duration_minutes'] = $duration_minutes;
     if ($category === 'Pet Hotel' && slotIsHotelBoarding($specific_service)) {
         $response['duration_display'] = '30-minute check-in; room capacity is checked for the selected date only. For multi-night stays, contact the clinic to confirm availability.';
@@ -892,7 +950,12 @@ try {
     $response['simultaneous_capacity'] = $simultaneous_limit;
     $response['total_daily_bookings'] = $total_daily_bookings;
     $response['category_daily_bookings'] = $category_daily_bookings;
-    $response['daily_capacity_reached'] = ($total_daily_bookings >= $global_daily_limit || $category_daily_bookings >= $daily_limit);
+    // Match the same full-group test used below and by book_appointment.php:
+    // a slot is insufficient when adding every group member would exceed either limit.
+    $response['daily_capacity_reached'] = (
+        ($total_daily_bookings + $group_count) > $global_daily_limit
+        || ($category_daily_bookings + $group_count) > $daily_limit
+    );
     $response['slots'] = [];
     $response['available_slots'] = 0;
 
@@ -942,6 +1005,8 @@ try {
         $label = date('g:i A', strtotime($time_value)) . ' – ' . date('g:i A', strtotime($end_value));
         $available = true;
         $reason = '';
+        // Reset this for every candidate time so no prior slot can leak a stale schedule.
+        $group_schedule = null;
 
         // For overnight boarding, check room capacity across the full selected day,
         // while the selected time remains a short check-in appointment.
@@ -964,16 +1029,35 @@ try {
         } elseif ($date < $today || ($date === $today && $start <= $current_minutes)) {
             $available = false;
             $reason = 'Time has passed';
-        } elseif ($total_daily_bookings >= $global_daily_limit) {
+        } elseif (($total_daily_bookings + $group_count) > $global_daily_limit) {
             $available = false;
-            $reason = 'Overall daily capacity reached';
-        } elseif ($category_daily_bookings >= $daily_limit) {
+            $reason = 'The overall daily capacity does not have enough spaces for all pets in this group.';
+        } elseif (($category_daily_bookings + $group_count) > $daily_limit) {
             $available = false;
-            $reason = 'Service daily capacity reached';
+            $reason = 'The service daily capacity does not have enough spaces for all pets in this group.';
         } else {
-            // New starts during 12:00-13:00 are blocked above. Services started
-            // before lunch may continue, subject to the reduced grooming capacity.
-            if (slotWouldExceedCapacity(
+            // New starts during 12:00-13:00 are blocked above. A group is planned
+            // pet-by-pet so every member receives a real time without exceeding
+            // the two-groomer capacity or the reduced one-groomer lunch coverage.
+            if ($group_count > 1) {
+                $group_schedule = slotPlanGroupSchedule(
+                    $group_count,
+                    $start,
+                    $duration_minutes,
+                    $existing_intervals,
+                    $category,
+                    $simultaneous_limit,
+                    $break_start,
+                    $break_end,
+                    $latest_start_minutes,
+                    $service_cutoff_minutes
+                );
+                if (!is_array($group_schedule) || count($group_schedule) !== $group_count) {
+                    $group_schedule = null;
+                    $available = false;
+                    $reason = 'There is not enough Grooming capacity to schedule every pet in this group before 5:00 PM. Please choose an earlier time or another date.';
+                }
+            } elseif (slotWouldExceedCapacity(
                 $capacity_start,
                 $capacity_end,
                 $existing_intervals,
@@ -1008,15 +1092,22 @@ try {
         // The UI should show the tightest remaining limit, not just staff/room capacity.
         $remaining = min($simultaneous_remaining, $category_daily_remaining, $global_daily_remaining);
 
-        $response['slots'][] = [
+        $slotPayload = [
             'time' => $time_value,
             'label' => $label,
             'available' => $available,
-            'remaining_slots' => $available ? $remaining : 0,
+            'remaining_slots' => $available ? ($group_count > 1 ? $group_count : $remaining) : 0,
             'capacity' => $simultaneous_limit,
             'duration_minutes' => $duration_minutes,
             'reason' => $reason,
         ];
+        if ($group_count > 1 && $available && isset($group_schedule) && is_array($group_schedule)) {
+            $groupFinish = max(array_column($group_schedule, 'end'));
+            $slotPayload['group_schedule'] = $group_schedule;
+            $slotPayload['group_finish_time'] = sprintf('%02d:%02d:00', intdiv($groupFinish, 60), $groupFinish % 60);
+            $slotPayload['group_finish_label'] = date('g:i A', strtotime($slotPayload['group_finish_time']));
+        }
+        $response['slots'][] = $slotPayload;
     }
 
     $response['is_full'] = ($response['available_slots'] === 0);

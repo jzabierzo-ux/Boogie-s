@@ -110,8 +110,7 @@ try {
     $serviceFeeExists = receiptColumnExists($appointmentColumns, 'service_fee');
     $totalPriceExists = receiptColumnExists($appointmentColumns, 'total_price');
     if ($serviceFeeExists && $totalPriceExists) {
-        // In this project, service_fee is the regular price and total_price is
-        // the final amount due after any validated promotion discount.
+        // Each group appointment row stores the price for that individual pet.
         $subtotalExpr = 'COALESCE(a.service_fee, 0)';
         $totalExpr = 'COALESCE(a.total_price, a.service_fee, 0)';
     } elseif ($totalPriceExists) {
@@ -157,6 +156,8 @@ try {
         'pickup_time' => isset($appointmentColumns['pickup_time']) ? 'a.pickup_time' : 'NULL::time',
         'discount_percent' => isset($appointmentColumns['discount_percent']) ? 'COALESCE(a.discount_percent, 0)' : '0::numeric',
         'promo_title' => isset($appointmentColumns['promo_title']) ? 'a.promo_title' : 'NULL::text',
+        'booking_group_id' => isset($appointmentColumns['booking_group_id']) ? 'a.booking_group_id' : 'NULL::text',
+        'user_id' => isset($appointmentColumns['user_id']) ? 'a.user_id' : 'NULL::bigint',
     ];
 
     // Prefer an actual payment/verification timestamp, then the record creation
@@ -185,9 +186,9 @@ try {
     $userColumnsStmt->execute();
     $userColumns = array_fill_keys($userColumnsStmt->fetchAll(PDO::FETCH_COLUMN), true);
 
-    $petNameExpr = isset($petColumns['name']) ? 'p.name' : "NULL::text";
-    $petOwnerNameExpr = isset($petColumns['owner_name']) ? 'p.owner_name' : "NULL::text";
-    $customerNameExpr = isset($userColumns['full_name']) ? 'u.full_name' : "NULL::text";
+    $petNameExpr = isset($petColumns['name']) ? 'p.name' : 'NULL::text';
+    $petOwnerNameExpr = isset($petColumns['owner_name']) ? 'p.owner_name' : 'NULL::text';
+    $customerNameExpr = isset($userColumns['full_name']) ? 'u.full_name' : 'NULL::text';
     $hasPetTable = $petNameExpr !== 'NULL::text' || $petOwnerNameExpr !== 'NULL::text';
     $hasUsersTable = $customerNameExpr !== 'NULL::text';
 
@@ -204,39 +205,138 @@ try {
         $customerNameExpr = 'NULL::text';
     }
 
-    $sql = "SELECT
-                a.id,
-                a.payment_status,
-                {$subtotalExpr} AS subtotal,
-                {$discountExpr} AS discount_amount,
-                {$optionalExpressions['discount_percent']} AS discount_percent,
-                {$optionalExpressions['promo_title']} AS promo_title,
-                {$taxExpr} AS tax_amount,
-                {$totalExpr} AS total_paid,
-                {$optionalExpressions['appointment_date']} AS appointment_date,
-                {$optionalExpressions['appointment_time']} AS appointment_time,
-                {$optionalExpressions['service']} AS service,
-                {$optionalExpressions['appointment_type']} AS appointment_type,
-                {$optionalExpressions['payment_method']} AS payment_method,
-                {$optionalExpressions['gcash_ref']} AS gcash_ref,
-                {$optionalExpressions['checkout_date']} AS checkout_date,
-                {$optionalExpressions['pickup_time']} AS pickup_time,
-                {$transactionTimestampExpr} AS transaction_datetime,
-                {$petNameExpr} AS pet_name,
-                {$petOwnerNameExpr} AS pet_owner_name,
-                {$customerNameExpr} AS customer_name
-            FROM public.appointments a
-            {$joins}
-            WHERE a.id = :id
-            LIMIT 1";
+    // Shared SELECT keeps the single-booking and group-booking receipt fields consistent.
+    $selectSql = "SELECT
+                    a.id,
+                    a.payment_status,
+                    {$subtotalExpr} AS subtotal,
+                    {$discountExpr} AS discount_amount,
+                    {$optionalExpressions['discount_percent']} AS discount_percent,
+                    {$optionalExpressions['promo_title']} AS promo_title,
+                    {$taxExpr} AS tax_amount,
+                    {$totalExpr} AS total_paid,
+                    {$optionalExpressions['appointment_date']} AS appointment_date,
+                    {$optionalExpressions['appointment_time']} AS appointment_time,
+                    {$optionalExpressions['service']} AS service,
+                    {$optionalExpressions['appointment_type']} AS appointment_type,
+                    {$optionalExpressions['payment_method']} AS payment_method,
+                    {$optionalExpressions['gcash_ref']} AS gcash_ref,
+                    {$optionalExpressions['checkout_date']} AS checkout_date,
+                    {$optionalExpressions['pickup_time']} AS pickup_time,
+                    {$transactionTimestampExpr} AS transaction_datetime,
+                    {$optionalExpressions['booking_group_id']} AS booking_group_id,
+                    {$optionalExpressions['user_id']} AS appointment_user_id,
+                    {$petNameExpr} AS pet_name,
+                    {$petOwnerNameExpr} AS pet_owner_name,
+                    {$customerNameExpr} AS customer_name
+                FROM public.appointments a
+                {$joins}";
 
-    $stmt = $pdo->prepare($sql);
+    $stmt = $pdo->prepare($selectSql . ' WHERE a.id = :id LIMIT 1');
     $stmt->execute([':id' => (int)$appointmentId]);
-    $receipt = $stmt->fetch(PDO::FETCH_ASSOC);
+    $selectedReceipt = $stmt->fetch(PDO::FETCH_ASSOC);
 
-    if (!$receipt) {
+    if (!$selectedReceipt) {
         http_response_code(404);
         exit('Transaction not found.');
+    }
+
+    $groupId = trim((string)($selectedReceipt['booking_group_id'] ?? ''));
+    $isGroupReceipt = false;
+    $receiptItems = [$selectedReceipt];
+    $receiptTransactionIds = [(int)$selectedReceipt['id']];
+
+    if ($groupId !== '' && isset($appointmentColumns['booking_group_id'])) {
+        // Group bookings are paid as one transaction, so include every appointment
+        // row attached to the same group instead of printing only the clicked pet.
+        $groupStmt = $pdo->prepare(
+            $selectSql . ' WHERE a.booking_group_id = :group_id ORDER BY a.appointment_time ASC NULLS LAST, a.id ASC'
+        );
+        $groupStmt->execute([':group_id' => $groupId]);
+        $groupRows = $groupStmt->fetchAll(PDO::FETCH_ASSOC);
+
+        // A valid Pet Group contains 2-20 individual pet appointment rows. Do not
+        // silently produce a partial receipt if its linked rows are missing.
+        if (count($groupRows) < 2 || count($groupRows) > 20) {
+            http_response_code(409);
+            exit('The Pet Group receipt is incomplete or has an invalid number of pets. Please check the group appointments.');
+        }
+
+        $selectedUserId = $selectedReceipt['appointment_user_id'] ?? null;
+        foreach ($groupRows as $groupRow) {
+            if (strtolower(trim((string)($groupRow['payment_status'] ?? ''))) !== 'paid') {
+                http_response_code(403);
+                exit('A Pet Group receipt can only be printed when all group appointments are marked Paid.');
+            }
+            if ($selectedUserId !== null && $groupRow['appointment_user_id'] !== null
+                && (string)$groupRow['appointment_user_id'] !== (string)$selectedUserId) {
+                http_response_code(409);
+                exit('The Pet Group appointments do not belong to the same customer.');
+            }
+        }
+
+        $isGroupReceipt = true;
+        $receiptItems = $groupRows;
+        $receiptTransactionIds = array_map(static function (array $row): int {
+            return (int)$row['id'];
+        }, $groupRows);
+        $receipt = $groupRows[0];
+
+        $receipt['subtotal'] = array_sum(array_map(static function (array $row): float {
+            return (float)($row['subtotal'] ?? 0);
+        }, $groupRows));
+        $receipt['total_paid'] = array_sum(array_map(static function (array $row): float {
+            return (float)($row['total_paid'] ?? 0);
+        }, $groupRows));
+        $receipt['discount_amount'] = $discountRecorded
+            ? array_sum(array_map(static function (array $row): float {
+                return (float)($row['discount_amount'] ?? 0);
+            }, $groupRows))
+            : null;
+
+        $taxValuesComplete = $taxRecorded;
+        $taxTotal = 0.0;
+        foreach ($groupRows as $groupRow) {
+            if (!isset($groupRow['tax_amount']) || $groupRow['tax_amount'] === '') {
+                $taxValuesComplete = false;
+                break;
+            }
+            $taxTotal += (float)$groupRow['tax_amount'];
+        }
+        $receipt['tax_amount'] = $taxValuesComplete ? $taxTotal : null;
+
+        $discountPercentValues = array_values(array_unique(array_map(static function (array $row): string {
+            return number_format((float)($row['discount_percent'] ?? 0), 4, '.', '');
+        }, $groupRows)));
+        $receipt['discount_percent'] = count($discountPercentValues) === 1
+            ? (float)$discountPercentValues[0]
+            : 0;
+
+        $promoTitles = [];
+        foreach ($groupRows as $groupRow) {
+            $promo = trim((string)($groupRow['promo_title'] ?? ''));
+            if ($promo !== '' && !in_array($promo, $promoTitles, true)) {
+                $promoTitles[] = $promo;
+            }
+        }
+        $receipt['promo_title'] = implode(', ', $promoTitles);
+
+        // Use a recorded shared payment method/reference even when the first row is blank.
+        foreach (['payment_method', 'gcash_ref', 'transaction_datetime', 'customer_name', 'pet_owner_name'] as $field) {
+            if (trim((string)($receipt[$field] ?? '')) !== '') {
+                continue;
+            }
+            foreach ($groupRows as $groupRow) {
+                if (trim((string)($groupRow[$field] ?? '')) !== '') {
+                    $receipt[$field] = $groupRow[$field];
+                    break;
+                }
+            }
+        }
+        $receipt['appointment_time'] = null;
+        $receipt['pet_name'] = count($groupRows) . ' pets';
+    } else {
+        $receipt = $selectedReceipt;
     }
 
     $paymentStatus = strtolower(trim((string)($receipt['payment_status'] ?? '')));
@@ -254,15 +354,23 @@ try {
         $customerName = 'Walk-in Guest';
     }
 
-    $bookingType = trim((string)($receipt['appointment_type'] ?? '')) ?: 'Not recorded';
+    $bookingType = $isGroupReceipt
+        ? 'Pet Group Booking'
+        : (trim((string)($receipt['appointment_type'] ?? '')) ?: 'Not recorded');
     $paymentMethod = trim((string)($receipt['payment_method'] ?? '')) ?: 'Not recorded';
     $paymentReference = trim((string)($receipt['gcash_ref'] ?? ''));
-    $receiptNumber = 'BPCS-' . str_pad((string)$receipt['id'], 8, '0', STR_PAD_LEFT);
+    if ($isGroupReceipt) {
+        $groupReceiptSuffix = strtoupper(substr(str_replace('-', '', $groupId), 0, 8));
+        $receiptNumber = 'BPCS-GRP-' . $groupReceiptSuffix;
+    } else {
+        $receiptNumber = 'BPCS-' . str_pad((string)$receipt['id'], 8, '0', STR_PAD_LEFT);
+    }
 } catch (Throwable $e) {
     error_log('Print receipt error for appointment #' . (int)$appointmentId . ': ' . $e->getMessage());
     http_response_code(500);
     exit('The transaction receipt could not be loaded. Please check the database and try again.');
 }
+
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -307,10 +415,21 @@ try {
             .receipt { width: 74mm !important; max-width: none !important; margin: 0 !important; padding: 0 !important; border: 0 !important; box-shadow: none !important; break-inside: avoid; page-break-inside: avoid; }
             .brand, .details, table, .totals, .notice { break-inside: avoid; page-break-inside: avoid; }
             .notice { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+            /* Long Pet Group receipts may continue onto additional thermal-paper pages. */
+            .group-receipt .receipt { break-inside: auto !important; page-break-inside: auto !important; }
+            .group-receipt table { break-inside: auto !important; page-break-inside: auto !important; }
+            .group-receipt thead { display: table-header-group; }
+            .group-receipt tbody tr { break-inside: avoid; page-break-inside: avoid; }
+            .group-receipt .brand,
+            .group-receipt .details,
+            .group-receipt .totals,
+            .group-receipt .notice,
+            .group-receipt .thank-you,
+            .group-receipt .receipt-footer { break-inside: avoid; page-break-inside: avoid; }
         }
     </style>
 </head>
-<body>
+<body class="<?php echo $isGroupReceipt ? 'group-receipt' : 'single-receipt'; ?>">
     <div class="toolbar">
         <button class="print-button" type="button" onclick="window.print()"><span aria-hidden="true">🖨</span> Print Receipt</button>
         <button class="close-button" type="button" onclick="window.close()">Close</button>
@@ -335,12 +454,12 @@ try {
 
         <section class="details" aria-label="Transaction details">
             <div class="detail"><span class="label">Customer</span><span class="value"><?php echo receiptEscape($customerName); ?></span></div>
-            <div class="detail"><span class="label">Pet</span><span class="value"><?php echo receiptEscape($receipt['pet_name'] ?? 'N/A') ?: 'N/A'; ?></span></div>
+            <div class="detail"><span class="label"><?php echo $isGroupReceipt ? 'Pets' : 'Pet'; ?></span><span class="value"><?php echo $isGroupReceipt ? count($receiptItems) . ' pets (see itemized schedule below)' : (receiptEscape($receipt['pet_name'] ?? 'N/A') ?: 'N/A'); ?></span></div>
             <div class="detail"><span class="label">Booking Type</span><span class="value"><?php echo receiptEscape($bookingType); ?></span></div>
             <div class="detail"><span class="label">Payment Method</span><span class="value"><?php echo receiptEscape($paymentMethod); ?></span></div>
             <div class="detail"><span class="label">Transaction Date</span><span class="value"><?php echo receiptDateTime($receipt['transaction_datetime'] ?? null); ?></span></div>
             <div class="detail"><span class="label">Appointment Date</span><span class="value"><?php echo receiptDateTime($receipt['appointment_date'] ?? null, 'M d, Y'); ?></span></div>
-            <div class="detail"><span class="label">Appointment Time</span><span class="value"><?php echo receiptDateTime($receipt['appointment_time'] ?? null, 'g:i A'); ?></span></div>
+            <div class="detail"><span class="label">Appointment Time</span><span class="value"><?php echo $isGroupReceipt ? 'Multiple times (see schedule below)' : receiptDateTime($receipt['appointment_time'] ?? null, 'g:i A'); ?></span></div>
             <?php if (!empty($receipt['checkout_date'])): ?>
                 <div class="detail"><span class="label">Checkout Date</span><span class="value"><?php echo receiptDateTime($receipt['checkout_date'], 'M d, Y'); ?></span></div>
             <?php endif; ?>
@@ -353,12 +472,22 @@ try {
         </section>
 
         <table aria-label="Paid services">
-            <thead><tr><th>Service Description</th><th class="amount">Amount</th></tr></thead>
+            <thead><tr><th><?php echo $isGroupReceipt ? 'Pet / Service / Schedule' : 'Service Description'; ?></th><th class="amount">Amount</th></tr></thead>
             <tbody>
-                <tr>
-                    <td><strong><?php echo receiptEscape($receipt['service'] ?? 'Service'); ?></strong></td>
-                    <td class="amount"><?php echo receiptMoney($receipt['subtotal'] ?? 0); ?></td>
-                </tr>
+                <?php foreach ($receiptItems as $item): ?>
+                    <tr>
+                        <td>
+                            <?php if ($isGroupReceipt): ?>
+                                <strong><?php echo receiptEscape(trim((string)($item['pet_name'] ?? '')) ?: ('Pet #' . (int)$item['id'])); ?></strong><br>
+                                <?php echo receiptEscape($item['service'] ?? 'Service'); ?><br>
+                                <span><?php echo receiptDateTime($item['appointment_date'] ?? null, 'M d, Y'); ?> · <?php echo receiptDateTime($item['appointment_time'] ?? null, 'g:i A'); ?></span>
+                            <?php else: ?>
+                                <strong><?php echo receiptEscape($item['service'] ?? 'Service'); ?></strong>
+                            <?php endif; ?>
+                        </td>
+                        <td class="amount"><?php echo receiptMoney($item['subtotal'] ?? 0); ?></td>
+                    </tr>
+                <?php endforeach; ?>
             </tbody>
         </table>
 
@@ -375,7 +504,7 @@ try {
 
         <div class="notice">System-generated transaction receipt. Tax / VAT is displayed only when separately recorded; no tax rate has been assumed.</div>
         <div class="thank-you">Thank you for choosing Boogie's Pet Care &amp; Services!</div>
-        <div class="receipt-footer">Transaction ID: <?php echo (int)$receipt['id']; ?> · Keep this receipt for your records.</div>
+        <div class="receipt-footer">Transaction ID<?php echo count($receiptTransactionIds) > 1 ? 's' : ''; ?>: <?php echo receiptEscape(implode(', ', $receiptTransactionIds)); ?> · Keep this receipt for your records.</div>
     </main>
 </body>
 </html>

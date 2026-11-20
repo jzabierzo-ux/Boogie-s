@@ -178,7 +178,8 @@ if ($appointmentId === false || $appointmentId === null || $appointmentId < 1 ||
 }
 
 try {
-    // Lock the appointment row before checking status/time to prevent concurrent cancellations.
+    // Read the selected appointment first. For a Pet Group, the shared group
+    // lock below protects every individual pet appointment as one cancellation.
     $pdo->beginTransaction();
 
     $query = "
@@ -190,6 +191,7 @@ try {
             a.payment_status,
             a.service,
             a.user_id,
+            a.booking_group_id,
             p.name AS pet_name,
             u.contact_number
         FROM appointments a
@@ -204,7 +206,7 @@ try {
         $params[':session_user_id'] = (int)$userId;
     }
 
-    $query .= ' LIMIT 1 FOR UPDATE OF a';
+    $query .= ' LIMIT 1';
     $stmt = $pdo->prepare($query);
     $stmt->execute($params);
     $booking = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -213,110 +215,251 @@ try {
         cancelBookingError($currentRole, 'unauthorized_or_not_found');
     }
 
-    // Role-specific service access: direct POST requests are checked as well.
-    if ($isPersonnel && !$isAdmin) {
-        $category = cancellationServiceCategory((string)($booking['service'] ?? ''));
-        $allowed = match ($currentRole) {
-            'groomer' => $category === 'grooming',
-            'pet_hotel_staff' => $category === 'pet_hotel',
-            'veterinarian', 'vet_assistant', 'vet_nurse' => $category === 'vet',
-            'manager', 'receptionist' => in_array($category, ['grooming', 'pet_hotel', 'vet'], true),
-            default => false
-        };
+    $bookingGroupId = trim((string)($booking['booking_group_id'] ?? ''));
+    $groupBookings = [];
+    $isGroupCancellation = false;
 
-        if (!$allowed) {
-            http_response_code(403);
-            if ($pdo->inTransaction()) {
-                $pdo->rollBack();
+    if ($bookingGroupId !== '') {
+        // booking_group_id is UUID in the Pet Group migration. Validate before
+        // casting it in SQL; never allow arbitrary POST text into a UUID cast.
+        if (!preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i', $bookingGroupId)) {
+            throw new RuntimeException('The Pet Group booking reference is invalid.');
+        }
+
+        // Serialize cancellation attempts for the same group, then lock every
+        // appointment in deterministic ID order to avoid partial group updates.
+        $groupLockStmt = $pdo->prepare("SELECT pg_advisory_xact_lock(hashtext(:lock_key)::bigint)");
+        $groupLockStmt->execute([':lock_key' => 'boogie-booking-group|' . $bookingGroupId]);
+
+        $groupQuery = "
+            SELECT
+                a.id,
+                a.appointment_date,
+                a.appointment_time,
+                a.booking_status,
+                a.payment_status,
+                a.service,
+                a.user_id,
+                a.booking_group_id,
+                a.payment_method,
+                a.gcash_ref,
+                a.gcash_receipt,
+                p.name AS pet_name,
+                u.contact_number
+            FROM appointments a
+            LEFT JOIN pets p ON p.id = a.pet_id
+            LEFT JOIN users u ON u.id = a.user_id
+            WHERE a.booking_group_id = CAST(:group_id AS uuid)
+        ";
+        $groupParams = [':group_id' => $bookingGroupId];
+        if (!$isPersonnel) {
+            $groupQuery .= ' AND a.user_id = :session_user_id';
+            $groupParams[':session_user_id'] = (int)$userId;
+        }
+        $groupQuery .= ' ORDER BY a.id FOR UPDATE OF a';
+
+        $groupStmt = $pdo->prepare($groupQuery);
+        $groupStmt->execute($groupParams);
+        $groupBookings = $groupStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+        if (count($groupBookings) < 2 || count($groupBookings) > 20) {
+            throw new RuntimeException('The Pet Group must contain between 2 and 20 pet appointments. Please contact the clinic before cancelling.');
+        }
+
+        // Reject malformed groups that mix owners, dates, or services. A valid
+        // group booking is one customer, one service and one appointment date.
+        $firstGroupRow = $groupBookings[0];
+        $expectedCustomerId = (int)($firstGroupRow['user_id'] ?? 0);
+        $expectedDate = substr((string)($firstGroupRow['appointment_date'] ?? ''), 0, 10);
+        $expectedService = strtolower(trim((string)($firstGroupRow['service'] ?? '')));
+        $expectedPaymentMethod = strtolower(trim((string)($firstGroupRow['payment_method'] ?? '')));
+        $expectedGcashRef = trim((string)($firstGroupRow['gcash_ref'] ?? ''));
+        $expectedGcashReceipt = trim((string)($firstGroupRow['gcash_receipt'] ?? ''));
+
+        foreach ($groupBookings as $groupRow) {
+            if ((int)($groupRow['user_id'] ?? 0) !== $expectedCustomerId
+                || substr((string)($groupRow['appointment_date'] ?? ''), 0, 10) !== $expectedDate
+                || strtolower(trim((string)($groupRow['service'] ?? ''))) !== $expectedService
+                || strtolower(trim((string)($groupRow['payment_method'] ?? ''))) !== $expectedPaymentMethod
+                || trim((string)($groupRow['gcash_ref'] ?? '')) !== $expectedGcashRef
+                || trim((string)($groupRow['gcash_receipt'] ?? '')) !== $expectedGcashReceipt) {
+                throw new RuntimeException('The Pet Group records do not share the same customer, service, date, and payment details. Please contact the clinic.');
             }
-            exit('Access denied for this service booking.');
+        }
+
+        $isGroupCancellation = true;
+    } else {
+        // Legacy single-pet bookings keep their original row-level lock.
+        $singleLockStmt = $pdo->prepare('SELECT id FROM appointments WHERE id = :id FOR UPDATE');
+        $singleLockStmt->execute([':id' => (int)$appointmentId]);
+        if (!$singleLockStmt->fetchColumn()) {
+            cancelBookingError($currentRole, 'unauthorized_or_not_found');
+        }
+        $groupBookings = [$booking];
+    }
+
+    // Validate every pet row before changing any of them.
+    $appointmentTimestamps = [];
+    $petNames = [];
+    $customerId = (int)($booking['user_id'] ?? 0);
+    $customerPhone = trim((string)($booking['contact_number'] ?? ''));
+    $serviceName = trim((string)($booking['service'] ?? 'Service')) ?: 'Service';
+
+    foreach ($groupBookings as $groupRow) {
+        if ($isPersonnel && !$isAdmin) {
+            $category = cancellationServiceCategory((string)($groupRow['service'] ?? ''));
+            $allowed = match ($currentRole) {
+                'groomer' => $category === 'grooming',
+                'pet_hotel_staff' => $category === 'pet_hotel',
+                'veterinarian', 'vet_assistant', 'vet_nurse' => $category === 'vet',
+                'manager', 'receptionist' => in_array($category, ['grooming', 'pet_hotel', 'vet'], true),
+                default => false
+            };
+
+            if (!$allowed) {
+                http_response_code(403);
+                if ($pdo->inTransaction()) {
+                    $pdo->rollBack();
+                }
+                exit('Access denied for this service booking.');
+            }
+        }
+
+        $currentStatus = strtoupper(trim((string)($groupRow['booking_status'] ?? '')));
+        if (in_array($currentStatus, ['COMPLETED', 'NO-SHOW', 'CANCELLED'], true)) {
+            cancelBookingError($currentRole, 'invalid_status');
+        }
+
+        $dateValue = trim((string)($groupRow['appointment_date'] ?? ''));
+        $timeValue = trim((string)($groupRow['appointment_time'] ?? '00:00:00'));
+        $appointmentTimestamp = strtotime($dateValue . ' ' . $timeValue);
+        if ($appointmentTimestamp === false || $appointmentTimestamp <= time()) {
+            cancelBookingError($currentRole, 'past_date');
+        }
+        if (!$isPersonnel && ($appointmentTimestamp - time()) < 86400) {
+            cancelBookingError($currentRole, 'late_cancellation');
+        }
+
+        $appointmentTimestamps[] = $appointmentTimestamp;
+        $rowPetName = trim((string)($groupRow['pet_name'] ?? ''));
+        if ($rowPetName !== '') {
+            $petNames[] = $rowPetName;
         }
     }
 
-    $currentStatus = strtoupper(trim((string)($booking['booking_status'] ?? '')));
-    if (in_array($currentStatus, ['COMPLETED', 'NO-SHOW', 'CANCELLED'], true)) {
-        cancelBookingError($currentRole, 'invalid_status');
-    }
-
-    $dateValue = trim((string)($booking['appointment_date'] ?? ''));
-    $timeValue = trim((string)($booking['appointment_time'] ?? '00:00:00'));
-    $appointmentTimestamp = strtotime($dateValue . ' ' . $timeValue);
-    if ($appointmentTimestamp === false || $appointmentTimestamp <= time()) {
-        cancelBookingError($currentRole, 'past_date');
-    }
-
-    // Customers must cancel at least 24 hours before the appointment.
-    // Authorized personnel can handle operational cancellations at any time before the appointment.
-    if (!$isPersonnel && ($appointmentTimestamp - time()) < 86400) {
-        cancelBookingError($currentRole, 'late_cancellation');
-    }
-
-    $serviceName = trim((string)($booking['service'] ?? 'Service')) ?: 'Service';
-    $petName = trim((string)($booking['pet_name'] ?? '')) ?: 'your pet';
-    $customerPhone = trim((string)($booking['contact_number'] ?? ''));
-    $customerId = (int)($booking['user_id'] ?? 0);
+    $appointmentTimestamp = min($appointmentTimestamps);
     $appointmentDateDisplay = date('M d, Y', $appointmentTimestamp);
-    $paymentStatus = strtolower(trim((string)($booking['payment_status'] ?? '')));
+    $petNames = array_values(array_unique($petNames));
+    $petName = $isGroupCancellation
+        ? count($groupBookings) . ' pets (' . implode(', ', $petNames) . ')'
+        : (trim((string)($booking['pet_name'] ?? '')) ?: 'your pet');
 
-    // A paid or pending-verification payment is sent for review/refund handling; this endpoint never verifies GCash.
-    $newPaymentStatus = in_array($paymentStatus, ['paid', 'pending verification'], true)
-        ? 'Refund Requested'
-        : 'Cancelled';
-
-    $updateSql = "
-        UPDATE appointments
-        SET booking_status = 'Cancelled',
-            payment_status = :payment_status,
-            cancel_reason = :cancel_reason
-        WHERE id = :appointment_id
-          AND UPPER(COALESCE(booking_status, '')) NOT IN ('COMPLETED', 'NO-SHOW', 'CANCELLED')
-    ";
-    $updateParams = [
-        ':payment_status' => $newPaymentStatus,
-        ':cancel_reason' => $cancelReason,
-        ':appointment_id' => (int)$appointmentId
-    ];
-
-    // Keep ownership in the write query as a second authorization check for customers.
-    if (!$isPersonnel) {
-        $updateSql .= ' AND user_id = :session_user_id';
-        $updateParams[':session_user_id'] = (int)$userId;
+    // A paid or pending-verification shared payment is sent for review/refund handling.
+    // This endpoint never verifies GCash.
+    $groupHasReviewablePayment = false;
+    foreach ($groupBookings as $groupRow) {
+        $rowPaymentStatus = strtolower(trim((string)($groupRow['payment_status'] ?? '')));
+        if (in_array($rowPaymentStatus, ['paid', 'pending verification'], true)) {
+            $groupHasReviewablePayment = true;
+            break;
+        }
     }
+    $newPaymentStatus = $groupHasReviewablePayment ? 'Refund Requested' : 'Cancelled';
 
-    $updateStmt = $pdo->prepare($updateSql);
-    $updateStmt->execute($updateParams);
+    if ($isGroupCancellation) {
+        $updateSql = "
+            UPDATE appointments
+            SET booking_status = 'Cancelled',
+                payment_status = :payment_status,
+                cancel_reason = :cancel_reason
+            WHERE booking_group_id = CAST(:group_id AS uuid)
+              AND UPPER(BTRIM(COALESCE(booking_status, ''))) NOT IN ('COMPLETED', 'NO-SHOW', 'CANCELLED')
+        ";
+        $groupUpdateParams = [
+            ':payment_status' => $newPaymentStatus,
+            ':cancel_reason' => $cancelReason,
+            ':group_id' => $bookingGroupId
+        ];
+        // Scope the group write to the authenticated customer as a second ownership check.
+        if (!$isPersonnel) {
+            $updateSql .= ' AND user_id = :session_user_id';
+            $groupUpdateParams[':session_user_id'] = (int)$userId;
+        }
+        $updateStmt = $pdo->prepare($updateSql);
+        $updateStmt->execute($groupUpdateParams);
+        if ($updateStmt->rowCount() !== count($groupBookings)) {
+            throw new RuntimeException('Not all Pet Group appointments were cancelled. No partial group cancellation was saved.');
+        }
+    } else {
+        $updateSql = "
+            UPDATE appointments
+            SET booking_status = 'Cancelled',
+                payment_status = :payment_status,
+                cancel_reason = :cancel_reason
+            WHERE id = :appointment_id
+              AND UPPER(COALESCE(booking_status, '')) NOT IN ('COMPLETED', 'NO-SHOW', 'CANCELLED')
+        ";
+        $updateParams = [
+            ':payment_status' => $newPaymentStatus,
+            ':cancel_reason' => $cancelReason,
+            ':appointment_id' => (int)$appointmentId
+        ];
 
-    if ($updateStmt->rowCount() !== 1) {
-        cancelBookingError($currentRole, 'invalid_status');
+        // Keep ownership in the write query as a second authorization check for customers.
+        if (!$isPersonnel) {
+            $updateSql .= ' AND user_id = :session_user_id';
+            $updateParams[':session_user_id'] = (int)$userId;
+        }
+
+        $updateStmt = $pdo->prepare($updateSql);
+        $updateStmt->execute($updateParams);
+        if ($updateStmt->rowCount() !== 1) {
+            cancelBookingError($currentRole, 'invalid_status');
+        }
     }
 
     if ($customerId > 0) {
+        // Create one customer-facing update and one admin alert for the entire
+        // cancellation, regardless of who initiated it.
         if ($isPersonnel) {
-            $notificationTitle = 'Booking Cancelled by Clinic';
-            $notificationMessage = "Your booking for {$petName} ({$serviceName}) was cancelled by clinic staff. Reason: {$cancelReason}. Payment status: {$newPaymentStatus}.";
-            $notificationReadValue = cancellationNotificationReadValue($pdo, 'notifications', false);
-
-            $notificationStmt = $pdo->prepare("
-                INSERT INTO notifications (user_id, title, message, type, is_read, created_at)
-                VALUES (:user_id, :title, :message, 'booking', {$notificationReadValue}, NOW())
-            ");
-            $notificationStmt->execute([
-                ':user_id' => $customerId,
-                ':title' => $notificationTitle,
-                ':message' => $notificationMessage
-            ]);
+            $customerNotificationTitle = $isGroupCancellation
+                ? 'Pet Group Booking Cancelled by Clinic'
+                : 'Booking Cancelled by Clinic';
+            $customerNotificationMessage = $isGroupCancellation
+                ? "Your group booking for {$petName} ({$serviceName}) was cancelled by clinic staff. Reason: {$cancelReason}. Payment status: {$newPaymentStatus}."
+                : "Your booking for {$petName} ({$serviceName}) was cancelled by clinic staff. Reason: {$cancelReason}. Payment status: {$newPaymentStatus}.";
+            $adminNotificationMessage = $isGroupCancellation
+                ? 'Clinic staff cancelled Pet Group booking for ' . $petName . ' (' . $serviceName . '). Customer: ' . $customerId . '. Reason: ' . $cancelReason . '. Payment status: ' . $newPaymentStatus . '.'
+                : 'Clinic staff cancelled booking #' . (int)$appointmentId . ' for ' . $petName . ' (' . $serviceName . '). Customer: ' . $customerId . '. Reason: ' . $cancelReason . '. Payment status: ' . $newPaymentStatus . '.';
         } else {
-            $notificationMessage = $fullName . ' cancelled their ' . $serviceName
-                . ' appointment. Reason: ' . $cancelReason
-                . '. Payment status: ' . $newPaymentStatus . '.';
-            $notificationReadValue = cancellationNotificationReadValue($pdo, 'admin_notifications', false);
-
-            $notificationStmt = $pdo->prepare("
-                INSERT INTO admin_notifications (message, is_read, created_at)
-                VALUES (:message, {$notificationReadValue}, NOW())
-            ");
-            $notificationStmt->execute([':message' => $notificationMessage]);
+            $customerNotificationTitle = $isGroupCancellation
+                ? 'Pet Group Booking Cancelled'
+                : 'Booking Cancelled';
+            $customerNotificationMessage = $isGroupCancellation
+                ? "You successfully cancelled your Pet Group booking for {$petName} ({$serviceName}). Reason: {$cancelReason}. Payment status: {$newPaymentStatus}."
+                : "You successfully cancelled your booking for {$petName} ({$serviceName}). Reason: {$cancelReason}. Payment status: {$newPaymentStatus}.";
+            $adminNotificationMessage = $isGroupCancellation
+                ? $fullName . ' cancelled their Pet Group booking for ' . $petName . ' (' . $serviceName . '). Reason: ' . $cancelReason . '. Payment status: ' . $newPaymentStatus . '.'
+                : $fullName . ' cancelled their ' . $serviceName . ' appointment. Reason: ' . $cancelReason . '. Payment status: ' . $newPaymentStatus . '.';
         }
+
+        $customerReadValue = cancellationNotificationReadValue($pdo, 'notifications', false);
+        $customerNotificationStmt = $pdo->prepare("
+            INSERT INTO notifications (user_id, title, message, type, is_read, created_at)
+            VALUES (:user_id, :title, :message, 'booking', {$customerReadValue}, NOW())
+        ");
+        $customerNotificationStmt->execute([
+            ':user_id' => $customerId,
+            ':title' => $customerNotificationTitle,
+            ':message' => $customerNotificationMessage
+        ]);
+
+        $adminReadValue = cancellationNotificationReadValue($pdo, 'admin_notifications', false);
+        $adminNotificationStmt = $pdo->prepare("
+            INSERT INTO admin_notifications (message, is_read, created_at)
+            VALUES (:message, {$adminReadValue}, NOW())
+        ");
+        $adminNotificationStmt->execute([':message' => $adminNotificationMessage]);
     }
 
     $pdo->commit();
@@ -324,9 +467,13 @@ try {
     // Send customer SMS only after the database transaction commits.
     if ($customerPhone !== '' && strtoupper($customerPhone) !== 'N/A') {
         if ($isPersonnel) {
-            $smsBody = "Hi! Your booking for {$petName} ({$serviceName}) on {$appointmentDateDisplay} was CANCELLED by the clinic. Reason: {$cancelReason}. - Boogie's Pet Care";
+            $smsBody = $isGroupCancellation
+                ? "Hi! Your Pet Group booking for {$petName} ({$serviceName}) on {$appointmentDateDisplay} was CANCELLED by the clinic. Reason: {$cancelReason}. - Boogie's Pet Care"
+                : "Hi! Your booking for {$petName} ({$serviceName}) on {$appointmentDateDisplay} was CANCELLED by the clinic. Reason: {$cancelReason}. - Boogie's Pet Care";
         } else {
-            $smsBody = "Hi {$fullName}, you have successfully cancelled your booking for {$petName} ({$serviceName}) on {$appointmentDateDisplay}. - Boogie's Pet Care";
+            $smsBody = $isGroupCancellation
+                ? "Hi {$fullName}, you have successfully cancelled your Pet Group booking for {$petName} ({$serviceName}) on {$appointmentDateDisplay}. - Boogie's Pet Care"
+                : "Hi {$fullName}, you have successfully cancelled your booking for {$petName} ({$serviceName}) on {$appointmentDateDisplay}. - Boogie's Pet Care";
         }
 
         try {
