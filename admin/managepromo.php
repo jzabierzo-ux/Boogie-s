@@ -286,7 +286,7 @@ try {
             COUNT(*) FILTER (
                 WHERE {$promo_expired_sql}
             ) AS expired
-        FROM promos
+        FROM public.promos
     ");
     $promo_stats = $stats_stmt->fetch(PDO::FETCH_ASSOC) ?: [];
     $total_promos = (int)($promo_stats['total'] ?? 0);
@@ -309,7 +309,7 @@ try {
     $query = "
         SELECT id, tag, title, theme_color, button_text, target_url, starts_on, expiry_date,
                discount_percent, applicable_category, status
-        FROM promos
+        FROM public.promos
     ";
 
     if ($filter === 'active') {
