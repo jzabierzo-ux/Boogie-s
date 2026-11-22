@@ -273,8 +273,9 @@ $promo_start_valid_sql = "(starts_on IS NULL OR starts_on::date <= {$manila_toda
 $promo_expiry_valid_sql = "(expiry_date IS NULL OR expiry_date::date >= {$manila_today_sql})";
 $promo_expired_sql = "(expiry_date IS NOT NULL AND expiry_date::date < {$manila_today_sql})";
 
+// Keep the statistics query separate from the table query. A missing optional
+// display column must never reset valid promo counters to zero.
 try {
-    // Use the same active/date rules for the summary card and the active list.
     $stats_stmt = $pdo->query("
         SELECT
             COUNT(*) AS total,
@@ -292,23 +293,36 @@ try {
     $total_promos = (int)($promo_stats['total'] ?? 0);
     $active_promos = (int)($promo_stats['active'] ?? 0);
     $expired_promos = (int)($promo_stats['expired'] ?? 0);
+} catch (Throwable $e) {
+    error_log('Manage promos statistics query failed: ' . $e->getMessage());
+}
 
-    // The summary counts above also provide the exact number of rows for the
-    // selected filter, so a separate filtered COUNT query is not necessary.
-    $filtered_promo_count = match ($filter) {
-        'active' => $active_promos,
-        'expired' => $expired_promos,
-        default => $total_promos,
-    };
+$filtered_promo_count = match ($filter) {
+    'active' => $active_promos,
+    'expired' => $expired_promos,
+    default => $total_promos,
+};
+$total_pages = max(1, (int)ceil($filtered_promo_count / $per_page));
+$current_page = min($requested_page, $total_pages);
+$offset = ($current_page - 1) * $per_page;
 
-    $total_pages = max(1, (int)ceil($filtered_promo_count / $per_page));
-    $current_page = min($requested_page, $total_pages);
-    $offset = ($current_page - 1) * $per_page;
+try {
+    // These fields are optional in older promo table versions. Discover them
+    // before selecting so the list works with both the current and legacy schema.
+    $column_stmt = $pdo->query("
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'promos'
+    ");
+    $promo_columns = array_fill_keys($column_stmt->fetchAll(PDO::FETCH_COLUMN), true);
+    $button_text_expr = isset($promo_columns['button_text']) ? 'button_text' : 'NULL::text AS button_text';
+    $target_url_expr = isset($promo_columns['target_url']) ? 'target_url' : 'NULL::text AS target_url';
 
-    // Fetch only the fields rendered in the table and only one page at a time.
     $query = "
-        SELECT id, tag, title, theme_color, button_text, target_url, starts_on, expiry_date,
-               discount_percent, applicable_category, status
+        SELECT id, tag, title, theme_color,
+               {$button_text_expr}, {$target_url_expr},
+               starts_on, expiry_date, discount_percent, applicable_category, status
         FROM public.promos
     ";
 
@@ -325,21 +339,14 @@ try {
     }
 
     $query .= " ORDER BY id DESC LIMIT :limit OFFSET :offset";
-
     $promo_stmt = $pdo->prepare($query);
     $promo_stmt->bindValue(':limit', $per_page, PDO::PARAM_INT);
     $promo_stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
     $promo_stmt->execute();
     $promos = $promo_stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 } catch (Throwable $e) {
-    error_log('Manage promos query failed: ' . $e->getMessage());
-    $total_promos = 0;
-    $active_promos = 0;
-    $expired_promos = 0;
-    $filtered_promo_count = 0;
-    $total_pages = 1;
-    $current_page = 1;
-    $offset = 0;
+    // Preserve valid summary counts even if the table display query has an issue.
+    error_log('Manage promos list query failed: ' . $e->getMessage());
     $promos = [];
 }
 
